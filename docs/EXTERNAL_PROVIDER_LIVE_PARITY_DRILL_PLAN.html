@@ -119,7 +119,7 @@
   <main>
     <h1>External Provider Live Parity Drill Plan</h1>
     <section class="summary" aria-label="Summary">
-      <p>Validate live external-turn tracking for <code>codex</code>, <code>claude</code>, and <code>opencode</code> through the product web terminal and TUI. Each provider drill creates a fresh provider-owned session outside Arroba, imports it as an unattached agent, then verifies badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior while the external turn is still running.</p>
+      <p>Validate live external-turn tracking for <code>codex</code>, <code>claude</code>, and <code>opencode</code> through the product web terminal and TUI. Each provider drill creates a fresh provider-owned session outside Chariox, imports it as an unattached agent, then verifies badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior while the external turn is still running.</p>
     </section>
 
     <h2>Drill Shape</h2>
@@ -151,7 +151,7 @@
     </div>
 
     <h2>Provider Prompt Contract</h2>
-    <p>The drill prompt must force enough activity to prove Arroba keeps a single turn active across many provider updates. The prompt should ask the provider to:</p>
+    <p>The drill prompt must force enough activity to prove Chariox keeps a single turn active across many provider updates. The prompt should ask the provider to:</p>
     <ol>
       <li>Create temporary drill files under the chosen workspace. Prefer a temporary drill directory when the provider allows it; use a unique workspace-root scratch-file prefix when a provider blocks subdirectory writes, and report that as a provider limitation.</li>
       <li>Run 20 small tool actions, each with a visible marker <code>TOOL_STEP_01</code> through <code>TOOL_STEP_20</code>.</li>
@@ -164,11 +164,11 @@
     <h2>Execution Flow</h2>
     <ol>
       <li>Preflight the local dev kernel on <code>44120</code>, the product frontend, provider auth, and provider CLI availability.</li>
-      <li>For each provider, launch the external session outside Arroba and submit the provider prompt.</li>
-      <li>Refresh Arroba's unattached-agent inventory until the new provider session appears.</li>
-      <li>Import the unattached provider session into a new Arroba session.</li>
-      <li>Open that Arroba session in the web terminal and in TUI automation.</li>
-      <li>Poll provider transcript, Arroba operational history, web DOM state, and TUI automation snapshots until final completion.</li>
+      <li>For each provider, launch the external session outside Chariox and submit the provider prompt.</li>
+      <li>Refresh Chariox's unattached-agent inventory until the new provider session appears.</li>
+      <li>Import the unattached provider session into a new Chariox session.</li>
+      <li>Open that Chariox session in the web terminal and in TUI automation.</li>
+      <li>Poll provider transcript, Chariox operational history, web DOM state, and TUI automation snapshots until final completion.</li>
       <li>Capture before, during, and after evidence for every provider and observer.</li>
     </ol>
 
@@ -191,7 +191,7 @@
         </tr>
         <tr>
           <td>Prompt dedupe</td>
-          <td>Arroba shows the external prompt once. It must not repeat the prompt as new blobs arrive.</td>
+          <td>Chariox shows the external prompt once. It must not repeat the prompt as new blobs arrive.</td>
         </tr>
         <tr>
           <td>Live updates</td>
@@ -212,7 +212,7 @@
     <ul>
       <li>One artifact directory per provider under the existing live-drill artifact convention.</li>
       <li>Provider-native raw transcript/session file snapshot.</li>
-      <li>Arroba operational-history excerpt for the imported session and agent.</li>
+      <li>Chariox operational-history excerpt for the imported session and agent.</li>
       <li>Web screenshots before, during, after, and after expanding the completed turn.</li>
       <li>TUI automation snapshots before, during, after, and after expanding the completed turn.</li>
       <li>Badge transition timeline with timestamps and source events.</li>
@@ -224,7 +224,7 @@
     <ul>
       <li>Add a new live matrix script rather than overloading the fixture-based external import drill.</li>
       <li>Run providers sequentially by default to avoid provider auth, CPU, and model-output contention.</li>
-      <li>Keep the provider-native session open and observable until Arroba has verified the final idle state.</li>
+      <li>Keep the provider-native session open and observable until Chariox has verified the final idle state.</li>
       <li>Use existing kernel IPC helpers for unattached-agent refresh/import and session history reads.</li>
       <li>Use existing TUI automation socket helpers for snapshots and badge assertions.</li>
       <li>Use product frontend browser automation for DOM, screenshot, scroll, and collapse assertions.</li>
@@ -245,18 +245,18 @@
       <li>Provider matrix for <code>codex</code>, <code>claude</code>, and <code>opencode</code>.</li>
       <li>Web terminal evidence: badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior.</li>
       <li>TUI evidence: badge lifecycle, transcript parity, scroll behavior, and turn collapse behavior.</li>
-      <li>Artifact links or paths for screenshots, snapshots, raw provider transcripts, and Arroba history excerpts.</li>
+      <li>Artifact links or paths for screenshots, snapshots, raw provider transcripts, and Chariox history excerpts.</li>
       <li><strong>Provider limitations and clarifications.</strong></li>
     </ol>
 
     <h2>Provider Limitations And Clarifications</h2>
-    <p>Every completed drill run must end with this provider-by-provider limitations section. This is part of the acceptance criteria, not an optional appendix. The final report must clarify what each provider persists and exposes live, what Arroba can display from that data, and what is unavailable because the provider does not write it to its session files or event stream.</p>
+    <p>Every completed drill run must end with this provider-by-provider limitations section. This is part of the acceptance criteria, not an optional appendix. The final report must clarify what each provider persists and exposes live, what Chariox can display from that data, and what is unavailable because the provider does not write it to its session files or event stream.</p>
     <ul>
       <li>For each provider, list available live metadata: status/running state, assistant text, tool calls, tool results, reasoning/thinking summaries, timestamps, token usage, model identity, and final completion/error state.</li>
-      <li>For each missing metadata category, state whether it is an Arroba bug, a provider persistence limitation, or a drill-observation limitation.</li>
+      <li>For each missing metadata category, state whether it is a Chariox bug, a provider persistence limitation, or a drill-observation limitation.</li>
       <li>Do not imply parity for traces or hidden reasoning that the provider does not expose.</li>
-      <li>Include exact provider session IDs and Arroba session/agent IDs so limitations can be reproduced.</li>
-      <li>When a provider falls short, record the product impact and the expected Arroba behavior, such as showing an explicit unavailable metadata state rather than leaving the UI blank or implying the turn is still active.</li>
+      <li>Include exact provider session IDs and Chariox session/agent IDs so limitations can be reproduced.</li>
+      <li>When a provider falls short, record the product impact and the expected Chariox behavior, such as showing an explicit unavailable metadata state rather than leaving the UI blank or implying the turn is still active.</li>
     </ul>
   </main>
 </body>

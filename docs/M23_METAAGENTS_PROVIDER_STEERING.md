@@ -19,7 +19,7 @@ Claude was characterized separately after installing Claude Code into a
 temporary npm prefix and prepending that prefix to `PATH`:
 
 ```sh
-PATH=/tmp/arroba-claude-code-cli/node_modules/.bin:$PATH \
+PATH=/tmp/chariox-claude-code-cli/node_modules/.bin:$PATH \
   node apps/cli/scripts/live-provider-context-injection-drill.mjs \
   --provider claude \
   --include-midturn-steering \
@@ -39,21 +39,21 @@ Native TUI prompt-injection validation was also rerun after repairing the drill
 for the current history-outline API and provider-native hidden-context fields:
 
 ```sh
-pnpm --filter @arroba/cli run native-tui:prompt-injection-drill -- --providers codex,opencode,claude
+pnpm --filter @chariox/cli run native-tui:prompt-injection-drill -- --providers codex,opencode,claude
 ```
 
 Result: passed for Codex, OpenCode, and Claude. For Codex and OpenCode, the
-drill verifies native-origin prompts enter Arroba history/output,
+drill verifies native-origin prompts enter Chariox history/output,
 provider-hidden context is forwarded using the current provider-native fields,
-and the native TUI screen does not show Arroba hidden instruction markers. For
-Claude, the drill verifies Arroba-origin prompt injection reaches Claude through
+and the native TUI screen does not show Chariox hidden instruction markers. For
+Claude, the drill verifies Chariox-origin prompt injection reaches Claude through
 the hook/PTY bridge, the hook-visible prompt is redacted, the expected output is
-recorded in Arroba history, and the Claude native screen does not show Arroba
+recorded in Chariox history, and the Claude native screen does not show Chariox
 hidden instruction markers.
 
-## Arroba Kernel Behavior
+## Chariox Kernel Behavior
 
-Ordinary `SubmitPrompt` does not reach provider steering while an agent has an active prompt. The prompt owner admits the second prompt as queued. Metaagent event prompts and `arroba.meta.run_command` prompt commands intentionally bypass that queue only when the target is a local running provider run with an active prompt; that path records Arroba prompt history and dispatches directly to the adapter.
+Ordinary `SubmitPrompt` does not reach provider steering while an agent has an active prompt. The prompt owner admits the second prompt as queued. Metaagent event prompts and `chariox.meta.run_command` prompt commands intentionally bypass that queue only when the target is a local running provider run with an active prompt; that path records Chariox prompt history and dispatches directly to the adapter.
 
 If the target is remote, idle, missing a running provider run, or otherwise not steerable, the metaagent prompt falls back to normal prompt submission.
 

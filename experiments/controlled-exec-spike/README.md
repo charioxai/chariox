@@ -4,11 +4,11 @@ Disposable experiment for M12.
 
 Purpose:
 
-- validate Arroba-controlled command execution
+- validate Chariox-controlled command execution
 - validate provider-independent permission gating
 - validate same-turn approval/choice interactions
 
-This is not production Arroba code.
+This is not production Chariox code.
 
 ## Layout
 

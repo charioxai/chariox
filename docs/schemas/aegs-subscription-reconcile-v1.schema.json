@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/aegs-subscription-reconcile-v1.schema.json",
-  "title": "Arroba AEGS Authoritative Subscription Reconciliation",
+  "$id": "https://chariox.com/schemas/aegs-subscription-reconcile-v1.schema.json",
+  "title": "Chariox AEGS Authoritative Subscription Reconciliation",
   "type": "object",
   "additionalProperties": false,
   "required": ["owner_id", "generator_id", "subscriptions"],

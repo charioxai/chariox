@@ -101,7 +101,7 @@ async function main() {
   const base = explicitBase || (process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : "HEAD^")
   const repositoryRoot = runGit(["rev-parse", "--show-toplevel"])
   const targetDir = process.env.CARGO_TARGET_DIR || join(repositoryRoot, "target")
-  const temporaryRoot = await mkdtemp(join(tmpdir(), "arroba-clippy-base-"))
+  const temporaryRoot = await mkdtemp(join(tmpdir(), "chariox-clippy-base-"))
   const baseWorktree = join(temporaryRoot, "checkout")
 
   let baseAdded = false

@@ -1,27 +1,27 @@
 # M16 Runtime MCP Extension Registration Plan
 
-M16 lets agents use the Arroba runtime MCP to register Arroba-managed extensions on behalf of the user. Registered extensions must be indistinguishable from user-created extensions: they live in Arroba's global extension registries, appear in every Arroba terminal, can be managed by normal Arroba extension commands and panels, and can be granted to agents through the existing grant/revoke model.
+M16 lets agents use the Chariox runtime MCP to register Chariox-managed extensions on behalf of the user. Registered extensions must be indistinguishable from user-created extensions: they live in Chariox's global extension registries, appear in every Chariox terminal, can be managed by normal Chariox extension commands and panels, and can be granted to agents through the existing grant/revoke model.
 
-This plan covers registration only. It does not auto-grant newly registered extensions. Agents that have enough runtime permission can register an extension, then explicitly call `arroba.request_extension` to use it.
+This plan covers registration only. It does not auto-grant newly registered extensions. Agents that have enough runtime permission can register an extension, then explicitly call `chariox.request_extension` to use it.
 
 ## Decisions
 
-- Extension registries are global-only. Arroba should not segment extension definitions by project/workspace; grant/revoke remains the access-control boundary.
+- Extension registries are global-only. Chariox should not segment extension definitions by project/workspace; grant/revoke remains the access-control boundary.
 - The kernel remains the extension authority. Cloud and relay do not store, proxy, or interpret extension definitions.
 - The runtime MCP gets registration tools for MCPs, skills, environments, scripts, connectors, and connector adapters.
-- Scripts, skills, connectors, and connector adapters are registered by path. Agents can create files with normal provider-native shell/file tools, then register the resulting path with Arroba.
+- Scripts, skills, connectors, and connector adapters are registered by path. Agents can create files with normal provider-native shell/file tools, then register the resulting path with Chariox.
 - MCPs and environments are registered from structured config because their current registry APIs already use structured definitions.
 - Registration does not auto-grant.
 - Existing `AgentPermissionLevel` is the permission taxonomy:
   - `yolo`: registration proceeds without extra approval.
   - `required`: registration creates a kernel `RuntimeInteraction` approval before persistence.
 - Keep `yolo` as the default permission level.
-- MCP grants are the only path that needs provider warm relaunch/continuation, because MCPs are rendered into provider-native MCP config at provider launch. Skills need no hot reload. Scripts and connectors are Arroba runtime MCP tools and are not provider-native registrations.
+- MCP grants are the only path that needs provider warm relaunch/continuation, because MCPs are rendered into provider-native MCP config at provider launch. Skills need no hot reload. Scripts and connectors are Chariox runtime MCP tools and are not provider-native registrations.
 - The existing MCP warm relaunch/continuation path should cover Codex, OpenCode, and Claude. M16 must validate Claude end to end and fix only if the drill proves the current path is incomplete.
 
 ## Architecture Fit
 
-Runtime MCP calls enter the kernel through the existing authenticated provider-run MCP surface. The new registration tools should dispatch under the same runtime tool bridge as `arroba.list_extensions` and `arroba.request_extension`.
+Runtime MCP calls enter the kernel through the existing authenticated provider-run MCP surface. The new registration tools should dispatch under the same runtime tool bridge as `chariox.list_extensions` and `chariox.request_extension`.
 
 For local agents:
 
@@ -50,25 +50,25 @@ Cloud only needs to render the installed extensions it already receives from the
 Change normal extension discovery/registration to use user-global roots only:
 
 ```text
-~/.arroba/mcps
-~/.arroba/skills
-~/.arroba/envs
-~/.arroba/scripts
-~/.arroba/connectors/definitions
-~/.arroba/connectors/adapters
+~/.chariox/mcps
+~/.chariox/skills
+~/.chariox/envs
+~/.chariox/scripts
+~/.chariox/connectors/definitions
+~/.chariox/connectors/adapters
 ```
 
-Existing `workspace_id` fields should be retained for request compatibility and relative path resolution only. For example, `register_script_path` may resolve `scripts/foo.py` against the current workspace/worktree, but the installed script definition is written to `~/.arroba/scripts`.
+Existing `workspace_id` fields should be retained for request compatibility and relative path resolution only. For example, `register_script_path` may resolve `scripts/foo.py` against the current workspace/worktree, but the installed script definition is written to `~/.chariox/scripts`.
 
-Project-local roots such as `./.arroba/mcps` and `./.arroba/skills` should no longer participate in normal extension discovery/registration after this milestone. If backwards compatibility with existing project-local definitions is needed, handle it with an explicit import/migration path rather than keeping project-local roots in the main registry search path.
+Project-local roots such as `./.chariox/mcps` and `./.chariox/skills` should no longer participate in normal extension discovery/registration after this milestone. If backwards compatibility with existing project-local definitions is needed, handle it with an explicit import/migration path rather than keeping project-local roots in the main registry search path.
 
 ## Runtime MCP Tool Surface
 
 Add canonical tools plus provider-safe aliases where the existing runtime MCP alias pattern requires them.
 
-### `arroba.register_mcp`
+### `chariox.register_mcp`
 
-Registers or updates a global Arroba MCP definition.
+Registers or updates a global Chariox MCP definition.
 
 Input:
 
@@ -89,12 +89,12 @@ Input:
 
 Behavior:
 
-- Validate with the existing `ArrobaMcpServerConfig` validation.
+- Validate with the existing `CharioxMcpServerConfig` validation.
 - Write to the global MCP registry.
 - Return the installed definition and path.
 - Do not grant it to the current agent.
 
-### `arroba.register_skill_path`
+### `chariox.register_skill_path`
 
 Registers or updates a global skill from a directory containing `SKILL.md`.
 
@@ -110,10 +110,10 @@ Behavior:
 
 - Resolve relative paths against the current workspace/worktree context.
 - Validate with the existing skill metadata parser.
-- Install/update into `~/.arroba/skills`.
+- Install/update into `~/.chariox/skills`.
 - Return metadata and path.
 
-### `arroba.register_environment`
+### `chariox.register_environment`
 
 Registers or updates a global script execution environment.
 
@@ -134,10 +134,10 @@ Input:
 Behavior:
 
 - Validate executable/runtime with the existing environment registry logic.
-- Write to `~/.arroba/envs`.
+- Write to `~/.chariox/envs`.
 - Return environment config and path.
 
-### `arroba.register_script_path`
+### `chariox.register_script_path`
 
 Registers a global script extension from a Python or TypeScript file.
 
@@ -156,10 +156,10 @@ Behavior:
 - Resolve relative paths against the current workspace/worktree context.
 - Resolve the environment from the global environment registry.
 - Validate with the existing script inspector and `test_run`.
-- Install into `~/.arroba/scripts`.
+- Install into `~/.chariox/scripts`.
 - Return script metadata and path.
 
-### `arroba.register_connector_path`
+### `chariox.register_connector_path`
 
 Registers or updates a global connector from connector YAML.
 
@@ -175,10 +175,10 @@ Behavior:
 
 - Resolve relative paths against the current workspace/worktree context.
 - Validate with the existing connector registry and adapter validation.
-- Write to `~/.arroba/connectors/definitions`.
+- Write to `~/.chariox/connectors/definitions`.
 - Return connector definition and path.
 
-### `arroba.register_connector_adapter_path`
+### `chariox.register_connector_adapter_path`
 
 Registers or updates a global connector adapter from an adapter YAML/package.
 
@@ -194,7 +194,7 @@ Behavior:
 
 - Resolve relative paths against the current workspace/worktree context.
 - Validate with the existing adapter registry logic.
-- Copy/register into `~/.arroba/connectors/adapters`.
+- Copy/register into `~/.chariox/connectors/adapters`.
 - Return adapter definition and path.
 
 ## Permission Gate
@@ -216,12 +216,12 @@ Behavior:
 - If permission is `required`, create a `RuntimeInteraction` with `Allow` and `Deny`.
 - Denial returns a structured runtime tool failure and does not mutate the registry.
 - Approval proceeds with the registry mutation.
-- The interaction must be projected to all Arroba terminals attached to the session, including web terminal and remote TUI, through existing runtime interaction projection.
+- The interaction must be projected to all Chariox terminals attached to the session, including web terminal and remote TUI, through existing runtime interaction projection.
 
 Suggested interaction text:
 
 ```text
-Allow agent `<agent-ref>` to register global Arroba <kind> `<name>`?
+Allow agent `<agent-ref>` to register global Chariox <kind> `<name>`?
 ```
 
 When the operation is path-based, include the resolved source path in the message.
@@ -232,16 +232,16 @@ Registration and grants remain separate.
 
 After registration:
 
-- The extension appears in `arroba.list_extensions`.
+- The extension appears in `chariox.list_extensions`.
 - The extension appears in normal CLI/web extension lists.
 - It is not exposed to an agent until granted.
 
 For use:
 
-- MCP: agent calls `arroba.request_extension`; existing grant flow records the grant, schedules MCP continuation, reloads the provider after the current turn, and resumes the prompt with hidden continuation context. Validate for Codex, OpenCode, and Claude.
-- Skill: agent calls `arroba.request_extension`; skill body/package is returned/materialized and can be followed immediately.
-- Script: agent calls `arroba.request_extension` with `environment`; script tool becomes an Arroba runtime MCP tool for the agent.
-- Connector: agent calls `arroba.request_extension` with optional credential and safety; connector operations become Arroba runtime MCP tools for the agent.
+- MCP: agent calls `chariox.request_extension`; existing grant flow records the grant, schedules MCP continuation, reloads the provider after the current turn, and resumes the prompt with hidden continuation context. Validate for Codex, OpenCode, and Claude.
+- Skill: agent calls `chariox.request_extension`; skill body/package is returned/materialized and can be followed immediately.
+- Script: agent calls `chariox.request_extension` with `environment`; script tool becomes a Chariox runtime MCP tool for the agent.
+- Connector: agent calls `chariox.request_extension` with optional credential and safety; connector operations become Chariox runtime MCP tools for the agent.
 
 Do not add provider reloads for skills, scripts, or connectors unless a focused end-to-end drill proves a provider-specific blocker. The intended architecture is that only third-party MCP grants require provider-native relaunch.
 
@@ -294,9 +294,9 @@ Flow:
 
 1. Create a temporary skill directory with `SKILL.md`.
 2. Start a local provider agent.
-3. Agent calls `arroba.register_skill_path`.
-4. Agent calls `arroba.list_extensions` and sees the skill as ungranted.
-5. Agent calls `arroba.request_extension`.
+3. Agent calls `chariox.register_skill_path`.
+4. Agent calls `chariox.list_extensions` and sees the skill as ungranted.
+5. Agent calls `chariox.request_extension`.
 6. Agent uses the returned skill body in the same turn.
 7. Open/list extensions from the terminal and confirm visibility.
 
@@ -311,10 +311,10 @@ Screenshot:
 Flow:
 
 1. Create a Python or TypeScript script file with valid `run` and `test_run`.
-2. Register an environment through `arroba.register_environment`.
-3. Register the script through `arroba.register_script_path`.
-4. Agent calls `arroba.list_extensions` and sees the script as ungranted.
-5. Agent calls `arroba.request_extension` with the environment.
+2. Register an environment through `chariox.register_environment`.
+3. Register the script through `chariox.register_script_path`.
+4. Agent calls `chariox.list_extensions` and sees the script as ungranted.
+5. Agent calls `chariox.request_extension` with the environment.
 6. Agent calls the script runtime tool in the same provider session.
 
 Screenshot:
@@ -328,11 +328,11 @@ Screenshot:
 Flow:
 
 1. Create a connector adapter package/YAML.
-2. Register it through `arroba.register_connector_adapter_path`.
+2. Register it through `chariox.register_connector_adapter_path`.
 3. Create connector YAML.
-4. Register it through `arroba.register_connector_path`.
-5. Agent calls `arroba.list_extensions` and sees the connector as ungranted.
-6. Agent calls `arroba.request_extension`.
+4. Register it through `chariox.register_connector_path`.
+5. Agent calls `chariox.list_extensions` and sees the connector as ungranted.
+6. Agent calls `chariox.request_extension`.
 7. Agent calls a connector operation in the same provider session.
 
 Screenshot:
@@ -348,9 +348,9 @@ Run for Codex, OpenCode, and Claude.
 Flow:
 
 1. Create a deterministic echo MCP server fixture.
-2. Register it through `arroba.register_mcp`.
-3. Agent calls `arroba.list_extensions` and sees the MCP as ungranted.
-4. Agent calls `arroba.request_extension`.
+2. Register it through `chariox.register_mcp`.
+3. Agent calls `chariox.list_extensions` and sees the MCP as ungranted.
+4. Agent calls `chariox.request_extension`.
 5. Verify existing warm provider relaunch/continuation occurs.
 6. After continuation, agent calls the MCP successfully.
 
@@ -382,7 +382,7 @@ Flow:
 
 1. Register an extension from workspace A.
 2. Open workspace B/session B.
-3. Confirm the extension appears in `arroba.list_extensions` and normal extension listing.
+3. Confirm the extension appears in `chariox.list_extensions` and normal extension listing.
 4. Confirm it is ungranted in workspace B.
 5. Grant it in workspace B and use it.
 
@@ -394,7 +394,7 @@ Screenshot:
 
 ### Cloud Sidebar Drill
 
-Add or update an `arroba-cloud` drill.
+Add or update an `chariox-cloud` drill.
 
 Flow:
 
@@ -412,7 +412,7 @@ Screenshot:
 ## Acceptance Criteria
 
 - Agents can register MCPs, skills, environments, scripts, connectors, and connector adapters through runtime MCP.
-- Registered extensions are global and visible from any Arroba terminal.
+- Registered extensions are global and visible from any Chariox terminal.
 - Registration is permission-gated by the existing agent permission level.
 - Default `yolo` behavior remains unchanged.
 - Registration does not auto-grant.

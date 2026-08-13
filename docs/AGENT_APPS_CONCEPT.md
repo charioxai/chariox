@@ -7,7 +7,7 @@ workflow publication, deployment, web-app, and mobile integration work.
 ## Summary
 
 An Agent App is a web or native application with one or more routes or actions
-mediated by an Arroba workflow endpoint.
+mediated by a Chariox workflow endpoint.
 
 Normal routes continue to behave like normal application routes. Wrapped routes
 invoke a published workflow before, during, or after serving the route. The
@@ -431,42 +431,42 @@ Example:
 }
 ```
 
-Arroba does not need to own all auth providers. It should preserve endpoint
+Chariox does not need to own all auth providers. It should preserve endpoint
 role requirements and make them enforceable by deployment infrastructure,
 Cloud-hosted auth, or a self-hosted wrapper.
 
 ## External Web App Integration
 
-Agent Apps should not require every user to deploy through Arroba containers.
+Agent Apps should not require every user to deploy through Chariox containers.
 There should be an integration path for existing web app deployments such as
 Vercel, Render, Fly, Kubernetes, or a user's own server.
 
 The external integration package would provide:
 
 - route middleware for wrapped routes
-- a client to an Arroba kernel/publication runtime
+- a client to a Chariox kernel/publication runtime
 - static asset overlay resolution
 - streaming shell helpers
 - generated app-action MCP/tool registration
 - local/dev commands to publish/export required workflow packages
 
-However, provider execution still requires an Arroba kernel and provider
+However, provider execution still requires a Chariox kernel and provider
 runtime somewhere. Many serverless environments cannot run long-lived provider
 CLI processes inside request handlers. Therefore external integration likely
 has two modes:
 
 1. Sidecar/service mode:
    - app stays deployed where it is
-   - Arroba kernel/publication runtime runs as a sidecar, VM, container, or
-     hosted Arroba service
+   - Chariox kernel/publication runtime runs as a sidecar, VM, container, or
+     hosted Chariox service
    - web app middleware calls that runtime
 
 2. Embedded development mode:
-   - local development can install packages and run Arroba locally
+   - local development can install packages and run Chariox locally
    - useful for testing, but not suitable for all production hosts
 
 For Vercel-style platforms, the likely production path is middleware plus a
-remote Arroba runtime, not bundling provider CLIs into the Vercel function.
+remote Chariox runtime, not bundling provider CLIs into the Vercel function.
 
 Provider credentials should remain provider-owned and runtime-local. The
 external app package should not include provider credentials.

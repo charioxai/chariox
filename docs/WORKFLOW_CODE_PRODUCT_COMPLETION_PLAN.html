@@ -170,7 +170,7 @@
   <body>
     <main>
       <section class="hero">
-        <p class="eyebrow">Arroba implementation plan</p>
+        <p class="eyebrow">Chariox implementation plan</p>
         <h1>Workflow Code Product Completion</h1>
         <p class="summary">
           This plan completes workflow-code as a professional product feature: unambiguous export
@@ -237,7 +237,7 @@
         <li>Add explicit package-named request/tool aliases for workflow-code package export/import while preserving existing <code>ExportWorkflowCodeArtifact</code> compatibility.</li>
         <li>Add source export requests for both saved artifact refs and existing workflow refs, including workflows originally built manually through slash commands or product UI.</li>
         <li>Because serialized protocol shapes change, bump the local daemon protocol version and update protocol snapshot/hash tests.</li>
-        <li>Expose metaagent tools under <code>arroba.meta.workflow_code.*</code>: <code>package_export</code>, <code>package_import</code>, <code>source_export</code>, <code>source_export_directory</code>, and keep older <code>export/import</code> or <code>source_export_dir</code> as documented compatibility aliases.</li>
+        <li>Expose metaagent tools under <code>chariox.meta.workflow_code.*</code>: <code>package_export</code>, <code>package_import</code>, <code>source_export</code>, <code>source_export_directory</code>, and keep older <code>export/import</code> or <code>source_export_dir</code> as documented compatibility aliases.</li>
       </ul>
 
       <h3>Source Export From Existing Workflows</h3>
@@ -254,11 +254,11 @@
       <h2>Always-On Metaagent Guides</h2>
       <p>
         Guides are always available. There is no opt-in/out configuration. Distribution should copy
-        built-in guide files into user-visible Arroba home while keeping embedded binary guides as a fallback.
+        built-in guide files into user-visible Chariox home while keeping embedded binary guides as a fallback.
       </p>
       <ul>
-        <li>On install or first kernel startup, seed built-in guides to <code>~/.arroba/metaagent-guides/builtin/...</code>.</li>
-        <li>Users can copy a built-in guide into <code>&lt;workspace&gt;/.arroba/metaagent-guides/...</code> and edit it for project-specific behavior.</li>
+        <li>On install or first kernel startup, seed built-in guides to <code>~/.chariox/metaagent-guides/builtin/...</code>.</li>
+        <li>Users can copy a built-in guide into <code>&lt;workspace&gt;/.chariox/metaagent-guides/...</code> and edit it for project-specific behavior.</li>
         <li>Guide lookup order is workspace, then user-wide, then built-in copies, then embedded fallback.</li>
         <li>If multiple guides share the same id, the higher-precedence guide replaces lower-precedence versions for <code>read_guide</code>; <code>search_guides</code> and <code>list_guides</code> return the effective guide plus <code>source_scope</code>.</li>
         <li>Expose <code>source_scope</code> values: <code>workspace</code>, <code>user</code>, <code>builtin_copy</code>, and <code>embedded</code>.</li>
@@ -309,7 +309,7 @@
         </tbody>
       </table>
       <ul>
-        <li>Add <code>arroba.meta.workflow_code.canvas_contract</code> so metaagents can retrieve the current dimensions programmatically.</li>
+        <li>Add <code>chariox.meta.workflow_code.canvas_contract</code> so metaagents can retrieve the current dimensions programmatically.</li>
         <li>Document the same dimensions in workflow-code authoring and pattern guides.</li>
         <li>Add validation diagnostics for explicit canvas overlap between nodes, endpoints, and generated exit markers.</li>
         <li>Keep omitted coordinates valid; kernel/web auto-layout can still assign positions.</li>
@@ -358,7 +358,7 @@
         <li>Export the same existing workflow as a single JavaScript source file generated from the live workflow graph.</li>
         <li>Export the same existing workflow as a source directory with external schema JSON files generated from the live workflow graph.</li>
         <li>Copy all three export forms to the Hetzner machine or another isolated second-kernel workspace, preferably through the same distribution channel a user would use rather than sharing local artifact state.</li>
-        <li>Start a clean second kernel with its own <code>ARROBA_HOME</code>, workspace, worktree, provider catalog, and relay/socket configuration.</li>
+        <li>Start a clean second kernel with its own <code>CHARIOX_HOME</code>, workspace, worktree, provider catalog, and relay/socket configuration.</li>
         <li>Import and run the package JSON on the second kernel.</li>
         <li>Validate, apply, and run the single JavaScript source on the second kernel.</li>
         <li>Validate, apply, and run the source directory on the second kernel, proving <code>schemaFromFile</code> works with package-relative <code>schemas/*.json</code> paths.</li>
@@ -462,7 +462,7 @@
         <li>Add always-on guide seeding and layered lookup with source scopes.</li>
         <li>Add the canvas contract tool, documentation, overlap validation, and update canonical examples.</li>
         <li>Add TUI/shell workflow-code commands and tests.</li>
-        <li>Add web terminal command support, command-center entries, and workflow UI export actions in <code>arroba-cloud</code>, including the publish/distribute menu entries for package export, single-file code export, and source-directory zip export.</li>
+        <li>Add web terminal command support, command-center entries, and workflow UI export actions in <code>chariox-cloud</code>, including the publish/distribute menu entries for package export, single-file code export, and source-directory zip export.</li>
         <li>Extend OSS artifact/topology drills to cover package export, source export, source-directory export, and round-trip apply/run.</li>
         <li>Add the second-kernel Hetzner distribution drill for package, generated single-source, and generated source-directory forms exported from an existing live workflow.</li>
         <li>Extend Cloud visual drills for all workflow-code topologies, screenshots, no-overlap assertions, and web command/UI export flows.</li>

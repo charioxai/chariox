@@ -4,17 +4,17 @@ Status: planned.
 
 ## Goal
 
-Make Arroba own the operational history and durable runtime state needed to stop, restart, and recover local and remote work. Arroba should keep active/recent session UX fast and reliable while allowing long-term archiving to be delegated to user-provided storage systems through an adapter protocol.
+Make Chariox own the operational history and durable runtime state needed to stop, restart, and recover local and remote work. Chariox should keep active/recent session UX fast and reliable while allowing long-term archiving to be delegated to user-provided storage systems through an adapter protocol.
 
 ## Product Decisions
 
-- Arroba owns operational transcript history. The CLI, shell, and future clients ask the kernel for transcript chunks and render them; they do not own durable transcript storage.
+- Chariox owns operational transcript history. The CLI, shell, and future clients ask the kernel for transcript chunks and render them; they do not own durable transcript storage.
 - Operational history is always local for v1 so active/recent sessions, session resume, provider continuation, workflow recovery, prompt history, and recent search do not depend on an external archive service.
 - Archive history is separate from operational history. Archive can be disabled, backed by an external adapter, or later backed by a local archive implementation.
 - If archive is disabled, operational transcripts/history can disappear after the configured retention period. Search continues to work for retained operational history only.
-- Arroba never deletes operational transcript content for an archived session/agent until the archive adapter confirms durable acceptance.
-- Remote kernels are not auto-relaunched in v1. Users manually restart home and worker kernels; Arroba reconciles durable state when they come back.
-- Git remains the source of truth for Git objects. Arroba stores commit pointers and searchable summaries, not full diffs.
+- Chariox never deletes operational transcript content for an archived session/agent until the archive adapter confirms durable acceptance.
+- Remote kernels are not auto-relaunched in v1. Users manually restart home and worker kernels; Chariox reconciles durable state when they come back.
+- Git remains the source of truth for Git objects. Chariox stores commit pointers and searchable summaries, not full diffs.
 - A small local archive index is v2. V1 does not keep a separate local search index for transcript content removed from operational history.
 
 ## Background Lifecycle Invariant
@@ -33,7 +33,7 @@ Normal prompts, sessions, workflows, and shell commands must not wait for archiv
 
 ### Operational History
 
-Operational history is Arroba-owned and required.
+Operational history is Chariox-owned and required.
 
 Default v1 backend:
 
@@ -43,19 +43,19 @@ Default v1 backend:
 - Indexed by session, agent, provider, model, turn, prompt, workflow, machine, repo, worktree, event kind, timestamp, and Git commit SHA where relevant.
 - Full-text search over retained operational prompt/output/error text plus compact Git subjects and changed paths.
 
-Operational history stores canonical Arroba events and is the backing source for `GetSessionHistory`.
+Operational history stores canonical Chariox events and is the backing source for `GetSessionHistory`.
 
 ### Artifact Storage
 
 Artifacts are retained in both operational storage and archive storage for v1. There is no hybrid mode where history is archived but artifacts are only best-effort local files: operational artifacts may be deleted by retention only after the configured artifact archive accepts them, or immediately after retention if artifact archive is disabled and the user accepts that the artifact disappears.
 
-Operational artifacts are Arroba-owned and local:
+Operational artifacts are Chariox-owned and local:
 
 ```toml
 [artifacts.operational]
 backend = "filesystem"
-root = "~/.arroba/artifacts"
-index_path = "~/.arroba/artifacts/index.db"
+root = "~/.chariox/artifacts"
+index_path = "~/.chariox/artifacts/index.db"
 retention_days = 30
 ```
 
@@ -81,38 +81,38 @@ Archive modes:
 mode = "disabled" # disabled | external
 ```
 
-When disabled, Arroba may delete operational transcript/history after retention. Those deleted transcripts are gone from Arroba history/search.
+When disabled, Chariox may delete operational transcript/history after retention. Those deleted transcripts are gone from Chariox history/search.
 
-When external, Arroba sends canonical events to the configured adapter:
+When external, Chariox sends canonical events to the configured adapter:
 
 ```toml
 [history.archive]
 mode = "external"
 url = "http://127.0.0.1:49300"
-token_env = "ARROBA_HISTORY_TOKEN"
+token_env = "CHARIOX_HISTORY_TOKEN"
 archive_deleted_agents = true
 archive_before_delete = true
 delete_operational_after_verified_archive = true
 ```
 
-The adapter may be backed by Postgres, S3, ClickHouse, Elasticsearch, a company audit system, or anything else. Arroba only knows the adapter protocol.
+The adapter may be backed by Postgres, S3, ClickHouse, Elasticsearch, a company audit system, or anything else. Chariox only knows the adapter protocol.
 
 Archive search is capability-negotiated:
 
-- If adapter exposes search, Arroba can merge operational and archive search results.
-- If adapter does not expose search, Arroba returns operational matches and reports that archived history is externally managed and not searchable through Arroba.
+- If adapter exposes search, Chariox can merge operational and archive search results.
+- If adapter does not expose search, Chariox returns operational matches and reports that archived history is externally managed and not searchable through Chariox.
 - Active/recent transcript UX never depends on archive search.
 
 ## User Config
 
-History and persistence configuration lives in the Arroba TOML config file, currently resolved by the kernel as `~/.arroba/config.toml` or `$XDG_CONFIG_HOME/arroba/config.toml`.
+History and persistence configuration lives in the Chariox TOML config file, currently resolved by the kernel as `~/.chariox/config.toml` or `$XDG_CONFIG_HOME/chariox/config.toml`.
 
 Initial shape:
 
 ```toml
 [history.operational]
 backend = "sqlite"
-path = "~/.arroba/history/operational.db"
+path = "~/.chariox/history/operational.db"
 retention_days = 30
 max_size_mb = 5000
 keep_pinned_sessions = true
@@ -124,8 +124,8 @@ mode = "disabled"
 
 [artifacts.operational]
 backend = "filesystem"
-root = "~/.arroba/artifacts"
-index_path = "~/.arroba/artifacts/index.db"
+root = "~/.chariox/artifacts"
+index_path = "~/.chariox/artifacts/index.db"
 retention_days = 30
 
 [artifacts.archive]
@@ -133,7 +133,7 @@ mode = "disabled"
 
 [state]
 backend = "sqlite"
-path = "~/.arroba/state/kernel.db"
+path = "~/.chariox/state/kernel.db"
 snapshot_interval_events = 1000
 ```
 
@@ -143,7 +143,7 @@ External archive example:
 [history.archive]
 mode = "external"
 url = "http://127.0.0.1:49300"
-token_env = "ARROBA_HISTORY_TOKEN"
+token_env = "CHARIOX_HISTORY_TOKEN"
 archive_deleted_agents = true
 archive_before_delete = true
 delete_operational_after_verified_archive = true
@@ -152,7 +152,7 @@ require_durable_acceptance = true
 [artifacts.archive]
 mode = "external"
 url = "http://127.0.0.1:49300"
-token_env = "ARROBA_HISTORY_TOKEN"
+token_env = "CHARIOX_HISTORY_TOKEN"
 require_durable_acceptance = true
 ```
 
@@ -230,7 +230,7 @@ The archive adapter is a user-run HTTP or local socket service.
 Required endpoint:
 
 ```http
-POST /arroba/history/events
+POST /chariox/history/events
 ```
 
 Required semantics:
@@ -244,10 +244,10 @@ Required semantics:
 Optional endpoints:
 
 ```http
-GET  /arroba/history/capabilities
-POST /arroba/history/query
-POST /arroba/history/search
-GET  /arroba/history/events/:event_id
+GET  /chariox/history/capabilities
+POST /chariox/history/query
+POST /chariox/history/search
+GET  /chariox/history/events/:event_id
 ```
 
 Capabilities response:
@@ -262,16 +262,16 @@ Capabilities response:
 }
 ```
 
-For v1, external archive adapters are not primary transcript stores. Operational history remains the active transcript source. If an external adapter advertises `search = true`, Arroba also sends `POST /arroba/history/search` with the same history query fields used by local `QueryHistory`/`SearchHistory`, expects canonical `HistoryEvent` rows back, deduplicates by `event_id`, and returns the merged `HistoryEvents` response. If an external adapter advertises `semantic_search = true` or `vector_search = true`, Arroba sends `POST /arroba/history/semantic-search` with the same filter envelope plus query text and expects ranked `SemanticHistoryMatch` rows; the adapter owns embedding generation, vector storage, and retrieval. Kernel semantic history search now has explicit `knn` and `agent` modes: `knn` returns adapter matches directly, while `agent` resolves the focused idle agent, supplies KNN candidates to a hidden utility prompt, validates the agent's strict JSON output with the same JSON Schema validator used by workflow output validation, and returns an answer plus cited matches.
+For v1, external archive adapters are not primary transcript stores. Operational history remains the active transcript source. If an external adapter advertises `search = true`, Chariox also sends `POST /chariox/history/search` with the same history query fields used by local `QueryHistory`/`SearchHistory`, expects canonical `HistoryEvent` rows back, deduplicates by `event_id`, and returns the merged `HistoryEvents` response. If an external adapter advertises `semantic_search = true` or `vector_search = true`, Chariox sends `POST /chariox/history/semantic-search` with the same filter envelope plus query text and expects ranked `SemanticHistoryMatch` rows; the adapter owns embedding generation, vector storage, and retrieval. Kernel semantic history search now has explicit `knn` and `agent` modes: `knn` returns adapter matches directly, while `agent` resolves the focused idle agent, supplies KNN candidates to a hidden utility prompt, validates the agent's strict JSON output with the same JSON Schema validator used by workflow output validation, and returns an answer plus cited matches.
 
 Artifact archive endpoints:
 
 ```http
-PUT  /arroba/artifacts/blobs/:artifact_id
-POST /arroba/artifacts/manifest
+PUT  /chariox/artifacts/blobs/:artifact_id
+POST /chariox/artifacts/manifest
 ```
 
-Blob uploads are raw bytes with `x-arroba-sha256` and `x-arroba-size-bytes` headers. The manifest contains canonical artifact records, including `artifact_id`, `sha256`, `size_bytes`, `display_name`, source kind, session/attachment/workspace pointers, and metadata. The adapter must durably store the blob and manifest before returning the artifact id as accepted. Arroba uploads blobs before the manifest and marks the operational artifact archive outbox accepted only after manifest acceptance.
+Blob uploads are raw bytes with `x-chariox-sha256` and `x-chariox-size-bytes` headers. The manifest contains canonical artifact records, including `artifact_id`, `sha256`, `size_bytes`, `display_name`, source kind, session/attachment/workspace pointers, and metadata. The adapter must durably store the blob and manifest before returning the artifact id as accepted. Chariox uploads blobs before the manifest and marks the operational artifact archive outbox accepted only after manifest acceptance.
 
 ## Session And Agent Lifecycle
 
@@ -300,7 +300,7 @@ Archiving can happen when:
 - a session is explicitly deleted and `archive_before_delete = true`
 - operational history exceeds configured size limits
 
-For archived sessions/agents, Arroba keeps a small local stub:
+For archived sessions/agents, Chariox keeps a small local stub:
 
 ```text
 session_id / agent_id
@@ -376,7 +376,7 @@ On kernel start:
 7. Reconcile machines/workers.
 8. Mark in-flight work as `resumable`, `recovering`, `interrupted`, `failed`, or `completed`.
 
-Provider process memory is not guaranteed. Arroba guarantees its own state and best available provider resume.
+Provider process memory is not guaranteed. Chariox guarantees its own state and best available provider resume.
 
 ## Provider Resume Descriptors
 
@@ -423,7 +423,7 @@ Worker keeps a small local WAL for events it generated but could not forward bef
 
 ## Git Observation
 
-Arroba tracks Git activity without owning Git commands.
+Chariox tracks Git activity without owning Git commands.
 
 Before each agent turn, record:
 
@@ -540,10 +540,10 @@ If multiple agents could have caused a commit, store all candidates and show the
 
 - Add archive adapter client. **Landed foundation:** disabled and external archive clients now implement the adapter append/capabilities protocol, including durable acceptance validation and optional bearer-token auth from `history.archive.token_env`.
 - Add durable outbox/checkpointing. **Landed:** operational SQLite now includes a `history_archive_outbox` table with idempotent enqueue, pending-load, failed-attempt recording, accepted marking, and reopen-safe checkpoint coverage. External archive mode queues new transcript events, and the one-shot exporter flushes pending events to the adapter while checkpointing accepted/rejected outcomes.
-- Add an ops flush entrypoint. **Landed:** `arroba-history-archive-flush [--limit N]` loads the same Arroba config as the kernel, opens the configured operational SQLite store, sends pending outbox events through the configured archive adapter, and prints attempted/accepted/rejected event ids as JSON. This is intentionally outside the interactive CLI/shell command set.
+- Add an ops flush entrypoint. **Landed:** `chariox-history-archive-flush [--limit N]` loads the same Chariox config as the kernel, opens the configured operational SQLite store, sends pending outbox events through the configured archive adapter, and prints attempted/accepted/rejected event ids as JSON. This is intentionally outside the interactive CLI/shell command set.
 - Add archive-disabled retention behavior. **Landed store safety layer:** operational history can prune rows before a cutoff, either allowing unarchived deletion for disabled archive mode or requiring verified archive acceptance. Pruned-empty sessions get a marker that disables legacy JSONL fallback, preventing deleted history from reappearing through compatibility reads.
 - Add external archive mode with verified acceptance before operational deletion.
-- Add artifact operational store and archive protocol. **Landed foundation:** transferred files are registered into a filesystem-backed operational blob store with a SQLite artifact index/outbox, an `artifact_stored` canonical history event is emitted with an `artifact://sha256/...` reference, and `arroba-history-archive-flush` flushes pending artifact blobs/manifests through external artifact archive endpoints before flushing history events.
+- Add artifact operational store and archive protocol. **Landed foundation:** transferred files are registered into a filesystem-backed operational blob store with a SQLite artifact index/outbox, an `artifact_stored` canonical history event is emitted with an `artifact://sha256/...` reference, and `chariox-history-archive-flush` flushes pending artifact blobs/manifests through external artifact archive endpoints before flushing history events.
 
 ### M8.7 Agent/Session Archival Lifecycle
 
@@ -570,14 +570,14 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Reconcile manually restarted workers. **Landed:** remote agent spawn now records durable agent snapshots on home. After restart, home restores the remote agent identity from durable state and, when a worker lease is stale or missing, refreshes the worker binding at prompt dispatch time before retrying the remote submit.
 - Replace stale relay peers after daemon restart. **Landed:** relay registration for the same realm and daemon id now replaces the previous peer handle, preventing home from routing remote requests to a dead worker connection after manual worker relaunch.
 - Handle already-settled remote completions. **Landed:** when the worker-side leased prompt has already settled before home asks for completion, home treats the worker `NoActivePrompt` completion response as settled and completes the home-side prompt instead of leaving the agent running.
-- Validate home restart, worker restart, and both restart drills. **Landed:** `pnpm --filter @arroba/cli run remote-restart:drill` launches isolated relay/home/worker kernels, spawns a remote dev-stub agent, verifies a baseline prompt, restarts home with worker alive, restarts worker with home alive and observes a refreshed leased agent id, then restarts both kernels and verifies the remote agent can prompt again.
+- Validate home restart, worker restart, and both restart drills. **Landed:** `pnpm --filter @chariox/cli run remote-restart:drill` launches isolated relay/home/worker kernels, spawns a remote dev-stub agent, verifies a baseline prompt, restarts home with worker alive, restarts worker with home alive and observes a refreshed leased agent id, then restarts both kernels and verifies the remote agent can prompt again.
 
 ### M8.11 Git Observation
 
 - Add pre/post turn Git snapshots. **Landed for local provider turns:** local structured prompt dispatch captures a Git snapshot from the provider run working directory before the prompt is sent, then captures a second snapshot after prompt completion. The Git commands run in blocking background tasks outside the main app lock, and snapshots are keyed by provider run and prompt id.
 - Emit Git history events with provider, model, turn, prompt, and candidate attribution. **Landed for local provider turns:** post-turn observation emits `git_commit_detected`, `git_worktree_changed`, `git_worktree_dirty`, `git_worktree_clean`, and `git_push_detected` events into operational history. Commit events include commit SHA, subject, author, timestamp, changed paths, branch, before/after HEAD, dirty state, prompt summary, provider, model, prompt id, and attribution candidates.
-- Add search coverage by commit SHA, subject, changed path, branch, worktree, provider, model, and prompt text. **Landed:** focused store coverage and `pnpm --filter @arroba/cli run git-observation:drill` verify commit subject/path/provider/model/prompt attribution in operational search.
-- Remote Git observation. **Landed:** worker kernels observe their own worktrees and return Git observations to home on leased prompt completion; home appends those observations into its operational history with home session/agent/prompt attribution. Events remain scoped to the provider working Git repository and include `repo_root` plus `worktree_path`, so history can distinguish commits from different repos without scanning arbitrary extra repos. `pnpm --filter @arroba/cli run remote-git-observation:drill` validates the path.
+- Add search coverage by commit SHA, subject, changed path, branch, worktree, provider, model, and prompt text. **Landed:** focused store coverage and `pnpm --filter @chariox/cli run git-observation:drill` verify commit subject/path/provider/model/prompt attribution in operational search.
+- Remote Git observation. **Landed:** worker kernels observe their own worktrees and return Git observations to home on leased prompt completion; home appends those observations into its operational history with home session/agent/prompt attribution. Events remain scoped to the provider working Git repository and include `repo_root` plus `worktree_path`, so history can distinguish commits from different repos without scanning arbitrary extra repos. `pnpm --filter @chariox/cli run remote-git-observation:drill` validates the path.
 
 ## Live Drills
 
@@ -593,13 +593,13 @@ If multiple agents could have caused a commit, store all candidates and show the
 - Git commit detected after an agent turn.
 - Ambiguous commit attribution with two candidate agents.
 - Search finds commit by subject, changed path, agent, provider, model, and prompt text.
-- Local Git observation drill: `pnpm --filter @arroba/cli run git-observation:drill`.
+- Local Git observation drill: `pnpm --filter @chariox/cli run git-observation:drill`.
 - Remote Git observation drill: launch isolated relay/home/worker kernels, spawn a remote dev-stub agent in a worker Git repo, commit during the remote turn, complete the turn, then verify home operational history finds the commit by subject, changed path, repo/worktree, provider, model, and home prompt id.
-- Postgres + MinIO archive adapter drill: `pnpm --filter @arroba/cli run postgres-archive:drill` launches real ephemeral `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers behind an HTTP adapter. It creates transcript events through an isolated dev-stub kernel, flushes Arroba's archive outbox through `arroba-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only history search when external archive search is disabled, Postgres-backed archive search through Arroba after deleting the matching operational row, semantic archive-search protocol handling, transferred-artifact operational indexing, artifact blob upload to MinIO/S3-compatible storage, artifact manifest storage in Postgres, and artifact history-event archiving.
+- Postgres + MinIO archive adapter drill: `pnpm --filter @chariox/cli run postgres-archive:drill` launches real ephemeral `postgres:16-alpine`, `minio/minio`, and `minio/mc` containers behind an HTTP adapter. It creates transcript events through an isolated dev-stub kernel, flushes Chariox's archive outbox through `chariox-history-archive-flush`, and verifies bearer-token auth, adapter capabilities, append idempotency, HTTP failure retry, durable partial-rejection safety, non-durable rejected-event checkpointing, final retry acceptance, operational-only history search when external archive search is disabled, Postgres-backed archive search through Chariox after deleting the matching operational row, semantic archive-search protocol handling, transferred-artifact operational indexing, artifact blob upload to MinIO/S3-compatible storage, artifact manifest storage in Postgres, and artifact history-event archiving.
 
 ## V2
 
-- Portable Arroba kernel image export/import.
+- Portable Chariox kernel image export/import.
 - Remote kernel automatic relaunch.
 - Remote MCP install/version repair.
 - Packaged archive adapters for common systems.

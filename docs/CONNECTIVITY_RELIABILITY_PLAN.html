@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Arroba Runtime Resilience And Recovery Plan</title>
+  <title>Chariox Runtime Resilience And Recovery Plan</title>
   <style>
     :root {
       color-scheme: light;
@@ -421,7 +421,7 @@
       <div>
         <h1>Runtime Resilience Plan And Execution Record</h1>
         <p class="dek">
-          Implemented cross-repo program for making <code>arroba</code> and <code>arroba-cloud</code> recover smoothly from lost
+          Implemented cross-repo program for making <code>chariox</code> and <code>chariox-cloud</code> recover smoothly from lost
           connections, relay outages, kernel and worker restarts, Cloud service interruptions, slice disruptions,
           and collaborator disconnects across web and TUI terminals.
         </p>
@@ -628,7 +628,7 @@
         <article class="callout">
           <h3>Existing OSS Coverage</h3>
           <p>
-            <code>arroba</code> already has tests and live drills for kernel websocket replay gaps, event replay after
+            <code>chariox</code> already has tests and live drills for kernel websocket replay gaps, event replay after
             websocket restart, command idempotency, local kernel restart persistence, remote leased-agent restart,
             hosted terminal pairing, TUI/web parity, native provider TUI, slice lifecycle, remote runtime, and
             distributed validation gates.
@@ -637,7 +637,7 @@
         <article class="callout">
           <h3>Existing Cloud Coverage</h3>
           <p>
-            <code>arroba-cloud</code> already has browser kernel reconnect modules, heartbeat watchdogs, subscription
+            <code>chariox-cloud</code> already has browser kernel reconnect modules, heartbeat watchdogs, subscription
             and replay tests, local browser/kernel drills, hosted browser relay smoke, stale target checks, slice
             browser E2E drills, Playwright screenshot hooks, and Cloud validation artifacts.
           </p>
@@ -907,23 +907,23 @@
             <td>
               <code>cargo test --manifest-path apps/kernel/Cargo.toml</code><br>
               <code>cargo test --manifest-path apps/relay/Cargo.toml</code><br>
-              <code>pnpm --filter @arroba/cli run build</code>
+              <code>pnpm --filter @chariox/cli run build</code>
             </td>
           </tr>
           <tr>
             <td>Cloud unit and browser tests</td>
             <td>
-              <code>pnpm --filter @arroba-cloud/web run test</code><br>
-              <code>pnpm --filter @arroba-cloud/api run test</code><br>
+              <code>pnpm --filter @chariox-cloud/web run test</code><br>
+              <code>pnpm --filter @chariox-cloud/api run test</code><br>
               <code>pnpm run validation:suite</code>
             </td>
           </tr>
           <tr>
             <td>Focused live drills</td>
             <td>
-              <code>pnpm --filter @arroba/cli run local-restart:drill</code><br>
-              <code>pnpm --filter @arroba/cli run remote-restart:drill</code><br>
-              <code>pnpm --filter @arroba/cli run tui-web-parity:visual-session</code><br>
+              <code>pnpm --filter @chariox/cli run local-restart:drill</code><br>
+              <code>pnpm --filter @chariox/cli run remote-restart:drill</code><br>
+              <code>pnpm --filter @chariox/cli run tui-web-parity:visual-session</code><br>
               <code>pnpm run smoke:hosted-browser-relay-kernel</code>
             </td>
           </tr>
@@ -987,7 +987,7 @@
           Execution followed the commit cadence on dedicated OSS and Cloud continuation branches. Final checkpoints
           include remote projection recovery, live Claude slice and native TUI support, deterministic provider lifecycle
           drills, exhaustive validation registries, and restored Cloud lint gates. Task-owned Cloud dirty files were
-          isolated in <code>arroba-cloud-resilience-validation</code>; the original dirty checkout was left untouched.
+          isolated in <code>chariox-cloud-resilience-validation</code>; the original dirty checkout was left untouched.
           The workflow deletion checkpoint is <code>3fea076a2</code>, the expanded Cloud synchronization checkpoint is
           <code>759871f0</code>, and both continuation branches were pushed to origin.
         </p>

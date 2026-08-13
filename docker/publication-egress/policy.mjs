@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto"
 import { isIP } from "node:net"
 
-export const PUBLICATION_EGRESS_POLICY_SCHEMA = "arroba.publication-egress-policy.v1"
+export const PUBLICATION_EGRESS_POLICY_SCHEMA = "chariox.publication-egress-policy.v1"
 
 const DNS_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/
 const IPV4_DENY_RANGES = [

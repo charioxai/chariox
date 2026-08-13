@@ -84,7 +84,7 @@ export function remoteProbeCommand(role) {
     "available_kib=$(df -Pk /var/lib | awk 'NR == 2 {print $4}')",
     "root_use_percent=$(df -Pk / | awk 'NR == 2 {gsub(/%/, \"\", $5); print $5}')",
     "role_marker=unassigned",
-    "marker=/etc/arroba/event-publication/host-role",
+    "marker=/etc/chariox/event-publication/host-role",
     "if test -e \"$marker\"; then role_marker=$(tr -d '\\r\\n' < \"$marker\"); fi",
     "if test \"$expected_role\" != relay && test \"$role_marker\" != unassigned && test \"$role_marker\" != \"$expected_role\"; then",
     "  printf 'host role marker is %s, refusing requested role %s\\n' \"$role_marker\" \"$expected_role\" >&2",
@@ -186,10 +186,10 @@ export async function runPreflight(options, dependencies = {}) {
   assertPhysicalSeparation(aeds, aegs, relay)
   const evidence = {
     schemaVersion: 1,
-    kind: "arroba-event-publication-hetzner-preflight",
+    kind: "chariox-event-publication-hetzner-preflight",
     runId: options.runId,
     capturedAt: new Date().toISOString(),
-    source: { repository: "arroba", revision, dirty },
+    source: { repository: "chariox", revision, dirty },
     separation: {
       aedsAndAegs: true,
       eventServicesAndRelay: relay ? true : null,

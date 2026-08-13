@@ -1,8 +1,8 @@
 # Delivery Status
 
-Detailed milestone and delivery status for Arroba. The [README](../README.md)
+Detailed milestone and delivery status for Chariox. The [README](../README.md)
 carries a short summary; this file holds the full history so the README stays
-oriented toward what Arroba is and how to run it.
+oriented toward what Chariox is and how to run it.
 
 ## Milestones
 
@@ -47,7 +47,7 @@ oriented toward what Arroba is and how to run it.
 - the OpenCode-backed multi-agent path still needs stabilization, but the current daemon and CLI suites are green
 - the split-pane TypeScript CLI is still an initial slice centered on the primary transcript plus up to two auxiliary panes
 - the M4.5 ownership refactor is closed: session, prompt, provider process/output, workflow/runtime-tool, and transport/relay ownership plus runtime fallback deletion and dead-code purge are complete; `DaemonApp` remains bootstrap/composition scaffolding, not the command-state owner
-- workspace claims are a bounded safety and scheduling layer; M4.6 managed artifact I/O coordinates Arroba-managed provider-session writes; remaining coordination work is port claims, policy commands for unsafe mode, optional integration checks, and post-v1 artifact-specific region models
+- workspace claims are a bounded safety and scheduling layer; M4.6 managed artifact I/O coordinates Chariox-managed provider-session writes; remaining coordination work is port claims, policy commands for unsafe mode, optional integration checks, and post-v1 artifact-specific region models
 - generic agent transport is intentionally deferred; OpenCode continues to use its native local HTTP + SSE adapter path
 
 The project specification and architecture remain the primary source of truth

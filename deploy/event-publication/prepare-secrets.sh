@@ -22,15 +22,15 @@ resolve_port() {
   printf '%s\n' "${value}"
 }
 
-aeds_kernel_port="$(resolve_port ARROBA_AEDS_KERNEL_PORT 43130)"
-aeds_producer_port="$(resolve_port ARROBA_AEDS_PRODUCER_PORT 43131)"
-dummy_aegs_port="$(resolve_port ARROBA_DUMMY_AEGS_PORT 43132)"
-github_aegs_port="$(resolve_port ARROBA_GITHUB_AEGS_PORT 43133)"
-jira_aegs_port="$(resolve_port ARROBA_JIRA_AEGS_PORT 43134)"
-linear_aegs_port="$(resolve_port ARROBA_LINEAR_AEGS_PORT 43135)"
-gitlab_aegs_port="$(resolve_port ARROBA_GITLAB_AEGS_PORT 43136)"
-sentry_aegs_port="$(resolve_port ARROBA_SENTRY_AEGS_PORT 43137)"
-slack_aegs_port="$(resolve_port ARROBA_SLACK_AEGS_PORT 43138)"
+aeds_kernel_port="$(resolve_port CHARIOX_AEDS_KERNEL_PORT 43130)"
+aeds_producer_port="$(resolve_port CHARIOX_AEDS_PRODUCER_PORT 43131)"
+dummy_aegs_port="$(resolve_port CHARIOX_DUMMY_AEGS_PORT 43132)"
+github_aegs_port="$(resolve_port CHARIOX_GITHUB_AEGS_PORT 43133)"
+jira_aegs_port="$(resolve_port CHARIOX_JIRA_AEGS_PORT 43134)"
+linear_aegs_port="$(resolve_port CHARIOX_LINEAR_AEGS_PORT 43135)"
+gitlab_aegs_port="$(resolve_port CHARIOX_GITLAB_AEGS_PORT 43136)"
+sentry_aegs_port="$(resolve_port CHARIOX_SENTRY_AEGS_PORT 43137)"
+slack_aegs_port="$(resolve_port CHARIOX_SLACK_AEGS_PORT 43138)"
 if [[ "$(printf '%s\n' \
   "${aeds_kernel_port}" "${aeds_producer_port}" "${dummy_aegs_port}" "${github_aegs_port}" \
   "${jira_aegs_port}" "${linear_aegs_port}" "${gitlab_aegs_port}" \
@@ -39,7 +39,7 @@ if [[ "$(printf '%s\n' \
   printf 'Event-service host ports must be distinct\n' >&2
   exit 2
 fi
-printf 'ARROBA_AEDS_KERNEL_PORT=%s\nARROBA_AEDS_PRODUCER_PORT=%s\nARROBA_DUMMY_AEGS_PORT=%s\nARROBA_GITHUB_AEGS_PORT=%s\nARROBA_JIRA_AEGS_PORT=%s\nARROBA_LINEAR_AEGS_PORT=%s\nARROBA_GITLAB_AEGS_PORT=%s\nARROBA_SENTRY_AEGS_PORT=%s\nARROBA_SLACK_AEGS_PORT=%s\n' \
+printf 'CHARIOX_AEDS_KERNEL_PORT=%s\nCHARIOX_AEDS_PRODUCER_PORT=%s\nCHARIOX_DUMMY_AEGS_PORT=%s\nCHARIOX_GITHUB_AEGS_PORT=%s\nCHARIOX_JIRA_AEGS_PORT=%s\nCHARIOX_LINEAR_AEGS_PORT=%s\nCHARIOX_GITLAB_AEGS_PORT=%s\nCHARIOX_SENTRY_AEGS_PORT=%s\nCHARIOX_SLACK_AEGS_PORT=%s\n' \
   "${aeds_kernel_port}" \
   "${aeds_producer_port}" \
   "${dummy_aegs_port}" \
@@ -124,12 +124,12 @@ slack_producer_token="$(tr -d '\r\n' < "${slack_producer_token_file}")"
 slack_management_token="$(tr -d '\r\n' < "${slack_management_token_file}")"
 printf '{"local-container-kernel":"%s"}\n' "${kernel_token}" \
   > "${secrets_dir}/aeds-kernel-tokens.json"
-printf '{"dev.arroba.dummy":{"token":"%s","event_types":["dummy.test"]},"dev.arroba.github":{"token":"%s","event_types":["pull_request.opened","pull_request.synchronize","pull_request.review_requested","issues.opened","workflow_run.completed"]},"dev.arroba.jira-cloud":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","issue.transitioned"]},"dev.arroba.linear":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","project.updated"]},"dev.arroba.gitlab":{"token":"%s","event_types":["merge_request.opened","merge_request.updated","issue.created","pipeline.completed"]},"dev.arroba.sentry":{"token":"%s","event_types":["issue.created","issue.resolved"]},"dev.arroba.slack":{"token":"%s","event_types":["app.mentioned","message.channels","reaction.added"]}}\n' \
+printf '{"dev.chariox.dummy":{"token":"%s","event_types":["dummy.test"]},"dev.chariox.github":{"token":"%s","event_types":["pull_request.opened","pull_request.synchronize","pull_request.review_requested","issues.opened","workflow_run.completed"]},"dev.chariox.jira-cloud":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","issue.transitioned"]},"dev.chariox.linear":{"token":"%s","event_types":["issue.created","issue.assigned","issue.updated","project.updated"]},"dev.chariox.gitlab":{"token":"%s","event_types":["merge_request.opened","merge_request.updated","issue.created","pipeline.completed"]},"dev.chariox.sentry":{"token":"%s","event_types":["issue.created","issue.resolved"]},"dev.chariox.slack":{"token":"%s","event_types":["app.mentioned","message.channels","reaction.added"]}}\n' \
   "${producer_token}" "${github_producer_token}" "${jira_producer_token}" \
   "${linear_producer_token}" "${gitlab_producer_token}" "${sentry_producer_token}" \
   "${slack_producer_token}" \
   > "${secrets_dir}/aeds-producer-capabilities.json"
-printf '{"dev.arroba.dummy":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.github":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.jira-cloud":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.linear":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.gitlab":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.sentry":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.arroba.slack":{"url":"http://127.0.0.1:%s","token":"%s"}}\n' \
+printf '{"dev.chariox.dummy":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.github":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.jira-cloud":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.linear":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.gitlab":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.sentry":{"url":"http://127.0.0.1:%s","token":"%s"},"dev.chariox.slack":{"url":"http://127.0.0.1:%s","token":"%s"}}\n' \
   "${dummy_aegs_port}" "${management_token}" \
   "${github_aegs_port}" "${github_management_token}" \
   "${jira_aegs_port}" "${jira_management_token}" \

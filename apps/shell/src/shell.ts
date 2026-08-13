@@ -3,9 +3,9 @@ import { readFile } from "node:fs/promises"
 import { stdin as defaultStdin, stdout as defaultStdout, stderr as defaultStderr } from "node:process"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { createDefaultShellContext, type ShellContext } from "@arroba/kernel-client/shell-core"
-import { executeShellLine, executeShellScript, executeShellScriptLines } from "@arroba/kernel-client/shell-script"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { createDefaultShellContext, type ShellContext } from "@chariox/kernel-client/shell-core"
+import { executeShellLine, executeShellScript, executeShellScriptLines } from "@chariox/kernel-client/shell-script"
 
 export { executeShellLine, executeShellScript, executeShellScriptLines }
 
@@ -122,10 +122,10 @@ export function createInitialShellContext(options: ShellCliOptions): ShellContex
 
 export function shellUsage(): string {
   return [
-    "usage: arroba-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE]",
-    "       arroba-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE] [--continue-on-error]",
+    "usage: chariox-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE]",
+    "       chariox-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE] [--continue-on-error]",
     "",
-    "Runs an Arroba command REPL. Commands do not use the TUI slash prefix:",
+    "Runs a Chariox command REPL. Commands do not use the TUI slash prefix:",
     "  @ session list",
     "  @ session new --dir ../qa as s",
     "  @ session use $s",
@@ -142,7 +142,7 @@ export function shellUsage(): string {
     "  @ context",
     "  @ pwd",
     "  @ vars",
-    "  @ source setup.arroba",
+    "  @ source setup.chariox",
     "  @ exit",
   ].join("\n")
 }
@@ -154,11 +154,11 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
 }): Promise<number> {
   let context = createInitialShellContext(options)
   const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
-  const clientId = `arroba-shell-${process.pid}-${Date.now()}`
+  const clientId = `chariox-shell-${process.pid}-${Date.now()}`
   const readline = createInterface({ input: io.input, output: io.output, terminal: Boolean((io.output as { isTTY?: boolean }).isTTY) })
 
   try {
-    io.output.write("arroba-shell\n")
+    io.output.write("chariox-shell\n")
     for (;;) {
       const line = await readline.question("@ ")
       const result = await executeShellLine(
@@ -266,7 +266,7 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
   }
   const context = createInitialShellContext(options)
   const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
-  const clientId = `arroba-shell-script-${process.pid}-${Date.now()}`
+  const clientId = `chariox-shell-script-${process.pid}-${Date.now()}`
   try {
     const source = await readFile(options.scriptPath, "utf8")
     const result = await executeShellScript(source.split(/\r?\n/), context, { client, clientId }, (line) => io.output.write(line), {
@@ -282,11 +282,11 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
 }
 
 export function defaultKernelEndpoint(): string {
-  if (process.env.ARROBA_KERNEL_URL) {
-    return process.env.ARROBA_KERNEL_URL
+  if (process.env.CHARIOX_KERNEL_URL) {
+    return process.env.CHARIOX_KERNEL_URL
   }
-  const host = process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"
-  const port = process.env.ARROBA_KERNEL_PORT ?? "43118"
+  const host = process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"
+  const port = process.env.CHARIOX_KERNEL_PORT ?? "43118"
   return `ws://${host}:${port}/kernel`
 }
 

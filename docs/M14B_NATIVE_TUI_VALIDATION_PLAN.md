@@ -3,45 +3,45 @@
 ## Status
 
 In progress. This milestone replaces the earlier split-native TUI plan with a
-validation-first plan for Arroba-managed provider-native TUIs:
+validation-first plan for Chariox-managed provider-native TUIs:
 
 ```text
-arroba codex [session-ref]
-arroba opencode [session-ref]
-arroba claude [session-ref]
+chariox codex [session-ref]
+chariox opencode [session-ref]
+chariox claude [session-ref]
 ```
 
-Every native TUI launch is owned by Arroba. If no session ref is provided,
-Arroba creates a session and the first native-TUI agent. If a session ref is
-provided, Arroba attaches a new native-TUI agent to that Arroba session. Native
+Every native TUI launch is owned by Chariox. If no session ref is provided,
+Chariox creates a session and the first native-TUI agent. If a session ref is
+provided, Chariox attaches a new native-TUI agent to that Chariox session. Native
 TUI launches never attach to an existing provider run.
 
 This plan is intentionally about provider-native TUI behavior, not workspace live sync.
 Prompt attachments are files/images transferred with a prompt. Workspace live sync is
-the separate Arroba MCP `read_artifact`/`write_artifact` workspace-coordination
+the separate Chariox MCP `read_artifact`/`write_artifact` workspace-coordination
 system and remains covered by the workspace live sync milestones and drills.
 
 2026-05-14 update: Codex/OpenCode prompt attachment byte transfer is
-implemented for relay-attached native TUI clients and Arroba TUI submissions.
-The same-host relay drill validates native-TUI-origin and Arroba-TUI-origin
-attachments with two provider-native TUIs plus one Arroba observer in the same
+implemented for relay-attached native TUI clients and Chariox TUI submissions.
+The same-host relay drill validates native-TUI-origin and Chariox-TUI-origin
+attachments with two provider-native TUIs plus one Chariox observer in the same
 session. The older direct Docker slice-target drill has been removed; slice
 coverage now uses the home-managed slice topology only.
 
 2026-05-16 permissions update: native TUI permissions now use a single
 kernel-owned interaction contract. Provider-native permission requests are
-projected to every Arroba TUI in the session regardless of prompt origin.
+projected to every Chariox TUI in the session regardless of prompt origin.
 Codex/OpenCode provider-native approval replies are routed back to the active
-Arroba interaction when they arrive through the native proxy. Claude local
-native TUI permission hooks bridge all origins into Arroba; remote-rendered
-Claude detects visible PTY permission prompts and creates the same Arroba
+Chariox interaction when they arrive through the native proxy. Claude local
+native TUI permission hooks bridge all origins into Chariox; remote-rendered
+Claude detects visible PTY permission prompts and creates the same Chariox
 interaction before injecting the resolved decision back into the PTY.
 
 2026-05-14 Claude attachment update: local Claude native TUI prompt attachments
 are implemented and covered by `live-native-tui-attachment-drill.mjs --provider
 claude`. Native-origin `@file`/`@image` prompts are captured as kernel prompt
-attachments. Arroba-origin text attachments are delivered through Claude hook
-`additionalContext`; Arroba-origin non-text attachments are materialized and
+attachments. Chariox-origin text attachments are delivered through Claude hook
+`additionalContext`; Chariox-origin non-text attachments are materialized and
 submitted to Claude's TUI as native `@path` mentions.
 
 2026-05-14 standard remote finding, now superseded: the original native TUI
@@ -63,7 +63,7 @@ cross-host worker.
 
 2026-05-15 standard home-worker validation update: Codex and OpenCode pass the
 same-host standard home-worker drills for prompt/turns, provider permissions,
-and prompt attachments. The drill uses two native TUIs plus one Arroba observer
+and prompt attachments. The drill uses two native TUIs plus one Chariox observer
 CLI in one session, separated provider runs, no cross-agent marker
 contamination, and badge transitions back to idle. Codex uses a native TUI
 projection path that translates home-kernel session output into Codex app-server
@@ -72,20 +72,20 @@ prompt queue and worker-owned provider execution.
 
 2026-05-15 Claude standard home-worker update: Claude Code now has a
 remote-rendered PTY path for worker-owned execution. Prompt/turn observation
-passes with two Claude native TUIs plus one Arroba observer in the same Arroba
+passes with two Claude native TUIs plus one Chariox observer in the same Chariox
 session, with no cross-agent marker contamination and badge transitions back to
 idle. Image prompt attachments pass in both directions in same-host home-worker
 mode: local Claude `@path` image prompts are intercepted by the remote-rendered
 wrapper, transmitted as inline prompt attachments, materialized on the worker,
-and injected into the worker-owned Claude TUI; Arroba-origin image attachments
+and injected into the worker-owned Claude TUI; Chariox-origin image attachments
 follow the same worker materialization path. Permissions pass in both
-native-origin and Arroba-origin directions: permission prompts surface in the
+native-origin and Chariox-origin directions: permission prompts surface in the
 remote-rendered Claude native TUI and approval is sent through kernel-owned PTY
 input to the worker provider run.
 
 2026-05-15 actual Hetzner validation update: Codex and OpenCode pass against a
 real Hetzner worker for prompt/turns, provider permissions, and prompt
-attachments in both native-origin and Arroba-origin directions. The drill uses
+attachments in both native-origin and Chariox-origin directions. The drill uses
 SSH local forwarding for the relay and an SSH provider endpoint bridge for
 worker-local Codex/OpenCode provider endpoints. Claude Code initially failed
 extended Hetzner validation because macOS stores Claude Code credentials in the
@@ -99,7 +99,7 @@ path.
 
 2026-05-15 home-managed slice validation update: Codex, OpenCode, and Claude
 Code pass the local Docker home-managed slice drill for prompt/turns, provider
-permissions, and prompt attachments. The native provider TUIs and Arroba
+permissions, and prompt attachments. The native provider TUIs and Chariox
 observer attach to the home kernel session; the home kernel places provider
 execution on the slice worker through `slice_ref` and reuses the existing
 leased-runtime projection path. Codex/OpenCode run in server-in-kernel mode with
@@ -111,7 +111,7 @@ payload and marks `/workspace` trusted in the slice.
 2026-05-16 MCP/skills update: Native TUI MCP/skill drills now validate
 agent-scoped grants for Codex and OpenCode in local, same-host standard
 home-worker, and home-managed local Docker slice modes. Home-managed slices use
-`ARROBA_CAPABILITY_ISOLATION_ROOT` so worker MCP/skill registries are isolated
+`CHARIOX_CAPABILITY_ISOLATION_ROOT` so worker MCP/skill registries are isolated
 from host workspace and persisted-home registries. Claude native TUI hidden
 skill injection now uses Claude Code's `UserPromptSubmit` hook
 `additionalContext` path: the hook emits a scoped request id, and the local
@@ -132,8 +132,8 @@ Providers:
 
 Functional areas:
 
-- prompt and turn observation with two provider TUIs plus one Arroba TUI in one
-  Arroba session
+- prompt and turn observation with two provider TUIs plus one Chariox TUI in one
+  Chariox session
 - provider permissions
 - prompt attachments, meaning files/images sent with a prompt
 - MCPs and skills
@@ -164,20 +164,20 @@ Prompt/turns:
 Permissions:
 
 - Local Codex/OpenCode: covered by `live-native-tui-permission-drill.mjs` in
-  both native-TUI-origin and Arroba-TUI-origin directions.
+  both native-TUI-origin and Chariox-TUI-origin directions.
 - Local Claude: product behavior is implemented with the same kernel-owned
-  interaction contract for native-origin and Arroba-origin prompts. Dedicated
+  interaction contract for native-origin and Chariox-origin prompts. Dedicated
   automated coverage is provided by `live-native-tui-permission-drill.mjs
   --provider claude`.
 - Standard remote home-worker Codex/OpenCode: covered by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers
-  codex,opencode --include-permissions`. Native-origin and Arroba-origin
-  prompts both surface permission interactions to the Arroba observer and can be
+  codex,opencode --include-permissions`. Native-origin and Chariox-origin
+  prompts both surface permission interactions to the Chariox observer and can be
   approved there. The same coverage also passes with `--hetzner-worker`.
 - Standard remote home-worker Claude: covered by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
-  --include-permissions`. Native-origin and Arroba-origin prompts both surface
-  permission interactions through Arroba. The remote-rendered Claude TUI remains
+  --include-permissions`. Native-origin and Chariox-origin prompts both surface
+  permission interactions through Chariox. The remote-rendered Claude TUI remains
   coherent while the launcher detects the PTY prompt and injects the resolved
   decision back into the provider run. This passes in same-host relay mode and
   with the actual Hetzner worker once the Linux worker has Claude credentials in
@@ -190,7 +190,7 @@ Prompt attachments:
 
 - Local Codex/OpenCode: covered by `live-native-tui-attachment-drill.mjs`.
 - Local Claude: covered by `live-native-tui-attachment-drill.mjs --provider
-  claude` for native-origin and Arroba-origin image attachments. Text/file
+  claude` for native-origin and Chariox-origin image attachments. Text/file
   attachment delivery is also implemented through the same native capture and
   hook context paths.
 - Same-host relay Codex/OpenCode: covered by
@@ -201,7 +201,7 @@ Prompt attachments:
   codex,opencode --include-attachments`. The same coverage also passes with
   `--hetzner-worker`.
 - Standard remote home-worker Claude: covered for image prompt attachments in
-  both native-origin and Arroba-origin directions by
+  both native-origin and Chariox-origin directions by
   `live-remote-native-tui-drill.mjs --standard-home-worker --providers claude
   --include-attachments` in same-host relay mode and with the actual Hetzner
   worker once credentials are transferred.
@@ -212,24 +212,24 @@ Prompt attachments:
 
 MCPs and skills:
 
-- Covered for normal Arroba provider runs by existing local and remote
+- Covered for normal Chariox provider runs by existing local and remote
   MCP/skill drills.
 - Local native TUI provider launch now follows the same agent-scoped grant
   rendering path as ordinary local provider launch.
 - Standard home-worker native TUI intentionally does not install/copy MCPs or
   skills across home/worker machines. The worker must already have the matching
   MCP definitions, commands, environment, provider credentials, and any
-  provider/Arroba skill material required for the run. Home may send
+  provider/Chariox skill material required for the run. Home may send
   grant-derived MCP requirements for fail-fast validation and provider-run
   rendering, but it must not become a remote package installer in this mode.
-- Home-managed slice native TUI transfers granted Arroba skill packages from
+- Home-managed slice native TUI transfers granted Chariox skill packages from
   home to the child worker before provider execution because the slice is
   managed by the home kernel. MCP definitions are installed into an isolated
   managed-slice registry before worker launch and MCP commands/env execute on
   the worker side.
 - Focused unit coverage has landed for native remote provider-run MCP
-  propagation. Home-managed slice kernels set `ARROBA_CAPABILITY_ISOLATION_ROOT`
-  so project/user MCP and skill registries are isolated from any `.arroba`
+  propagation. Home-managed slice kernels set `CHARIOX_CAPABILITY_ISOLATION_ROOT`
+  so project/user MCP and skill registries are isolated from any `.chariox`
   registries mounted from the host workspace or persisted in the slice home.
 - Live MCP/skill drills now pass for Codex and OpenCode in local, standard
   same-host home-worker, and home-managed local Docker slice modes. Claude
@@ -242,7 +242,7 @@ MCPs and skills:
 Local fast path:
 
 - When the provider execution process can read the same filesystem path as the
-  TUI/client, Arroba may pass a local path or `file://` URL directly to the
+  TUI/client, Chariox may pass a local path or `file://` URL directly to the
   provider.
 - The local path fast path is acceptable for local native TUI drills and avoids
   unnecessary copying.
@@ -250,8 +250,8 @@ Local fast path:
 Transmission path:
 
 - When the provider execution process may not see the TUI/client filesystem,
-  Arroba must transmit attachment bytes.
-- Native TUI proxies and Arroba TUI prompt submission should convert local
+  Chariox must transmit attachment bytes.
+- Native TUI proxies and Chariox TUI prompt submission should convert local
   attachments into `PromptAttachment.contents_base64` when the run is remote,
   slice-backed, or explicitly exercising attachment transmission.
 - The kernel materializes inline attachment bytes on the provider-execution
@@ -267,7 +267,7 @@ Provider notes:
 - OpenCode supports file prompt parts. Remote/slice transmission must
   materialize files on the provider side before forwarding the OpenCode prompt.
 - Claude structured runs support inline base64 image/text handling, but Claude
-  native TUI hook/PTY mode needs separate validation for both Arroba-origin and
+  native TUI hook/PTY mode needs separate validation for both Chariox-origin and
   provider-native attachments.
 
 ## Implementation Order
@@ -285,28 +285,28 @@ Provider notes:
      native TUI runs.
    - Confirm the kernel materializes those bytes on the provider-execution
      machine and provider-facing paths are local to that machine.
-   - Add live checks for native-TUI-origin and Arroba-TUI-origin attachments.
+   - Add live checks for native-TUI-origin and Chariox-TUI-origin attachments.
      Same-host relay is validated for Codex/OpenCode; standard remote and
      home-managed slice remain to be added.
 
 3. Revisit local permissions for all providers.
    - Codex/OpenCode local native TUI permissions pass in both directions.
-   - Claude local permissions bridge native-origin and Arroba-origin prompts
-     into the same Arroba interaction path.
+   - Claude local permissions bridge native-origin and Chariox-origin prompts
+     into the same Chariox interaction path.
    - Provider-native approval replies for Codex/OpenCode resolve the active
-     Arroba interaction instead of bypassing the kernel.
+     Chariox interaction instead of bypassing the kernel.
 
 4. Implement and validate local Claude prompt attachments.
    - Completed for local text/file and image attachments.
    - Native-origin `@file`/`@image` references are captured and submitted to the
      kernel as prompt attachments.
-   - Arroba-origin text/file attachments are delivered through Claude hook
+   - Chariox-origin text/file attachments are delivered through Claude hook
      `additionalContext`.
-   - Arroba-origin images are materialized and injected into Claude Code as
+   - Chariox-origin images are materialized and injected into Claude Code as
      native `@path` mentions so the provider TUI handles them normally.
 
 5. Validate standard remote home-worker native TUI.
-   - In progress: native TUI launches can create remote-backed Arroba agents
+   - In progress: native TUI launches can create remote-backed Chariox agents
      and request worker-owned native provider runs.
    - Current provider status:
      - Codex/OpenCode: prompt/turn, permission, and prompt-attachment drills pass
@@ -343,13 +343,13 @@ Provider notes:
    - Codex/OpenCode: live MCP/skill validation passes locally, in same-host
      standard home-worker mode, and in home-managed local Docker slice mode.
    - Claude: live validation confirms pre-granted MCPs are rendered into the
-     provider run and same-turn skill requests receive hidden Arroba skill
+     provider run and same-turn skill requests receive hidden Chariox skill
      context through Claude Code hook `additionalContext` rather than visible
      PTY input.
    - Standard remote home-worker: do not copy/install MCPs or skills as product
      behavior. The drill preinstalls matching worker MCP definitions as setup,
      then validates grant-derived worker provider-run rendering.
-   - Home-managed slice: transfer granted Arroba skill packages to the
+   - Home-managed slice: transfer granted Chariox skill packages to the
      home-managed child worker before provider execution, validate worker-local
      materialized skill paths in prompt context where provider-supported, and
      validate MCP rendering against MCP definitions installed into the managed
@@ -383,18 +383,18 @@ Legend:
 
 Prompt/turn drills must launch:
 
-- two provider-native TUIs in one Arroba session
-- one observer Arroba TUI or automation-backed Arroba CLI in the same session
+- two provider-native TUIs in one Chariox session
+- one observer Chariox TUI or automation-backed Chariox CLI in the same session
 
 They must validate:
 
-- provider-native prompt from agent A appears in Arroba history and observer UI
-- provider-native prompt from agent B appears in Arroba history and observer UI
-- Arroba-origin prompt to agent A appears in the provider-native UI path and
+- provider-native prompt from agent A appears in Chariox history and observer UI
+- provider-native prompt from agent B appears in Chariox history and observer UI
+- Chariox-origin prompt to agent A appears in the provider-native UI path and
   completes
-- Arroba-origin prompt to agent B appears in the provider-native UI path and
+- Chariox-origin prompt to agent B appears in the provider-native UI path and
   completes
-- responses are visible in Arroba history and observer UI
+- responses are visible in Chariox history and observer UI
 - no A/B cross-contamination
 - agent footer badge changes from idle to working/thinking during the turn and
   returns to idle after completion
@@ -402,7 +402,7 @@ They must validate:
 Attachment drills must validate:
 
 - native-TUI-origin attachment reaches the provider execution side
-- Arroba-TUI-origin attachment reaches the provider execution side
+- Chariox-TUI-origin attachment reaches the provider execution side
 - local runs may pass local paths directly
 - remote and slice runs must transmit bytes and materialize provider-local
   paths
@@ -410,12 +410,12 @@ Attachment drills must validate:
 Permission drills must validate:
 
 - provider-native permission requests create a kernel-owned interaction visible
-  to all Arroba TUIs attached to the session
-- answering from Arroba resumes the same provider turn
+  to all Chariox TUIs attached to the session
+- answering from Chariox resumes the same provider turn
 - where provider-native approval replies are supported, the native reply
-  resolves the same Arroba interaction instead of bypassing kernel state
+  resolves the same Chariox interaction instead of bypassing kernel state
 - if a provider only exposes approval through a rendered PTY, the PTY remains
-  coherent and Arroba injects the resolved decision back through the provider
+  coherent and Chariox injects the resolved decision back through the provider
   selection path
 
 MCP/skill drills must validate:
@@ -426,7 +426,7 @@ MCP/skill drills must validate:
   preinstalled worker-local skill material without home-to-worker package
   transfer
 - slice provider execution sees worker-local MCP definitions and home-managed,
-  hash-verified materialized Arroba skill files
+  hash-verified materialized Chariox skill files
 - provider-native MCP calls execute on the provider execution machine
 
 ## Cleanup Rules

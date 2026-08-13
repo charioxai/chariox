@@ -8,7 +8,7 @@ of 2026-05-13.
 Achieved:
 
 - Added the kernel-owned Claude Code structured-stdio provider adapter.
-- Added launch-time Arroba permission/plan-mode mapping to Claude Code
+- Added launch-time Chariox permission/plan-mode mapping to Claude Code
   `--permission-mode`.
 - Added Claude catalog exposure with known CLI aliases plus defensive
   `~/.claude.json` model-cache discovery when Claude Code writes model options.
@@ -20,22 +20,22 @@ Achieved:
   including opaque attachment fallback references.
 - Added M13.3 Claude resume state with serialized `claude_session_id`,
   provider-session-id launch mapping, and protocol version 27.
-- Added Claude restart/resume for changed Arroba model/effort/execution config.
+- Added Claude restart/resume for changed Chariox model/effort/execution config.
 - Added Claude abort recovery by interrupting the stream-json process, restarting
-  with `--resume` when a Claude session id is known, and settling Arroba
+  with `--resume` when a Claude session id is known, and settling Chariox
   cancellation state.
 - Added Claude runtime MCP launch config through `--mcp-config` and
   `--strict-mcp-config`, keeping MCP wiring inside the provider adapter.
 - Verified local workflow parity with a Claude workflow node using a granted
-  provider MCP tool plus Arroba runtime MCP workflow output submission.
+  provider MCP tool plus Chariox runtime MCP workflow output submission.
 - Added Claude Code to CLI waiting-room/backend selection, command-center
   provider selection, provider preference persistence, and backend model
   filtering.
-- Normalized OpenCode's upstream provider catalog into the single Arroba
+- Normalized OpenCode's upstream provider catalog into the single Chariox
   backend provider `opencode`, so `openai` is no longer surfaced as a connected
-  top-level provider. Codex remains the top-level OpenAI-backed Arroba provider.
+  top-level provider. Codex remains the top-level OpenAI-backed Chariox provider.
 - Fixed local-drill relay startup when a persisted Cloud relay profile exists:
-  explicit `ARROBA_RELAY_URL` / `ARROBA_RELAY_TOKEN` now take precedence and do
+  explicit `CHARIOX_RELAY_URL` / `CHARIOX_RELAY_TOKEN` now take precedence and do
   not get replaced by automatic Cloud relay token refresh during daemon startup.
 - Verified the remote machine Claude path through a local relay: home and worker
   daemons registered in the same scoped relay realm, the waiting room surfaced
@@ -49,7 +49,7 @@ Achieved:
 Verified:
 
 - `cargo test --manifest-path apps/kernel/Cargo.toml claude --lib`
-- `cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel`
+- `cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel`
 - `node --check apps/cli/scripts/live-claude-provider-drill.mjs`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario attachment --timeout-ms 180000 --keep-artifacts-on-failure`
@@ -60,8 +60,8 @@ Verified:
 - `node apps/cli/scripts/live-claude-provider-drill.mjs --scenario selection --model sonnet --effort low --timeout-ms 180000 --keep-artifacts-on-failure`
 - `node apps/cli/scripts/live-workflow-runtime-drill.mjs --spawn-daemon --scenario validated-increment-chain --providers claude,codex,opencode --provider-model claude=sonnet --provider-model codex=gpt-5.2 --provider-model opencode=opencode/gpt-5.2 --poll-limit 180 --poll-interval-ms 2000`
 - `cargo test --manifest-path apps/kernel/Cargo.toml opencode_backend_catalog --lib`
-- `pnpm --filter @arroba/cli run lint`
-- `pnpm --filter @arroba/cli run build`
+- `pnpm --filter @chariox/cli run lint`
+- `pnpm --filter @chariox/cli run build`
 - `node --test apps/cli/dist/provider-catalog.test.js apps/cli/dist/waiting-room.test.js apps/cli/dist/provider-command-catalog.test.js apps/cli/dist/command-center.test.js`
 - Live kernel catalog probe returned connected providers
   `["claude","codex","opencode"]`, Claude models
@@ -71,15 +71,15 @@ Verified:
 - `cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol --lib`
 - `cargo test --manifest-path apps/kernel/Cargo.toml env_relay_config_takes_precedence_over_persisted_cloud_relay_profile`
 - `cargo check --manifest-path apps/kernel/Cargo.toml`
-- `cargo build --manifest-path apps/kernel/Cargo.toml --bin arroba-kernel`
-- `cargo build --manifest-path apps/relay/Cargo.toml --bin arroba-relay`
+- `cargo build --manifest-path apps/kernel/Cargo.toml --bin chariox-kernel`
+- `cargo build --manifest-path apps/relay/Cargo.toml --bin chariox-relay`
 - `node apps/cli/scripts/live-remote-machine-runtime-drill.mjs --provider claude --provider-model claude=sonnet --timeout-ms 180000`
 
 Known verification gap:
 
 - Claude Code model catalog discovery is best-effort. The subscription CLI path
   exposes aliases through `claude -p --model ...`, but does not expose a stable
-  machine-readable model listing command comparable to provider APIs. Arroba
+  machine-readable model listing command comparable to provider APIs. Chariox
   publishes known aliases/full IDs and also reads Claude Code's
   `additionalModelOptionsCache` / `additionalModelCostsCache` from
   `~/.claude.json` defensively when those caches exist. Cache shape changes must
@@ -98,14 +98,14 @@ Known verification gap:
 - Auth/status UX, larger artifact helper surfaces, native Claude TUI, slice
   support, and workspace live sync remain out of scope for this implementation slice.
 
-Claude Code should become a first-class Arroba provider at the same runtime level
+Claude Code should become a first-class Chariox provider at the same runtime level
 as Codex and OpenCode. The initial integration must use the local Claude Code CLI
 and its existing user login/subscription state. It must not use Anthropic SDK/API
-key flows for normal Arroba provider runs.
+key flows for normal Chariox provider runs.
 
 ## Architecture Fit
 
-Arroba's existing boundary remains the governing design:
+Chariox's existing boundary remains the governing design:
 
 - Clients talk only to the kernel through the existing local/remote kernel
   protocol.
@@ -125,7 +125,7 @@ Codex and OpenCode expose. The best fit is a kernel-owned structured stdio
 adapter:
 
 ```text
-Arroba CLI / web / native client
+Chariox CLI / web / native client
   <-> kernel local or relay-backed protocol
   <-> kernel provider runtime
   <-> Claude adapter
@@ -141,7 +141,7 @@ transport, not a relay participant, and not a Cloud concern.
   milestones. Leave it for a later coordinated-I/O hardening milestone.
 - Do not require `ANTHROPIC_API_KEY` or Anthropic SDK setup for normal Claude
   provider use.
-- Do not add Claude-specific behavior in Arroba CLI prompt dispatch, relay
+- Do not add Claude-specific behavior in Chariox CLI prompt dispatch, relay
   routing, or web/native client protocol code except for UI/catalog display of
   kernel-owned provider metadata.
 - Do not make Cloud proxy Claude Code runtime traffic.
@@ -162,11 +162,11 @@ claude -p \
 Additional launch flags are adapter-owned:
 
 - `--model <model>` for explicit model selection.
-- `--effort <level>` for Arroba variant/effort selection.
+- `--effort <level>` for Chariox variant/effort selection.
 - `--resume <session-id>` for provider session resume.
-- `--permission-mode <mode>` for Arroba execution/permission mapping.
+- `--permission-mode <mode>` for Chariox execution/permission mapping.
 - `--mcp-config <json>` when runtime MCP or artifact tools are bound.
-- `--strict-mcp-config` when Arroba needs to prevent unrelated project/user MCP
+- `--strict-mcp-config` when Chariox needs to prevent unrelated project/user MCP
   inheritance for a specific run.
 
 Normal subscription-backed runs should preserve Claude Code OAuth/keychain
@@ -177,17 +177,17 @@ profile mode is added.
 
 ## Permission And Mode Mapping
 
-Arroba already tracks an agent execution mode and permission level. Claude Code
+Chariox already tracks an agent execution mode and permission level. Claude Code
 must receive the closest native permission mode at launch and when turn-scoped
 config is supported.
 
 Initial mapping:
 
-| Arroba config | Claude Code mode | Notes |
+| Chariox config | Claude Code mode | Notes |
 | --- | --- | --- |
 | `execution_mode = Plan` | `--permission-mode plan` | Provider should analyze and present plans without code execution. |
 | `execution_mode = Build`, `permission_level = Required` | `--permission-mode default` | Claude asks for native approvals when needed. |
-| `execution_mode = Build`, `permission_level = Yolo` | `--permission-mode bypassPermissions` plus `--allow-dangerously-skip-permissions` | Matches current Arroba yolo semantics. Use only in trusted local workspaces. |
+| `execution_mode = Build`, `permission_level = Yolo` | `--permission-mode bypassPermissions` plus `--allow-dangerously-skip-permissions` | Matches current Chariox yolo semantics. Use only in trusted local workspaces. |
 
 If Claude Code supports live control messages for permission/model changes in
 the active stream, the adapter can later implement
@@ -230,7 +230,7 @@ protocol snapshot/hash tests, and add a focused drill.
 
 ### M13.1 Basic Local Claude Structured Provider
 
-Status: complete for local Arroba-client structured prompt I/O.
+Status: complete for local Chariox-client structured prompt I/O.
 
 Goal: launch Claude Code from the kernel, submit one prompt, stream deltas, and
 settle the turn from Claude's terminal result.
@@ -269,12 +269,12 @@ Status: complete for inline text/base64 attachments and opaque fallback
 references. Runtime MCP-backed artifact helpers remain deferred until a later
 artifact/tooling hardening slice.
 
-Goal: after basic streaming is proven, support Arroba prompt attachments and
+Goal: after basic streaming is proven, support Chariox prompt attachments and
 artifact references for Claude turns before remote/native work.
 
 Work:
 
-- Convert Arroba `PromptAttachment` records into Claude stream-json user content
+- Convert Chariox `PromptAttachment` records into Claude stream-json user content
   when supported.
 - For local files/artifacts, prefer explicit text blocks or path references that
   preserve kernel artifact ownership.
@@ -298,7 +298,7 @@ Live drills:
 
 Status: complete locally. Remote validation is tracked in M13.5.
 
-Goal: make Claude runs behave like persistent Arroba provider runs.
+Goal: make Claude runs behave like persistent Chariox provider runs.
 
 Work:
 
@@ -315,9 +315,9 @@ Live drills:
 
 - `claude-resume`: complete one prompt, terminate provider process, resume by
   provider session id, ask a follow-up that depends on previous context.
-- `claude-abort`: start a long-running prompt, cancel through Arroba, verify
+- `claude-abort`: start a long-running prompt, cancel through Chariox, verify
   kernel prompt cancellation and provider process recovery.
-- `claude-selection-update`: change model/effort through Arroba, verify either
+- `claude-selection-update`: change model/effort through Chariox, verify either
   live application or restart/resume behavior and correct run metadata.
 
 ### M13.4 Workflows And Multi-Agent Parity
@@ -355,7 +355,7 @@ paths because Claude is now in the provider catalog/runtime stack. Live drills
 are currently blocked before provider use by remote relay target bootstrap
 failure.
 
-Goal: use Claude Code from remote Arroba clients and remote worker kernels while
+Goal: use Claude Code from remote Chariox clients and remote worker kernels while
 preserving the relay architecture.
 
 Work:
@@ -410,7 +410,7 @@ Live drills:
 Status: implemented for the current native TUI contract. Claude Code exposes a
 rich interactive TUI, background sessions, `claude attach`, Remote Control, and
 hooks, but does not expose the same local provider-server protocol shape that
-Codex/OpenCode expose. Arroba therefore uses a kernel-owned PTY plus hook
+Codex/OpenCode expose. Chariox therefore uses a kernel-owned PTY plus hook
 events rather than a provider app-server proxy.
 
 Goal: add a native Claude Code TUI mode comparable to native Codex/OpenCode TUI
@@ -418,49 +418,49 @@ work, while the kernel remains session authority.
 
 Work:
 
-- Add `arroba claude [session-ref]` native launcher.
+- Add `chariox claude [session-ref]` native launcher.
 - Mark runs with `client_interface = native_tui`.
-- Ensure Arroba clients treat model/effort controls as provider-controlled for
+- Ensure Chariox clients treat model/effort controls as provider-controlled for
   native TUI runs.
 - Validate the hook-assisted interactive architecture:
-  - launch `claude` in an Arroba-owned PTY with a temporary settings overlay;
+  - launch `claude` in a Chariox-owned PTY with a temporary settings overlay;
   - register `UserPromptSubmit`, `Stop`, `StopFailure`, `PermissionRequest`,
     `PreToolUse`, `PostToolUse`, `ConfigChange`, and `SessionEnd` hooks;
-  - use `UserPromptSubmit` to observe native prompts and add Arroba hidden
+  - use `UserPromptSubmit` to observe native prompts and add Chariox hidden
     prompt context through `additionalContext`, not visible plain prompt text;
-  - use `Stop`/`StopFailure` and transcript tailing to settle Arroba turn state;
+  - use `Stop`/`StopFailure` and transcript tailing to settle Chariox turn state;
   - use `PermissionRequest`/`PreToolUse` to surface native approval state to
-    Arroba when possible.
-- Validate Arroba-client prompt injection into a native Claude TUI:
+    Chariox when possible.
+- Validate Chariox-client prompt injection into a native Claude TUI:
   - first attempt PTY input injection while the TUI is idle;
   - separately investigate whether background sessions expose a stable local
     reply API beyond `claude attach`;
-  - do not rely on Remote Control for Arroba runtime traffic, because it routes
-    through Anthropic services and is not an Arroba relay/kernel path.
+  - do not rely on Remote Control for Chariox runtime traffic, because it routes
+    through Anthropic services and is not a Chariox relay/kernel path.
 - Treat `claude -p --input-format stream-json --output-format stream-json` as
-  the structured Arroba provider path, not the native TUI path.
+  the structured Chariox provider path, not the native TUI path.
 - Preserve one provider run per native TUI agent.
 
 Live drills:
 
-- `native-claude-new-session`: start native Claude TUI from Arroba, verify kernel
+- `native-claude-new-session`: start native Claude TUI from Chariox, verify kernel
   creates session, agent, provider run, and output fanout.
 - `native-claude-existing-session`: attach native Claude TUI as a new top-level
   agent in an existing session.
 - `native-claude-hook-observation`: submit from the Claude TUI, verify
-  `UserPromptSubmit` reaches Arroba, the prompt appears in Arroba history, and
+  `UserPromptSubmit` reaches Chariox, the prompt appears in Chariox history, and
   `Stop` returns the badge to idle.
-- `native-claude-hidden-context`: verify Arroba prompt injection is delivered
+- `native-claude-hidden-context`: verify Chariox prompt injection is delivered
   through hook `additionalContext` or launch prompt flags without appearing as
   visible prompt text in the native TUI.
-- `native-claude-arroba-client-prompt`: submit from Arroba client and verify
+- `native-claude-chariox-client-prompt`: submit from Chariox client and verify
   the native Claude side receives the prompt and the full response turn without
   corrupting the TUI input state.
 - `native-claude-permission`: trigger a native Claude permission prompt, verify
-  the native TUI behaves as raw Claude Code, and verify Arroba can observe or
+  the native TUI behaves as raw Claude Code, and verify Chariox can observe or
   proxy the approval state when the hook data supports it.
-- `native-claude-attachments`: validate native TUI attachments and Arroba client
-  attachments separately; expect Arroba-to-native binary/image injection to need
+- `native-claude-attachments`: validate native TUI attachments and Chariox client
+  attachments separately; expect Chariox-to-native binary/image injection to need
   file-path materialization unless Claude exposes a running-session attachment
   API.
 - `native-claude-detach-reattach`: detach/reconnect client without losing kernel
@@ -480,7 +480,7 @@ Research notes:
   shell surface exposes attach/log/stop/respawn/remove, not a stable
   machine-to-session prompt API.
 - Remote Control proves Claude Code can split controller and local execution,
-  but routes through Anthropic infrastructure. It is not an Arroba runtime
+  but routes through Anthropic infrastructure. It is not a Chariox runtime
   transport and should not be used for kernel/relay session traffic.
 
 ### M13.8 Slice Support
@@ -515,7 +515,7 @@ Work:
 - Apply the macOS workspace write fence to Claude child processes.
 - Deny or restrict native write tools where Claude exposes stable controls.
 - Bind Workspace Live Sync managed tools through runtime MCP.
-- Verify direct native writes fail and Arroba Workspace Live Sync artifact writes succeed.
+- Verify direct native writes fail and Chariox Workspace Live Sync artifact writes succeed.
 
 Live drills:
 

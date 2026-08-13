@@ -2,13 +2,13 @@
 
 This document extends `docs/AGENT_APPS_CONCEPT.md`. It describes how Agent Apps
 can be integrated into existing web and mobile applications without assuming
-that every app is deployed through Arroba-owned containers.
+that every app is deployed through Chariox-owned containers.
 
 It is a concept document, not an implementation plan.
 
 ## Core Constraint
 
-Arroba has a specific runtime shape:
+Chariox has a specific runtime shape:
 
 - the kernel is the workflow/runtime authority
 - providers run through provider-native CLIs, adapters, or local servers
@@ -20,22 +20,22 @@ Arroba has a specific runtime shape:
 Therefore, an external web app integration must always answer this question:
 
 ```text
-Where does the Arroba runtime live?
+Where does the Chariox runtime live?
 ```
 
-A package installed into an arbitrary web app can wrap routes and call Arroba,
+A package installed into an arbitrary web app can wrap routes and call Chariox,
 but it cannot universally run provider CLIs, durable queues, workflow replicas,
 and writable overlays inside every hosting environment.
 
 ## Integration Modes
 
-### Arroba-Hosted Agent App
+### Chariox-Hosted Agent App
 
-In this mode, Arroba hosts the app-facing runtime.
+In this mode, Chariox hosts the app-facing runtime.
 
 ```text
 browser
-  -> Arroba public URL
+  -> Chariox public URL
   -> Agent App Gateway / publication server
   -> kernel
   -> provider CLIs
@@ -59,18 +59,18 @@ WebSocket, MCP-style access, generated HTML, dynamic web-app views, traces,
 overlays, app actions, replica pools, and persistent patches when policy allows.
 
 The tradeoff is that the app route being mediated by the agent is served through
-the Arroba deployment or an Arroba-controlled ingress.
+the Chariox deployment or a Chariox-controlled ingress.
 
-### Existing App With Arroba Sidecar
+### Existing App With Chariox Sidecar
 
-In this mode, the user's app stays where it is, and an Arroba runtime runs
+In this mode, the user's app stays where it is, and a Chariox runtime runs
 beside it.
 
 ```text
 browser
   -> existing app
   -> wrapped route middleware
-  -> local Arroba sidecar runtime
+  -> local Chariox sidecar runtime
   -> kernel/provider/workflow
   -> response effects back to app/browser
 ```
@@ -88,23 +88,23 @@ The sidecar can run provider CLIs and keep durable workflow state. The existing
 app only needs middleware or route handlers that call the sidecar for wrapped
 routes.
 
-### Existing App With Remote Arroba Runtime
+### Existing App With Remote Chariox Runtime
 
-In this mode, the app cannot or should not run the Arroba runtime locally. The
+In this mode, the app cannot or should not run the Chariox runtime locally. The
 app calls a remote runtime instead.
 
 ```text
 browser
   -> existing app or serverless route
-  -> Arroba integration middleware
-  -> remote Arroba Agent App Runtime
+  -> Chariox integration middleware
+  -> remote Chariox Agent App Runtime
   -> kernel/provider/workflow
   -> streamed/final response back
 ```
 
 This is the realistic mode for Vercel-style or serverless deployments. The app
 package can wrap routes and stream responses, but provider execution happens in
-a remote runtime: Arroba Cloud, a customer VM, a customer container, or another
+a remote runtime: Chariox Cloud, a customer VM, a customer container, or another
 self-hosted runner.
 
 This avoids pretending that every serverless request handler can run provider
@@ -114,7 +114,7 @@ sessions open reliably.
 ### Embedded Development Mode
 
 For local development, a framework package can start or connect to a local
-Arroba runtime.
+Chariox runtime.
 
 ```text
 developer app server
@@ -136,7 +136,7 @@ The gateway can be distributed as:
 - a container
 - a standalone binary
 - a local development service
-- an Arroba-hosted service
+- a Chariox-hosted service
 - a sidecar process next to an existing app
 
 Its responsibilities are:
@@ -200,13 +200,13 @@ The package should provide:
 - local commands for development and packaging
 - deployment commands or metadata for Cloud/sidecar/container modes
 
-The package should not contain provider credentials or Arroba account
+The package should not contain provider credentials or Chariox account
 credentials.
 
 ## Route Wrapping
 
 Normal routes continue to behave normally. Wrapped routes are mediated by an
-Arroba workflow endpoint.
+Chariox workflow endpoint.
 
 Example:
 
@@ -269,10 +269,10 @@ If it has source code and build tools:
 - it can serve the rebuilt output
 - this is heavier and should be explicit
 
-If the app is deployed on a platform where Arroba only has a remote runtime:
+If the app is deployed on a platform where Chariox only has a remote runtime:
 
-- Arroba cannot directly mutate that platform's deployed source
-- Arroba can return generated overlays for wrapped routes
+- Chariox cannot directly mutate that platform's deployed source
+- Chariox can return generated overlays for wrapped routes
 - persistent source changes require a repository/deployment integration, such
   as commit, pull request, platform API, or redeploy flow
 
@@ -299,7 +299,7 @@ Persistent patch should require:
 
 It should not be available to arbitrary public users.
 
-## Deployment And Arroba Flow
+## Deployment And Chariox Flow
 
 A complete deployment flow should look like this:
 
@@ -309,11 +309,11 @@ draft workflow
   -> package workflow snapshot, requirements, trace policy, route manifest,
      action manifest, and optional app assets
   -> deploy Agent App Runtime/Gateway
-  -> register deployment in Arroba Cloud
+  -> register deployment in Chariox Cloud
   -> expose public URL or sidecar/remote runtime URL
 ```
 
-For Arroba-hosted deployments, the package can include app assets and the
+For Chariox-hosted deployments, the package can include app assets and the
 gateway/runtime can serve the app route directly.
 
 For sidecar deployments, the package configures the sidecar and the existing
@@ -325,7 +325,7 @@ the remote Agent App Runtime only for wrapped routes.
 ## Serverless And Platform Limits
 
 Serverless platforms are important, but they are not a good place to run the
-full Arroba runtime directly.
+full Chariox runtime directly.
 
 Common limitations:
 
@@ -414,7 +414,7 @@ The universal Agent App abstraction is:
 
 ```text
 existing app route or app action
-  + wrapped Arroba workflow endpoint
+  + wrapped Chariox workflow endpoint
   + Agent App Runtime/Gateway
 ```
 

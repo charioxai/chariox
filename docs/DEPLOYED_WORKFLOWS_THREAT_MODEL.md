@@ -2,7 +2,7 @@
 
 Status: normative baseline for managed Agent App activation, updated 2026-07-16
 
-This threat model applies to Arroba-managed workflow and Agent App deployments.
+This threat model applies to Chariox-managed workflow and Agent App deployments.
 It complements `DEPLOYED_WORKFLOWS_AGENT_APP_PLATFORM_PLAN.html` and the runtime
 boundaries in `ARCHITECTURE.md`. A later design may add controls, but it must not
 weaken these invariants without an explicit security review and migration plan.
@@ -50,7 +50,7 @@ Out of scope for Phase 0 approval:
 4. A managed hosted release is an immutable package v3 plus a digest-bound
    deployment contract. Configuration, credential bindings, provider bundles,
    audience policy, and egress policy cannot broaden its declared ceilings.
-5. Runtime callers cannot forge Arroba identity, runner, session, or internal
+5. Runtime callers cannot forge Chariox identity, runner, session, or internal
    transport headers.
 6. One caller cannot read another caller's state, prompts, output, attachments,
    traces, overlays, credentials, or quota state.
@@ -68,7 +68,7 @@ Out of scope for Phase 0 approval:
 
 | Actor | Trusted for | Not trusted for |
 | --- | --- | --- |
-| Platform operator | Operating Arroba infrastructure under audited access | Customer ownership decisions or reading provider secrets by default |
+| Platform operator | Operating Chariox infrastructure under audited access | Customer ownership decisions or reading provider secrets by default |
 | Account owner/admin | Account policy, deployment lifecycle, handoff, billing, and credential bindings | Other accounts or platform-wide policy |
 | Deployer/operator | Explicit deployment and runtime operations granted by role | Ownership, billing, or capability expansion |
 | Builder | Supplying source and an immutable package for review | Customer credentials, destination ownership, or undeclared capabilities |
@@ -77,7 +77,7 @@ Out of scope for Phase 0 approval:
 | Machine caller | Invoking explicit routes with scoped credentials | Interactive sessions or unrelated routes |
 | Home kernel | Session, workflow, agent, interaction, queue, and execution authority | Cloud account or billing authority |
 | Hosted runner | Materializing approved packages and reporting observed runtime state | Changing desired state or account policy |
-| Provider CLI | Provider-native execution and provider-local credentials | Arroba account authorization or ingress identity |
+| Provider CLI | Provider-native execution and provider-local credentials | Chariox account authorization or ingress identity |
 | Relay | Admitting scoped connections and routing encrypted packets | Runtime authority or plaintext inspection |
 | Public ingress | TLS, host routing, audience auth, quotas, and trusted claim injection | Workflow or provider execution authority |
 
@@ -156,7 +156,7 @@ those boundaries.
   or verified hostname. Human-readable slugs are presentation only.
 - Legacy slug-only routing is allowed only when exactly one globally ready match
   exists; zero or multiple matches fail closed.
-- Caller-supplied internal Arroba and identity headers are removed.
+- Caller-supplied internal Chariox and identity headers are removed.
 - Audience authentication must complete before opening HTTP streams, SSE,
   WebSockets, or MCP sessions.
 - A later signed invocation envelope must bind deployment, environment, subject,
@@ -200,7 +200,7 @@ those boundaries.
   secret `RuntimeInteraction` is projected to all attached clients. First reply
   wins; cancel and timeout return no secret; callback-bearing commands bypass the
   response cache and callback values are not persisted or reprojected.
-- The direct callback channel bridges the official Claude CLI. Arroba does not
+- The direct callback channel bridges the official Claude CLI. Chariox does not
   implement provider OAuth authorization, token exchange, or PKCE.
 - Web and TUI arm the same home-kernel request path. Cloud stores an immutable
   route bound to account, enrollment, profile, target version, realm, kernel,

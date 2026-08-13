@@ -106,11 +106,11 @@ cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol_session_
 cargo test --manifest-path apps/kernel/Cargo.toml local_daemon_protocol_version_matches_typescript_kernel_client -- --nocapture
 cargo test --manifest-path apps/kernel/Cargo.toml session_history_entries_read_operational_history -- --nocapture
 cargo test --manifest-path apps/kernel/Cargo.toml performance_drill_session_history_outline -- --nocapture
-pnpm --filter @arroba/cli run lint
-pnpm --filter @arroba/cli run build
+pnpm --filter @chariox/cli run lint
+pnpm --filter @chariox/cli run build
 node --test apps/cli/dist/attached-session-prime-controller.test.js apps/cli/dist/deferred-bootstrap-controller.test.js apps/cli/dist/agent-pane-refresh-controller.test.js apps/cli/dist/session-bootstrap.test.js apps/cli/dist/ipc-requests.test.js packages/kernel-client/dist/shell-executor.test.js
-pnpm --filter @arroba/cli run history-outline:tui-drill
-pnpm --filter @arroba/cli run history-outline:tui-e2e-drill
+pnpm --filter @chariox/cli run history-outline:tui-drill
+pnpm --filter @chariox/cli run history-outline:tui-e2e-drill
 ```
 
 TUI history drill output:
@@ -157,7 +157,7 @@ it immediately as well as on mount. The passing drill then observed prompt and
 summary entries, an unloaded lazy blob placeholder, and independently fetched
 tool content after expanding that blob through the TUI automation toggle path.
 
-Current workspace note: a later `pnpm --filter @arroba/cli run lint` in the
+Current workspace note: a later `pnpm --filter @chariox/cli run lint` in the
 dirty shared worktree is blocked by unrelated `slice-command-handlers.ts`
 type errors from concurrent slice/auth edits. The history automation and
 deferred-bootstrap tests still pass, and the live TUI e2e drill passes.
@@ -165,12 +165,12 @@ deferred-bootstrap tests still pass, and the live TUI e2e drill passes.
 Cloud/web:
 
 ```sh
-pnpm --filter @arroba-cloud/web run build
-pnpm --filter @arroba-cloud/web run lint
+pnpm --filter @chariox-cloud/web run build
+pnpm --filter @chariox-cloud/web run lint
 node --test apps/web/dist/terminal-history.test.js apps/web/dist/terminal/history-hydration-controller.test.js apps/web/dist/terminal/terminal-runtime-hydration-coordinator.test.js apps/web/dist/terminal/freeform-pane-chrome-dom-controller.test.js apps/web/dist/freeform-footer-controls.test.js apps/web/dist/terminal/terminal-session-orchestration-composition.test.js
 node --test apps/web/dist/terminal/history-hydration-controller.test.js apps/web/dist/terminal/terminal-output-composition.test.js apps/web/dist/terminal/freeform-pane-chrome-dom-controller.test.js apps/web/dist/terminal/freeform-transcript-renderer.test.js
-pnpm --filter @arroba-cloud/web run history-outline:web-e2e-drill
-pnpm --filter @arroba-cloud/web run drill:browser
+pnpm --filter @chariox-cloud/web run history-outline:web-e2e-drill
+pnpm --filter @chariox-cloud/web run drill:browser
 pnpm run smoke:browser-relay-kernel
 ```
 

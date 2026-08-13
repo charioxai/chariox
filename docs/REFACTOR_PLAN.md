@@ -17,11 +17,11 @@ Living plan for the current code-simplification pass across the CLI, daemon, and
 
 Done:
 
-- deleted the old `arroba-cli-rust` binary implementation
+- deleted the old `chariox-cli-rust` binary implementation
 - removed the extra binary target from `apps/kernel/Cargo.toml`
 - removed the daemon integration test that still depended on the deleted Rust-only CLI
 - updated runtime and contributor docs so the supported local CLI paths are now:
-  - `arroba-cli`
+  - `chariox-cli`
   - direct `apps/cli` development
 
 Why this mattered:
@@ -152,12 +152,12 @@ Why this mattered:
 
 Done:
 
-- updated `apps/kernel/src/bin/arroba-cli.rs` so the Rust launcher only rebuilds `apps/cli` when TypeScript CLI outputs are missing or older than the CLI sources/build inputs
+- updated `apps/kernel/src/bin/chariox-cli.rs` so the Rust launcher only rebuilds `apps/cli` when TypeScript CLI outputs are missing or older than the CLI sources/build inputs
 - added focused launcher tests covering missing-output, fresh-output, and stale-output cases
 
 Why this mattered:
 
-- the launcher had been paying a full `pnpm --filter @arroba/cli run build` cost on every startup even when nothing changed
+- the launcher had been paying a full `pnpm --filter @chariox/cli run build` cost on every startup even when nothing changed
 - checking freshness first makes the local entrypoint faster and keeps rebuild work tied to actual source changes
 
 ### 12. CLI session-state core extraction
@@ -313,7 +313,7 @@ The refactor has started, but the largest simplification targets still remain:
 - `apps/kernel/src/app.rs` is still orchestration-heavy, but the history/prompt helper extraction is complete
 - `apps/kernel/src/local/api.rs` is now mostly request/response definitions plus transport dispatch
 - `apps/kernel/src/provider/service.rs` now focuses on provider lifecycle/orchestration, while `opencode_binding.rs` and `opencode_runtime.rs` own OpenCode-specific binding and transcript behavior
-- `apps/kernel/src/bin/arroba-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
+- `apps/kernel/src/bin/chariox-cli.rs` now skips unnecessary CLI rebuilds by checking build freshness first
 - `apps/cli/src/index.tsx` still contains most runtime wiring, but the session-state, attach/detach, waiting-room decision, and session-chrome runtime-state seams are now extracted
 
 ## Next Phases
@@ -422,8 +422,8 @@ For each phase:
 Current verification already completed during this pass:
 
 - `cargo test --manifest-path apps/kernel/Cargo.toml --no-run`
-- `pnpm --filter @arroba/domain test`
-- `pnpm --filter @arroba/cli test`
+- `pnpm --filter @chariox/domain test`
+- `pnpm --filter @chariox/cli test`
 - `git diff --check`
 
 ## Immediate Next Step

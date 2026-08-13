@@ -179,7 +179,7 @@
         <p class="muted">Refactor plan</p>
         <h1>Cross-Repo Line Cap and Responsibility Refactor</h1>
         <p class="lede">
-          Plan to refactor <code>arroba</code> and the sibling <code>arroba-cloud</code>
+          Plan to refactor <code>chariox</code> and the sibling <code>chariox-cloud</code>
           repository so hand-authored files stay below 1000 lines and responsibility
           boundaries are explicit, while current runtime behavior keeps working during migration.
         </p>
@@ -207,13 +207,13 @@
           </thead>
           <tbody>
             <tr>
-              <td><code>/Users/miguel/arroba</code></td>
+              <td><code>/Users/miguel/chariox</code></td>
               <td>126</td>
               <td>0 allowlisted files remain; OSS is below the 1000-line cap</td>
               <td>No current oversized targets; keep kernel runtime/control modules, relay paths, CLI roots and drills, iOS code, tests, and generated-adjacent helpers under the cap as they evolve</td>
             </tr>
             <tr>
-              <td><code>/Users/miguel/arroba-cloud</code></td>
+              <td><code>/Users/miguel/chariox-cloud</code></td>
               <td>42</td>
               <td>0 allowlisted files remain; Cloud is below the 1000-line cap</td>
               <td>No current oversized targets; keep terminal controllers, style templates, workflow React mounts, Prisma schema, tests, and drills under the cap as they evolve</td>
@@ -235,349 +235,349 @@
           </thead>
           <tbody>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>a2ab92586</code> <span class="muted">Split external-provider session control</span></td>
               <td><code>external_provider_session_control.rs</code> is now below the 1000-line cap and keeps the public poller entrypoints, shared DTOs, constants, and module facade. Discovery polling and request dispatch moved to <code>external_provider_session_control/poller.rs</code>, import/session launch logic to <code>import.rs</code>, observed-history reconciliation to <code>history.rs</code>, attached-target discovery and pruning to <code>targets.rs</code>, alias generation to <code>alias.rs</code>, and the focused tests to provider/control submodules under <code>external_provider_session_control/tests/</code>.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, child modules, and split tests; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::external_provider_session_control --lib -- --nocapture</code> (59 passed; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (0 allowlisted files, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>a3b153b1a</code> <span class="muted">Split external-provider session discovery</span></td>
               <td><code>external_provider_session_discovery.rs</code> is now below the 1000-line cap and keeps the public discovery facade, provider normalization, root resolution, and signature DTOs. Cache/index management moved to <code>external_provider_session_discovery/cache.rs</code>, candidate path discovery to <code>paths.rs</code>, provider parsers to <code>codex.rs</code>, <code>claude.rs</code>, and <code>opencode.rs</code>, shared JSONL readers to <code>jsonl.rs</code>, metadata/record helpers to <code>common.rs</code>, and provider-focused tests to the <code>tests/</code> subtree.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, child modules, and split tests; <code>cargo test --manifest-path apps/kernel/Cargo.toml app::external_provider_session_discovery --lib -- --nocapture</code> (30 passed; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (1 allowlisted file remains, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>c2f8aa636</code> <span class="muted">Split meta tool-dispatch modules</span></td>
               <td><code>meta.rs</code> is now below the 1000-line cap and acts as the runtime meta-tool dispatcher/facade plus shared argument and subscription helpers. Workflow-code and workflow-registry runtime tools moved to <code>meta/workflow_code.rs</code>, trace subscription/poll/wait batching moved to <code>meta/trace.rs</code>, and session overview, turn/blob, interaction resolution, task/plan payload, and agent-reference helpers moved to <code>meta/session_tools.rs</code>. Cross-module helpers are exposed only at <code>pub(super)</code> where sibling modules or the dispatcher need them.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and child modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::state::tool_dispatch::meta --lib --no-run</code> (compiled; existing crate warnings only); <code>node scripts/check-line-cap.mjs</code> (2 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for <code>meta.rs</code> (832 lines), <code>meta/workflow_code.rs</code> (943 lines), <code>meta/trace.rs</code> (710 lines), and <code>meta/session_tools.rs</code> (637 lines).</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>8c27c80b5</code> <span class="muted">Split CLI root queued prompt controllers</span></td>
               <td><code>cli-app-root.tsx</code> is now below the 1000-line cap and remains the Solid/OpenTUI composition root. Queued-prompt transcript synchronization, queued action mutation, strip selection, and keyboard routing moved to <code>cli-queued-prompt-controller.ts</code>. Workflow-registry command-center suggestion caching moved to <code>workflow-registry-suggestion-controller.ts</code>. The root keeps migration-safe wrapper callbacks around queued-prompt consumers so response shell, agent pane, primary transcript, and background runtime wiring continue to initialize in the existing order.</td>
               <td><code>pnpm --dir apps/cli exec tsc -p tsconfig.json --noEmit</code>; <code>node scripts/check-line-cap.mjs</code> (3 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for <code>cli-app-root.tsx</code> (973 lines), <code>cli-queued-prompt-controller.ts</code> (321 lines), and <code>workflow-registry-suggestion-controller.ts</code> (88 lines).</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>150406481</code> <span class="muted">Split workflow code responsibility modules</span></td>
               <td><code>workflow_code.rs</code> now preserves the public facade, constants, pattern catalog, and canvas contract. Compiler runtime, compiler bridge, model DTOs, workflow definitions, validation, artifact registry, workflow registry, source export/JavaScript writer, rebinding helpers, common hashing/IO helpers, and focused compiler/registry/validation tests live in child modules under <code>apps/kernel/src/workflow_code/</code>.</td>
               <td><code>rustfmt --edition 2024</code> for the workflow-code parent and child modules; <code>node scripts/check-line-cap.mjs</code> (4 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files. A broad <code>cargo test --manifest-path apps/kernel/Cargo.toml workflow_code -- --nocapture</code> compiled the split and passed the workflow-code module tests, then failed one unrelated local API workflow-code run assertion in the dirty worktree. A later focused test/check run was blocked before execution by an unrelated dirty <code>relay_peer_bridge.rs</code> reference to <code>try_pump_relay_leased_runtime_projections</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>f4b83a981</code> <span class="muted">Split relay connection routing support</span></td>
               <td><code>connection.rs</code> now keeps the WebSocket handshake, connection loop, daemon/client metadata/display/event arm orchestration, and disconnect notification path. Client request/subscribe/unsubscribe routing, target resolution, sender lookup, token/error helpers, backpressure handling, peer cleanup, logging helpers, and connection unit tests live in focused modules under <code>apps/relay/src/server/connection/</code>.</td>
               <td><code>rustfmt --edition 2024</code> for the relay connection parent and child modules; <code>cargo test --manifest-path apps/relay/Cargo.toml server -- --nocapture</code> (43 passed); <code>node scripts/check-line-cap.mjs</code> (5 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>ff1adcf86</code> <span class="muted">Split live workflow publication drill modules</span></td>
               <td><code>live-workflow-publication-drill.mjs</code> is now a launcher for the publication drill flow. Runtime/process helpers, browser/CDP validation, polling/assertion waiters, deterministic session builders, session-suite scenarios, manifest mode, container validation, package/schedule validation, and main flow orchestration live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
               <td><code>node --check</code> for the entrypoint and all extracted modules; module import smoke for flow, package validation, and session suite modules; <code>node scripts/check-line-cap.mjs</code> (6 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>e35592eb2</code> <span class="muted">Split workflow code artifact drill modules</span></td>
               <td><code>workflow-code-artifact-drill.mjs</code> is now the orchestration entrypoint. Argument/runtime helpers, topology validation, second-kernel/Hetzner distribution checks, embedded remote-runner source, wait helpers, and artifact-specific apply checks live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
               <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/workflow-code-artifact-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (7 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>dc80da97d</code> <span class="muted">Split live workspace sync drill modules</span></td>
               <td><code>live-workspace-live-sync-drill.mjs</code> is now the orchestration entrypoint. Option parsing/help, runtime/workspace setup, provider history/tool polling, managed collision/external-change checks, and tracked-mode scenarios live in focused modules under <code>apps/cli/scripts/lib/</code>.</td>
               <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/live-workspace-live-sync-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (8 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>21714a18f</code> <span class="muted">Split session outline projection helpers</span></td>
               <td><code>session_outline.rs</code> keeps request orchestration, prompt selection/filtering, promptless turn synthesis, and turn lifecycle decisions. Blob ID parsing, outline blob grouping, page-entry projection, inline limits, steering prompt projection checks, and summary/title formatting now live in <code>session_outline/projection.rs</code>.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched session outline modules; <code>cargo test -p arroba-kernel runtime::history_requests::session_outline --lib</code> (20 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (9 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for the parent and projection module.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched session outline modules; <code>cargo test -p chariox-kernel runtime::history_requests::session_outline --lib</code> (20 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (9 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for the parent and projection module.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>3b4c05fdb</code> <span class="muted">Split kernel session workflow code</span></td>
               <td><code>kernel_session.rs</code> now owns the session read/lifecycle facade and workflow-code wrapper surface. Workflow-code apply validation, generated-agent spawn/rebinding, grants, and workflow updates live in <code>kernel_session/workflow_code.rs</code>, with tests split into workflow-code preflight, workflow-code apply, and bootstrap recovery modules.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched kernel session modules; <code>cargo test -p arroba-kernel app::kernel_session --lib</code> (26 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (9 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched kernel session modules; <code>cargo test -p chariox-kernel app::kernel_session --lib</code> (26 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (9 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>148b30453</code> <span class="muted">Split meta runtime command router</span></td>
               <td><code>meta_runtime_command.rs</code> is now a facade. Dispatch/audit methods, spawn argument parsing, local daemon request builders, result payload shaping, response summarizers, and parser tests live in focused modules under <code>runtime/router/meta_runtime_command/</code>.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched meta command modules; <code>cargo test -p arroba-kernel runtime::router::meta_runtime_command --lib</code> (5 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (10 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched meta command modules; <code>cargo test -p chariox-kernel runtime::router::meta_runtime_command --lib</code> (5 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (10 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>e8e1422b3</code> <span class="muted">Split terminal stream responsibilities</span></td>
               <td><code>terminal/stream.rs</code> is now a facade for terminal stream records, synchronized store notification wiring, core stream service state mutation, scoped JSON sizing helpers, and service/store tests. Runtime APIs stay re-exported from the original module path.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched terminal stream modules; <code>cargo test -p arroba-kernel terminal::stream --lib</code> (34 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (11 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched terminal stream modules; <code>cargo test -p chariox-kernel terminal::stream --lib</code> (34 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (11 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>a8a1a83d0</code> <span class="muted">Split iOS app model responsibilities</span></td>
-              <td><code>ArrobaAppModel.swift</code> now keeps observable state, initialization, persisted selection, and the public model surface, while command routing, kernel event/transcript runtime handling, and formatting/state mutation helpers live in focused <code>ArrobaAppModel</code> extension files.</td>
-              <td><code>swift format --in-place</code> for the touched Swift model files; <code>swift build --package-path apps/ios/ArrobaPackage</code>; <code>swift test --package-path apps/ios/ArrobaPackage</code> (65 Swift Testing tests passed); <code>node scripts/check-line-cap.mjs</code> (12 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>CharioxAppModel.swift</code> now keeps observable state, initialization, persisted selection, and the public model surface, while command routing, kernel event/transcript runtime handling, and formatting/state mutation helpers live in focused <code>CharioxAppModel</code> extension files.</td>
+              <td><code>swift format --in-place</code> for the touched Swift model files; <code>swift build --package-path apps/ios/CharioxPackage</code>; <code>swift test --package-path apps/ios/CharioxPackage</code> (65 Swift Testing tests passed); <code>node scripts/check-line-cap.mjs</code> (12 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>21f1ec27f</code> <span class="muted">Split provider thread transfer drill</span></td>
               <td><code>live-provider-thread-transfer-drill.mjs</code> now owns CLI orchestration, worker-resume matrix setup, and artifact lifecycle, while shared runtime helpers, provider-state Docker transfer helpers, local/worker scenarios, and slice migration scenarios live in focused drill library modules.</td>
               <td><code>node --check</code> for the entrypoint and all extracted modules; <code>node apps/cli/scripts/live-provider-thread-transfer-drill.mjs --help</code>; <code>node scripts/check-line-cap.mjs</code> (13 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>731f3519b</code> <span class="muted">Split local API protocol envelopes</span></td>
               <td><code>types.rs</code> now acts as the local API protocol facade with the version constant and re-exports, while daemon/common DTOs, terminal command catalog DTOs, metaagent request DTOs, the request envelope, and the response envelope live in focused modules. Waiting-room request markers moved beside the waiting-room projection DTOs.</td>
-              <td><code>rustfmt --edition 2024</code> for touched local API type modules; <code>cargo test -p arroba-kernel local::api::tests::protocol_shapes --lib</code> (47 passed); <code>cargo check -p arroba-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (14 allowlisted files remain, no new offenders); staged <code>git diff --check</code>. Broader <code>cargo test -p arroba-kernel local::api --lib</code> currently repeats a stack overflow in <code>waiting_room_agent_workspace_update_drill_updates_public_projection</code>, outside this DTO split.</td>
+              <td><code>rustfmt --edition 2024</code> for touched local API type modules; <code>cargo test -p chariox-kernel local::api::tests::protocol_shapes --lib</code> (47 passed); <code>cargo check -p chariox-kernel</code>; <code>node scripts/check-line-cap.mjs</code> (14 allowlisted files remain, no new offenders); staged <code>git diff --check</code>. Broader <code>cargo test -p chariox-kernel local::api --lib</code> currently repeats a stack overflow in <code>waiting_room_agent_workspace_update_drill_updates_public_projection</code>, outside this DTO split.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>5a368bb91</code> <span class="muted">Split runtime tool catalogs</span></td>
               <td><code>runtime_tools.rs</code> now keeps shared runtime-tool constants and wire structs as the stable facade, while credential, extension, recall, meta argument, meta spec, meta canonical-name, and workflow tool catalogs live in focused transport modules beside the existing slice, validation, and workspace-live-sync tool modules.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched runtime-tool modules; <code>cargo test -p arroba-kernel runtime_tools --lib</code> (72 passed); <code>node scripts/check-line-cap.mjs</code> (15 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched runtime-tool modules; <code>cargo test -p chariox-kernel runtime_tools --lib</code> (72 passed); <code>node scripts/check-line-cap.mjs</code> (15 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>0f053be01</code> <span class="muted">Split workflow request runtime state</span></td>
               <td><code>workflow_request_runtime_state.rs</code> now keeps the workflow request dispatcher and session extraction facade, while workflow-code apply/run requests, workflow registry requests, artifact/package import/export requests, and shared workflow-code registry/preflight helpers live in dedicated runtime-state modules.</td>
-              <td><code>rustfmt --edition 2024</code> for the touched runtime-state modules; <code>cargo test -p arroba-kernel workflow_code_artifact --lib</code> (7 passed); <code>cargo test -p arroba-kernel workflow_registry --lib</code> (6 passed); <code>node scripts/check-line-cap.mjs</code> (16 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>rustfmt --edition 2024</code> for the touched runtime-state modules; <code>cargo test -p chariox-kernel workflow_code_artifact --lib</code> (7 passed); <code>cargo test -p chariox-kernel workflow_registry --lib</code> (6 passed); <code>node scripts/check-line-cap.mjs</code> (16 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>ebb1b5595</code> <span class="muted">Split kernel client protocol types</span></td>
               <td>The public <code>kernel-types.ts</code> path is now a 10-line facade that preserves imports and the protocol version export, while extension/config, session/waiting-room/workspace sync, daemon health, runtime/session control, cloud/remote/workspace records, provider/prompt payloads, history/recall/transcript, and workflow DTOs live in focused protocol type modules.</td>
-              <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (798 passed); <code>cargo test -p arroba-kernel client_protocol_conformance</code> (4 focused tests passed); <code>node scripts/check-line-cap.mjs</code> (17 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
+              <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (798 passed); <code>cargo test -p chariox-kernel client_protocol_conformance</code> (4 focused tests passed); <code>node scripts/check-line-cap.mjs</code> (17 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>117d2bfec</code> <span class="muted">Split validation gate aggregate helpers</span></td>
               <td>The validation gate aggregate facade now keeps aggregate construction, top-level formatting, exit-code policy, and public schema validation, while coverage extraction/requirement formatting, deep aggregate report validation, and primitive label/count validators live in dedicated helper modules.</td>
               <td><code>node --check</code> for the facade and all three extracted modules; <code>node --test apps/cli/scripts/lib/drill-validation-gate-aggregate.test.mjs apps/cli/scripts/lib/drill-validation-gate-discovery.test.mjs</code> (26 passed); <code>node scripts/check-line-cap.mjs</code> (18 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>fc4de6518</code> <span class="muted">Split drill matrix report aggregate helpers</span></td>
               <td>The drill matrix report facade now keeps report loading, per-report validation, per-report summary, and compatibility exports, while aggregate formatting/validation lives in an aggregate module and reusable validation/counting primitives live in a shared report helper module.</td>
               <td><code>node --check</code> for the facade, aggregate module, and shared helper module; <code>node --test apps/cli/scripts/lib/drill-matrix-report.test.mjs</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (19 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>2e6d4096d</code> <span class="muted">Split external provider live parity drill</span></td>
               <td>The live parity drill entrypoint now owns argument parsing, provider process orchestration, session import, and cleanup, while shared marker/report utilities, TUI/web/kernel observers, provider transcript evidence/assertions, and child-process automation helpers live in focused drill library modules.</td>
               <td><code>node --check</code> for the entrypoint and all four extracted modules; <code>node apps/cli/scripts/live-external-provider-live-parity-drill.mjs --help</code>; dry-run smoke with a temporary artifact root; <code>node scripts/check-line-cap.mjs</code> (20 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>83cda945f</code> <span class="muted">Split relay server tests</span></td>
               <td>The relay server production module now keeps server construction, listener lifecycle, health/display/packet dispatch, draining rejection, and shared registry access, while relay server test coverage is split by registry basics, daemon lifecycle, display tunnels, metadata/scoped tokens, runtime-client validation, routing ownership, subscription ownership, and daemon peer routing.</td>
               <td><code>rustfmt --edition 2024</code> for the relay server parent and new test modules; <code>cargo test --manifest-path apps/relay/Cargo.toml server -- --nocapture</code> (43 passed); <code>node scripts/check-line-cap.mjs</code> (21 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>8fc92a34f</code> <span class="muted">Extract history legacy import module</span></td>
               <td>The operational history root now keeps event types, storage, query, append, replacement, retention, archive, and schema wiring, while legacy transcript backfill/deduplication by merge key and exact transcript identity lives in a focused operational legacy-import module; the matching idempotency test lives in a child history test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, legacy-import module, parent test module, and child test module; <code>cargo test --manifest-path apps/kernel/Cargo.toml history -- --nocapture</code> (110 library tests plus filtered integration history tests passed); <code>node scripts/check-line-cap.mjs</code> (22 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>59fd5f541</code> <span class="muted">Split terminal command catalog data</span></td>
               <td>The terminal command catalog loader now owns parsing, enrichment, inferred kind/target/source defaults, and revision calculation, while catalog data is split into focused command-surface fragments for core/session commands, extension registration commands, workflow commands, workspace/slice commands, and provider/config/view commands.</td>
               <td><code>rustfmt --edition 2024</code> for the loader; <code>cargo test --manifest-path apps/kernel/Cargo.toml terminal_command_catalog -- --nocapture</code> (4 passed); <code>node scripts/check-line-cap.mjs</code> (22 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all catalog fragments.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>8f20dc1c9</code> <span class="muted">Split external provider observation tests</span></td>
               <td>The kernel-client external provider observation test suite now keeps identity matching, history metadata projection, status policy, merge behavior, and source-field policy in the original file, while transcript metadata application, turn metadata application, transcript footer marker resolution, and ordinary-history rejection coverage live in a sibling test file.</td>
               <td><code>pnpm --dir packages/kernel-client lint</code>; <code>pnpm --dir packages/kernel-client test</code> (794 passed); <code>node scripts/check-line-cap.mjs</code> (23 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for both split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>ec8b456f9</code> <span class="muted">Extract session publication core</span></td>
               <td>Session service core now keeps session lifecycle, workspace links, workflow definition lookup, workflow run lookup, and prompt queue lookup, while workflow publication creation, validation, alias resolution, runtime status/error updates, publication observability projection, and publication transport/parser policy live in a focused child module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and publication module; <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service -- --nocapture</code> (78 passed); path-scoped staged <code>git diff --check</code>; line-count checks for both split files. A same-window kernel-client test growth briefly blocked the live line-cap guard after this commit; <code>8f20dc1c9</code> split that test and restored <code>node scripts/check-line-cap.mjs</code> to 23 allowlisted files with no new offenders.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>78a84b11f</code> <span class="muted">Split git observer tests</span></td>
               <td>The git observer production module now keeps snapshot capture, commit observation, attribution, live-sync change detection, target application, journal integration, and git metadata helpers, while observation indexing, tracked live-sync change capture, target apply/conflict behavior, journal restore/sequence behavior, snapshot-store lookup behavior, and shared git-observer test fixtures live in focused sibling test modules.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and new test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml git_observer -- --nocapture</code> (31 passed); <code>node scripts/check-line-cap.mjs</code> (24 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>6f79d0015</code> <span class="muted">Split Claude native output helpers</span></td>
               <td>The Claude native provider-output bridge now keeps event processing, transcript fanout orchestration, terminal-permission interaction creation, prompt dispatch, and prompt injection sequencing in the parent module, while transcript cursor/drain logic, headless permission marker utilities, attachment formatting/materialization, and focused unit tests live in sibling modules.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, transcript, permission, attachment, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml provider_output_claude_native -- --nocapture</code> (4 passed); <code>node scripts/check-line-cap.mjs</code> (25 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>d9412f4a1</code> <span class="muted">Split MCP provider import modules</span></td>
               <td>The MCP registry now keeps server config types, registry roots, install/update/uninstall/list/get, validation, atomic config writes, managed root hashing, and defaults in the parent module, while provider import/discovery workflows live in a provider-import module, Codex/OpenCode/Claude config parsing and JSONC cleanup live in a provider-config module, and MCP unit coverage lives in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, provider-import, provider-config, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml mcp -- --nocapture</code> (58 passed); <code>node scripts/check-line-cap.mjs</code> (26 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>e641e3d06</code> <span class="muted">Split metaagent command catalog</span></td>
               <td>The metaagent command registry now keeps tokenization, search/list/docs projection, execution-policy routing, documented workflow policy lookup, search scoring, and JSON rendering in the parent module, while static command documentation is split into agent/session, workflow/guide, MCP/skill/extension, and system/credential catalog modules; registry tests live in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, catalog, catalog section, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml metaagent_command_registry -- --nocapture</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (27 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>900411a7c</code> <span class="muted">Split skill registry responsibilities</span></td>
               <td>The skill registry now keeps registry roots, install/update/upsert/uninstall/list/get, granted-context rendering, metadata parsing, URL upsert, and prompt matching in the parent module, while package hashing/materialization/file collection live in a package module, provider root discovery/import/OpenCode config parsing live in a provider-import module, and skill unit coverage lives in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, package, provider-import, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml skill -- --nocapture</code> (12 passed); <code>node scripts/check-line-cap.mjs</code> (28 allowlisted files remain, no new offenders); path-scoped <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>2945cd95e</code> <span class="muted">Split provider runtime tests</span></td>
               <td>Provider runtime now keeps provider launch, detached launch, launch failure cleanup, resume-state cleanup, launch success finalization, managed PTY spawn registration, and runtime binding orchestration in the production module, while resume-state policy tests, provider launch/native-TUI tests, and provider process lifecycle tests live in three focused sibling test modules.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and child test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml app::provider_runtime -- --nocapture</code> (27 passed); <code>node scripts/check-line-cap.mjs</code> (29 allowlisted files remain, no new offenders); staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>e847c1c67</code> <span class="muted">Split provider output responsibility modules</span></td>
               <td>Provider output now keeps the main pump orchestration, liveness reconciliation, structured-poll application, Claude bridge calls, prompt settlement, tracing, and fanout in the parent module, while background pump run selection, structured-output pending record storage, timeout reaping/candidate selection, and provider-output tests live in focused sibling modules. The newly over-cap external-observation provider policy file also moved its inline tests to a sibling test module so the guard remains clean after concurrent fallback-id work.</td>
               <td><code>rustfmt --edition 2024</code> for all parent and child modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml app::provider_output -- --nocapture</code> (19 passed); <code>cargo test --manifest-path apps/kernel/Cargo.toml provider::external_observation -- --nocapture</code> (20 passed); <code>node scripts/check-line-cap.mjs</code> (30 allowlisted files remain, no new offenders); path-scoped and staged <code>git diff --check</code>; line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>4458ff510</code> <span class="muted">Extract local Docker slice state handling</span></td>
               <td>Local Docker slice runtime now keeps provisioner process execution, provider login, log collection, host runtime inspection, command environment projection, private relay wiring, port checks, Docker readiness, and action-log paths, while saved-state/default-state manifests, backup creation, snapshot quiesce/resume, Docker image commits, and home-volume archiving live in a sibling state module; local-Docker tests live in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent, state, and test modules; <code>cargo test --manifest-path apps/kernel/Cargo.toml slice::local_docker -- --nocapture</code> (5 passed); path-scoped <code>git diff --check</code>; line-count checks for all split files. The live working-tree <code>node scripts/check-line-cap.mjs</code> run was blocked by an unrelated dirty provider file over the cap; the committed baseline removes <code>local_docker.rs</code> from the allowlist and leaves 31 remaining entries.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>7bd658a9d</code> <span class="muted">Extract runtime session workflow state</span></td>
               <td>Runtime session core now keeps identity, membership, agents, prompt runtime, metaagent tasks, runtime interactions, workspace links, attachments, provider focus, config changes, and session status transitions, while workflow definitions, publications, runs, restart reconciliation, workflow queues, schedules/watchdogs, node-run lookup, and workflow consoles live in a sibling workflow-state module; the runtime-session unit test lives in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and child modules, <code>cargo test --manifest-path apps/kernel/Cargo.toml session::runtime_session -- --nocapture</code> (1 passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for all split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>7bf9ee1b9</code> <span class="muted">Split iOS kernel protocol models and requests</span></td>
               <td>The iOS kernel protocol transport file now owns subscribe/unsubscribe/request frames, response frames, response payload decoding, event frame decoding, shared dynamic coding keys, and codec entry points, while decoded runtime/provider/MCP/skill/history model DTOs live in a model file and local daemon request cases plus request-only payload encoding live in a request file.</td>
-              <td><code>swift test --package-path apps/ios/ArrobaPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for all three Swift protocol files.</td>
+              <td><code>swift test --package-path apps/ios/CharioxPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for all three Swift protocol files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>390f6593b</code> <span class="muted">Extract relay connector writer helpers</span></td>
               <td>The relay connector now keeps relay configuration refresh, socket lifecycle, reconnect/backoff, heartbeat, token refresh, inventory refresh, incoming envelope dispatch, and shutdown coordination in the lifecycle module, while writer-lane frame serialization diagnostics and event-lane coalescing live in a sibling writer module and connector tests live in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the connector parent, writer module, and test module; <code>cargo test --manifest-path apps/kernel/Cargo.toml transport::relay_client::connector::tests -- --nocapture</code> (20 passed); <code>node scripts/check-line-cap.mjs</code>; path-scoped <code>git diff --check</code>; line-count checks for all connector split files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>ccf29c9c1</code> <span class="muted">Extract workflow turn completion handling</span></td>
               <td>Session turn state now keeps cancellation, node start/prepare/ack, workspace-claim blocking, output submission intake, console operations, resume, stop, and fail transitions, while workflow node completion, routed handoff emission, pending output commit, terminal-output fallback, schema validation, and completion-driven run status decisions live in a sibling completion module.</td>
               <td><code>rustfmt --edition 2024</code> for the service module, turn state module, and completion module; <code>cargo test --manifest-path apps/kernel/Cargo.toml session::service -- --nocapture</code> (78 passed); <code>node scripts/check-line-cap.mjs</code>; path-scoped <code>git diff --check</code>; line-count checks for both Rust modules.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>452e5c8b4</code> <span class="muted">Split iOS kernel protocol decoding tests</span></td>
               <td>The iOS kernel protocol request-shape test file now keeps request encoding, subscribe frames, workspace live sync, provider auth, MCP/skill listing, interaction, prompt, history, and agent request coverage, while runtime session, history, agent/session update, provider catalog/auth, MCP/skill response, interaction response, session state, and transport event decoding coverage lives in a sibling decoding test file.</td>
-              <td><code>swift test --package-path apps/ios/ArrobaPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for both Swift test files.</td>
+              <td><code>swift test --package-path apps/ios/CharioxPackage --filter KernelProtocol</code> (40 Swift Testing tests passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for both Swift test files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>6aebf686b</code> <span class="muted">Extract slice display endpoint handling</span></td>
               <td>Slice lifecycle now owns create/start/stop/delete, state save/reset, backup, worker discovery, relay selection, and lifecycle audit transitions, while display endpoint tunneling, hosted relay URL rewriting, tunnel registration, and tunnel revocation live in a dedicated display endpoint module.</td>
               <td><code>rustfmt --edition 2024</code> for the dispatcher, lifecycle module, and display endpoint module; <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::slice_command_executor::display_endpoint::tests -- --nocapture</code> (3 passed); <code>cargo test --manifest-path apps/kernel/Cargo.toml runtime::slice_command_executor::lifecycle::tests -- --nocapture</code> (6 passed); <code>node scripts/check-line-cap.mjs</code>; path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>8a8662545</code> <span class="muted">Split kernel protocol tests</span></td>
               <td>Kernel protocol production types, event construction, frame serialization, and error mapping now stay in the transport protocol module, while terminal-output batching, waiting-room delta, workflow-run delta, provider-run delta, agent-activity, metadata, and runtime-interaction coverage lives in a sibling test module.</td>
               <td><code>rustfmt --edition 2024</code> for the parent and child module, <code>cargo test --manifest-path apps/kernel/Cargo.toml transport::kernel_protocol::tests -- --nocapture</code> (9 passed), <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>0c871774b</code> <span class="muted">Split progress log milestone archive</span></td>
               <td>The active operations progress log now keeps the current validation window and recent operational follow-up, while older M0-M14 milestone implementation notes and validation history live in a sibling archive document.</td>
               <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for active and archived progress logs.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>73433967c</code> <span class="muted">Split protocol capability session details</span></td>
               <td>The main protocol document now keeps scope, lanes, native provider behavior, envelope shape, current transport baseline, command-dispatch direction, and workflow message direction, while capability API details, session/attachment semantics, workflow contracts, security semantics, compatibility, versioning, and terminal conformance live in a sibling protocol detail document.</td>
               <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference check preserving the main-file Native TUI section referenced by <code>AGENTS.md</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>a28a24736</code> <span class="muted">Split v1 spec capability details</span></td>
               <td>The main v1 specification now keeps product definition, runtime components, interaction lanes, node/agent/session/provider/workflow contracts, and provider adapter requirements, while the capability catalog, scheduling, memory/context transfer, git/file operations, data/storage boundaries, failure rules, entity list, and summary notes live in a sibling spec detail document.</td>
               <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference checks for existing <code>docs/spec-v1.md</code> links.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>bca6e949d</code> <span class="muted">Split architecture kernel runtime details</span></td>
               <td>The main architecture document now keeps top-level component boundaries, ownership rules, interaction lanes, security, memory, failure, deployment, and implementation choices, while target-kernel runtime model, workflow semantics, publication runtime, agent binding, and observability details live in a sibling architecture detail document.</td>
               <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, line-count checks for both Markdown files, and reference check preserving the main-file Native TUI section referenced by <code>AGENTS.md</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>396352cc5</code> <span class="muted">Split kernel web terminal performance slice doc</span></td>
               <td>The kernel/web terminal performance overview now keeps the stable goal, problem statement, cadence targets, principles, protocol work, drills, and expected outcomes, while the detailed current implementation slice and validation history live in a sibling HTML document.</td>
               <td><code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>, and line-count checks for both HTML files.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>09e9decf0</code> <span class="muted">Extract publication trace protocol helpers</span></td>
               <td>The live publication trace drill now keeps provider preflight, workflow publication setup, runtime lifecycle, matrix evaluation, exposure assertions, cleanup, and artifact reporting in the executable script, while gateway readiness, publication status polling, HTTP/SSE/WebSocket/MCP invocation, JSON capture, prompt construction, and free-port allocation live in a focused protocol helper.</td>
               <td><code>node --check</code> for the entrypoint and protocol helper, protocol helper import/free-port smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>. Full live drill was not run because it requires provider auth and a live kernel/publication runtime.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>605230af2</code> <span class="muted">Extract workflow runtime drill scenarios</span></td>
               <td>The live workflow runtime drill now keeps CLI parsing, runtime module loading, kernel/relay connection setup, workflow execution, polling, daemon cleanup, and artifact finalization in the executable script, while scenario prompt builders, MCP echo setup, workflow edge helpers, and configurable scenario request wiring live in a focused helper module.</td>
               <td><code>node --check</code> for the entrypoint and scenario helper, <code>--help</code> smoke, <code>--dry-run --scenario simple-chain</code> smoke, direct scenario-helper request-injection smoke for max-turn and MCP grant/install request builders, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>9c4c760c1</code> <span class="muted">Extract drill artifact validators</span></td>
               <td>The drill artifact facade now keeps lifecycle cleanup, artifact index IO, integrity verification, and aggregate assembly, while artifact content validation and artifact metadata validation live in focused helper modules behind unchanged public facade exports.</td>
               <td><code>node --check</code> for the facade and both extracted validator modules, facade export smoke check, <code>node --test apps/cli/scripts/lib/drill-artifacts.test.mjs apps/cli/scripts/lib/drill-artifacts.test/*.test.mjs apps/cli/scripts/lib/drill-validation-gate-artifact-check.test.mjs apps/cli/scripts/lib/drill-failure-manifest.test.mjs apps/cli/scripts/drill-artifact-index-summary.test.mjs apps/cli/scripts/drill-artifact-index-summary.test/*.test.mjs</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>3dad4c186</code> <span class="muted">Extract validation gate preset data</span></td>
               <td>Validation gate preset definitions now live in a declarative data module, while <code>drill-validation-gate-presets.mjs</code> keeps the public exports plus preset description, expansion, validation, and normalization behavior.</td>
               <td><code>node --check apps/cli/scripts/lib/drill-validation-gate-presets.mjs</code>, <code>node --check apps/cli/scripts/lib/drill-validation-gate-preset-data.mjs</code>, helper import smoke check preserving public exports, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>53efae858</code> <span class="muted">Extract remote native TUI scenario helpers</span></td>
               <td>The remote native TUI drill now keeps CLI option parsing, relay/kernel/slice setup, and drill orchestration in the executable script, while provider scenario execution, relay-client waiters, automation socket probes, badge/history checks, permissions, attachments, and MCP/skill validation live in a focused scenario helper module.</td>
               <td><code>node --check apps/cli/scripts/live-remote-native-tui-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-remote-native-tui-drill-scenario.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>13bb96f1e</code> <span class="muted">Extract provider context injection drill helpers</span></td>
               <td>The provider context injection drill now keeps provider-specific drill flows in the executable script, while shared runtime setup, JSON-RPC/OpenCode polling, probe construction, prompt visibility checks, and headless history readers live in a focused helper module.</td>
               <td><code>node --check apps/cli/scripts/live-provider-context-injection-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-provider-context-injection-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>2596871ce</code> <span class="muted">Extract cloud publication deployment transport helpers</span></td>
               <td>The Cloud publication deployment drill now keeps prompt/package construction and scenario orchestration in the executable script, while transport validation, browser/CDP assertions, deployment waiters, process control, and network helpers live in a focused helper module.</td>
               <td><code>node --check apps/cli/scripts/live-cloud-publication-deployment-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-cloud-publication-deployment-drill-transport.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>618e88737</code> + <code>0e2a469de</code> <span class="muted">Extract hosted cloud relay drill helpers</span></td>
               <td>The hosted Cloud relay drill now keeps hosted environment flags, service setup, and scenario selection in the executable script, while SSH/process helpers, retry/wait loops, hosted Cloud auth/token helpers, and command dependency shims live in a focused helper module.</td>
               <td><code>node --check apps/cli/scripts/live-hosted-cloud-relay-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-hosted-cloud-relay-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>5484c0251</code> <span class="muted">Extract live cloud relay drill helpers</span></td>
               <td>The live Cloud relay drill now keeps environment setup, service orchestration, and scenario assertions in the executable script, while process control, wait loops, Cloud auth/token helpers, workflow request builders, and command dependency shims live in a focused helper module.</td>
               <td><code>node --check apps/cli/scripts/live-cloud-relay-drill.mjs</code>, <code>node --check apps/cli/scripts/lib/live-cloud-relay-drill-helpers.mjs</code>, helper import smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><code>42dff2244</code> <span class="muted">Extract drill artifact index summary actions</span></td>
               <td>The artifact-index summary CLI now keeps argument parsing, freshness diagnostics, metadata requirements, and text output in the executable script, while aggregate next-action construction lives in a focused helper module.</td>
               <td><code>node --check apps/cli/scripts/drill-artifact-index-summary.mjs</code>, <code>node --check apps/cli/scripts/lib/drill-artifact-index-summary-actions.mjs</code>, <code>node apps/cli/scripts/drill-artifact-index-summary.mjs --help</code>, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>.</td>
             </tr>
             <tr>
-              <td><code>arroba</code></td>
+              <td><code>chariox</code></td>
               <td><a href="CROSS_REPO_LINE_CAP_RESPONSIBILITY_REFACTOR_HISTORY.html">Older migration history</a></td>
               <td>Earlier OSS and Cloud line-cap responsibility splits are archived in a companion history page so this active plan remains below the cap while preserving auditability.</td>
               <td>History page keeps the original rows and verification notes from this table.</td>
@@ -610,13 +610,13 @@
           </div>
         </div>
         <p class="muted">
-          Cleanup item: remove the tracked <code>/Users/miguel/arroba/core</code> ELF core dump from version control.
+          Cleanup item: remove the tracked <code>/Users/miguel/chariox/core</code> ELF core dump from version control.
           Separately review tracked Cloud <code>tmp/</code> visual artifacts and keep only canonical fixtures.
         </p>
       </section>
 
       <section>
-        <h2>Arroba Refactor Areas</h2>
+        <h2>Chariox Refactor Areas</h2>
         <table>
           <thead>
             <tr>
@@ -656,7 +656,7 @@
       </section>
 
       <section>
-        <h2>Arroba Cloud Refactor Areas</h2>
+        <h2>Chariox Cloud Refactor Areas</h2>
         <table>
           <thead>
             <tr>
@@ -732,15 +732,15 @@
       <section>
         <h2>Test Plan</h2>
         <ul>
-          <li><code>cargo test --manifest-path /Users/miguel/arroba/apps/kernel/Cargo.toml</code></li>
-          <li><code>cargo test --manifest-path /Users/miguel/arroba/apps/relay/Cargo.toml</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba run lint</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba run test</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba-cloud run lint</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba-cloud run test</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba-cloud --filter @arroba-cloud/db run prisma:validate</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba run protocol:conformance</code></li>
-          <li><code>pnpm --dir /Users/miguel/arroba --filter @arroba/cli run validation:focused-runtime-gate</code></li>
+          <li><code>cargo test --manifest-path /Users/miguel/chariox/apps/kernel/Cargo.toml</code></li>
+          <li><code>cargo test --manifest-path /Users/miguel/chariox/apps/relay/Cargo.toml</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox run lint</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox run test</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox-cloud run lint</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox-cloud run test</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox-cloud --filter @chariox-cloud/db run prisma:validate</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox run protocol:conformance</code></li>
+          <li><code>pnpm --dir /Users/miguel/chariox --filter @chariox/cli run validation:focused-runtime-gate</code></li>
         </ul>
         <p class="muted">
           Add Cloud browser terminal and publication/workflow drills based on the specific Cloud files touched by each implementation PR.
@@ -752,7 +752,7 @@
         <ul>
           <li>The 1000-line cap applies to hand-authored files only.</li>
           <li>The goal is maintainability and responsibility clarity, not product behavior changes.</li>
-          <li><code>arroba-cloud</code> remains a sibling repository at <code>/Users/miguel/arroba-cloud</code>.</li>
+          <li><code>chariox-cloud</code> remains a sibling repository at <code>/Users/miguel/chariox-cloud</code>.</li>
           <li>Existing local modifications are user-owned and must not be reverted during implementation.</li>
         </ul>
       </section>

@@ -1,17 +1,17 @@
 # M15 Script Extensions Plan
 
-M15 generalizes Arroba-managed provider add-ons under the name `extensions` and adds script extensions. Extension kinds for this phase are `mcp`, `skill`, and `script`; `api` is reserved for the next phase.
+M15 generalizes Chariox-managed provider add-ons under the name `extensions` and adds script extensions. Extension kinds for this phase are `mcp`, `skill`, and `script`; `api` is reserved for the next phase.
 
-The goal is to let users expose local Python and TypeScript functions to agents as Arroba-managed tools without requiring provider-specific setup, a JSON manifest, or an Arroba package inside the user's environment.
+The goal is to let users expose local Python and TypeScript functions to agents as Chariox-managed tools without requiring provider-specific setup, a JSON manifest, or a Chariox package inside the user's environment.
 
 ## Design Decisions
 
 - Extension grants are agent-scoped. Agents receive only extensions explicitly granted to them.
 - MCP and skill management remains available through `/mcp` and `/skill`/`/skills`, but those commands are aliases over the generic extension model.
 - Script extensions are regular script files. There is no user-authored JSON manifest in V1.
-- Script environments are external only. Arroba records and validates existing Python or Node environments; it does not install Python, Node, npm packages, or virtualenv dependencies in V1.
+- Script environments are external only. Chariox records and validates existing Python or Node environments; it does not install Python, Node, npm packages, or virtualenv dependencies in V1.
 - Runtime script environment is selected by the agent's script extension grant.
-- Script execution is owned by an Arroba runner/shim. The implemented V1 runner is per-call and captures stdout/stderr separately from the returned payload; the intended next refinement is a warm turn-scoped runner to avoid repeated imports for heavy SDKs.
+- Script execution is owned by a Chariox runner/shim. The implemented V1 runner is per-call and captures stdout/stderr separately from the returned payload; the intended next refinement is a warm turn-scoped runner to avoid repeated imports for heavy SDKs.
 - Remote agents can use home-owned script extensions through the home-proxy extension path: the worker receives only the projected tool manifest, forwards invocations, and the home kernel validates the current grant/lease/provider-run binding before executing the script in the home script environment. Explicit worker-local script extensions still require the matching script and environment on the worker and must fail fast when missing.
 - Workflows keep the current node-agent relationship. Workflow nodes use the extensions granted to their bound agents. Workflow export portability is deferred.
 
@@ -69,7 +69,7 @@ Unsupported or ambiguous types fail validation with an actionable error.
 
 User scripts return data from `run`. They must not write model-facing results to stdout.
 
-The Arroba runner owns stdout and serializes the returned value into the runtime tool result. User stdout/stderr or `console.log`/`console.error` output is captured as logs, not as the successful payload.
+The Chariox runner owns stdout and serializes the returned value into the runtime tool result. User stdout/stderr or `console.log`/`console.error` output is captured as logs, not as the successful payload.
 
 Successful tool result:
 
@@ -93,7 +93,7 @@ Error result:
 }
 ```
 
-Arroba enforces a per-call timeout and structured exception reporting in V1. Maximum returned payload size and captured log size caps are follow-up hardening work.
+Chariox enforces a per-call timeout and structured exception reporting in V1. Maximum returned payload size and captured log size caps are follow-up hardening work.
 
 ## CLI Surface
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/aegs-authorization-start-v1.schema.json",
-  "title": "Arroba AEGS Authorization Start",
+  "$id": "https://chariox.com/schemas/aegs-authorization-start-v1.schema.json",
+  "title": "Chariox AEGS Authorization Start",
   "type": "object",
   "additionalProperties": false,
   "required": ["generator_id"],

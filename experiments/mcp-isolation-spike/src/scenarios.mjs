@@ -228,7 +228,7 @@ async function runCodexRestartResume() {
     const started = await firstSocket.threadStart({ cwd: spikeRoot, ephemeral: false })
     const threadId = started?.thread?.id
     if (!threadId) throw new Error(`Codex thread/start did not return a thread id: ${JSON.stringify(started)}`)
-    const token = `arroba-spike-${Date.now()}`
+    const token = `chariox-spike-${Date.now()}`
     const firstTurn = await firstSocket.turnStart(threadId, `Remember this token for a resume test: ${token}. Reply with exactly ACK.`, { cwd: spikeRoot })
     await firstSocket.waitForTurnCompleted(firstTurn.turnId)
     await firstSocket.close()
@@ -307,7 +307,7 @@ async function runOpenCodeRestartResume() {
     const created = await firstRun.createSession({ directory: spikeRoot })
     const sessionId = created?.id
     if (!sessionId) throw new Error(`OpenCode session create did not return id: ${JSON.stringify(created)}`)
-    const token = `arroba-spike-${Date.now()}`
+    const token = `chariox-spike-${Date.now()}`
     await firstRun.prompt(sessionId, `Remember this token for a resume test: ${token}. Reply with exactly ACK.`, { directory: spikeRoot })
     await firstRun.stop()
 
@@ -424,7 +424,7 @@ async function runCodexAgentTriggeredGrant() {
         fake_beta_proxy_started_once_after_grant: betaProxyStarts === 1,
         fake_beta_tool_calls_after_continuation: betaToolCalls,
       },
-      note: 'Simulates agent-triggered MCP grant: assistant requests fake-beta, Arroba relaunches provider with proxied MCP, then sends synthetic continuation.',
+      note: 'Simulates agent-triggered MCP grant: assistant requests fake-beta, Chariox relaunches provider with proxied MCP, then sends synthetic continuation.',
       servers: runs.map((run) => ({ agent_id: run.agentId, endpoint: run.endpoint, log_path: run.logPath })),
       snapshot,
     }
@@ -488,7 +488,7 @@ async function runOpenCodeAgentTriggeredGrant() {
         fake_beta_proxy_started_once_after_grant: betaProxyStarts === 1,
         fake_beta_tool_calls_after_continuation: betaToolCalls,
       },
-      note: 'Simulates agent-triggered MCP grant: assistant requests fake-beta, Arroba relaunches provider with proxied MCP, then sends synthetic continuation.',
+      note: 'Simulates agent-triggered MCP grant: assistant requests fake-beta, Chariox relaunches provider with proxied MCP, then sends synthetic continuation.',
       servers: runs.map((run) => ({ agent_id: run.agentId, base_url: run.baseUrl, log_path: run.logPath })),
       snapshot,
     }

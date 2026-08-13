@@ -1,4 +1,4 @@
-# Arroba Server Provider Thread Round-Trip Plan
+# Chariox Server Provider Thread Round-Trip Plan
 
 ## Goal
 
@@ -6,17 +6,17 @@ Promote the validated local-to-slice provider-thread transfer path into a
 kernel/runtime capability and add the reverse path back to local execution.
 
 This is not a server-policy feature and does not require UX exposure. The
-capability is only about moving the same Arroba agent record between local and
+capability is only about moving the same Chariox agent record between local and
 slice execution while preserving the same provider-native conversation thread.
 
 The required round trip is:
 
 ```text
 local provider thread
-  -> transfer same Arroba agent to slice
+  -> transfer same Chariox agent to slice
   -> continue the same provider thread in the slice
   -> exchange prompts in the slice
-  -> transfer same Arroba agent back to local execution
+  -> transfer same Chariox agent back to local execution
   -> continue the same provider thread locally
   -> restore the exact original local agent configuration
 ```
@@ -29,7 +29,7 @@ Provider thread means the provider-native conversation identity:
 - OpenCode: OpenCode session id
 - Claude Code: Claude session id
 
-Same agent means the same Arroba agent record. The Arroba provider run id and
+Same agent means the same Chariox agent record. The Chariox provider run id and
 provider process may change. The provider thread id must not change.
 
 Original configuration means the local agent state before the forward transfer:
@@ -68,7 +68,7 @@ and slice attachment state.
 
 The forward operation must:
 
-1. Resolve the Arroba agent and verify the caller owns it.
+1. Resolve the Chariox agent and verify the caller owns it.
 2. Require the agent to be idle. If there is an active provider prompt, reject
    the transfer.
 3. Snapshot the original local configuration.
@@ -76,7 +76,7 @@ The forward operation must:
 5. Prepare and start the target slice.
 6. Copy provider-local state into the slice.
 7. Import provider auth into the slice.
-8. Move the same Arroba agent record to the slice worker.
+8. Move the same Chariox agent record to the slice worker.
 9. Terminate the idle local provider run through the kernel-owned provider-run
    lifecycle.
 10. Launch provider execution in the slice with the captured resume state.
@@ -91,7 +91,7 @@ lifecycle termination is the correct authority.
 
 The reverse operation must:
 
-1. Resolve the same Arroba agent record.
+1. Resolve the same Chariox agent record.
 2. Require the agent to be idle. If there is an active provider prompt, reject
    the reverse transfer.
 3. Load the transfer record created by the forward path.
@@ -100,13 +100,13 @@ The reverse operation must:
    lifecycle.
 6. Copy provider-local state back from the slice to the correct local provider
    state location.
-7. Clear the remote execution binding from the same Arroba agent record.
+7. Clear the remote execution binding from the same Chariox agent record.
 8. Restore the original local agent configuration exactly.
 9. Launch the local provider with the current resume state.
 10. Verify the local provider run reports the same provider thread id as both:
     the original pre-transfer local thread id and the pre-reverse slice thread
     id.
-11. Confirm no duplicate live provider run remains for the same Arroba agent and
+11. Confirm no duplicate live provider run remains for the same Chariox agent and
     provider thread.
 
 Reverse is not just clearing `remote_execution`. Provider-local state produced
@@ -234,7 +234,7 @@ Run the round-trip drill for:
 Pass criteria for every provider:
 
 ```text
-same Arroba agent id before, during, and after transfer
+same Chariox agent id before, during, and after transfer
 same provider thread id local -> slice
 same provider thread id slice -> local
 local provider recalls marker A before transfer
@@ -249,9 +249,9 @@ no duplicate live provider runs remain
 
 After implementation and validation:
 
-1. Update `docs/ARROBA_SERVER_PROVIDER_THREAD_TRANSFER_DRILLS_PLAN.md` with the
+1. Update `docs/CHARIOX_SERVER_PROVIDER_THREAD_TRANSFER_DRILLS_PLAN.md` with the
    round-trip evidence and artifact paths.
-2. Update `docs/ARROBA_SERVERS_AND_ARROBANET_CONCEPT.md` to say the provider
+2. Update `docs/CHARIOX_SERVERS_AND_CHARIOXNET_CONCEPT.md` to say the provider
    thread transfer path supports round-trip restore for the providers that pass
    the matrix.
 3. Record provider-specific state transfer requirements in the drill plan.

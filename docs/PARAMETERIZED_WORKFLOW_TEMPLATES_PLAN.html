@@ -339,9 +339,9 @@ const bracketSize = params.bracket_size;</code></pre>
             <tr>
               <td>Runtime MCP for metaagents</td>
               <td>
-                Extend <code>arroba.meta.workflow_registry.list/get</code> responses with
+                Extend <code>chariox.meta.workflow_registry.list/get</code> responses with
                 <code>parameters_schema</code>, and extend
-                <code>arroba.meta.workflow_registry.load/run</code> tool schemas with
+                <code>chariox.meta.workflow_registry.load/run</code> tool schemas with
                 <code>parameters</code>. Tool descriptions should instruct metaagents to inspect
                 schemas and pass required parameters.
               </td>
@@ -447,7 +447,7 @@ const bracketSize = params.bracket_size;</code></pre>
         <ul>
           <li>Unit test runtime MCP tool schemas include <code>parameters</code>.</li>
           <li>
-            Dispatch test <code>arroba.meta.workflow_registry.load</code> with
+            Dispatch test <code>chariox.meta.workflow_registry.load</code> with
             <code>{ "bracket_size": 4 }</code> and assert the generated workflow shape.
           </li>
           <li>

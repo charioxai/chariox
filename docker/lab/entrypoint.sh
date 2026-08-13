@@ -1,26 +1,26 @@
 #!/usr/bin/env sh
 set -eu
 
-mkdir -p "$HOME/.config/arroba" "$HOME/.local/share/arroba" "$HOME/.cache/arroba/runtime" "$HOME/workspace"
+mkdir -p "$HOME/.config/chariox" "$HOME/.local/share/chariox" "$HOME/.cache/chariox/runtime" "$HOME/workspace"
 
-if [ -n "${ARROBA_MACHINE_ALIAS:-}" ]; then
-  export ARROBA_MACHINE_ALIAS
+if [ -n "${CHARIOX_MACHINE_ALIAS:-}" ]; then
+  export CHARIOX_MACHINE_ALIAS
 elif [ -n "${HOSTNAME:-}" ]; then
-  export ARROBA_MACHINE_ALIAS="$HOSTNAME"
+  export CHARIOX_MACHINE_ALIAS="$HOSTNAME"
 fi
 
 case "${1:-daemon}" in
   daemon)
     shift || true
-    exec arroba-kernel "$@"
+    exec chariox-kernel "$@"
     ;;
   relay)
     shift || true
-    exec arroba-relay "$@"
+    exec chariox-relay "$@"
     ;;
-  cli|arroba)
+  cli|chariox)
     shift || true
-    exec arroba "$@"
+    exec chariox "$@"
     ;;
   shell|zsh)
     shift || true

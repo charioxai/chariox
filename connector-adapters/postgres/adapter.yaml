@@ -1,6 +1,6 @@
 kind: connector_adapter
 name: postgres
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
-command: arroba-adapter-postgres
+adapter_protocol: chariox-connector-adapter-v2
+command: chariox-adapter-postgres
 description: Built-in Postgres connector adapter.

@@ -10,7 +10,7 @@ docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
 
 ## Connect The Host Kernel To The Lab Relay
 
-Open the host Arroba CLI and configure the relay:
+Open the host Chariox CLI and configure the relay:
 
 ```text
 /relay use ws://127.0.0.1:43150 local-lab
@@ -27,7 +27,7 @@ Use the `daemon=<id>` value in the next step.
 ## Start A Remote CLI Inside The Container
 
 ```sh
-docker exec -it arroba-worker-a arroba \
+docker exec -it chariox-worker-a chariox \
   --relay-url ws://relay:43150 \
   --relay-token local-lab \
   --target-daemon-id <host-daemon-id>
@@ -59,8 +59,8 @@ From the host CLI, after `worker-a` and `worker-b` register through the relay:
 
 ```text
 /machine list
-/machine approve arroba-worker-a
-/machine rename arroba-worker-a docker-a
+/machine approve chariox-worker-a
+/machine rename chariox-worker-a docker-a
 /machine kernels docker-a
 ```
 

@@ -1,17 +1,17 @@
-# M26 Arroba Encrypted Vault Plan
+# M26 Chariox Encrypted Vault Plan
 
 ## Goal
 
-Replace OS-dependent credential storage with an Arroba-owned encrypted vault that behaves consistently across macOS, Linux, and Windows.
+Replace OS-dependent credential storage with a Chariox-owned encrypted vault that behaves consistently across macOS, Linux, and Windows.
 
-The kernel must control all vault unlock UX through Arroba runtime interactions projected to terminals. Secrets must remain encrypted at rest, decrypted only inside the kernel, and never returned to agents.
+The kernel must control all vault unlock UX through Chariox runtime interactions projected to terminals. Secrets must remain encrypted at rest, decrypted only inside the kernel, and never returned to agents.
 
 ## Product Requirements
 
-- No macOS Keychain, Windows Credential Manager, Linux Secret Service, or per-secret OS confirmation prompts for Arroba vault operations.
+- No macOS Keychain, Windows Credential Manager, Linux Secret Service, or per-secret OS confirmation prompts for Chariox vault operations.
 - No legacy compatibility path for OS-backed secret items. Existing OS-backed secrets are not read or migrated by this milestone.
 - Runtime MCP secret tools keep the same no-leak contract: agents get credential handles and tool outcomes, not secret values.
-- Unlocking is an Arroba popup interaction. The popup appears in all attached terminals that can answer runtime interactions.
+- Unlocking is a Chariox popup interaction. The popup appears in all attached terminals that can answer runtime interactions.
 - Metaagents and regular agents may trigger an unlock request when a vault operation requires it, but the passphrase is captured by the kernel-owned popup and is not delivered to the agent.
 - The user can choose an unlock duration from the popup, such as this operation, 30 minutes, 1 hour, this session, or until kernel shutdown.
 - The user can extend an active unlock through a popup without retyping the passphrase when the vault is already unlocked.
@@ -25,8 +25,8 @@ Config shape:
 
 ```toml
 [credentials.vault]
-backend = "arroba_encrypted"
-path = "~/.arroba/vault/vault.db"
+backend = "chariox_encrypted"
+path = "~/.chariox/vault/vault.db"
 unlock_policy = "ttl"
 default_ttl_minutes = 30
 max_ttl_minutes = 240
@@ -46,8 +46,8 @@ The first implementation should support `ttl`, `kernel_init`, and `always`. `ses
 
 Add a new durable `CredentialVaultStore` backend:
 
-- `ArrobaEncryptedCredentialVaultStore`
-- Encrypted database or file under the Arroba config/state directory.
+- `CharioxEncryptedCredentialVaultStore`
+- Encrypted database or file under the Chariox config/state directory.
 - Versioned vault header with algorithm, KDF params, salt, and schema version.
 - Derive the vault key from a user passphrase with a memory-hard KDF such as Argon2id.
 - Encrypt secret values with an authenticated encryption scheme such as XChaCha20-Poly1305 or AES-256-GCM.
@@ -62,7 +62,7 @@ Use existing kernel-owned `RuntimeInteraction` infrastructure.
 Locked vault popup:
 
 - Level: critical.
-- Title: `Unlock Arroba Vault`.
+- Title: `Unlock Chariox Vault`.
 - Message explains which session/agent/tool requested access.
 - Redacted custom input for the vault passphrase.
 - Choices for unlock duration: `This operation`, `30 minutes`, `1 hour`, `Until kernel shutdown`, `Cancel`.
@@ -70,7 +70,7 @@ Locked vault popup:
 
 Unlocked vault popup:
 
-- Title: `Arroba Vault Unlocked`.
+- Title: `Chariox Vault Unlocked`.
 - Choices: `Extend 30 minutes`, `Extend 1 hour`, `Lock now`, `Dismiss`.
 - No passphrase field needed while the vault key is already in memory.
 
@@ -104,9 +104,9 @@ Keep the existing warm in-memory secret cache, but make it subordinate to unlock
 
 ## Config And Removal Work
 
-- Change the default vault backend to `arroba_encrypted`.
+- Change the default vault backend to `chariox_encrypted`.
 - Remove OS keychain backend selection from default config.
-- Delete or quarantine platform keychain code paths used by Arroba vault operations.
+- Delete or quarantine platform keychain code paths used by Chariox vault operations.
 - Remove tests and docs that rely on macOS Keychain prompts for normal operation.
 - Keep no automatic migration from old OS-backed secrets. Users recreate secrets through the new runtime MCP/UI path.
 
@@ -126,7 +126,7 @@ Keep the existing warm in-memory secret cache, but make it subordinate to unlock
 - Add encrypted vault file format and store implementation.
 - Add create/open/read/write/delete tests with a temporary vault file.
 - Add corruption and wrong-passphrase tests.
-- Wire config parsing for `arroba_encrypted`.
+- Wire config parsing for `chariox_encrypted`.
 
 ### Phase 2: Unlock Coordinator
 
@@ -136,8 +136,8 @@ Keep the existing warm in-memory secret cache, but make it subordinate to unlock
 
 ### Phase 3: Popup Integration
 
-- Implement `Unlock Arroba Vault` interaction with redacted input and duration choices.
-- Implement `Arroba Vault Unlocked` extension popup.
+- Implement `Unlock Chariox Vault` interaction with redacted input and duration choices.
+- Implement `Chariox Vault Unlocked` extension popup.
 - Project interactions to web terminal, local TUI, remote TUI, and native TUI through existing interaction plumbing.
 - Add cancellation and timeout behavior with clear user-facing messages.
 
@@ -161,7 +161,7 @@ Run live end-to-end drills and save screenshots in `.artifacts`.
 Pass criteria:
 
 - No OS credential dialog appears during any normal vault operation.
-- Screenshots show Arroba popups, redacted input, duration choices, and successful secret use.
+- Screenshots show Chariox popups, redacted input, duration choices, and successful secret use.
 - Session history and agent traces do not contain passphrases or secret values.
 - Agents can trigger the need for unlock but cannot read or infer the secret.
 

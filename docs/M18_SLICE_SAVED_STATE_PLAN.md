@@ -4,7 +4,7 @@
 
 Allow users and authorized agents to save the current state of a slice and later launch a slice from that saved state, without exposing Docker image, container, or volume lifecycle details to the user.
 
-The default product concept is **saved slice state**, not a visible list of checkpoint versions. A user should be able to click `Save state`, and Arroba should make the slice reusable with the same browser logins, local configuration, installed tools, and runtime environment.
+The default product concept is **saved slice state**, not a visible list of checkpoint versions. A user should be able to click `Save state`, and Chariox should make the slice reusable with the same browser logins, local configuration, installed tools, and runtime environment.
 
 Agents should be able to request the same operation through the runtime MCP. The home kernel remains the authority that performs the host-side Docker operations.
 
@@ -24,14 +24,14 @@ Backup operation:
 Create backup
 ```
 
-This writes a separate backup copy, but does not make Arroba manage multiple visible versions in normal UX. After backup creation, Arroba shows where it lives and explains how to manually swap it in if needed.
+This writes a separate backup copy, but does not make Chariox manage multiple visible versions in normal UX. After backup creation, Chariox shows where it lives and explains how to manually swap it in if needed.
 
 User-facing concepts:
 
 ```text
 Save state         -> overwrite current reusable slice state
 Create backup     -> copy current saved state somewhere safe
-Reset state        -> go back to the base Arroba slice image/profile
+Reset state        -> go back to the base Chariox slice image/profile
 Launch from state  -> create/start a slice using saved state
 ```
 
@@ -48,14 +48,14 @@ Both pieces are required because Docker image state and `/home/slice` volume sta
 
 ## Storage Layout
 
-Use an Arroba-managed state root under the existing slice root.
+Use a Chariox-managed state root under the existing slice root.
 
 ```text
-~/.arroba/slices/states/<state_id>/
+~/.chariox/slices/states/<state_id>/
   manifest.json
   home.tar.zst
 
-~/.arroba/slices/backups/<backup_id>/
+~/.chariox/slices/backups/<backup_id>/
   manifest.json
   home.tar.zst
 ```
@@ -63,15 +63,15 @@ Use an Arroba-managed state root under the existing slice root.
 Docker images:
 
 ```text
-arroba-slice-state:<state_id>
-arroba-slice-backup:<backup_id>
+chariox-slice-state:<state_id>
+chariox-slice-backup:<backup_id>
 ```
 
 For a slice named `gmail-work`, the active state can be deterministic:
 
 ```text
 state_id = gmail-work
-image_ref = arroba-slice-state:gmail-work
+image_ref = chariox-slice-state:gmail-work
 ```
 
 Backup names can be timestamped:
@@ -167,7 +167,7 @@ Save state:
 1. Resolve the slice container and `/home/slice` volume.
 2. Require no active agents.
 3. Stop/quiesce the container.
-4. Run `docker commit <container> arroba-slice-state:<state_id>`.
+4. Run `docker commit <container> chariox-slice-state:<state_id>`.
 5. Archive the home volume to `states/<state_id>/home.tar.zst`.
 6. Write `manifest.json`.
 7. Mark state saved and audit success/failure.
@@ -215,24 +215,24 @@ TUI slash commands:
 CLI:
 
 ```text
-arroba slice state save <slice>
-arroba slice state status <slice>
-arroba slice state reset <slice>
-arroba slice backup create <slice> --name gmail-ready
+chariox slice state save <slice>
+chariox slice state status <slice>
+chariox slice state reset <slice>
+chariox slice backup create <slice> --name gmail-ready
 ```
 
 After backup creation, show:
 
 ```text
 Backup saved:
-  ~/.arroba/slices/backups/gmail-work-20260609-181500
+  ~/.chariox/slices/backups/gmail-work-20260609-181500
 
-To use it manually, stop Arroba slice operations, then swap this backup directory
+To use it manually, stop Chariox slice operations, then swap this backup directory
 with the active state directory:
-  ~/.arroba/slices/states/gmail-work
+  ~/.chariox/slices/states/gmail-work
 
 The Docker image tag for this backup is:
-  arroba-slice-backup:gmail-work-20260609-181500
+  chariox-slice-backup:gmail-work-20260609-181500
 ```
 
 First-class restore-from-backup can be added later, but is not required for the initial feature.
@@ -242,8 +242,8 @@ First-class restore-from-backup can be added later, but is not required for the 
 Expose:
 
 ```text
-arroba.save_slice_state({ slice_ref? })
-arroba.create_slice_backup({ slice_ref?, name? })
+chariox.save_slice_state({ slice_ref? })
+chariox.create_slice_backup({ slice_ref?, name? })
 ```
 
 If `slice_ref` is omitted, infer the current agent's slice.

@@ -1,14 +1,14 @@
-# Arroba v1 Specification
+# Chariox v1 Specification
 
 ## Status
 
 Draft v1.
 
-This document defines the implementation target for Arroba v1. It is more specific than the high-level architecture summary in `agents/AGENTS.md` and is intended to guide code, schema, and protocol design.
+This document defines the implementation target for Chariox v1. It is more specific than the high-level architecture summary in `agents/AGENTS.md` and is intended to guide code, schema, and protocol design.
 
 Terminology note:
 
-- the docs now use `Arroba Kernel` as the architectural term for the runtime authority hosted by the `arroba-kernel` process
+- the docs now use `Chariox Kernel` as the architectural term for the runtime authority hosted by the `chariox-kernel` process
 - the docs now use `workspace` as the target term for the persistent collaboration domain that is still mostly implemented as a `session` in the current code
 
 Implementation baseline choices are documented in `docs/ARCHITECTURE.md` under **Implementation Choices (v1 baseline)**.
@@ -25,7 +25,7 @@ Current delivery sequence:
 
 ## 1. Product Definition
 
-Arroba v1 is an Arroba-Kernel-centered orchestrator for native AI coding CLIs and compatible agent runtimes.
+Chariox v1 is a Chariox-Kernel-centered orchestrator for native AI coding CLIs and compatible agent runtimes.
 
 It provides:
 
@@ -33,10 +33,10 @@ It provides:
 - daemon-owned capabilities invoked outside normal provider input
 - lightweight provider integration where needed for file attachment
 - local-first workspace hosting with optional remote attachment through a relay server
-- one Arroba Kernel owning a local runtime domain that may include both local and relay-attached clients or agents
+- one Chariox Kernel owning a local runtime domain that may include both local and relay-attached clients or agents
 
-Arroba is a wrapper around provider CLIs, not a replacement for their execution engines.
-Arroba owns the slash-command surface and routes provider behavior through adapters.
+Chariox is a wrapper around provider CLIs, not a replacement for their execution engines.
+Chariox owns the slash-command surface and routes provider behavior through adapters.
 
 ## 2. Goals
 
@@ -44,9 +44,9 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 - Allow multiple local or remote clients to attach to the same workspace.
 - Allow multiple local or remote runtime members, including clients and agents, to attach to the same kernel-owned runtime domain.
 - Finish one provider deeply before expanding provider breadth.
-- Support multiple top-level Arroba-managed agents inside one session, each with its own runtime context.
-- Let users invoke Arroba actions through daemon-owned slash commands.
-- Reserve `/<provider> ...` as the provider-specific command namespace exposed by Arroba for the focused agent provider, while `/agent ...` remains Arroba-owned agent management.
+- Support multiple top-level Chariox-managed agents inside one session, each with its own runtime context.
+- Let users invoke Chariox actions through daemon-owned slash commands.
+- Reserve `/<provider> ...` as the provider-specific command namespace exposed by Chariox for the focused agent provider, while `/agent ...` remains Chariox-owned agent management.
 - Support daemon-owned capabilities for shell, file, git, screenshot, scheduling, and transfer workflows.
 - Support transferring a file to the daemon host and attaching it to the active provider when the provider supports attachment.
 - Keep the provider control boundary intentionally small in v1.
@@ -63,9 +63,9 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 ## 4. Core Principles
 
 - Provider-native PTY first: provider terminal behavior must remain intact for ordinary non-command traffic.
-- Prefer the strongest provider-native contract: when a provider exposes a stable local structured protocol, Arroba should prefer that protocol over PTY-derived heuristics for prompt lifecycle, output ordering, and command discovery.
-- Slash-command ownership: Arroba owns `/...` command parsing and completion.
-- Kernel-centered runtime: the Arroba Kernel is the source of truth for live workspace state.
+- Prefer the strongest provider-native contract: when a provider exposes a stable local structured protocol, Chariox should prefer that protocol over PTY-derived heuristics for prompt lifecycle, output ordering, and command discovery.
+- Slash-command ownership: Chariox owns `/...` command parsing and completion.
+- Kernel-centered runtime: the Chariox Kernel is the source of truth for live workspace state.
 - Node-centered routing: the kernel is the source of truth for routing between local and remote members attached to the same runtime domain.
 - Local-first execution: workspaces run on the user's machine.
 - Relay is transport, not authority: relay infrastructure may forward connections but must not become the authority for session/runtime state.
@@ -78,7 +78,7 @@ Arroba owns the slash-command surface and routes provider behavior through adapt
 
 ## 5. Runtime Components
 
-Arroba v1 has four runtime components:
+Chariox v1 has four runtime components:
 
 - Client
 - Machine
@@ -100,7 +100,7 @@ Responsibilities:
 
 - render the provider terminal stream
 - render focused-agent state and, when a session contains multiple top-level agents, render per-agent history/runtime views without making the client the runtime authority
-- render Arroba slash-command help, completions, warnings, and command results
+- render Chariox slash-command help, completions, warnings, and command results
 - send terminal keystrokes or structured prompt/config actions to the daemon through the appropriate surface
 - invoke daemon capabilities
 - upload artifacts for transfer when requested
@@ -108,17 +108,17 @@ Responsibilities:
 
 ### 5.2 Machine
 
-A machine is a host where Arroba can run agent workloads through its daemon.
+A machine is a host where Chariox can run agent workloads through its daemon.
 
 Properties:
 
 - each machine has one daemon per OS user account
-- a user may register and use multiple machines for the same Arroba account
+- a user may register and use multiple machines for the same Chariox account
 - machines are the execution hosts for session workspaces, provider processes, and artifacts
 
-### 5.3 Arroba Kernel
+### 5.3 Chariox Kernel
 
-There is one Arroba Kernel per machine OS user account, hosted by the `arroba-kernel` process.
+There is one Chariox Kernel per machine OS user account, hosted by the `chariox-kernel` process.
 
 The kernel is responsible for:
 
@@ -178,7 +178,7 @@ Security boundary requirement:
 
 ## 6. Interaction Lanes
 
-Arroba v1 has three interaction lanes between clients, daemon, and providers.
+Chariox v1 has three interaction lanes between clients, daemon, and providers.
 
 ### 6.1 Terminal Lane
 
@@ -188,24 +188,24 @@ Properties:
 
 - preserves native provider CLI behavior for ordinary non-command traffic
 - transports provider stdout, stderr, and terminal control sequences
-- transports user keystrokes as terminal input when they are not intercepted as Arroba slash commands
+- transports user keystrokes as terminal input when they are not intercepted as Chariox slash commands
 - is the default interaction path for ordinary user work
 
 Transmission requirement:
 
 - user-generated information sent through this lane (for example prompts and terminal-entered content) must be protected with session-scoped end-to-end encryption whenever it traverses remote transport
 
-Arroba must not require ordinary non-command terminal traffic to be parsed into structured commands.
+Chariox must not require ordinary non-command terminal traffic to be parsed into structured commands.
 
 Provider-specific note:
 
 - some providers MAY expose a richer local session/event API in addition to PTY traffic
-- when that API is stable and supported by the adapter, Arroba MAY derive provider output, turn lifecycle, and command discovery from that structured surface instead of from PTY silence or screen scraping
+- when that API is stable and supported by the adapter, Chariox MAY derive provider output, turn lifecycle, and command discovery from that structured surface instead of from PTY silence or screen scraping
 - OpenCode is the current reference provider-specific use of this model
 
 ### 6.2 Capability Lane
 
-The capability lane is used for daemon-owned Arroba commands invoked through the slash-command dispatcher.
+The capability lane is used for daemon-owned Chariox commands invoked through the slash-command dispatcher.
 
 Capabilities are executed by the daemon, not typed into the provider terminal.
 
@@ -234,7 +234,7 @@ In v1, the canonical control surface contains three operations:
 - `request_memory_update`
 - `request_compaction_summary`
 
-The control lane may also carry `/<provider> ...` command invocations after Arroba resolves the focused provider command catalog and target adapter behavior.
+The control lane may also carry `/<provider> ...` command invocations after Chariox resolves the focused provider command catalog and target adapter behavior.
 
 OpenCode-specific v1.1 target:
 
@@ -255,35 +255,35 @@ Target direction:
 
 - daemon-client communication should use one daemon-owned bidirectional transport that supports both local and relayed connections without changing workspace semantics
 - daemon-agent communication remains adapter-specific for now, with OpenCode as the reference structured integration
-- a generic agent transport protocol is intentionally deferred until Arroba has integrated more than one concrete agent family
+- a generic agent transport protocol is intentionally deferred until Chariox has integrated more than one concrete agent family
 - current transport differences are implementation history, not a long-term architectural principle
 
 ### 6.4 Slash Command System
 
-Arroba owns the slash-command namespace.
+Chariox owns the slash-command namespace.
 
 Required rules:
 
-- `/...` is reserved for Arroba command dispatch and completion.
-- `/<provider> ...` is the provider-specific namespace exposed by the focused Arroba adapter.
+- `/...` is reserved for Chariox command dispatch and completion.
+- `/<provider> ...` is the provider-specific namespace exposed by the focused Chariox adapter.
 - command completion is daemon-managed and may depend on session, provider, and attachment context.
 - ordinary non-command input continues to flow through the terminal lane unchanged.
 
 OpenCode-specific note:
 
-- OpenCode command discovery SHOULD use machine-readable provider surfaces before falling back to shipped Arroba catalogs
+- OpenCode command discovery SHOULD use machine-readable provider surfaces before falling back to shipped Chariox catalogs
 - this includes provider-exposed command, agent, and skill listing where available
 
 Provider command discovery policy:
 
-- Arroba ships built-in provider command catalogs for explicitly supported provider version families.
-- Arroba augments those catalogs by reading supported custom-command files or config locations when the provider supports that model.
-- Arroba does not rely on scraping human-oriented `/help` output as the primary compatibility mechanism.
-- if the detected provider version is unsupported, Arroba MUST warn the user but MUST still keep best-effort `/<provider> ...` completions enabled.
+- Chariox ships built-in provider command catalogs for explicitly supported provider version families.
+- Chariox augments those catalogs by reading supported custom-command files or config locations when the provider supports that model.
+- Chariox does not rely on scraping human-oriented `/help` output as the primary compatibility mechanism.
+- if the detected provider version is unsupported, Chariox MUST warn the user but MUST still keep best-effort `/<provider> ...` completions enabled.
 
 ### 6.5 Agent-Scoped Extensions
 
-Arroba manages provider-facing extensions as daemon-owned assets rather than treating project-local provider files as the authoritative source of truth.
+Chariox manages provider-facing extensions as daemon-owned assets rather than treating project-local provider files as the authoritative source of truth.
 
 Extension classes include:
 
@@ -295,11 +295,11 @@ Extension classes include:
 
 Required rules:
 
-- extensions are installed once on the machine and bound per Arroba-managed top-level agent or provider run
+- extensions are installed once on the machine and bound per Chariox-managed top-level agent or provider run
 - extension visibility defaults to the bound agent only
-- Arroba materializes provider-specific extension views at launch time rather than requiring the project directory to be the canonical source of truth
+- Chariox materializes provider-specific extension views at launch time rather than requiring the project directory to be the canonical source of truth
 - provider-facing generated files MAY be written for compatibility, but the daemon-owned registry remains authoritative
-- top-level Arroba agents are the scoping boundary for extensions; provider-native subagents are not separately orchestrated by Arroba
+- top-level Chariox agents are the scoping boundary for extensions; provider-native subagents are not separately orchestrated by Chariox
 
 Extension visibility policies MAY include:
 
@@ -308,13 +308,13 @@ Extension visibility policies MAY include:
 
 ### 6.6 Workflow Console
 
-Arroba SHOULD provide one kernel-owned append-only console per workflow definition.
+Chariox SHOULD provide one kernel-owned append-only console per workflow definition.
 
 Initial v1 rules:
 
 - the console is scoped to the workflow, not the workspace
 - it is separate from provider traces, mailbox content, handoff payloads, and audit events
-- nodes MAY read, write, and clear the workflow console through Arroba-managed MCP tools
+- nodes MAY read, write, and clear the workflow console through Chariox-managed MCP tools
 - the kernel/CLI MUST NOT rewrite or curate the visible console stream; it renders appended output as-is
 - the console is transient runtime state in v1 and does not require persistence across daemon restarts
 - workflow-level prompts MAY mention the console, but nodes should use it only when the workflow-level prompt explicitly says so
@@ -327,7 +327,7 @@ Ownership split:
 
 ## 7. Node and Agent Endpoint Model
 
-Arroba should distinguish between the kernel's internal runtime model and provider-specific integration details.
+Chariox should distinguish between the kernel's internal runtime model and provider-specific integration details.
 
 ### 7.1 Node Members
 
@@ -342,7 +342,7 @@ All such members may participate in the same workspace/workflow domain when atta
 
 ### 7.2 Agent Endpoint Modes
 
-Arroba should support both:
+Chariox should support both:
 
 - `managed` endpoints launched by the kernel
 - `external` endpoints discovered/configured and connected to by the kernel
@@ -350,7 +350,7 @@ Arroba should support both:
 This allows:
 
 - first-party local convenience integrations
-- third-party agent runtimes Arroba does not ship itself
+- third-party agent runtimes Chariox does not ship itself
 - remote agent runtimes attached through relay while still belonging to the same kernel-owned runtime domain
 
 ### 7.3 Workspace Coordination
@@ -370,13 +370,13 @@ Scope rule:
 
 - coordination is workspace-scoped, not repo-scoped across every workspace on a machine
 - different workspaces may still collide later in the same way independent PRs can conflict
-`request_compaction_summary` is a daemon-owned control event used during Arroba-triggered compaction to request a compaction summary from the active provider run before warm-starting a fresh run.
+`request_compaction_summary` is a daemon-owned control event used during Chariox-triggered compaction to request a compaction summary from the active provider run before warm-starting a fresh run.
 
 Implications:
 
 - memory-update inquiries are formal control-plane events in v1 and are distinct from normal user prompt/response traffic
 - commit-description generation is not a formal control-plane request in v1
-- provider functionality must not depend on the control lane except for enhanced attachment support, memory-update coordination, and Arroba-driven compaction coordination when available
+- provider functionality must not depend on the control lane except for enhanced attachment support, memory-update coordination, and Chariox-driven compaction coordination when available
 
 ## 7. Sessions and Provider Runs
 
@@ -393,7 +393,7 @@ A session is bound to:
 
 A session may have:
 
-- multiple top-level Arroba-managed agents
+- multiple top-level Chariox-managed agents
 - multiple attached clients
 - multiple parked provider runs
 - agent-scoped provider runs when multi-agent session mode or workflow mode is active
@@ -409,11 +409,11 @@ A session can be reassigned between its eligible agent machines over time, but o
 
 ### 7.1.1 Session Agent Model
 
-Arroba-managed top-level agents are first-class session entities in v1.
+Chariox-managed top-level agents are first-class session entities in v1.
 
 Required rules:
 
-- a session MAY contain one or more top-level Arroba-managed agents
+- a session MAY contain one or more top-level Chariox-managed agents
 - each top-level agent MUST have its own stable agent id within the session
 - each top-level agent SHOULD carry its own provider context, prompt target, history, and worktree-assignment metadata even when the initial implementation reuses shared session infrastructure
 - the daemon MUST track a focused top-level agent for direct user interaction in multi-agent session mode
@@ -428,7 +428,7 @@ Implementation note for the current codebase:
 
 ### 7.1.2 Session Lifecycle Semantics
 
-Arroba sessions are intended to be persistent by default.
+Chariox sessions are intended to be persistent by default.
 
 Required rules:
 
@@ -489,8 +489,8 @@ States:
 
 Switching providers:
 
-1. The user requests a switch through the Arroba UI.
-2. Arroba prepares a transfer package from Arroba-managed memory (short-term and long-term) plus workspace state, and it must not rely on provider-private state.
+1. The user requests a switch through the Chariox UI.
+2. Chariox prepares a transfer package from Chariox-managed memory (short-term and long-term) plus workspace state, and it must not rely on provider-private state.
 3. A new provider process is launched.
 4. The old provider run may be parked.
 5. The user may resume a parked run later if supported by the provider process model.
@@ -499,27 +499,27 @@ Provider switching must remain minimally intrusive.
 
 ### 7.2.1 Provider Authentication Model
 
-Arroba uses a wrapper-style provider authentication model.
+Chariox uses a wrapper-style provider authentication model.
 
 Required rules:
 
-- Arroba launches native provider CLIs on the host machine and reuses their native local login state.
-- Arroba MUST NOT require Anthropic API keys or other provider API credentials when the provider CLI already supports native end-user login/subscription access.
-- Arroba MUST NOT store, mint, proxy, or relay provider credentials in v1.
+- Chariox launches native provider CLIs on the host machine and reuses their native local login state.
+- Chariox MUST NOT require Anthropic API keys or other provider API credentials when the provider CLI already supports native end-user login/subscription access.
+- Chariox MUST NOT store, mint, proxy, or relay provider credentials in v1.
 - provider authentication remains local to the machine hosting the provider run.
-- Arroba account/server authentication is separate from provider authentication.
+- Chariox account/server authentication is separate from provider authentication.
 
 Operational behavior:
 
 - if a provider CLI is already logged in for the selected local profile, the daemon may launch it directly
 - if a provider CLI is installed but not logged in, the daemon surfaces `not_logged_in` status and instructs the user to complete the provider-native login flow on that machine
 - if the provider login has expired or become invalid, the daemon surfaces `expired` status and a reauthentication hint
-- remote Arroba clients may observe and acknowledge provider-auth state, but the actual provider login flow remains provider-native on the host machine
+- remote Chariox clients may observe and acknowledge provider-auth state, but the actual provider login flow remains provider-native on the host machine
 
 `account_profile` semantics:
 
 - `account_profile` selects a provider-native local account/config context
-- it is not an Arroba-managed credential container
+- it is not a Chariox-managed credential container
 - adapters MAY map it to provider-specific config roots, profile names, or environment selections
 
 ### 7.2.1.1 Provider Rollout Order
@@ -534,20 +534,20 @@ Required rules:
 
 ### 7.2.2 Provider-Native Subagents
 
-Provider-native subagents are not first-class Arroba workflow agents in v1.
+Provider-native subagents are not first-class Chariox workflow agents in v1.
 
 Required rules:
 
-- Arroba orchestrates only top-level session agents or workflow nodes that it launches explicitly
+- Chariox orchestrates only top-level session agents or workflow nodes that it launches explicitly
 - any subagents internally spawned by a provider run are treated as provider-owned implementation details
-- Arroba MUST NOT require separate scheduling, extension binding, or worktree allocation per provider-native subagent by default
+- Chariox MUST NOT require separate scheduling, extension binding, or worktree allocation per provider-native subagent by default
 - provider-native subagents may use the skills, MCPs, commands, and instructions available to their parent top-level provider run
 
-Future implementations MAY surface debug or telemetry metadata about provider-native subagents when a provider exposes stable support for that, but such subagents remain outside Arroba's orchestration model.
+Future implementations MAY surface debug or telemetry metadata about provider-native subagents when a provider exposes stable support for that, but such subagents remain outside Chariox's orchestration model.
 
 ### 7.3 Workflow Layer Above Workspaces
 
-Arroba v1 MUST support both manually directed multi-agent workspaces and a workflow layer above the single-agent workspace model.
+Chariox v1 MUST support both manually directed multi-agent workspaces and a workflow layer above the single-agent workspace model.
 
 Delivery priority inside v1:
 
@@ -802,7 +802,7 @@ Worktree compatibility rule:
 
 ### 8.1 Provider Adapter Requirement
 
-Each supported provider has an adapter owned by Arroba.
+Each supported provider has an adapter owned by Chariox.
 
 The adapter is responsible for:
 
@@ -818,7 +818,7 @@ The adapter is responsible for:
 
 ### 8.1.1 Extension Projection Requirement
 
-Provider adapters MUST translate Arroba's daemon-owned extension bindings into the provider-specific shape expected by that provider runtime.
+Provider adapters MUST translate Chariox's daemon-owned extension bindings into the provider-specific shape expected by that provider runtime.
 
 Examples:
 
@@ -828,8 +828,8 @@ Examples:
 
 Isolation rule:
 
-- if a provider supports custom config roots, home directories, or equivalent launch-time overrides, Arroba SHOULD use them to keep agent-scoped extension views isolated
-- if a provider only supports project-local extension files, Arroba SHOULD rely on worktree or projected-workspace isolation to preserve per-agent visibility boundaries
+- if a provider supports custom config roots, home directories, or equivalent launch-time overrides, Chariox SHOULD use them to keep agent-scoped extension views isolated
+- if a provider only supports project-local extension files, Chariox SHOULD rely on worktree or projected-workspace isolation to preserve per-agent visibility boundaries
 
 ### 8.2 Canonical Control Operations
 
@@ -877,7 +877,7 @@ Expected behavior:
 
 Outputs:
 
-- success with structured memory update payload for Arroba short-term/long-term memory pipelines
+- success with structured memory update payload for Chariox short-term/long-term memory pipelines
 - unsupported
 - failed with error details suitable for user-facing reporting
 
@@ -885,14 +885,14 @@ Outputs:
 
 Purpose:
 
-- allow the daemon to request a model-authored compaction summary during Arroba-driven user-triggered compaction
+- allow the daemon to request a model-authored compaction summary during Chariox-driven user-triggered compaction
 - produce a summary artifact suitable for warming a fresh provider run with an empty context window
 
 Inputs:
 
 - session identifier
 - provider run identifier
-- compaction intent (`user_triggered_arroba_compact`)
+- compaction intent (`user_triggered_chariox_compact`)
 - optional output policy hints (for example target length or required headings)
 
 Expected behavior:
@@ -913,33 +913,33 @@ If a provider adapter does not implement `attach_file`, `request_memory_update`,
 
 Provider-specific structured adapter note:
 
-- some adapters MAY expose richer provider-owned operations beyond the canonical v1 control trio when Arroba needs them for correctness
+- some adapters MAY expose richer provider-owned operations beyond the canonical v1 control trio when Chariox needs them for correctness
 - OpenCode is expected to use provider-specific session operations for prompt submit, command invoke, turn abort, and event subscription
-- those richer provider-specific operations remain adapter-internal and do not change Arroba's provider-agnostic user-facing model
+- those richer provider-specific operations remain adapter-internal and do not change Chariox's provider-agnostic user-facing model
 
-In that case Arroba must:
+In that case Chariox must:
 
 - store the transferred file in the session workspace or a session-scoped staging location
 - surface the local path to the user
 - avoid pretending the provider has received the file
-- continue memory transfer using Arroba-managed memory sources without requiring provider-side memory update signals
-- if compaction summary is unsupported, allow Arroba-driven compaction using Arroba-managed memory snapshots as fallback warm-up
+- continue memory transfer using Chariox-managed memory sources without requiring provider-side memory update signals
+- if compaction summary is unsupported, allow Chariox-driven compaction using Chariox-managed memory snapshots as fallback warm-up
 
 ### 8.4 Provider Command Compatibility
 
-Arroba MUST surface provider command compatibility status to the user.
+Chariox MUST surface provider command compatibility status to the user.
 
 Minimum compatibility state:
 
 - detected provider name and version
-- matched Arroba catalog version or version family when one exists
+- matched Chariox catalog version or version family when one exists
 - support status (`supported` | `best_effort` | `unsupported_not_installed`)
-- warning text when Arroba does not officially support the detected version
+- warning text when Chariox does not officially support the detected version
 
 Compatibility rule:
 
 - unsupported provider versions MUST NOT disable `/agent` completions by default
-- instead, Arroba continues with best-effort completions from the nearest shipped catalog plus discovered custom commands and surfaces a warning that behavior may drift
+- instead, Chariox continues with best-effort completions from the nearest shipped catalog plus discovered custom commands and surfaces a warning that behavior may drift
 
 ### 8.5 Provider Login Procedure
 
@@ -947,9 +947,9 @@ Provider login remains provider-native.
 
 Required rules:
 
-- Arroba SHOULD prefer prompting the user to use the provider's normal CLI login flow rather than reimplementing login itself
-- Arroba MAY surface provider-specific login instructions, but those instructions are advisory and adapter-owned
-- Arroba MUST NOT treat provider login as a server-side or relay-side concern
+- Chariox SHOULD prefer prompting the user to use the provider's normal CLI login flow rather than reimplementing login itself
+- Chariox MAY surface provider-specific login instructions, but those instructions are advisory and adapter-owned
+- Chariox MUST NOT treat provider login as a server-side or relay-side concern
 - if the provider CLI supports multiple local profiles, the adapter MAY expose those through `account_profile`
 
 Minimum provider auth states:
@@ -962,17 +962,17 @@ Minimum provider auth states:
 
 ### 8.6 Extension and MCP Management
 
-Arroba owns extension installation and binding in v1.
+Chariox owns extension installation and binding in v1.
 
 Required rules:
 
-- skills, MCP definitions, command packs, and similar extension assets are installed through Arroba-managed flows rather than delegated to provider CLIs
+- skills, MCP definitions, command packs, and similar extension assets are installed through Chariox-managed flows rather than delegated to provider CLIs
 - installation is machine-scoped; availability is determined by per-agent binding
 - MCP servers are daemon-managed runtime components and MAY be launched or terminated independently of provider CLIs
 - only the MCPs bound to a given top-level provider run should be exposed to that run
 - extension installation metadata, compatibility state, and bindings should be inspectable through daemon-owned APIs
-- workflow runtime tools are part of the Arroba runtime contract and SHOULD be projected to providers through Arroba-managed MCP bindings rather than provider-specific direct daemon access
-- for managed provider runs, Arroba SHOULD attach its daemon-owned MCP runtime automatically during launch
+- workflow runtime tools are part of the Chariox runtime contract and SHOULD be projected to providers through Chariox-managed MCP bindings rather than provider-specific direct daemon access
+- for managed provider runs, Chariox SHOULD attach its daemon-owned MCP runtime automatically during launch
 - day-1 implementation MAY use statically advertised runtime tools with runtime-side scope validation; release hardening SHOULD add dynamic per-turn scoping, stronger per-run isolation, and MCP health/reconnect handling
 
 ## 9. Capability, Scheduling, Memory, Storage, and Evolution Details

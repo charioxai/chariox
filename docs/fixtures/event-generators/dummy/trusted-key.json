@@ -1,5 +1,5 @@
 {
-  "key_id": "dev.arroba.fixture.2026-07-v2",
+  "key_id": "dev.chariox.fixture.2026-07-v2",
   "algorithm": "ed25519",
-  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA1p1lD6gesJ3KUGUQXpsKxIvcbvJXRFEIREA39V3lnCQ=\n-----END PUBLIC KEY-----\n"
+  "public_key_pem": "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEAfLRLhW8zaj3rsvS+K4GJ7CgPUpYuXx+KTWOLTFwjvMI=\n-----END PUBLIC KEY-----\n"
 }

@@ -1,15 +1,15 @@
-# Arroba Server Provider Thread Transfer Drills Plan
+# Chariox Server Provider Thread Transfer Drills Plan
 
 ## Goal
 
-Validate whether an autonomous Arroba agent can be made compliant with an
-Arroba Server slice requirement while preserving the same provider-native
+Validate whether an autonomous Chariox agent can be made compliant with an
+Chariox Server slice requirement while preserving the same provider-native
 thread.
 
 This plan answers one open design question:
 
 ```text
-Can a running agent move from local execution into a standard Arroba slice and
+Can a running agent move from local execution into a standard Chariox slice and
 continue as the same provider thread?
 ```
 
@@ -26,8 +26,8 @@ Provider thread means the provider-native conversation identity:
 - OpenCode: OpenCode session id
 - Claude Code: Claude session id
 
-Same agent means the same Arroba agent record continuing through the same
-provider-native thread. The provider process and Arroba provider run id may
+Same agent means the same Chariox agent record continuing through the same
+provider-native thread. The provider process and Chariox provider run id may
 change. The provider thread id must remain the same.
 
 Transfer means:
@@ -72,9 +72,9 @@ For each provider, a successful transfer must prove:
   accepting more turns
 - the slice provider run starts with the same provider thread id
 - a post-transfer prompt observes prior conversation state
-- Arroba terminals attached to the session continue to receive coherent output
+- Chariox terminals attached to the session continue to receive coherent output
 - server-directed workflow endpoint invocation still reaches the client kernel
-- no duplicate live provider run exists for the same Arroba agent and provider
+- no duplicate live provider run exists for the same Chariox agent and provider
   thread
 - rollback restores the exact previous local configuration when transfer fails
 
@@ -91,7 +91,7 @@ The design should be considered unsupported for a provider or scenario if:
 - rollback cannot restore the exact previous configuration
 
 If a provider fails, V1 should require autonomous agents that need strict
-slice-backed server admission to start inside the standard Arroba slice instead
+slice-backed server admission to start inside the standard Chariox slice instead
 of moving there later.
 
 ## Evidence To Capture
@@ -118,7 +118,7 @@ Artifacts should be saved under `./.artifacts/provider-thread-transfer/`.
 first executable drill in this plan:
 
 ```bash
-pnpm --filter @arroba/cli run provider-thread-transfer:drill
+pnpm --filter @chariox/cli run provider-thread-transfer:drill
 ```
 
 The implemented drill modes are:
@@ -134,17 +134,17 @@ The implemented drill modes are:
   provider through the existing remote-native launch path with the captured
   provider session id; and verifies same-thread recall. This proves provider
   thread portability through a worker launch, but it does not yet prove moving
-  the same Arroba agent record.
+  the same Chariox agent record.
 - `slice-restart`, which validates a real home-managed local Docker slice
   lifecycle. It creates a slice, imports provider auth, spawns a slice-backed
   agent, launches the provider through the leased worker path, sends a marker
   prompt, saves the slice state with `restart_agents`, and verifies that the
-  same Arroba agent record continues with the same provider-native thread after
+  same Chariox agent record continues with the same provider-native thread after
   slice restart.
 - `live-migrate-to-slice`, which validates the hard Drill 4 path. It starts
   the provider thread on the main machine, captures the provider-native thread
   id, creates and starts a local Docker slice, copies provider-local state into
-  the slice, moves the same Arroba agent record to the slice worker, lets the
+  the slice, moves the same Chariox agent record to the slice worker, lets the
   move operation terminate the idle local provider run, launches provider
   execution in the slice with the captured resume state, and verifies
   same-thread recall through the client kernel path.
@@ -220,7 +220,7 @@ Real local Docker slice save/restart evidence on June 13, 2026:
 
 - OpenCode passed in
   `.artifacts/provider-thread-transfer/1781388631534-82761/matrix.json`
-  - same Arroba agent record: `agent-3`
+  - same Chariox agent record: `agent-3`
   - provider thread id stayed
     `ses_13cf63dabffexRi9Tby15Yk1bs`
   - `SaveSliceState(restart_agents)` stopped and restarted the slice-backed
@@ -229,7 +229,7 @@ Real local Docker slice save/restart evidence on June 13, 2026:
     terminal projection
 - Codex passed in
   `.artifacts/provider-thread-transfer/1781388307332-60948/matrix.json`
-  - same Arroba agent record: `agent-3`
+  - same Chariox agent record: `agent-3`
   - provider thread id stayed
     `019ec307-7174-76d0-8a40-dba0ed637d88`
   - `SaveSliceState(restart_agents)` stopped and restarted the slice-backed
@@ -252,7 +252,7 @@ Real live local-to-slice migration evidence on June 14, 2026:
 
 - OpenCode passed in
   `.artifacts/provider-thread-transfer/1781420264462-60101/matrix.json`
-  - same Arroba agent record: `agent-3`
+  - same Chariox agent record: `agent-3`
   - local provider run `provider-run-1` was ended by `move_agent_to_remote`
   - provider thread id stayed
     `ses_13b13df17ffe46ychcDg5t4l0F`
@@ -261,7 +261,7 @@ Real live local-to-slice migration evidence on June 14, 2026:
   - post-migration recall marker was observed through the client kernel path
 - Codex passed in
   `.artifacts/provider-thread-transfer/1781420327276-68599/matrix.json`
-  - same Arroba agent record: `agent-3`
+  - same Chariox agent record: `agent-3`
   - local provider run `provider-run-1` was ended by `move_agent_to_remote`
   - provider thread id stayed
     `019ec4ed-11e4-7383-98be-9b120ab8137a`
@@ -270,7 +270,7 @@ Real live local-to-slice migration evidence on June 14, 2026:
   - post-migration recall marker was observed through the client kernel path
 - Claude Code passed in
   `.artifacts/provider-thread-transfer/1781419887303-27671/matrix.json`
-  - same Arroba agent record: `agent-3`
+  - same Chariox agent record: `agent-3`
   - local provider run `provider-run-1` was ended by `move_agent_to_remote`
   - provider thread id stayed
     `fc801906-14dd-4eaf-8869-af11fce0476b`
@@ -313,7 +313,7 @@ Current executable conclusion:
 same provider thread, different local provider process: yes for OpenCode and Codex
 same provider thread after same-host worker resume with shared state: yes for OpenCode and Codex
 same provider thread after same-host worker resume with isolated worker state: yes for Codex, no for OpenCode
-same provider thread after real slice save/restart with same Arroba agent record: yes for OpenCode and Codex
+same provider thread after real slice save/restart with same Chariox agent record: yes for OpenCode and Codex
 same provider thread after live migration from local unsliced execution into a slice: yes for OpenCode, Codex, and Claude Code
 ```
 
@@ -364,7 +364,7 @@ fresh slice.
 
 For each provider:
 
-1. Start a local Arroba agent.
+1. Start a local Chariox agent.
 2. Send a prompt that creates a unique marker in the provider thread.
 3. Capture the provider thread id from kernel/provider state.
 4. Stop the provider process.
@@ -415,7 +415,7 @@ provider process."
 ## Drill 2: Duplicate-Run Prevention
 
 Purpose: prove the transfer machinery never leaves two live provider runs for
-the same Arroba agent and provider thread.
+the same Chariox agent and provider thread.
 
 For each provider:
 
@@ -428,7 +428,7 @@ For each provider:
 Pass criteria:
 
 - old run is stopped, parked, or rejected before new run accepts prompts
-- only one active provider run is associated with the Arroba agent
+- only one active provider run is associated with the Chariox agent
 - input to the old run fails loudly or is routed to the new active run by
   explicit kernel state, not by accident
 
@@ -459,13 +459,13 @@ isolation effects.
 
 ## Drill 4: Standard Slice Resume
 
-Purpose: validate the actual Arroba Server compliance scenario.
+Purpose: validate the actual Chariox Server compliance scenario.
 
 For each provider:
 
 1. Start a local autonomous agent outside the slice.
 2. Create a unique marker in the provider thread.
-3. Resolve a test Arroba Server policy requiring the standard slice.
+3. Resolve a test Chariox Server policy requiring the standard slice.
 4. Ask the client kernel to make the agent compliant.
 5. Prepare the standard slice with credentials and required provider-local
    state identified in Drill 0.
@@ -473,7 +473,7 @@ For each provider:
 7. Verify same provider thread id.
 8. Invoke a test workflow endpoint from a server-kernel simulation.
 9. Confirm the client kernel fans out to the slice provider run and attached
-   Arroba terminals.
+   Chariox terminals.
 
 Pass criteria:
 
@@ -529,7 +529,7 @@ Pass criteria:
 
 ## Drill 7: Workflow Endpoint Trigger After Transfer
 
-Purpose: verify the final Arroba Server trigger path, not just provider resume.
+Purpose: verify the final Chariox Server trigger path, not just provider resume.
 
 Topology:
 
@@ -539,7 +539,7 @@ test app service
   -> server workflow endpoint
   -> client kernel
   -> transferred provider thread
-  -> attached Arroba terminals
+  -> attached Chariox terminals
 ```
 
 Steps:
@@ -586,10 +586,10 @@ Recommended V1 policy values:
 ## Final Decision Rule
 
 If all three providers pass Drill 4 and Drill 5 with a local-unsliced starting
-point, Arroba Server V1 can support live autonomous compliance transfer into a
+point, Chariox Server V1 can support live autonomous compliance transfer into a
 standard slice.
 
-If one or more providers fail, Arroba Server V1 should still support strict
+If one or more providers fail, Chariox Server V1 should still support strict
 server policies by requiring autonomous agents to start inside the standard
 slice before connecting to servers that require slice-backed execution.
 

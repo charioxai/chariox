@@ -1,6 +1,6 @@
 # MCP Isolation Spike
 
-This is a disposable repo-local spike for M7. It validates whether Arroba should keep per-agent MCP grants as a production design.
+This is a disposable repo-local spike for M7. It validates whether Chariox should keep per-agent MCP grants as a production design.
 
 The spike is intentionally outside production `apps/` and `packages/` code. It should produce evidence before production work continues on dynamic MCP grant activation.
 
@@ -38,7 +38,7 @@ Implemented now:
 
 Not implemented yet:
 
-- productionizing this architecture in Arroba kernel/provider runtime code
+- productionizing this architecture in Chariox kernel/provider runtime code
 - larger scale runs with real MCPs and provider memory measurements
 
 ## Commands
@@ -93,6 +93,6 @@ These artifacts are disposable and should not be committed.
 
 ## Next Implementation Steps
 
-1. Convert the spike result into a production implementation plan for Arroba kernel/provider runtime.
+1. Convert the spike result into a production implementation plan for Chariox kernel/provider runtime.
 2. Decide whether production backing runtimes should default to per-agent, shared, or capability-configurable.
 3. Add a larger optional/nightly drill with real MCPs once production wiring exists.

@@ -188,7 +188,7 @@
     <header>
       <h1>Kernel and Web Terminal Performance Plan</h1>
       <p class="summary">
-        Simplify Arroba runtime updates so the web terminal feels immediate while idle kernels use
+        Simplify Chariox runtime updates so the web terminal feels immediate while idle kernels use
         almost no CPU. The system should send the minimum useful information at the minimum useful
         cadence. Humans do not need millisecond-level updates for values that change at human-scale
         speed.
@@ -512,7 +512,7 @@
           against the built web modules, runs the live local idle browser/kernel drill, and runs the
           stale relay target drill. The live idle drill uses a <code>12s</code> default idle window
           for the local gate and can be promoted to the full acceptance window with
-          <code>ARROBA_IDLE_BROWSER_DRILL_DURATION_MS=300000</code>. The hosted staging prompt drill
+          <code>CHARIOX_IDLE_BROWSER_DRILL_DURATION_MS=300000</code>. The hosted staging prompt drill
           is instrumented with a second browser page observing the waiting room, so it records
           keypress-to-terminal-route, keypress-to-visible prompt, keypress-to-first-provider-output,
           keypress-to-provider marker, keypress-to-waiting-room-row, and classified hot-path
@@ -682,8 +682,8 @@
           <code>waiting_room.public_snapshot.get</code> and proves those repeated reads do not grow
           <code>command-results.jsonl</code>. The latest kernel-side focused tests additionally
           verify that projected remote provider runs are not local pump targets, idle running
-          Arroba provider runs do not keep the background output pump active, and idle running
-          Arroba provider runs do not count as transport active work; starting provider runs still
+          Chariox provider runs do not keep the background output pump active, and idle running
+          Chariox provider runs do not count as transport active work; starting provider runs still
           use the active cadence. Focused <code>event_writer</code> Rust tests now also verify local
           websocket and hosted relay event-lane coalescing: event bursts keep a stable
           <code>33ms</code> deadline, preserve every queued event, and can be disabled for test
@@ -822,7 +822,7 @@
           <tr>
             <td>Provider streaming output</td>
             <td>
-              Browser observes continuous visible output with no long gaps introduced by the Arroba
+              Browser observes continuous visible output with no long gaps introduced by the Chariox
               transport; frames are coalesced; no full session snapshot is sent per output burst;
               scrolling and input remain responsive while output streams. The live local browser
               gate must join a real terminal session, capture its browser subscription attachment,

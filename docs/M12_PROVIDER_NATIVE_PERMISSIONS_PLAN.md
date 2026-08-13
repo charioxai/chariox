@@ -2,16 +2,16 @@
 
 ## Goal
 
-Add Arroba-managed user-facing permissions without introducing Arroba-owned bash execution in v1.
+Add Chariox-managed user-facing permissions without introducing Chariox-owned bash execution in v1.
 
-Arroba will:
+Chariox will:
 
 - normalize provider-native permission behavior,
 - expose one consistent user model,
-- surface native permission/question requests through Arroba clients,
+- surface native permission/question requests through Chariox clients,
 - support defaults at the session level and overrides at the agent level.
 
-MCP gating is out of scope for this milestone because MCP access is already controlled by Arroba grants.
+MCP gating is out of scope for this milestone because MCP access is already controlled by Chariox grants.
 
 ## V1 user model
 
@@ -40,10 +40,10 @@ Precedence:
 - `plan + approval-required` -> approval `untrusted`, sandbox `read-only`
 - `plan + yolo` -> approval `never`, sandbox `read-only`
 
-Workspace live sync launch policy remains authoritative when enabled. Managed mode can force stricter behavior when selective write fencing is unavailable. Tracked mode is observational, so Codex build runs use `danger-full-access` with the same native approval policy; this keeps repositories outside the selected synced roots editable instead of letting Codex's `workspace-write` sandbox block them before Arroba can observe the selected roots at turn end.
+Workspace live sync launch policy remains authoritative when enabled. Managed mode can force stricter behavior when selective write fencing is unavailable. Tracked mode is observational, so Codex build runs use `danger-full-access` with the same native approval policy; this keeps repositories outside the selected synced roots editable instead of letting Codex's `workspace-write` sandbox block them before Chariox can observe the selected roots at turn end.
 
 Codex CLI documentation also refers to the strict approval policy as `unless-trusted`; the current
-app-server schema used by Arroba's supported Codex runtime names the same mode `untrusted`.
+app-server schema used by Chariox's supported Codex runtime names the same mode `untrusted`.
 
 ### OpenCode
 
@@ -133,7 +133,7 @@ Implemented:
 - CLI slash commands for session/agent mode and permissions
 - agent footer display of effective mode and permissions
 - blocking popup interactions via `request_popup`
-- always-injected shared runtime instructions advertising Arroba runtime tools
+- always-injected shared runtime instructions advertising Chariox runtime tools
 - Codex native approval interception and response routing
 - OpenCode native permission interception and response routing
 - pane-local CLI interaction rendering for user feedback and provider-native permissions
@@ -143,8 +143,8 @@ Implemented:
 Validated with:
 
 - `cargo test --manifest-path apps/kernel/Cargo.toml --no-run`
-- `pnpm --filter @arroba/kernel-client run test`
-- `pnpm --filter @arroba/cli run lint`
+- `pnpm --filter @chariox/kernel-client run test`
+- `pnpm --filter @chariox/cli run lint`
 - controlled-exec spike fake/live drills for blocking popup semantics
 - live native permission drills for Codex and OpenCode
 - live popup drills, including Codex popup execution on the real-home provider auth path
@@ -159,7 +159,7 @@ M12 is closed with:
 - session-level and agent-level `mode` / `permissions`
 - agent override precedence over session defaults
 - normalized provider-native permission UX for Codex and OpenCode
-- blocking Arroba popup UX for user feedback
+- blocking Chariox popup UX for user feedback
 - same-turn continuation after popup or native permission response
 - CLI interaction-strip rendering and response submission
 - remote leased-agent forwarding for provider-native permissions and non-permission popups
@@ -167,4 +167,4 @@ M12 is closed with:
 The following are intentionally outside M12 and belong to later milestones:
 
 - shell popup queue UX
-- any Arroba-owned execution gate beyond provider-native permissions
+- any Chariox-owned execution gate beyond provider-native permissions

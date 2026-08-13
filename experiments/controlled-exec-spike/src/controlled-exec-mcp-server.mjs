@@ -49,7 +49,7 @@ async function handle(message) {
         result: {
           protocolVersion,
           capabilities: { tools: {} },
-          serverInfo: { name: "arroba-controlled-exec-spike", version: "0.0.0-spike" },
+          serverInfo: { name: "chariox-controlled-exec-spike", version: "0.0.0-spike" },
         },
       })
       return
@@ -63,7 +63,7 @@ async function handle(message) {
           tools: [
             {
               name: "controlled_exec",
-              description: "Execute a command through an Arroba-like permission gate.",
+              description: "Execute a command through a Chariox-like permission gate.",
               inputSchema: {
                 type: "object",
                 properties: {
@@ -77,7 +77,7 @@ async function handle(message) {
             },
             {
               name: "request_popup",
-              description: "Block on a scripted popup response to simulate a synchronous Arroba interaction.",
+              description: "Block on a scripted popup response to simulate a synchronous Chariox interaction.",
               inputSchema: {
                 type: "object",
                 properties: {

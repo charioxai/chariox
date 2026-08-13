@@ -7,13 +7,13 @@ Credentials can use `basic` injection, where `username` is the database user and
 Run a local MySQL for this example:
 
 ```sh
-docker run --rm --name arroba-mysql-example -e MYSQL_ROOT_PASSWORD=arroba -e MYSQL_DATABASE=arroba -p 3306:3306 mysql:8
+docker run --rm --name chariox-mysql-example -e MYSQL_ROOT_PASSWORD=chariox -e MYSQL_DATABASE=chariox -p 3306:3306 mysql:8
 ```
 
 In another shell, create sample data:
 
 ```sh
-docker exec arroba-mysql-example mysql -uroot -parroba arroba -e "create table if not exists users (id int primary key, email varchar(255)); insert into users values (1, 'user@example.com') on duplicate key update email = values(email);"
+docker exec chariox-mysql-example mysql -uroot -pchariox chariox -e "create table if not exists users (id int primary key, email varchar(255)); insert into users values (1, 'user@example.com') on duplicate key update email = values(email);"
 ```
 
 Store the password, register the credential, and register the connector:

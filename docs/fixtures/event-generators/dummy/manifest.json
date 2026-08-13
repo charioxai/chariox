@@ -1,15 +1,15 @@
 {
   "schema_version": 1,
-  "generator_id": "dev.arroba.dummy",
+  "generator_id": "dev.chariox.dummy",
   "version": "1.0.0",
   "name": "Dummy Events",
   "summary": "Deterministic event source for local and deployment validation.",
-  "provider": "Arroba test harness",
+  "provider": "Chariox test harness",
   "publisher": {
-    "id": "dev.arroba",
-    "name": "Arroba"
+    "id": "dev.chariox",
+    "name": "Chariox"
   },
-  "protocol_version": 1,
+  "protocol_version": 2,
   "categories": ["Developer tools", "Testing"],
   "authorization": {
     "kind": "none",
@@ -32,9 +32,9 @@
     }
   ],
   "signature": {
-    "key_id": "dev.arroba.fixture.2026-07-v2",
+    "key_id": "dev.chariox.fixture.2026-07-v2",
     "algorithm": "ed25519",
-    "digest": "sha256:f898c1079c6d475ff497fbcd13a37d76a1a35d3ace7bcb6a19540015c8c06718",
-    "value": "gsy1flHq1+l4uYdal/3/B1z4r16ETwukdeLdPAMZ4aMNHMwWiY9gCJEHZMm2rPCUky0z9DjFP1oTL/9JK0dSDw=="
+    "digest": "sha256:01b50f68fdc4cdcbb3c50efb906d743fb90e636cb8ae861f4fcf4823ebc97d6e",
+    "value": "3qQ1kctslV8otFbfOzoeqIqzh/erN+VrE+/suey+2tKKTo5nHfk0IHNZDhoKbXxNT15LetVdgs6f68Q/QTAtAg=="
   }
 }

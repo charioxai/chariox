@@ -2,7 +2,7 @@
 
 ## Status
 
-Working contributor conventions for Arroba v1.
+Working contributor conventions for Chariox v1.
 
 ## 1. Purpose
 
@@ -47,9 +47,9 @@ Use `docs/spec-v1.md`, `docs/ARCHITECTURE.md`, and `docs/PROTOCOL.md` for produc
 
 ## 2.5 Logging and Debugging
 
-- Use the shared Arroba logging system for runtime diagnostics.
+- Use the shared Chariox logging system for runtime diagnostics.
 - Do not add ad hoc debug env vars, one-off `appendFileSync` debug files, or temporary `eprintln!`/`console.log` debugging paths in committed code.
-- Runtime processes should write structured NDJSON logs under the shared Arroba log root.
+- Runtime processes should write structured NDJSON logs under the shared Chariox log root.
 - Default logging should capture metadata, lifecycle, warnings, and errors; prompt/provider content should not be logged by default.
 - If a change needs new debug visibility, extend the shared logger and document the added fields or commands instead of introducing a second logging mechanism.
 

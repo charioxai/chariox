@@ -4,7 +4,7 @@
 
 Turn the current session-agent metadata plumbing into a real manual multi-agent session runtime:
 
-- one session can host multiple top-level Arroba agents
+- one session can host multiple top-level Chariox agents
 - each agent has its own provider-run context and history
 - `Ctrl+A` and `/agent cycle` change the active agent, not just the footer label
 - the CLI response area is visibly split into one sub-area per agent
@@ -37,8 +37,8 @@ Still missing:
 When focus changes:
 
 - the daemon updates `focused_agent_id`
-- if the newly focused agent already has a parked provider run, Arroba resumes it
-- if the previous focused agent had the active provider run, Arroba parks it
+- if the newly focused agent already has a parked provider run, Chariox resumes it
+- if the previous focused agent had the active provider run, Chariox parks it
 - if the newly focused agent has no provider run yet, the session may temporarily have no active run until a launch/recovery path creates one
 
 ### Prompt routing
@@ -46,7 +46,7 @@ When focus changes:
 - direct user prompt submission always targets `focused_agent_id`
 - before dispatch, the daemon ensures the focused agent has an active provider run
 - if a parked run exists for that agent, it is resumed
-- if no run exists yet, Arroba launches one for that agent using the agent's provider/model metadata plus the current default account profile behavior
+- if no run exists yet, Chariox launches one for that agent using the agent's provider/model metadata plus the current default account profile behavior
 
 ## History and Output Model
 

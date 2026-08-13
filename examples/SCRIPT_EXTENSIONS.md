@@ -1,8 +1,8 @@
 # Script Extensions
 
-Script extensions let an Arroba agent call a local Python or TypeScript function as a tool. The user script only needs to define one callable `run` function plus a `test_run` validation function. Arroba handles tool input parsing, process execution, JSON serialization, and returning the result to the model.
+Script extensions let a Chariox agent call a local Python or TypeScript function as a tool. The user script only needs to define one callable `run` function plus a `test_run` validation function. Chariox handles tool input parsing, process execution, JSON serialization, and returning the result to the model.
 
-Scripts must exist on the machine hosting the agent. Arroba does not install Python or Node packages for you in v1; point Arroba at the environment you want it to use.
+Scripts must exist on the machine hosting the agent. Chariox does not install Python or Node packages for you in v1; point Chariox at the environment you want it to use.
 
 ## Python
 
@@ -92,8 +92,8 @@ Register the venv Python:
 Create a package root for Node dependencies:
 
 ```sh
-mkdir -p .arroba-script-envs/ts-default
-cd .arroba-script-envs/ts-default
+mkdir -p .chariox-script-envs/ts-default
+cd .chariox-script-envs/ts-default
 npm init -y
 npm install tsx
 ```
@@ -126,7 +126,7 @@ export function test_run(): void {
 Register Node with the package root that has `tsx`:
 
 ```text
-/env register node-default --node /opt/homebrew/bin/node --package-root /absolute/path/to/.arroba-script-envs/ts-default
+/env register node-default --node /opt/homebrew/bin/node --package-root /absolute/path/to/.chariox-script-envs/ts-default
 ```
 
 Register and grant:
@@ -160,7 +160,7 @@ The model receives:
 Install packages into the Node package root:
 
 ```sh
-cd .arroba-script-envs/ts-default
+cd .chariox-script-envs/ts-default
 npm install zod
 ```
 
@@ -252,10 +252,10 @@ Keep scripts simple:
 - Add full type hints to `run` parameters.
 - Add a return type annotation in Python.
 - Add a docstring or JSDoc comment to describe the tool to the model.
-- Define `test_run` with a toy example. Arroba runs it during validation/registration.
+- Define `test_run` with a toy example. Chariox runs it during validation/registration.
 - Return normal JSON-serializable values: strings, numbers, booleans, lists, dicts/objects, or `None`/`null`.
-- Do not print JSON to stdout for Arroba.
-- Do not write result files for Arroba.
-- Do not import an Arroba library.
+- Do not print JSON to stdout for Chariox.
+- Do not write result files for Chariox.
+- Do not import a Chariox library.
 
-Arroba's runner serializes the return value and sends it back to the model.
+Chariox's runner serializes the return value and sends it back to the model.

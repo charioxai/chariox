@@ -1,7 +1,7 @@
 # GitHub Connector Example
 
-This example gives an agent read access to selected GitHub REST API operations through the Arroba HTTP adapter.
-The GitHub token stays in the Arroba vault and is not sent to the model.
+This example gives an agent read access to selected GitHub REST API operations through the Chariox HTTP adapter.
+The GitHub token stays in the Chariox vault and is not sent to the model.
 
 ## 1. Get A GitHub Token
 
@@ -16,7 +16,7 @@ For a dedicated token, create a GitHub personal access token with only the scope
 For public repository metadata and public issues, no special repository scope is required.
 For private repositories, use the narrowest repository read scope available for your token type.
 
-## 2. Store The Token In The Arroba Vault
+## 2. Store The Token In The Chariox Vault
 
 Store the token under the vault key used by `credential.yaml`:
 
@@ -52,8 +52,8 @@ Then register the GitHub connector:
 
 ```text
 /connector test github viewer --credential github-api --allow read --input '{}'
-/connector test github repo --credential github-api --allow read --input '{"owner":"mgutierrez09","repo":"arroba"}'
-/connector test github list_repo_issues --credential github-api --allow read --input '{"owner":"mgutierrez09","repo":"arroba"}'
+/connector test github repo --credential github-api --allow read --input '{"owner":"mgutierrez09","repo":"chariox"}'
+/connector test github list_repo_issues --credential github-api --allow read --input '{"owner":"mgutierrez09","repo":"chariox"}'
 ```
 
 ## 6. Grant It To An Agent

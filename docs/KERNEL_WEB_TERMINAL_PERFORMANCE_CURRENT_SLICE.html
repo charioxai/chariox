@@ -297,7 +297,7 @@
           failures still schedule a broad refresh for recovery. Successful browser transport reattach now
           also stays local: after <code>AttachToSession</code> and resubscribe it updates controls
           and status without scheduling prompt-history refresh work. The kernel transport pump now
-          also treats a running Arroba provider with no active prompt as idle work instead of
+          also treats a running Chariox provider with no active prompt as idle work instead of
           keeping the fast pump cadence alive forever; prompt work, provider startup, native
           provider streams, and due watchdogs still wake the pump. Repeated route-visible
           waiting-room refresh scheduling now also uses the successful-refresh freshness guard:
@@ -507,13 +507,13 @@
           Hosted relay daemon heartbeats should use the same human-scale default cadence. The base
           daemon config and environment loader now share a <code>5s</code>
           <code>DEFAULT_RELAY_HEARTBEAT_MS</code>; explicit tests and drills can still override
-          <code>ARROBA_RELAY_HEARTBEAT_MS</code> when they need faster simulated failure detection.
+          <code>CHARIOX_RELAY_HEARTBEAT_MS</code> when they need faster simulated failure detection.
         </li>
         <li>
           The background transport pump should be adaptive: keep <code>500ms</code> while prompt work,
           provider startup, native/background provider streams, or due workflow watchdogs exist;
           otherwise use a <code>5s</code> safety sweep so an idle kernel does not wake continuously.
-          A running Arroba provider with no active prompt is idle for pump purposes. The pump task
+          A running Chariox provider with no active prompt is idle for pump purposes. The pump task
           also waits on the shared runtime projection change signal, so a new prompt/run/watchdog
           mutation can wake it immediately instead of waiting for the idle sweep.
         </li>

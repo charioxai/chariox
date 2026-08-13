@@ -217,14 +217,14 @@
   <header>
     <h1>Cross-Repo Review Remediation Plan</h1>
     <p class="lede">
-      A phased plan to carry out the July 2026 cross-repo review of <code>arroba</code> and
-      <code>arroba-cloud</code>: eliminate blocking work under the kernel's global lock, close the
+      A phased plan to carry out the July 2026 cross-repo review of <code>chariox</code> and
+      <code>chariox-cloud</code>: eliminate blocking work under the kernel's global lock, close the
       security gaps in relay and cloud token handling, restore fail-closed startup behavior in the
       hosted control plane, add missing CI, and pay down the largest structural debts.
     </p>
     <div class="meta">
       <span>Drafted: 2026-07-06</span>
-      <span>Repos: arroba, arroba-cloud</span>
+      <span>Repos: chariox, chariox-cloud</span>
       <span>Source: full-repo review (kernel, relay, cloud API, relay-tokens, web terminal)</span>
       <span>Status: proposed</span>
     </div>
@@ -249,7 +249,7 @@
           <tr>
             <td>0</td>
             <td>A. Fail-closed security fixes + cloud CI</td>
-            <td>arroba-cloud, arroba</td>
+            <td>chariox-cloud, chariox</td>
             <td>P0</td>
             <td>1–2 days</td>
             <td>Low (small, isolated diffs)</td>
@@ -258,7 +258,7 @@
           <tr>
             <td>1</td>
             <td>B. Unblock the kernel: no blocking work under the app lock</td>
-            <td>arroba</td>
+            <td>chariox</td>
             <td>P0</td>
             <td>1–2 weeks</td>
             <td>Medium (touches hot paths)</td>
@@ -276,7 +276,7 @@
           <tr>
             <td>3</td>
             <td>D. Rust workspace + shared claim model</td>
-            <td>arroba</td>
+            <td>chariox</td>
             <td>P1</td>
             <td>2–3 days</td>
             <td>Low</td>
@@ -294,7 +294,7 @@
           <tr>
             <td>5</td>
             <td>F. Hygiene and small performance items</td>
-            <td>arroba</td>
+            <td>chariox</td>
             <td>P2</td>
             <td>&lt;1 day</td>
             <td>Trivial</td>
@@ -318,22 +318,22 @@
     </p>
 
     <div class="task security">
-      <h4>A1. Require real cookie/CSRF secrets at startup <span class="repo">arroba-cloud</span></h4>
+      <h4>A1. Require real cookie/CSRF secrets at startup <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/api/src/http/browser-security-registration.ts:30–31</code>, <code>apps/api/src/node-server.ts</code></div>
       <ul>
         <li>Remove the <code>"dev-only-cookie-secret-must-not-ship"</code> / <code>"dev-only-csrf-hmac-key-must-not-ship"</code> fallbacks from <code>registerBrowserSecurity</code>.</li>
         <li>Make <code>createCloudApiServer</code> throw at startup when neither <code>options.csrf</code> nor <code>options.auth0.sessionSecret</code> supplies a secret, unless an explicit <code>allowInsecureDevSecrets: true</code> flag is passed.</li>
         <li>Set that flag only in test factories (<code>server.test.ts</code>, <code>local-browser-terminal-server.ts</code>) — never in <code>node-server.ts</code>.</li>
-        <li>Wire <code>ARROBA_CLOUD_COOKIE_SECRET</code> / <code>ARROBA_CLOUD_CSRF_HMAC_KEY</code> env vars through <code>startCloudApiNodeServer</code> so production has a first-class configuration path.</li>
+        <li>Wire <code>CHARIOX_CLOUD_COOKIE_SECRET</code> / <code>CHARIOX_CLOUD_CSRF_HMAC_KEY</code> env vars through <code>startCloudApiNodeServer</code> so production has a first-class configuration path.</li>
       </ul>
       <div class="accept"><strong>Accept:</strong> starting <code>node-server.ts</code> with no Auth0 config and no explicit secrets exits non-zero with a clear message; a test asserts the throw; existing test suites pass using the explicit dev flag.</div>
     </div>
 
     <div class="task security">
-      <h4>A2. Guard the test-identity-header bypass out of production <span class="repo">arroba-cloud</span></h4>
+      <h4>A2. Guard the test-identity-header bypass out of production <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/api/src/node-server.ts:14</code></div>
       <ul>
-        <li>Remove <code>testAuth0IdentityHeader: env.ARROBA_CLOUD_TEST_AUTH0_IDENTITY_HEADER === "1"</code> from the production entrypoint entirely.</li>
+        <li>Remove <code>testAuth0IdentityHeader: env.CHARIOX_CLOUD_TEST_AUTH0_IDENTITY_HEADER === "1"</code> from the production entrypoint entirely.</li>
         <li>Keep the option on <code>createCloudApiServer</code> for test factories, but make it refuse to activate when <code>NODE_ENV === "production"</code> (throw, don't silently ignore).</li>
       </ul>
       <div class="accept"><strong>Accept:</strong> setting the env var against the production entrypoint has no effect; a test asserts that constructing a server with the option under <code>NODE_ENV=production</code> throws.</div>
@@ -341,7 +341,7 @@
 
     <div class="task security">
       <h4>A3. Constant-time signature and token comparison <span class="repo">both</span></h4>
-      <div class="where"><code>arroba-cloud/packages/relay-tokens/src/index.ts:171</code>, <code>arroba/apps/relay/src/auth.rs:177</code></div>
+      <div class="where"><code>chariox-cloud/packages/relay-tokens/src/index.ts:171</code>, <code>chariox/apps/relay/src/auth.rs:177</code></div>
       <ul>
         <li>TypeScript: in <code>verifyRelayToken</code>, decode both signatures to buffers and compare with <code>crypto.timingSafeEqual</code> (length-check first, then compare; reject on length mismatch).</li>
         <li>Rust: replace <code>expected_token != request.token</code> in <code>SharedTokenVerifier::verify</code> with a constant-time comparison. Add the <code>subtle</code> crate (already transitively present via the crypto stack) and use <code>ConstantTimeEq</code> on the byte slices.</li>
@@ -350,7 +350,7 @@
     </div>
 
     <div class="task security">
-      <h4>A4. Relay auth fails closed on clock error <span class="repo">arroba</span></h4>
+      <h4>A4. Relay auth fails closed on clock error <span class="repo">chariox</span></h4>
       <div class="where"><code>apps/relay/src/auth.rs:468</code> (<code>current_unix_ms</code>)</div>
       <ul>
         <li><code>current_unix_ms()</code> currently returns <code>0</code> when <code>SystemTime::now()</code> is before the epoch, which makes every expired token verify successfully.</li>
@@ -360,7 +360,7 @@
     </div>
 
     <div class="task security">
-      <h4>A5. Make relay "open bootstrap mode" an explicit opt-in <span class="repo">arroba</span></h4>
+      <h4>A5. Make relay "open bootstrap mode" an explicit opt-in <span class="repo">chariox</span></h4>
       <div class="where"><code>apps/relay/src/auth.rs:176–181</code>, relay server config/bootstrap</div>
       <ul>
         <li>Today <code>SharedTokenVerifier::new(None)</code> accepts any request. Keep the capability for localhost bootstrap, but require the relay binary/config to state it explicitly (e.g. <code>auth_mode = "open"</code> or <code>--insecure-open-relay</code>).</li>
@@ -371,10 +371,10 @@
     </div>
 
     <div class="task">
-      <h4>A6. Add CI to arroba-cloud <span class="repo">arroba-cloud</span></h4>
+      <h4>A6. Add CI to chariox-cloud <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>.github/workflows/ci.yml</code> (new)</div>
       <ul>
-        <li>Mirror the arroba node job: pnpm 9.15 / Node 22, <code>pnpm install --frozen-lockfile</code>, <code>pnpm lint</code>, <code>pnpm build</code>, <code>pnpm test</code>.</li>
+        <li>Mirror the chariox node job: pnpm 9.15 / Node 22, <code>pnpm install --frozen-lockfile</code>, <code>pnpm lint</code>, <code>pnpm build</code>, <code>pnpm test</code>.</li>
         <li>Add a Postgres service container (schema lives in <code>packages/db/prisma</code>) and run <code>prisma migrate deploy</code> before tests that need it; skip or mock DB-bound suites if they already support it.</li>
         <li>Gate merges to <code>main</code> on the workflow once it is green for a few days.</li>
       </ul>
@@ -474,12 +474,12 @@
     <h2>Phase 2 — Token model hardening <span class="pill p1">P1</span></h2>
     <p>
       Must land before hosted relay realms are opened beyond trusted testers. These changes touch the
-      wire format contract between arroba-cloud (issuer) and the arroba relay (verifier), so they ship
+      wire format contract between chariox-cloud (issuer) and the chariox relay (verifier), so they ship
       as coordinated pairs with shared test vectors.
     </p>
 
     <div class="task security">
-      <h4>C1. Cap client-supplied TTLs server-side <span class="repo">arroba-cloud</span></h4>
+      <h4>C1. Cap client-supplied TTLs server-side <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/api/src/runtime-token-service.ts:39</code>, <code>pairing-service.ts:61</code>, <code>device-login-service.ts:54</code>, <code>pairing-token-repository.ts:21</code></div>
       <ul>
         <li>Every issuance path does <code>input.ttlMs ?? default</code> with no ceiling, and routes accept <code>ttlMs</code> from request bodies — an authenticated client can mint effectively immortal relay tokens.</li>
@@ -490,10 +490,10 @@
     </div>
 
     <div class="task security">
-      <h4>C2. Relay-side revocation for scoped tokens <span class="repo">arroba</span></h4>
+      <h4>C2. Relay-side revocation for scoped tokens <span class="repo">chariox</span></h4>
       <div class="where"><code>apps/relay/src/auth.rs</code> (<code>ScopedTokenVerifier</code>), relay server state</div>
       <ul>
-        <li>The relay verifies scoped tokens purely by signature + expiry; <code>jti</code> (<code>token_id</code>) is carried but never checked, and arroba-cloud already has revocation bookkeeping (<code>account-admin-revocations</code>) with nowhere to enforce it.</li>
+        <li>The relay verifies scoped tokens purely by signature + expiry; <code>jti</code> (<code>token_id</code>) is carried but never checked, and chariox-cloud already has revocation bookkeeping (<code>account-admin-revocations</code>) with nowhere to enforce it.</li>
         <li>Add an in-memory denylist to <code>ScopedTokenVerifier</code> keyed by <code>token_id</code> (and a coarser one by <code>account_id</code> for account deactivation), checked in <code>validate_claims</code>.</li>
         <li>Feed it from cloud: a periodic pull of active revocations for the realm (simple, works with current architecture) — entries expire from the denylist when the underlying token would have expired anyway, keeping it bounded.</li>
         <li>With C1's short TTLs, a small propagation delay is acceptable; document the bound (revocation effective within one sync interval).</li>
@@ -503,10 +503,10 @@
 
     <div class="task">
       <h4>C3. Single token format + shared claim model <span class="repo">both</span></h4>
-      <div class="where"><code>arroba/apps/relay/src/auth.rs</code> (dual <code>arroba-scoped-v1</code>/JWT parsing), <code>arroba-cloud/packages/relay-tokens</code></div>
+      <div class="where"><code>chariox/apps/relay/src/auth.rs</code> (dual <code>chariox-scoped-v1</code>/JWT parsing), <code>chariox-cloud/packages/relay-tokens</code></div>
       <ul>
         <li>The relay accepts two formats with duplicated claim parsing; the TS and Rust claim models are hand-synchronized and already drifting (TS emits <code>session_id</code>, Rust silently drops it).</li>
-        <li>Standardize on the JWT form (cloud already issues it), deprecate <code>arroba-scoped-v1</code>: keep accepting it for one release with a warning metric, then delete <code>decode_scoped_token_parts</code> and <code>encode_scoped_hmac_token</code> or move them to test-only.</li>
+        <li>Standardize on the JWT form (cloud already issues it), deprecate <code>chariox-scoped-v1</code>: keep accepting it for one release with a warning metric, then delete <code>decode_scoped_token_parts</code> and <code>encode_scoped_hmac_token</code> or move them to test-only.</li>
         <li>Create a shared conformance fixture: a JSON file of valid/invalid token test vectors (claims, secret, expected verdict) checked into <em>both</em> repos (or one repo, vendored by script into the other) and consumed by both test suites. Add <code>session_id</code> to the Rust claim struct while doing this.</li>
         <li>Add <code>nbf</code>/future-<code>iat</code> tolerance checks (small clock-skew window, e.g. 60s) on the Rust verifier.</li>
       </ul>
@@ -514,7 +514,7 @@
     </div>
 
     <div class="task">
-      <h4>C4. Enable a real CSP on the hosted web app <span class="repo">arroba-cloud</span></h4>
+      <h4>C4. Enable a real CSP on the hosted web app <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/api/src/server.ts:89</code> (<code>contentSecurityPolicy: false</code>), <code>apps/web</code></div>
       <ul>
         <li>The browser terminal handles relay tokens and session data; XSS there is token theft. Define a strict policy (<code>default-src 'self'</code>; explicit <code>connect-src</code> for relay websocket origins; no <code>unsafe-inline</code> scripts) and enumerate what currently violates it.</li>
@@ -529,7 +529,7 @@
     <h2>Phase 3 — Rust workspace and build unification <span class="pill p1">P1</span></h2>
 
     <div class="task">
-      <h4>D1. Root Cargo workspace <span class="repo">arroba</span></h4>
+      <h4>D1. Root Cargo workspace <span class="repo">chariox</span></h4>
       <div class="where">new root <code>Cargo.toml</code>; <code>apps/kernel</code>, <code>apps/relay</code>, <code>adapters/rust</code> (currently three crates, three lockfiles)</div>
       <ul>
         <li>Create a virtual workspace with the three members; delete the per-crate <code>Cargo.lock</code> files in favor of one root lock. This removes version drift between kernel and relay — which share the auth types via a path dependency today.</li>
@@ -550,7 +550,7 @@
     </p>
 
     <div class="task">
-      <h4>E1. Split <code>terminal-browser-app.ts</code> <span class="repo">arroba-cloud</span></h4>
+      <h4>E1. Split <code>terminal-browser-app.ts</code> <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/web/src/terminal/app/terminal-browser-app.ts</code> (4,861 lines)</div>
       <ul>
         <li>This is the browser-side analog of the old <code>DaemonApp</code> god object. The sibling <code>terminal/</code> controllers (side-panel composition, session snapshot, history hydration, slices panel) show the target shape already exists — continue it.</li>
@@ -560,7 +560,7 @@
     </div>
 
     <div class="task">
-      <h4>E2. Kernel monster files <span class="repo">arroba</span></h4>
+      <h4>E2. Kernel monster files <span class="repo">chariox</span></h4>
       <div class="where"><code>workflow_code.rs</code> (6,337), <code>runtime/external_provider_session_control.rs</code> (5,149), <code>app/external_provider_session_discovery.rs</code> (4,026), <code>app/kernel_session.rs</code> (2,728), <code>terminal/stream.rs</code> (2,702)</div>
       <ul>
         <li><code>WORKFLOW_CODE_OVERARCHING_PLAN.html</code> already governs <code>workflow_code.rs</code> — fold its split into that plan rather than duplicating here.</li>
@@ -571,7 +571,7 @@
     </div>
 
     <div class="task">
-      <h4>E3. Directory structure for <code>apps/api/src</code> <span class="repo">arroba-cloud</span></h4>
+      <h4>E3. Directory structure for <code>apps/api/src</code> <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/api/src</code> (~100 flat files with name-prefix namespacing)</div>
       <ul>
         <li>The prefixes are the module map: move <code>account-*</code> → <code>account/</code>, <code>browser-*</code> → <code>browser/</code>, <code>billing-*</code> → <code>billing/</code>, <code>cloud-api-*-facade</code> → <code>facades/</code>, keeping <code>routes/</code> and <code>http/</code> as-is.</li>
@@ -581,7 +581,7 @@
     </div>
 
     <div class="task">
-      <h4>E4. Styles out of TypeScript <span class="repo">arroba-cloud</span></h4>
+      <h4>E4. Styles out of TypeScript <span class="repo">chariox-cloud</span></h4>
       <div class="where"><code>apps/web/src/styles/</code> — <code>workflows.ts</code> (3,876), <code>freeform.ts</code> (3,648), <code>terminal.ts</code> (2,957), <code>tokens.ts</code> (1,613), <code>waiting-room.ts</code> (1,488)</div>
       <ul>
         <li>~13,500 lines of CSS living as TS strings defeats tooling (no CSS linting, no dead-rule detection) and forces the <code>unsafe-inline</code> style CSP carve-out from C4.</li>
@@ -595,7 +595,7 @@
     <h2>Phase 5 — Hygiene and small items <span class="pill p2">P2</span></h2>
 
     <div class="task hygiene">
-      <h4>F1. Remove tracked junk, ignore generated clutter <span class="repo">arroba</span></h4>
+      <h4>F1. Remove tracked junk, ignore generated clutter <span class="repo">chariox</span></h4>
       <div class="where">repo root</div>
       <ul>
         <li><code>git rm</code>: <code>gmail-view-email-sent-1781191069.png</code>, <code>commands.txt</code>, <code>outputs/workflow-echo-mcp-*.txt</code>, <code>.tmp-opencode-openapi.json</code>; move <code>tmp/live-drills/*</code> into <code>docs/</code> or <code>examples/</code> if the drill fixtures are still referenced, otherwise delete.</li>
@@ -605,16 +605,16 @@
     </div>
 
     <div class="task hygiene">
-      <h4>F2. README restructure <span class="repo">arroba</span></h4>
+      <h4>F2. README restructure <span class="repo">chariox</span></h4>
       <div class="where"><code>README.md</code></div>
       <ul>
-        <li>Move the milestone-history prose (the 40-line "current codebase provides" bullet) to <code>docs/STATUS.md</code> or the roadmap doc; keep the README to: what Arroba is, architecture sketch, how to build/run each app, where the docs live.</li>
+        <li>Move the milestone-history prose (the 40-line "current codebase provides" bullet) to <code>docs/STATUS.md</code> or the roadmap doc; keep the README to: what Chariox is, architecture sketch, how to build/run each app, where the docs live.</li>
       </ul>
       <div class="accept"><strong>Accept:</strong> README under ~120 lines; a newcomer can go from clone to running daemon + CLI using only the README.</div>
     </div>
 
     <div class="task">
-      <h4>F3. Projection clone reduction <span class="repo">arroba</span></h4>
+      <h4>F3. Projection clone reduction <span class="repo">chariox</span></h4>
       <div class="where">kernel projections (~5,000 <code>.clone()</code> sites overall; focus on per-command snapshot clones)</div>
       <ul>
         <li>Continue the "trimmed router-side snapshots" direction: wrap warmed read models in <code>Arc</code> so command handlers share rather than copy; measure with the B1 instrumentation before/after to pick the top three projection types by clone cost rather than doing a blanket pass.</li>
@@ -630,7 +630,7 @@
       <li><strong>Phase 1 is measured, not asserted:</strong> B1's lock-hold and command-latency histograms are the acceptance instrument for B2–B5; keep the baseline and after numbers in a short appendix committed next to this plan.</li>
       <li><strong>Refactors are move-only:</strong> Phase 4 slices separate mechanical moves from behavior changes into distinct commits, relying on the existing (large) suites; no refactor PR may change a test expectation.</li>
       <li><strong>Cross-repo token changes (C1–C3) land behind compatibility:</strong> relay keeps accepting the old format for one release; the shared vector file is the contract test preventing drift from returning.</li>
-      <li>Existing harnesses to lean on: the local daemon smoke harness (kernel), relay smoke drills, arroba-cloud's route/service suites, and the visual-validation fixtures for the web terminal.</li>
+      <li>Existing harnesses to lean on: the local daemon smoke harness (kernel), relay smoke drills, chariox-cloud's route/service suites, and the visual-validation fixtures for the web terminal.</li>
     </ul>
   </section>
 

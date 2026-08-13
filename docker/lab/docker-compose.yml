@@ -3,57 +3,57 @@ services:
     build:
       context: ../..
       dockerfile: docker/lab/Dockerfile
-    image: arroba-lab:latest
-    container_name: arroba-relay
+    image: chariox-lab:latest
+    container_name: chariox-relay
     command: ["relay"]
     environment:
-      ARROBA_RELAY_HOST: 0.0.0.0
-      ARROBA_RELAY_PORT: "43150"
-      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
+      CHARIOX_RELAY_HOST: 0.0.0.0
+      CHARIOX_RELAY_PORT: "43150"
+      CHARIOX_RELAY_TOKEN: ${CHARIOX_RELAY_TOKEN:-local-lab}
     ports:
       - "43150:43150"
 
   worker-a:
-    image: arroba-lab:latest
+    image: chariox-lab:latest
     build:
       context: ../..
       dockerfile: docker/lab/Dockerfile
-    container_name: arroba-worker-a
-    hostname: arroba-worker-a
+    container_name: chariox-worker-a
+    hostname: chariox-worker-a
     command: ["daemon"]
     environment:
-      ARROBA_RELAY_URL: ws://relay:43150
-      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
-      ARROBA_ACCEPT_REMOTE_LEASES: "true"
-      ARROBA_MACHINE_ALIAS: arroba-worker-a
+      CHARIOX_RELAY_URL: ws://relay:43150
+      CHARIOX_RELAY_TOKEN: ${CHARIOX_RELAY_TOKEN:-local-lab}
+      CHARIOX_ACCEPT_REMOTE_LEASES: "true"
+      CHARIOX_MACHINE_ALIAS: chariox-worker-a
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-relay,localhost,127.0.0.1}
     volumes:
-      - worker-a-home:/home/arroba
+      - worker-a-home:/home/chariox
     ports:
       - "39000-39049:39000-39049"
     depends_on:
       - relay
 
   worker-b:
-    image: arroba-lab:latest
+    image: chariox-lab:latest
     build:
       context: ../..
       dockerfile: docker/lab/Dockerfile
-    container_name: arroba-worker-b
-    hostname: arroba-worker-b
+    container_name: chariox-worker-b
+    hostname: chariox-worker-b
     command: ["daemon"]
     environment:
-      ARROBA_RELAY_URL: ws://relay:43150
-      ARROBA_RELAY_TOKEN: ${ARROBA_RELAY_TOKEN:-local-lab}
-      ARROBA_ACCEPT_REMOTE_LEASES: "true"
-      ARROBA_MACHINE_ALIAS: arroba-worker-b
+      CHARIOX_RELAY_URL: ws://relay:43150
+      CHARIOX_RELAY_TOKEN: ${CHARIOX_RELAY_TOKEN:-local-lab}
+      CHARIOX_ACCEPT_REMOTE_LEASES: "true"
+      CHARIOX_MACHINE_ALIAS: chariox-worker-b
       HTTP_PROXY: ${HTTP_PROXY:-}
       HTTPS_PROXY: ${HTTPS_PROXY:-}
       NO_PROXY: ${NO_PROXY:-relay,localhost,127.0.0.1}
     volumes:
-      - worker-b-home:/home/arroba
+      - worker-b-home:/home/chariox
     ports:
       - "39050-39099:39050-39099"
     depends_on:

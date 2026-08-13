@@ -1,4 +1,4 @@
-# Arroba v1 Capability and Evolution Specification Details
+# Chariox v1 Capability and Evolution Specification Details
 
 Extracted from [spec-v1.md](spec-v1.md) to keep the main v1 specification below the line cap while preserving detailed capability, scheduling, memory, storage, failure, and entity notes.
 
@@ -41,7 +41,7 @@ Runs a Workspace Live Sync file edit flow.
 
 Requirements:
 
-- initiated through an Arroba slash command such as `/edit`
+- initiated through a Chariox slash command such as `/edit`
 - applied to workspace files, not daemon internals
 - able to report diffs or change summaries back to the client
 
@@ -93,7 +93,7 @@ If provider attachment is unsupported, the local stored path is surfaced instead
 
 ### 9.9 Compact Context
 
-This capability is triggered by the Arroba slash command `/compact`.
+This capability is triggered by the Chariox slash command `/compact`.
 
 It is user-triggered and daemon-orchestrated.
 
@@ -103,10 +103,10 @@ Flow:
 2. Daemon invokes provider adapter `request_compaction_summary` on the active run.
 3. Daemon stores the returned summary as a compaction artifact/memory input.
 4. Daemon starts a fresh provider run with an empty context window.
-5. Daemon warms the new run using the compaction summary plus Arroba-selected memory/workspace state.
+5. Daemon warms the new run using the compaction summary plus Chariox-selected memory/workspace state.
 6. Previous run is parked or terminated according to session policy.
 
-If `request_compaction_summary` is unsupported, Arroba falls back to Arroba-managed memory summaries and still allows fresh-run warm-up.
+If `request_compaction_summary` is unsupported, Chariox falls back to Chariox-managed memory summaries and still allows fresh-run warm-up.
 
 ## 10. Scheduling Model
 
@@ -121,8 +121,8 @@ Schedules are stored as session metadata and execute only while:
 v1 schedule execution types:
 
 - send a prompt into the active provider terminal workflow
-- run an Arroba capability
-- run a small workflow composed of Arroba steps
+- run a Chariox capability
+- run a small workflow composed of Chariox steps
 
 Example workflow shapes:
 
@@ -135,11 +135,11 @@ The schedule system belongs to the capability lane, not the control lane.
 
 ## 11. Memory Management and Context Transfer
 
-Arroba v1 memory management is designed to reduce repeated user instructions while staying compatible with provider-native behavior.
+Chariox v1 memory management is designed to reduce repeated user instructions while staying compatible with provider-native behavior.
 
 ### 11.1 Dual Memory Model
 
-Arroba maintains two complementary memory scopes per session:
+Chariox maintains two complementary memory scopes per session:
 
 - short-term memory for immediate conversational and task continuity
 - long-term memory for durable user/project guidance that should persist across provider switches and machine reassignment
@@ -177,7 +177,7 @@ Lifecycle:
 
 ### 11.4 Context Transfer Package
 
-When context transfer is requested (for provider switch, machine reassignment, or resumed work), Arroba composes a transfer package from:
+When context transfer is requested (for provider switch, machine reassignment, or resumed work), Chariox composes a transfer package from:
 
 - selected short-term memory snapshot
 - relevant long-term memory entries
@@ -185,18 +185,18 @@ When context transfer is requested (for provider switch, machine reassignment, o
 
 Requirements:
 
-- transfer package generation is deterministic and auditable at the Arroba layer
+- transfer package generation is deterministic and auditable at the Chariox layer
 - users can inspect or constrain what long-term memory is included
 - transfer data remains encrypted in transit under per-session end-to-end encryption rules
 - daemon may trigger `request_memory_update` before package generation to refresh memory state after provider-side compaction/reset signals
-- for Arroba-driven compaction, daemon may trigger `request_compaction_summary` and use the output as warm-up context for a fresh run
+- for Chariox-driven compaction, daemon may trigger `request_compaction_summary` and use the output as warm-up context for a fresh run
 
 ### 11.5 Boundaries
 
 Memory management must follow these boundaries:
 
-- Arroba memory augments, but does not replace, provider-native hidden session state
-- provider internals are not required for Arroba memory continuity
+- Chariox memory augments, but does not replace, provider-native hidden session state
+- provider internals are not required for Chariox memory continuity
 - users must be able to clear short-term and long-term memory independently
 
 ## 12. Git and File Operation Requirements
@@ -322,12 +322,12 @@ Likely entities for v1:
 
 ## 16. Summary
 
-Arroba v1 is defined by three lanes:
+Chariox v1 is defined by three lanes:
 
 - terminal lane for raw provider-native interaction
-- capability lane for Arroba-owned commands and workflows
+- capability lane for Chariox-owned commands and workflows
 - control lane for three narrow provider integration points: `attach_file`, `request_memory_update`, and `request_compaction_summary`
 
-This keeps Arroba faithful to the native CLI experience while still supporting practical daemon-owned features such as scheduling, screenshots, file transfer, memory-aware context transfer, git inspection, file operations, and attachment-aware workflows.
+This keeps Chariox faithful to the native CLI experience while still supporting practical daemon-owned features such as scheduling, screenshots, file transfer, memory-aware context transfer, git inspection, file operations, and attachment-aware workflows.
 
-In workflow mode, Arroba extends that same daemon-owned model to multi-agent execution through a generic graph runtime, structured handoffs, explicit worktree isolation, and coordinator-driven completion decisions.
+In workflow mode, Chariox extends that same daemon-owned model to multi-agent execution through a generic graph runtime, structured handoffs, explicit worktree isolation, and coordinator-driven completion decisions.

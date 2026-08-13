@@ -4,12 +4,12 @@ Status: active client contract for terminal implementations.
 
 ## Goal
 
-Any Arroba CLI should render agent responses consistently without embedding
+Any Chariox CLI should render agent responses consistently without embedding
 provider-specific parsing rules in the client.
 
 This document defines:
 
-- what a CLI should consume from Arroba
+- what a CLI should consume from Chariox
 - how normal assistant output should be rendered
 - how tool output should be rendered
 - which parsing logic belongs in shared libraries rather than in each client
@@ -19,8 +19,8 @@ This document defines:
 This document covers response rendering for:
 
 - assistant text replies
-- provider reasoning/streaming text as exposed through Arroba transcript events
-- tool calls emitted by Codex, OpenCode, and Arroba runtime tools
+- provider reasoning/streaming text as exposed through Chariox transcript events
+- tool calls emitted by Codex, OpenCode, and Chariox runtime tools
 
 It does not define:
 
@@ -31,7 +31,7 @@ It does not define:
 
 ## Rendering Layers
 
-An Arroba CLI should treat agent response rendering as three layers:
+A Chariox CLI should treat agent response rendering as three layers:
 
 1. `Transcript entry selection`
    Choose which transcript/session events belong in the visible response stream.
@@ -42,19 +42,19 @@ An Arroba CLI should treat agent response rendering as three layers:
    Render tool output through the shared `ToolDisplay` contract.
 
 The important rule is that only layer 3 is provider-shape-sensitive, and that
-sensitivity must live in shared Arroba code, not in each CLI.
+sensitivity must live in shared Chariox code, not in each CLI.
 
 ## Canonical Inputs
 
 ### Normal assistant responses
 
-Normal agent replies should be rendered from Arroba transcript/message records,
+Normal agent replies should be rendered from Chariox transcript/message records,
 not from provider raw PTY output.
 
 Clients should prefer:
 
 - finalized assistant transcript entries
-- streamed assistant deltas that Arroba has already classified as assistant
+- streamed assistant deltas that Chariox has already classified as assistant
   text
 
 Clients should not scrape:
@@ -76,7 +76,7 @@ packages/tool-display/schema/tool-display.schema.json
 packages/tool-display/fixtures/
 ```
 
-TypeScript clients should depend on `@arroba/tool-display`.
+TypeScript clients should depend on `@chariox/tool-display`.
 
 Non-TypeScript clients should consume:
 
@@ -176,15 +176,15 @@ inspect provider raw JSON.
 
 ## Provider Independence Rule
 
-Codex and OpenCode emit different raw tool shapes. Arroba normalizes them
+Codex and OpenCode emit different raw tool shapes. Chariox normalizes them
 before the client should care.
 
 Examples already handled in the shared formatter:
 
 - Codex runtime patch payloads using `patch_text`
-- OpenCode Arroba runtime tool aliases such as:
-  - `arroba_read_artifact`
-  - `arroba_apply_patch`
+- OpenCode Chariox runtime tool aliases such as:
+  - `chariox_read_artifact`
+  - `chariox_apply_patch`
 - OpenCode snake_case inputs
 
 If another provider/model emits a new raw shape, fix it once in the shared tool
@@ -212,7 +212,7 @@ Recommended behavior:
 
 To keep CLI, web, iOS, and Android aligned:
 
-- normalization lives in shared Arroba code
+- normalization lives in shared Chariox code
 - fixtures define raw-provider compatibility examples
 - schema defines the language-neutral output contract
 
@@ -230,7 +230,7 @@ Any new CLI implementation should:
 
 - consume normal transcript entries for assistant text
 - use the shared transcript markdown path for message bodies
-- format tool updates through `@arroba/tool-display` or the schema-equivalent
+- format tool updates through `@chariox/tool-display` or the schema-equivalent
   implementation
 - render patch preview from `previewLines`
 - use collapsed tool title/summary for compact rows

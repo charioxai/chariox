@@ -2,21 +2,21 @@
 
 ## Goal
 
-Allow Arroba agents to create usable vault-backed credential handles on behalf of
+Allow Chariox agents to create usable vault-backed credential handles on behalf of
 the user without receiving secret values in model context, provider transcripts,
 history, logs, or runtime MCP results.
 
 M17 adds two runtime MCP credential-creation paths:
 
-- `arroba.create_generated_credential`: the kernel generates a random secret,
-  stores it in the configured Arroba vault, and registers matching credential
+- `chariox.create_generated_credential`: the kernel generates a random secret,
+  stores it in the configured Chariox vault, and registers matching credential
   metadata.
-- `arroba.request_credential_secret`: the agent asks the user for a secret
-  through a redacted Arroba runtime interaction; the kernel captures the value,
-  stores it in the configured Arroba vault, and registers matching credential
+- `chariox.request_credential_secret`: the agent asks the user for a secret
+  through a redacted Chariox runtime interaction; the kernel captures the value,
+  stores it in the configured Chariox vault, and registers matching credential
   metadata.
 
-Both tools must reuse the existing Arroba credential model. They must not define
+Both tools must reuse the existing Chariox credential model. They must not define
 new credential injection structures.
 
 ## Existing Credential Model
@@ -46,7 +46,7 @@ values remain stored in the configured platform vault through
 
 ## Runtime MCP Tools
 
-### `arroba.create_generated_credential`
+### `chariox.create_generated_credential`
 
 The agent supplies credential metadata and optional generator settings. The
 kernel generates the secret value.
@@ -94,7 +94,7 @@ Example output:
 }
 ```
 
-### `arroba.request_credential_secret`
+### `chariox.request_credential_secret`
 
 The agent supplies credential metadata and a user-facing prompt. The user enters
 the secret through a redacted runtime interaction.
@@ -112,7 +112,7 @@ Example input:
   },
   "prompt": {
     "title": "Add Gmail password",
-    "message": "Enter the password to store in Arroba Vault.",
+    "message": "Enter the password to store in Chariox Vault.",
     "placeholder": "Password",
     "min_length": 8,
     "max_length": 256
@@ -158,7 +158,7 @@ Extend the existing runtime interaction custom choice shape with an input type:
 `input_kind` defaults to `text` for backward compatibility.
 
 Only credential-storage tool handlers may create `input_kind: "secret"`
-interactions. Generic `arroba.request_popup` continues to return custom replies
+interactions. Generic `chariox.request_popup` continues to return custom replies
 to the agent and must not expose a secret input mode.
 
 Secret interaction invariants:
@@ -241,8 +241,8 @@ execution.
 4. Bump local daemon protocol version and update protocol snapshots.
 5. Implement generated password generation in kernel code with CSPRNG.
 6. Implement vault-backed credential upsert helper.
-7. Implement `arroba.create_generated_credential`.
-8. Implement `arroba.request_credential_secret`.
+7. Implement `chariox.create_generated_credential`.
+8. Implement `chariox.request_credential_secret`.
 9. Update TUI interaction rendering/input handling for masked secret custom
    input.
 10. Update web terminal interaction normalization, rendering, DOM handling, and
@@ -260,7 +260,7 @@ OSS/kernel:
 - Generated credential stores a retrievable vault secret with a mock vault store.
 - User-entered credential stores a retrievable vault secret with a mock vault
   store.
-- `arroba.list_credential_handles` shows created credential metadata without
+- `chariox.list_credential_handles` shows created credential metadata without
   values.
 - Existing secret-use tools can use the new handle.
 - Policy hook blocks credential creation when configured false.
@@ -295,9 +295,9 @@ For each provider available at validation time:
 
 Flow:
 
-1. Start a local Arroba TUI session.
+1. Start a local Chariox TUI session.
 2. Spawn provider agent.
-3. Ask agent to call `arroba.create_generated_credential` for a confined local
+3. Ask agent to call `chariox.create_generated_credential` for a confined local
    browser or PTY credential.
 4. Ask agent to use the handle through an existing secret-use tool.
 5. Assert history contains only handle/status/tool names, not the secret.
@@ -307,8 +307,8 @@ Flow:
 
 For each provider available at validation time:
 
-1. Start a local Arroba TUI session.
-2. Ask agent to call `arroba.request_credential_secret`.
+1. Start a local Chariox TUI session.
+2. Ask agent to call `chariox.request_credential_secret`.
 3. The validator enters the secret as the end user through the redacted field.
 4. Ask agent to use the created handle.
 5. Assert history contains no secret.
@@ -342,17 +342,17 @@ After confined drills pass:
 1. Launch a slice-backed session and agent.
 2. Ask the agent to open the browser and navigate to Gmail account creation.
 3. When the account flow prompts for a password, ask the agent to call
-   `arroba.request_credential_secret`.
-4. The validator enters the password through the redacted Arroba prompt.
+   `chariox.request_credential_secret`.
+4. The validator enters the password through the redacted Chariox prompt.
 5. The agent uses the stored browser credential to fill the password field.
 6. If Google allows account creation through the live browser flow, complete
    setup.
-7. Create a new email and send it to `arroba.fortytwo@gmail.com` confirming the
+7. Create a new email and send it to `chariox.fortytwo@gmail.com` confirming the
    flow works.
 
 If Google requires CAPTCHA, phone verification, identity proof, recovery-account
 ownership, or another non-automatable/manual verification step, the drill stops
-and records the blocker. Arroba must not bypass Google protections or fabricate
+and records the blocker. Chariox must not bypass Google protections or fabricate
 verification.
 
 ## Completion Criteria

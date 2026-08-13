@@ -24,28 +24,28 @@ test("publication image copies compile-time workflow examples before building th
 })
 
 test("publication image reserves isolated credential, action, and gateway identities", () => {
-  assert.match(dockerfile, /useradd --create-home --uid 1001 .* arroba/)
-  assert.match(dockerfile, /useradd --create-home --uid 1002 .* arroba-action/)
-  assert.match(dockerfile, /useradd --create-home --uid 1003 .* arroba-gateway/)
-  assert.match(dockerfile, /chown -R root:root \/opt\/arroba/)
-  assert.match(dockerfile, /chmod -R go-w \/opt\/arroba/)
-  assert.doesNotMatch(dockerfile, /chown -R arroba:arroba \/opt\/arroba/)
-  assert.match(dockerfile, /chmod 700 \/home\/arroba \/home\/arroba-action \/home\/arroba-gateway/)
+  assert.match(dockerfile, /useradd --create-home --uid 1001 .* chariox/)
+  assert.match(dockerfile, /useradd --create-home --uid 1002 .* chariox-action/)
+  assert.match(dockerfile, /useradd --create-home --uid 1003 .* chariox-gateway/)
+  assert.match(dockerfile, /chown -R root:root \/opt\/chariox/)
+  assert.match(dockerfile, /chmod -R go-w \/opt\/chariox/)
+  assert.doesNotMatch(dockerfile, /chown -R chariox:chariox \/opt\/chariox/)
+  assert.match(dockerfile, /chmod 700 \/home\/chariox \/home\/chariox-action \/home\/chariox-gateway/)
   assert.match(dockerfile, /WORKDIR \/workspace/)
-  assert.match(dockerfile, /ENTRYPOINT \["tini", "--", "arroba-publication-container"\]/)
+  assert.match(dockerfile, /ENTRYPOINT \["tini", "--", "chariox-publication-container"\]/)
   assert.doesNotMatch(dockerfile, /^USER\s+/m, "PID 1 must retain only the root bootstrap needed to prepare isolated role state")
 })
 
 test("publication image pins and verifies every official provider CLI", () => {
-  assert.match(dockerfile, /ARG ARROBA_CODEX_VERSION=\d+\.\d+\.\d+/)
-  assert.match(dockerfile, /ARG ARROBA_OPENCODE_VERSION=\d+\.\d+\.\d+/)
-  assert.match(dockerfile, /ARG ARROBA_CLAUDE_VERSION=\d+\.\d+\.\d+/)
-  assert.match(dockerfile, /"@openai\/codex@\$\{ARROBA_CODEX_VERSION\}"/)
-  assert.match(dockerfile, /"opencode-ai@\$\{ARROBA_OPENCODE_VERSION\}"/)
-  assert.match(dockerfile, /"@anthropic-ai\/claude-code@\$\{ARROBA_CLAUDE_VERSION\}"/)
-  assert.match(dockerfile, /test "\$\(codex --version\)" = "codex-cli \$\{ARROBA_CODEX_VERSION\}"/)
-  assert.match(dockerfile, /test "\$\(opencode --version\)" = "\$\{ARROBA_OPENCODE_VERSION\}"/)
-  assert.match(dockerfile, /test "\$\(claude --version\)" = "\$\{ARROBA_CLAUDE_VERSION\} \(Claude Code\)"/)
+  assert.match(dockerfile, /ARG CHARIOX_CODEX_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /ARG CHARIOX_OPENCODE_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /ARG CHARIOX_CLAUDE_VERSION=\d+\.\d+\.\d+/)
+  assert.match(dockerfile, /"@openai\/codex@\$\{CHARIOX_CODEX_VERSION\}"/)
+  assert.match(dockerfile, /"opencode-ai@\$\{CHARIOX_OPENCODE_VERSION\}"/)
+  assert.match(dockerfile, /"@anthropic-ai\/claude-code@\$\{CHARIOX_CLAUDE_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(codex --version\)" = "codex-cli \$\{CHARIOX_CODEX_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(opencode --version\)" = "\$\{CHARIOX_OPENCODE_VERSION\}"/)
+  assert.match(dockerfile, /test "\$\(claude --version\)" = "\$\{CHARIOX_CLAUDE_VERSION\} \(Claude Code\)"/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+@openai\/codex(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+opencode-ai(?:\s|$)/)
   assert.doesNotMatch(dockerfile, /npm install -g\s+@anthropic-ai\/claude-code(?:\s|$)/)
@@ -56,20 +56,20 @@ test("publication image labels the protocol version verified against its kernel"
   assert.ok(protocolVersion, "the shared kernel client protocol version must be readable")
   assert.match(
     dockerfile,
-    new RegExp(`ARG ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION=${protocolVersion}`, "g"),
+    new RegExp(`ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=${protocolVersion}`, "g"),
   )
   assert.match(
     dockerfile,
-    /arroba-kernel --print-local-daemon-protocol-version\)" = "\$\{ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
+    /chariox-kernel --print-local-daemon-protocol-version\)" = "\$\{CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
   )
   assert.match(
     dockerfile,
-    /LABEL dev\.arroba\.local-daemon-protocol-version="\$\{ARROBA_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
+    /LABEL dev\.chariox\.local-daemon-protocol-version="\$\{CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION\}"/,
   )
 })
 
 test("publication egress image runs only the dedicated unprivileged gateway", () => {
   assert.match(egressDockerfile, /USER 10001:10001/)
-  assert.match(egressDockerfile, /ENTRYPOINT \["node", "\/opt\/arroba-egress\/gateway\.mjs"\]/)
+  assert.match(egressDockerfile, /ENTRYPOINT \["node", "\/opt\/chariox-egress\/gateway\.mjs"\]/)
   assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
 })

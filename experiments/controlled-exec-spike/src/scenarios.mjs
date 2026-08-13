@@ -20,7 +20,7 @@ function timestamp() {
 }
 
 async function withTempDir(fn) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-controlled-exec-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-controlled-exec-"))
   try {
     return await fn(dir)
   } finally {

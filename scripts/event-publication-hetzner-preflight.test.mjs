@@ -143,7 +143,7 @@ test("machine identity prevents alias-based co-location and relay reuse", () => 
 })
 
 test("successful preflight retains revision, resource, and separation evidence", async (context) => {
-  const evidenceDir = await mkdtemp(path.join(os.tmpdir(), "arroba-event-preflight-"))
+  const evidenceDir = await mkdtemp(path.join(os.tmpdir(), "chariox-event-preflight-"))
   context.after(() => rm(evidenceDir, { recursive: true, force: true }))
   const options = { ...baseOptions, evidenceDir }
   const evidenceByRole = {
@@ -168,7 +168,7 @@ test("successful preflight retains revision, resource, and separation evidence",
 })
 
 test("preflight routes host-specific SSH keys without persisting them", async (context) => {
-  const evidenceDir = await mkdtemp(path.join(os.tmpdir(), "arroba-event-preflight-keys-"))
+  const evidenceDir = await mkdtemp(path.join(os.tmpdir(), "chariox-event-preflight-keys-"))
   context.after(() => rm(evidenceDir, { recursive: true, force: true }))
   const options = {
     ...baseOptions,

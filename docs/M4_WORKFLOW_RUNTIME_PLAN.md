@@ -251,7 +251,7 @@ Required slices:
 Late-stage follow-up:
 
 - add durable daemon identity and workspace-level manager semantics
-- persist a daemon runtime record and lock under `.arroba/runtime/daemon`
+- persist a daemon runtime record and lock under `.chariox/runtime/daemon`
 - make the CLI prefer attach-or-start against that workspace daemon record
 - stamp managed provider children with daemon instance id so stale-child cleanup can be added later
 
@@ -265,7 +265,7 @@ CLI target:
 Safety model:
 
 - safe teardown should only stop daemon-tracked managed processes that are not attached and not actively executing work
-- attached sessions must survive provider loss by degrading provider runs rather than losing the Arroba session itself
+- attached sessions must survive provider loss by degrading provider runs rather than losing the Chariox session itself
 - CLI process inspection should explain why a process is blocked from safe teardown
 
 ## Suggested Immediate Next Steps

@@ -1,39 +1,39 @@
 # Connector Extensions
 
-Connector extensions expose external systems to agents as runtime tools. Arroba core does not implement service protocols directly. A connector uses an adapter, and the adapter executable owns the protocol-specific work.
+Connector extensions expose external systems to agents as runtime tools. Chariox core does not implement service protocols directly. A connector uses an adapter, and the adapter executable owns the protocol-specific work.
 
 ## Layout
 
 User-registered connector files are copied to:
 
 ```text
-~/.arroba/connectors/definitions/
+~/.chariox/connectors/definitions/
 ```
 
 User-registered adapters are copied to:
 
 ```text
-~/.arroba/connectors/adapters/
+~/.chariox/connectors/adapters/
 ```
 
-Package-managed Arroba installs can also ship adapters from the install resource directory. Those appear in `/connector adapter list` together with user-registered adapters.
+Package-managed Chariox installs can also ship adapters from the install resource directory. Those appear in `/connector adapter list` together with user-registered adapters.
 The adapter implementations live outside the kernel package. The kernel does not link adapter-specific code or dependencies; it only discovers adapter manifests and launches adapter commands.
 The shipped adapter package currently includes `http`, `graphql`, `grpc`, `postgres`, and `mysql`.
 
 ## 1. Register An Adapter
 
-An adapter is an executable that speaks `arroba-connector-adapter-v2` over JSON lines on stdin/stdout.
+An adapter is an executable that speaks `chariox-connector-adapter-v2` over JSON lines on stdin/stdout.
 
 ```yaml
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
-command: /path/to/arroba-adapter-http
-description: HTTP adapter for Arroba connectors.
+adapter_protocol: chariox-connector-adapter-v2
+command: /path/to/chariox-adapter-http
+description: HTTP adapter for Chariox connectors.
 ```
 
-If `command` has no path separators, Arroba launches it through the process `PATH`.
+If `command` has no path separators, Chariox launches it through the process `PATH`.
 Use `./adapter.py`, `./adapter.mjs`, or another relative path when the executable should be copied with the adapter directory.
 
 Register a user adapter:
@@ -52,7 +52,7 @@ Useful commands:
 
 ## 2. Store A Secret
 
-Store the secret value in the Arroba vault. The value is never sent to the model.
+Store the secret value in the Chariox vault. The value is never sent to the model.
 
 ```sh
 credential set google-maps-prod
@@ -121,7 +121,7 @@ operations:
         address: "{{address}}"
 ```
 
-Arroba treats `config` as opaque data. The `http` adapter validates and executes this config.
+Chariox treats `config` as opaque data. The `http` adapter validates and executes this config.
 
 Register it:
 
@@ -217,7 +217,7 @@ Prepare response:
 }
 ```
 
-Arroba checks the declared target against the credential policy. Only then does it resolve the secret and send the call request.
+Chariox checks the declared target against the credential policy. Only then does it resolve the secret and send the call request.
 
 Call request:
 
@@ -268,7 +268,7 @@ Failure:
 }
 ```
 
-Adapters are trusted local code. If a connector is granted a credential, Arroba resolves the secret from the vault only after the adapter declares an allowed credential target, and passes the secret to the adapter process, never to the model.
+Adapters are trusted local code. If a connector is granted a credential, Chariox resolves the secret from the vault only after the adapter declares an allowed credential target, and passes the secret to the adapter process, never to the model.
 
 ## Built-In Adapter Examples
 

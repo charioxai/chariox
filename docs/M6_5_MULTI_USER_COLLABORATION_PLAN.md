@@ -2,13 +2,13 @@
 
 ## Goal
 
-Allow two or more users to collaborate in one Arroba session while keeping provider ownership private and keeping the session, workflow, relay, and workspace live sync model coherent.
+Allow two or more users to collaborate in one Chariox session while keeping provider ownership private and keeping the session, workflow, relay, and workspace live sync model coherent.
 
 The v1 collaboration model is open collaboration inside an invited session:
 
 - users share the same session
 - users may work in the same repository, branch, and worktree when they choose to
-- users may also work across separate forks or worktrees and explicitly link them for Arroba workspace live sync coordination
+- users may also work across separate forks or worktrees and explicitly link them for Chariox workspace live sync coordination
 - each user can see and control only their own providers and agents outside workflow execution
 - shared workflow graphs update for all session members
 - workflow nodes can represent agents owned by different users
@@ -17,11 +17,11 @@ The v1 collaboration model is open collaboration inside an invited session:
 
 This milestone does not add a public agent marketplace, external-agent marker, or generalized ACL language. V1 uses fixed ownership rules and session-scoped invites.
 
-Cloud-backed invitation, collaborator history, and hosted relay admission are tracked separately in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`. This plan remains the kernel/runtime collaboration policy layer.
+Cloud-backed invitation, collaborator history, and hosted relay admission are tracked separately in `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`. This plan remains the kernel/runtime collaboration policy layer.
 
 ## Core Decisions
 
-- A collaboration unit is still one Arroba session.
+- A collaboration unit is still one Chariox session.
 - Invites are per session.
 - The kernel remains the authority for membership, ownership, redaction, workflow mutation, endpoint execution, and workspace live sync coordination.
 - The relay remains a transport layer and must not become a policy authority.
@@ -33,7 +33,7 @@ Cloud-backed invitation, collaborator history, and hosted relay admission are tr
 - Several endpoints can exist in the same workflow, owned by different users.
 - Node-level prompts and endpoint prompts are private because they are attached to an owned agent.
 - Workflow graph structure, public labels, edges, endpoint aliases, run state, and workflow outputs are visible to session members unless a later milestone adds stronger privacy modes.
-- Concurrent workflow edits use simple optimistic rejection. Arroba does not merge simultaneous graph edits in v1.
+- Concurrent workflow edits use simple optimistic rejection. Chariox does not merge simultaneous graph edits in v1.
 - Workspace live sync remains the file/worktree conflict authority. This milestone does not add another I/O conflict resolver.
 
 ## Non-Goals
@@ -229,16 +229,16 @@ Policy:
 
 ## Workspace Links
 
-Workspace links let session members tell Arroba that separate local repositories, forks, branches, or worktrees should be treated as one logical coordination target for workspace live sync.
+Workspace links let session members tell Chariox that separate local repositories, forks, branches, or worktrees should be treated as one logical coordination target for workspace live sync.
 
-This is not Git synchronization. It is an Arroba coordination identity.
+This is not Git synchronization. It is a Chariox coordination identity.
 
 Example use case:
 
 - user A works in `github.com/a/project`
 - user B works in `github.com/b/project-fork`
 - both are logically collaborating on the same project branch
-- they attach their current worktrees to the same Arroba workspace link
+- they attach their current worktrees to the same Chariox workspace link
 - workspace live sync coordinates writes as if both worktrees belong to one logical workspace
 
 State shape:
@@ -271,19 +271,19 @@ Rules:
 - no separate workspace-link invite is needed; the session invite is the access boundary
 - attaching a worktree does not change Git remotes, branches, or files
 - external changes remain allowed; workspace live sync already accounts for observed file state and conflicts
-- if a worktree is not attached to a link, Arroba treats it according to the existing workspace identity rules
+- if a worktree is not attached to a link, Chariox treats it according to the existing workspace identity rules
 
 Command shape:
 
 ```bash
-arroba workspace link create <name>
-arroba workspace link list
-arroba workspace link show <name-or-id>
-arroba workspace link attach <name-or-id>
-arroba workspace link detach <name-or-id>
+chariox workspace link create <name>
+chariox workspace link list
+chariox workspace link show <name-or-id>
+chariox workspace link attach <name-or-id>
+chariox workspace link detach <name-or-id>
 ```
 
-The same command family must be available in `arroba-shell`.
+The same command family must be available in `chariox-shell`.
 
 Workspace live sync integration:
 
@@ -476,7 +476,7 @@ Exit criteria:
 Status: closed in implementation. Sessions now carry session-scoped workspace
 links with per-user/per-machine attachments. Members can create, list, show,
 attach, and detach links through kernel API, TUI slash commands, and
-`arroba-shell`. Workspace live sync preserves existing unlinked behavior, but when a
+`chariox-shell`. Workspace live sync preserves existing unlinked behavior, but when a
 provider run's worktree is attached to a workspace link, coordination uses
 `workspace_link:<link-id>` as the logical repository id so explicitly linked
 worktrees/forks share edit reservations and artifact snapshots.
@@ -538,9 +538,9 @@ M6.5 is complete when:
 
 As of 2026-04-20, the collaboration foundation has live-drill coverage for the core local/scoped-relay paths:
 
-- `pnpm --filter @arroba/cli run multi-user-workflow:drill` passes against an isolated scoped relay and kernel with three relay callers. It verifies session invites, caller-owned session creation, per-user agent visibility, node ownership, cross-owner edge authorization, unrelated edge-removal denial, stale revision rejection, endpoint-owner invocation denial, incident-edge removal, and non-owner node-instruction redaction.
-- `pnpm --filter @arroba/cli run multi-user-cli-workflow:drill` passes with two real PTY-hosted CLIs over scoped relay. It verifies shared-session attach, hidden-agent startup safety, user-owned node creation from each CLI, graph add/remove live refresh in both workflow screens, endpoint creation live refresh, endpoint-owner-only invocation, owner invocation, and workflow-run visibility in both CLIs.
-- `pnpm --filter @arroba/cli run multi-user-freeform-relay:drill` passes against an isolated scoped relay and kernel. It verifies that freeform projections remain caller-scoped: each user sees only their own agents, owned-agent prompt submission succeeds, cross-user prompt submission is rejected, and other-user agents are redacted from session state.
+- `pnpm --filter @chariox/cli run multi-user-workflow:drill` passes against an isolated scoped relay and kernel with three relay callers. It verifies session invites, caller-owned session creation, per-user agent visibility, node ownership, cross-owner edge authorization, unrelated edge-removal denial, stale revision rejection, endpoint-owner invocation denial, incident-edge removal, and non-owner node-instruction redaction.
+- `pnpm --filter @chariox/cli run multi-user-cli-workflow:drill` passes with two real PTY-hosted CLIs over scoped relay. It verifies shared-session attach, hidden-agent startup safety, user-owned node creation from each CLI, graph add/remove live refresh in both workflow screens, endpoint creation live refresh, endpoint-owner-only invocation, owner invocation, and workflow-run visibility in both CLIs.
+- `pnpm --filter @chariox/cli run multi-user-freeform-relay:drill` passes against an isolated scoped relay and kernel. It verifies that freeform projections remain caller-scoped: each user sees only their own agents, owned-agent prompt submission succeeds, cross-user prompt submission is rejected, and other-user agents are redacted from session state.
 
 The remaining M6.5 validation gap is physical remote-machine/provider-CLI coverage through relay. That is intentionally deferred until the operator can run from a suitable non-remote environment. The cloud-service work does not change the kernel ownership boundary: hosted relay should issue scoped credentials and route packets, while session membership, workflow authorization, provider ownership, and projection redaction remain kernel-owned.
 

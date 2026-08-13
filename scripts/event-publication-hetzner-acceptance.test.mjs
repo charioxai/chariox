@@ -29,7 +29,7 @@ const options = {
 function preflight() {
   return {
     schemaVersion: 1,
-    kind: "arroba-event-publication-hetzner-preflight",
+    kind: "chariox-event-publication-hetzner-preflight",
     runId: options.runId,
     source: { revision: "a".repeat(40), dirty: false },
     separation: { aedsAndAegs: true, eventServicesAndRelay: true },
@@ -112,10 +112,10 @@ test("remote commands fence machine, role, and the exact concurrent AEGS set", (
   })
   assert.match(readOnly, /cat \/etc\/machine-id/)
   assert.match(readOnly, /host-role/)
-  assert.match(readOnly, /arroba-aegs-github\.service/)
+  assert.match(readOnly, /chariox-aegs-github\.service/)
   assert.match(readOnly, /active_units/)
-  assert.match(readOnly, /arroba-aegs-jira\.service/)
-  assert.match(readOnly, /arroba-aegs-slack\.service/)
+  assert.match(readOnly, /chariox-aegs-jira\.service/)
+  assert.match(readOnly, /chariox-aegs-slack\.service/)
   assert.match(readOnly, /sort/)
   assert.doesNotMatch(readOnly, /systemctl restart/)
   assert.doesNotMatch(readOnly, /\brm\b|docker system prune|docker compose down/)
@@ -128,7 +128,7 @@ test("remote commands fence machine, role, and the exact concurrent AEGS set", (
     restart: true,
   })
   assert.match(restart, /systemctl restart/)
-  assert.match(restart, /arroba-aeds\.service/)
+  assert.match(restart, /chariox-aeds\.service/)
   assert.doesNotMatch(restart, /\breboot\b|\brm\b|docker system prune/)
 })
 
@@ -150,7 +150,7 @@ test("acceptance checks AEDS then the expected AEGS set and retains bounded evid
   assert.equal(result.record.restartMode, "read-only")
   assert.equal(result.record.component, "github")
   assert.deepEqual(result.record.expectedAegs, ["github"])
-  assert.match(written, /arroba-event-publication-hetzner-acceptance/)
+  assert.match(written, /chariox-event-publication-hetzner-acceptance/)
   assert.doesNotMatch(written, /sshKey/)
 })
 

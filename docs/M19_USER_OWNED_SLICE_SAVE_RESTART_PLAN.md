@@ -9,7 +9,7 @@ The user-facing save action must support office-work slices where an agent has l
 1. User opens a slice-backed terminal view.
 2. Agent works in the slice.
 3. User clicks `Save and restart agents`.
-4. Arroba stops the slice, saves its state, starts it again from that state, and relaunches the attached idle agents so they continue in the saved slice.
+4. Chariox stops the slice, saves its state, starts it again from that state, and relaunches the attached idle agents so they continue in the saved slice.
 
 ## Scope
 
@@ -36,15 +36,15 @@ The user-facing save action must support office-work slices where an agent has l
 
 ## Source Of Truth
 
-The home kernel remains the authority. Active slice agents are determined from Arroba state, not from Docker process inspection.
+The home kernel remains the authority. Active slice agents are determined from Chariox state, not from Docker process inspection.
 
 Agent categories:
 
-- Managed active agent: an Arroba agent attached to `slice.agent_ids`, with a live session and a remote execution binding matching the slice worker.
+- Managed active agent: a Chariox agent attached to `slice.agent_ids`, with a live session and a remote execution binding matching the slice worker.
 - Busy active agent: managed active agent with an in-flight prompt/provider run. Save is rejected.
 - Idle active agent: managed active agent attached to the slice with no running turn. Save/restart may relaunch it.
 - Stale attachment: `slice.agent_ids` entry whose session/agent no longer exists or whose remote binding no longer matches the slice. Reconcile and detach before save validation.
-- Foreign process: any process not represented by Arroba home-kernel state. Preserve filesystem state, but do not manage or relaunch it.
+- Foreign process: any process not represented by Chariox home-kernel state. Preserve filesystem state, but do not manage or relaunch it.
 
 ## Kernel Changes
 
@@ -95,8 +95,8 @@ Agent categories:
 
 Remove agent-facing slice state tools:
 
-- `arroba.save_slice_state`
-- `arroba.create_slice_backup`
+- `chariox.save_slice_state`
+- `chariox.create_slice_backup`
 
 Also remove dispatch/proxy code and relay peer request paths that only exist to let a runtime MCP call save or backup slice state.
 
@@ -148,7 +148,7 @@ Behavior:
 
 ### Current Lifecycle Baseline
 
-2026-06-11: `pnpm --filter @arroba/cli run slice:lifecycle-drill`
+2026-06-11: `pnpm --filter @chariox/cli run slice:lifecycle-drill`
 passed locally. The drill covered headed slice creation and display endpoint
 projection, provider auth import summaries for Codex/OpenCode/Claude, Codex
 device-login start, OpenCode auth removal while preserving other providers,
@@ -187,7 +187,7 @@ Web:
 
 ### Live Drill
 
-Run the final drill from the web terminal view page, not by manually driving Docker or the browser outside Arroba.
+Run the final drill from the web terminal view page, not by manually driving Docker or the browser outside Chariox.
 
 1. Open a headed slice-backed web terminal session.
 2. Ask the agent to install a simple program inside the slice, for example `jq` or `htop`, and verify it runs.

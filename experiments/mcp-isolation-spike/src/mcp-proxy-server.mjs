@@ -121,7 +121,7 @@ async function handle(message) {
         result: {
           protocolVersion: '2024-11-05',
           capabilities: { tools: {} },
-          serverInfo: { name: `arroba-spike-proxy-${name}`, version: '0.0.0-spike' },
+          serverInfo: { name: `chariox-spike-proxy-${name}`, version: '0.0.0-spike' },
         },
       })
       return

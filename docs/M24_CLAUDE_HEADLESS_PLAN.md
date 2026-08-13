@@ -4,20 +4,20 @@
 
 Add a new `Claude headless` provider mode that runs the interactive Claude Code
 CLI without `-p`, through the user's Claude Code login, while presenting the
-same standard Arroba agent surface as Codex, OpenCode, and the current Claude
+same standard Chariox agent surface as Codex, OpenCode, and the current Claude
 stream-json provider. Rename the current Claude stream-json provider surface to
 `Claude -p`.
 
 This plan does not introduce Anthropic SDK, Claude API, hosted agent services,
-or provider credential storage in Arroba. Claude execution remains through the
+or provider credential storage in Chariox. Claude execution remains through the
 official Claude Code CLI and Claude Code login state.
 
 ## Non-Goals
 
-- Do not replace `arroba claude` native TUI. Native TUI remains a visible
+- Do not replace `chariox claude` native TUI. Native TUI remains a visible
   provider-native client surface.
 - Do not use Anthropic SDK, Agent SDK, or direct API calls.
-- Do not use Claude Remote Control as Arroba's backend control protocol.
+- Do not use Claude Remote Control as Chariox's backend control protocol.
 - Do not make Cloud, relay, or web app a runtime authority.
 - Do not remove `Claude -p`; keep it available for users who prefer the
   structured stream-json path.
@@ -30,7 +30,7 @@ Provider catalog labels:
   Claude Code usage.
 - `Claude -p`: current `claude -p --input-format stream-json
   --output-format stream-json` provider path.
-- `Claude native TUI`: the explicit `arroba claude` provider-native TUI surface,
+- `Claude native TUI`: the explicit `chariox claude` provider-native TUI surface,
   shown only where native TUI launch is relevant.
 
 Internal compatibility rules:
@@ -71,11 +71,11 @@ Current Claude native TUI:
 - Uses interactive `claude` without `-p`.
 - Launches through `apps/cli/src/native-tui/claude.ts` for local native TUI and
   the kernel native launch path for remote/slice native TUI.
-- Injects Arroba-origin prompts by typing into the Claude PTY/screen.
+- Injects Chariox-origin prompts by typing into the Claude PTY/screen.
 - Uses Claude hooks for `UserPromptSubmit`, `Stop`, `StopFailure`,
   `SessionEnd`, `PermissionRequest`, `PreToolUse`, and `PostToolUse`.
 - Sends hidden context through `UserPromptSubmit` `additionalContext`.
-- Bridges provider-native permission prompts into Arroba runtime interactions.
+- Bridges provider-native permission prompts into Chariox runtime interactions.
 - Current transcript ingestion is enough for native TUI observation, but not yet
   enough for full standard provider parity.
 
@@ -104,9 +104,9 @@ mode-switching architecture.
      TUI client.
 
 2. Prompt input driver
-   - Type Arroba prompts into the hidden PTY.
+   - Type Chariox prompts into the hidden PTY.
    - Maintain the same prompt origin distinctions as native TUI:
-     - Arroba-origin prompt.
+     - Chariox-origin prompt.
      - Native/provider-origin prompt, if ever observed.
    - Do not expose a raw hidden terminal as the normal user interface.
 
@@ -118,13 +118,13 @@ mode-switching architecture.
 
 4. Transcript tailer
    - Tail Claude's session JSONL transcript continuously.
-   - Convert transcript entries into Arroba provider output blobs.
+   - Convert transcript entries into Chariox provider output blobs.
    - Deduplicate entries across relaunch, resume, compaction, and old transcript
      writes.
    - Use hook `Stop` as one completion signal, not as the only output source.
 
 5. Provider run integration
-   - Mark the run as a standard Arroba agent from the client perspective.
+   - Mark the run as a standard Chariox agent from the client perspective.
    - Internally, the run uses provider-native PTY and transcript observation
      rather than structured stdio.
    - Keep kernel as the authority for prompt queue, status, interactions,
@@ -242,7 +242,7 @@ Tasks:
   attachment context must be delivered via `UserPromptSubmit` additionalContext.
 - Preserve existing attachment rendering:
   - visible file mentions where Claude needs them
-  - hidden inline context where Arroba owns the attachment payload
+  - hidden inline context where Chariox owns the attachment payload
 - Ensure prompt metadata and history show user-visible prompt text correctly.
 
 Validation:
@@ -274,7 +274,7 @@ Tasks:
   - file path
   - line offset
   - message uuid or stable dedupe key
-  - current Arroba prompt id
+  - current Chariox prompt id
   - Claude session id
   - provider subagent/task mapping if available
 - Parse and map transcript entries:
@@ -315,7 +315,7 @@ Files to inspect/update:
 
 Tasks:
 
-- Start Arroba turn on prompt submission.
+- Start Chariox turn on prompt submission.
 - Mark provider run as working/thinking while Claude is processing.
 - Complete prompt on Claude `Stop` hook after transcript tailer drains new
   output.
@@ -378,7 +378,7 @@ Tasks:
   - `PermissionRequest`
   - `PreToolUse`
   - `PostToolUse`
-- Surface one kernel-owned `RuntimeInteraction` to all Arroba clients in the
+- Surface one kernel-owned `RuntimeInteraction` to all Chariox clients in the
   session.
 - Resolve allowed/denied decisions by writing hook response files.
 - Support required, plan, yolo/bypass modes.
@@ -439,7 +439,7 @@ Tasks:
 
 - Preserve managed workspace live sync instructions.
 - Ensure direct native writes inside protected roots are either fenced or routed
-  through Arroba MCP tools according to the existing policy.
+  through Chariox MCP tools according to the existing policy.
 - Make transcript tool mapping show file modifications coherently.
 - Validate external-directory writes and protected-root writes.
 
@@ -447,7 +447,7 @@ Validation:
 
 - Workspace live sync drill with `Claude headless`.
 - Protected root direct write denial or fence enforcement drill.
-- Arroba MCP read/write/edit artifact drill.
+- Chariox MCP read/write/edit artifact drill.
 - Remote worker and slice variants where available.
 
 ### 11. Workflows
@@ -478,7 +478,7 @@ Tasks:
 - Remote worker:
   - launch headless Claude on the worker kernel;
   - use worker-local Claude Code login;
-  - relay only Arroba protocol events, not Claude credentials or transcript
+  - relay only Chariox protocol events, not Claude credentials or transcript
     contents through Cloud.
 - Home-managed slice:
   - allow headless Claude if Claude auth is available/imported into the slice;
@@ -502,7 +502,7 @@ OSS TUI:
 - Waiting room provider picker shows `Claude headless` and `Claude -p`.
 - Agent footer/provider badge shows selected mode.
 - Command center provider commands show both modes.
-- Native TUI command remains `arroba claude`.
+- Native TUI command remains `chariox claude`.
 
 Web/Cloud:
 
@@ -578,7 +578,7 @@ Must validate:
 ### Prompt Assembly And Hidden Injection Drill
 
 ```bash
-pnpm --filter @arroba/cli run prompt-assembly:drill -- \
+pnpm --filter @chariox/cli run prompt-assembly:drill -- \
   --providers codex,opencode,claude-p,claude-headless \
   --provider-model claude-p=sonnet \
   --provider-model claude-headless=sonnet
@@ -595,7 +595,7 @@ Must validate:
 ### Provider Steering Drill
 
 ```bash
-pnpm --filter @arroba/cli run provider-steering:drill -- \
+pnpm --filter @chariox/cli run provider-steering:drill -- \
   --providers codex,opencode,claude-p,claude-headless \
   --provider-model claude-p=sonnet \
   --provider-model claude-headless=sonnet \
@@ -740,7 +740,7 @@ Run through the actual web frontend, not direct protocol shortcuts. The current
 Cloud product drills that need extension are:
 
 ```bash
-cd ../arroba-cloud
+cd ../chariox-cloud
 
 pnpm run build
 
@@ -755,8 +755,8 @@ node scripts/terminal-badge-drill.mjs \
   --scenario permission \
   --permission-hold-ms 1000
 
-ARROBA_WORKFLOW_CANVAS_PROVIDER=claude-headless \
-ARROBA_WORKFLOW_CANVAS_MODEL=sonnet \
+CHARIOX_WORKFLOW_CANVAS_PROVIDER=claude-headless \
+CHARIOX_WORKFLOW_CANVAS_MODEL=sonnet \
 node scripts/local-workflow-canvas-visual-drill.mjs
 ```
 
@@ -812,7 +812,7 @@ validated behavior:
 ### Native TUI Regression Drill
 
 ```bash
-pnpm --filter @arroba/cli run native-tui:prompt-injection-drill -- \
+pnpm --filter @chariox/cli run native-tui:prompt-injection-drill -- \
   --providers codex,opencode,claude
 ```
 
@@ -828,9 +828,9 @@ native Claude TUI path.
   worker, and supported slice topologies.
 - Hidden prompt injection is centralized and delivered through Claude hook
   additionalContext.
-- Assistant text and tool calls stream into Arroba history/output with parity
+- Assistant text and tool calls stream into Chariox history/output with parity
   close to `Claude -p`.
-- Permissions resolve through Arroba interactions in TUI and web.
+- Permissions resolve through Chariox interactions in TUI and web.
 - Runtime MCP, scripts, skills, attachments, workspace live sync, workflows, and
   metaagent filtering all work with `Claude headless`.
 - All live drills above pass or produce documented provider limitations with

@@ -1,10 +1,10 @@
-# Arroba Validation Platform
+# Chariox Validation Platform
 
-Arroba runtime features must be validated through reusable drill primitives, not one-off scripts with private conventions. The goal is to make local, remote, hosted, collab, native TUI, slice, and provider-specific behavior comparable across features.
+Chariox runtime features must be validated through reusable drill primitives, not one-off scripts with private conventions. The goal is to make local, remote, hosted, collab, native TUI, slice, and provider-specific behavior comparable across features.
 
 ## Shared Primitives
 
-- Artifact lifecycle: use `apps/cli/scripts/lib/drill-artifacts.mjs` to prepare drill roots and preserve failed runs with `arroba-drill-failure.json`.
+- Artifact lifecycle: use `apps/cli/scripts/lib/drill-artifacts.mjs` to prepare drill roots and preserve failed runs with `chariox-drill-failure.json`.
 - Failure summaries: use `apps/cli/scripts/lib/drill-failure-manifest.mjs` or `apps/cli/scripts/drill-failure-summary.mjs` to validate and summarize preserved failed runs without printing credentials or large payloads.
 - Failure taxonomy: use `apps/cli/scripts/lib/drill-failure-taxonomy.mjs` for classification owners and next actions shared by failure manifests and matrix reports.
 - Runtime signals: use `apps/cli/scripts/lib/drill-runtime-signals.mjs` for stable distributed-runtime signal ids and owner mapping. Do not hand-write signal owner tables in feature drills. Use `runtime-projection-health` for kernel read-model freshness/invariant drift, and `client-projection-health` for web/TUI/native transcript rendering or client-visible projection state.
@@ -33,19 +33,19 @@ node apps/cli/scripts/drill-validation-suite.mjs --list
 node apps/cli/scripts/drill-validation-suite.mjs --command
 ```
 
-The `--json` output uses schema `arroba.drill.validation_suite.v1` and lists the exact test paths and command covered by the suite. Use `--output PATH` with `--json` when CI or staging jobs should collect the coverage manifest as an artifact.
-The `--run-json` output uses schema `arroba.drill.validation_suite_run.v1`, runs the suite, records pass/fail status, duration, exit code, command, and embeds the manifest. Use `--run-json --output PATH --output-artifact-index PATH` when a staging or release gate needs evidence that the suite actually executed.
+The `--json` output uses schema `chariox.drill.validation_suite.v1` and lists the exact test paths and command covered by the suite. Use `--output PATH` with `--json` when CI or staging jobs should collect the coverage manifest as an artifact.
+The `--run-json` output uses schema `chariox.drill.validation_suite_run.v1`, runs the suite, records pass/fail status, duration, exit code, command, and embeds the manifest. Use `--run-json --output PATH --output-artifact-index PATH` when a staging or release gate needs evidence that the suite actually executed.
 
 Run or replay the deterministic runtime convergence scenario with:
 
 ```bash
-pnpm --filter @arroba/cli run runtime-resilience:deterministic-chaos-drill -- --seed local-replay
+pnpm --filter @chariox/cli run runtime-resilience:deterministic-chaos-drill -- --seed local-replay
 node apps/cli/scripts/live-runtime-resilience-chaos-matrix-drill.mjs \
   --only deterministic-runtime-convergence \
   --chaos-seed local-replay
 ```
 
-The replay schema is `arroba.drill.chaos_replay.v1`. It records the seed, fault plan, monotonic virtual-time trace, invariant evidence, queue/resource summaries, and stale-callback suppression without recording credentials or payload secrets. The resilience matrix captures replay paths from successful as well as failed children so a passing baseline and a regression can both be audited.
+The replay schema is `chariox.drill.chaos_replay.v1`. It records the seed, fault plan, monotonic virtual-time trace, invariant evidence, queue/resource summaries, and stale-callback suppression without recording credentials or payload secrets. The resilience matrix captures replay paths from successful as well as failed children so a passing baseline and a regression can both be audited.
 
 Export the shared failure taxonomy with:
 
@@ -71,7 +71,7 @@ node apps/cli/scripts/drill-validation-gate.mjs \
   --platform-bundle .artifacts/drill-platform \
   --artifact-root .artifacts \
   --require-artifact-coverage-area distributed-observability \
-  --require-artifact-schema arroba.drill.validation_suite_run.v1 \
+  --require-artifact-schema chariox.drill.validation_suite_run.v1 \
   --require-artifact-exit-criterion-status satisfied \
   --require-runtime-signal-owner kernel-authority \
   --require-artifact-provider-account-alias codex=work \
@@ -86,9 +86,9 @@ node apps/cli/scripts/drill-validation-gate.mjs \
   --json --output .artifacts/drill-validation-gate.json
 ```
 
-The gate output schema is `arroba.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require platform runtime-signal owner coverage with `--require-runtime-signal-owner`, can require artifact metadata coverage with `--require-artifact-coverage-area`, can require artifact schema coverage with `--require-artifact-schema`, can require artifact exit-criterion status evidence with `--require-artifact-exit-criterion-status` and `--require-artifact-incomplete-exit-criterion-status`, can require non-secret provider account labels with `--require-artifact-provider-account-alias provider=alias`, can require dry-run matrix planned diagnostic coverage with `--require-artifact-planned-owner` and `--require-artifact-planned-classification`, can reject stale artifact indexes with `--require-artifact-max-age-ms`, can reject stale matrix reports with `--require-matrix-max-age-ms`, can reject stale preserved failure bundles with `--require-failure-max-age-ms`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Validation-gate report and aggregate `presets` fields must use the closed preset registry; typoed labels are rejected instead of counted as new coverage. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first; missing planned owners and classifications route to the owning subsystem instead of only producing a generic artifact-index failure. Text summaries include discovered artifact coverage areas, artifact schema counts, runtime signal counts, runtime signal owner counts, provider account alias labels, planned owner/classification labels, stale artifact indexes, stale matrix reports, stale failure manifests, exit-criterion status labels, and incomplete exit-criterion status labels for artifact, matrix, failure, and validation-gate aggregate evidence so operators can see which evidence types, provider profiles, dry-run limitations, and runtime subsystems were present without opening raw JSON. `drill-artifact-index-summary.mjs` accepts the same `--require-artifact-max-age-ms` and `--require-matrix-max-age-ms` freshness flags when CI needs to reject stale evidence before it reaches a validation gate.
+The gate output schema is `chariox.drill.validation_gate.v1`. It fails when no checks are configured, verifies the platform bundle, verifies indexed artifacts, can require platform runtime-signal owner coverage with `--require-runtime-signal-owner`, can require artifact metadata coverage with `--require-artifact-coverage-area`, can require artifact schema coverage with `--require-artifact-schema`, can require artifact exit-criterion status evidence with `--require-artifact-exit-criterion-status` and `--require-artifact-incomplete-exit-criterion-status`, can require non-secret provider account labels with `--require-artifact-provider-account-alias provider=alias`, can require dry-run matrix planned diagnostic coverage with `--require-artifact-planned-owner` and `--require-artifact-planned-classification`, can reject stale artifact indexes with `--require-artifact-max-age-ms`, can reject stale matrix reports with `--require-matrix-max-age-ms`, can reject stale preserved failure bundles with `--require-failure-max-age-ms`, fails when selected matrix reports failed or are incomplete under `--require-complete`, and fails when preserved failure manifests are present. Validation-gate report and aggregate `presets` fields must use the closed preset registry; typoed labels are rejected instead of counted as new coverage. Failed gate reports include `nextActions` grouped by owner/classification so CI and staging operators can route the next fix without opening raw logs first; missing planned owners and classifications route to the owning subsystem instead of only producing a generic artifact-index failure. Text summaries include discovered artifact coverage areas, artifact schema counts, runtime signal counts, runtime signal owner counts, provider account alias labels, planned owner/classification labels, stale artifact indexes, stale matrix reports, stale failure manifests, exit-criterion status labels, and incomplete exit-criterion status labels for artifact, matrix, failure, and validation-gate aggregate evidence so operators can see which evidence types, provider profiles, dry-run limitations, and runtime subsystems were present without opening raw JSON. `drill-artifact-index-summary.mjs` accepts the same `--require-artifact-max-age-ms` and `--require-matrix-max-age-ms` freshness flags when CI needs to reject stale evidence before it reaches a validation gate.
 Use `--matrix-report PATH` and `--failure-manifest PATH` when CI already knows the exact artifact paths and should avoid broad discovery.
-The distributed-runtime preset requires artifact coverage area `distributed-observability`, schema `arroba.drill.validation_suite_run.v1`, and exit-criterion status `satisfied`, so release/staging evidence must include a passing executed validation-suite report whose artifact index metadata proves the distributed-observability checks ran rather than only publishing a coverage manifest or a generic suite run. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema, coverage, and status metadata. When the executable suite evidence is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`; when the coverage area is missing, the next action points operators to run validation-suite artifacts covering `distributed-observability`.
+The distributed-runtime preset requires artifact coverage area `distributed-observability`, schema `chariox.drill.validation_suite_run.v1`, and exit-criterion status `satisfied`, so release/staging evidence must include a passing executed validation-suite report whose artifact index metadata proves the distributed-observability checks ran rather than only publishing a coverage manifest or a generic suite run. Pass `--include-default-artifacts` or explicit artifact indexes so the gate can verify that schema, coverage, and status metadata. When the executable suite evidence is missing, the gate's next action points operators to rerun the suite with `--run-json --output PATH --output-artifact-index PATH`; when the coverage area is missing, the next action points operators to run validation-suite artifacts covering `distributed-observability`.
 
 For one-command distributed-runtime evidence generation, use:
 
@@ -103,12 +103,12 @@ node apps/cli/scripts/drill-distributed-runtime-gate.mjs \
   --require-chaos-contract-registry-parity \
   --require-complete \
   --json --output .artifacts/drill-validation-gate/distributed-runtime.json \
-  --output-artifact-index .artifacts/drill-validation-gate/arroba-drill-artifacts.json
+  --output-artifact-index .artifacts/drill-validation-gate/chariox-drill-artifacts.json
 ```
 
-The wrapper runs the OSS and Cloud validation suites and the distributed matrix scripts, then feeds their generated artifact indexes and matrix roots into the distributed-runtime preset. Use `--require-generated-matrix-registry-parity` and `--require-chaos-contract-registry-parity` whenever the gate spans both repos; they fail before execution if generated matrix ownership or chaos replay schemas, fault kinds, and invariants disagree. Cloud staging smoke enables both checks for the distributed-runtime gate. JSON/file reports include `generatedEvidence`, which records whether suites/matrices were generated, the generated roots, validation-suite artifact indexes, validation-suite failure roots in `validationSuites.failureRoots`, generated matrix artifact indexes in `matrixReports.artifactIndexes`, matrix report paths, command arguments, artifact-index flags, and replayable `nodeArgs` for generated child commands. Gate report and aggregate validators reject generated command records without `nodeArgs` and reject unknown generated matrix artifact-index flags, so replay metadata cannot be silently dropped or made ambiguous. Generated child-command failures include the owning repo/matrix or validation-suite label alongside the cwd, report, artifact index, and output. Generated validation-suite commands pass `--preserve-failure-root`, so a failed generated OSS or Cloud suite leaves `arroba-drill-failure.json` below its generated validation-suite output root.
+The wrapper runs the OSS and Cloud validation suites and the distributed matrix scripts, then feeds their generated artifact indexes and matrix roots into the distributed-runtime preset. Use `--require-generated-matrix-registry-parity` and `--require-chaos-contract-registry-parity` whenever the gate spans both repos; they fail before execution if generated matrix ownership or chaos replay schemas, fault kinds, and invariants disagree. Cloud staging smoke enables both checks for the distributed-runtime gate. JSON/file reports include `generatedEvidence`, which records whether suites/matrices were generated, the generated roots, validation-suite artifact indexes, validation-suite failure roots in `validationSuites.failureRoots`, generated matrix artifact indexes in `matrixReports.artifactIndexes`, matrix report paths, command arguments, artifact-index flags, and replayable `nodeArgs` for generated child commands. Gate report and aggregate validators reject generated command records without `nodeArgs` and reject unknown generated matrix artifact-index flags, so replay metadata cannot be silently dropped or made ambiguous. Generated child-command failures include the owning repo/matrix or validation-suite label alongside the cwd, report, artifact index, and output. Generated validation-suite commands pass `--preserve-failure-root`, so a failed generated OSS or Cloud suite leaves `chariox-drill-failure.json` below its generated validation-suite output root.
 
-Cross-repo registry parity checks are strict contracts, not label counters. Generated-matrix parity validates the OSS schema `arroba.drill.generated_matrix_names.v1`, the Cloud schema `arroba.cloud.drill.generated_matrix_names.v1`, unique matrix names, and exact matrix repo ownership before comparing the two registries. Chaos-contract parity validates schema `arroba.drill.chaos_contract.v1`, replay and invariant report schemas, unique fault kinds, and unique invariant ids. Runtime-signal parity validates schema `arroba.drill.runtime_signals.v1`, unique signal ids, owner, and description parity. Failure-taxonomy parity validates schema `arroba.drill.failure_taxonomy.v1`, target `scenario`, unique classification kinds, Cloud classifications known to OSS, and owner parity except for documented Cloud-context owner overrides. Keep these checks enabled in staging gates so a typo, stale generated matrix name, duplicate contract value, or malformed Cloud registry fails before live drills spend provider or remote-machine time.
+Cross-repo registry parity checks are strict contracts, not label counters. Generated-matrix parity validates the OSS schema `chariox.drill.generated_matrix_names.v1`, the Cloud schema `chariox.cloud.drill.generated_matrix_names.v1`, unique matrix names, and exact matrix repo ownership before comparing the two registries. Chaos-contract parity validates schema `chariox.drill.chaos_contract.v1`, replay and invariant report schemas, unique fault kinds, and unique invariant ids. Runtime-signal parity validates schema `chariox.drill.runtime_signals.v1`, unique signal ids, owner, and description parity. Failure-taxonomy parity validates schema `chariox.drill.failure_taxonomy.v1`, target `scenario`, unique classification kinds, Cloud classifications known to OSS, and owner parity except for documented Cloud-context owner overrides. Keep these checks enabled in staging gates so a typo, stale generated matrix name, duplicate contract value, or malformed Cloud registry fails before live drills spend provider or remote-machine time.
 
 Validation-gate aggregates copy that provenance into each report summary and count `coverage.generatedEvidenceKinds`, `coverage.generatedMatrixArtifactIndexes`, `coverage.generatedMatrixNames`, `coverage.generatedMatrixRepos`, `coverage.generatedValidationSuiteArtifactIndexes`, and `coverage.generatedValidationSuiteFailureRoots`, so a higher-level gate can prove whether it consumed generated validation-suite runs, generated matrix reports, generated matrix identity metadata, generated validation-suite artifact indexes, generated matrix artifact indexes, discovered evidence, explicit evidence, and preserved generated-suite failure bundles. Aggregate summaries also preserve stale matrix report sources as `coverage.matrixStaleReports` and stale failure manifest sources as `coverage.failureStaleManifests`, so bundled evidence still points to the exact report or preserved failure bundle that must be regenerated. Use `drill-validation-gate-summary.mjs --require-generated-evidence-kind validation-suite-run --require-generated-evidence-kind matrix-report --require-generated-validation-suite-artifact-index PATH --require-generated-matrix-artifact-index PATH --require-generated-validation-suite-failure-root PATH` when CI must reject a stale/discovered-only gate bundle or one that omits generated validation-suite artifact-index, generated matrix artifact-index, or failure-root provenance.
 
@@ -121,7 +121,7 @@ change is isolated to one quality axis:
 
 ```bash
 pnpm run validation:focused-runtime-gate
-pnpm --filter @arroba/cli run validation:focused-runtime-gate
+pnpm --filter @chariox/cli run validation:focused-runtime-gate
 
 node apps/cli/scripts/drill-focused-runtime-gate.mjs \
   --matrix-root .artifacts/drill-matrices \
@@ -153,7 +153,7 @@ the matching live matrix has completed.
 
 ## Matrix Reports
 
-Matrix scripts write JSON with schema `arroba.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
+Matrix scripts write JSON with schema `chariox.drill.matrix.v1`. Use `defaultDrillMatrixReportPath(...)` so reports are written under `.artifacts/drill-matrices/<matrix>/<timestamp>.json` when the caller does not pass `--report PATH`. `--report PATH` remains the override for CI jobs or custom collection directories.
 
 Summarize one or more reports with:
 
@@ -171,12 +171,12 @@ For dry-run reports, it prints selected scenario exit criteria so reviewers can 
 Use `--require-complete` for release/staging gates that must reject skipped or dry-run scenarios even when no scenario failed.
 When more than one report is selected, the human summary prints an aggregate section with total coverage, failure owners, next actions, and incomplete scenarios.
 Failed-scenario summaries include an owner and next action so humans and CI can route the fix without opening raw logs first.
-The shared taxonomy can also be exported as schema `arroba.drill.failure_taxonomy.v1` by calling `drillFailureTaxonomyManifest(...)` from `apps/cli/scripts/lib/drill-failure-taxonomy.mjs`; use this instead of duplicating classification tables in feature drills or UI diagnostics.
-The `--json`/`--output` aggregate schema is `arroba.drill.matrix.aggregate.v1`; its `reports`, `failedScenarios`, and `incompleteScenarios` entries include the originating report `source` path when available. Its `reports` entries must have internally consistent status/count/duration fields, and aggregate totals must equal the sum of those entries. Its `owners` map counts failed-scenario owners, `nextActions` groups repeated owner/classification/action pairs, its `failedScenarios` entries include `classification`, `owner`, `reason`, `artifactHints`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
+The shared taxonomy can also be exported as schema `chariox.drill.failure_taxonomy.v1` by calling `drillFailureTaxonomyManifest(...)` from `apps/cli/scripts/lib/drill-failure-taxonomy.mjs`; use this instead of duplicating classification tables in feature drills or UI diagnostics.
+The `--json`/`--output` aggregate schema is `chariox.drill.matrix.aggregate.v1`; its `reports`, `failedScenarios`, and `incompleteScenarios` entries include the originating report `source` path when available. Its `reports` entries must have internally consistent status/count/duration fields, and aggregate totals must equal the sum of those entries. Its `owners` map counts failed-scenario owners, `nextActions` groups repeated owner/classification/action pairs, its `failedScenarios` entries include `classification`, `owner`, `reason`, `artifactHints`, and `nextAction`, and its `incompleteScenarios` entries list skipped and dry-run coverage gaps.
 
 Required top-level fields:
 
-- `schema`: always `arroba.drill.matrix.v1`.
+- `schema`: always `chariox.drill.matrix.v1`.
 - `matrix`: stable matrix name.
 - `status`: `passed`, `failed`, or `dry-run`; it must match scenario statuses.
 - `dryRun`: boolean; true only when every selected scenario is `dry-run`.
@@ -214,13 +214,13 @@ The matrix report validator rejects secret-looking metadata keys, token-shaped m
 
 ## Failure Manifests
 
-Failed drills that preserve artifacts write `arroba-drill-failure.json` with schema `arroba.drill.failure.v1`.
+Failed drills that preserve artifacts write `chariox-drill-failure.json` with schema `chariox.drill.failure.v1`.
 
 Summarize one or more preserved roots or manifest files with:
 
 ```bash
 node apps/cli/scripts/drill-failure-summary.mjs path/to/preserved-root
-node apps/cli/scripts/drill-failure-summary.mjs path/to/arroba-drill-failure.json
+node apps/cli/scripts/drill-failure-summary.mjs path/to/chariox-drill-failure.json
 node apps/cli/scripts/drill-failure-summary.mjs --find apps/cli/target .artifacts
 node apps/cli/scripts/drill-failure-summary.mjs --find --max-depth 4 .artifacts
 node apps/cli/scripts/drill-failure-summary.mjs --json --output path/to/failure-aggregate.json --find apps/cli/target .artifacts
@@ -229,7 +229,7 @@ node apps/cli/scripts/drill-failure-summary.mjs --find --require-failure-max-age
 
 Required top-level fields:
 
-- `schema`: always `arroba.drill.failure.v1`.
+- `schema`: always `chariox.drill.failure.v1`.
 - `rootDir`: preserved artifact root.
 - `failedAt`: ISO timestamp for the failure.
 - `metadata`: non-secret drill context such as drill name, provider profile, relay mode, or scenario id.
@@ -238,7 +238,7 @@ Required top-level fields:
 Failure manifests redact sensitive metadata keys, token-shaped metadata values, and token-shaped error text before writing. The validator rejects token-shaped metadata values, including nested values, so externally supplied manifests cannot pass with credentials embedded. Failure summaries also redact sensitive metadata keys, token-shaped error messages, and omit nested values. Keep raw logs, screenshots, and packet captures in the preserved artifact root, not in the manifest.
 When more than one failure manifest is selected, the summary command prints an aggregate owner/classification section so preserved failure batches can be routed quickly.
 Failure manifest discovery is bounded by default, prunes heavy irrelevant directories, and accepts `--max-depth N` for CI layouts that need a tighter or wider traversal bound.
-The `--json`/`--output` aggregate schema is `arroba.drill.failure.aggregate.v1`.
+The `--json`/`--output` aggregate schema is `chariox.drill.failure.aggregate.v1`.
 Its `nextActions` entries group repeated owner/classification/action pairs so CI and humans can route a failure batch without scanning every manifest.
 Each failure entry includes the drill name, preserved artifact root, optional manifest `source` path, owner, classification, and next action.
 Use `--require-failure-max-age-ms MS` when CI must reject stale preserved failure bundles instead of routing old failures as current blockers; aggregate output then includes `requiredFailureMaxAgeMs` and `staleFailureManifests`.

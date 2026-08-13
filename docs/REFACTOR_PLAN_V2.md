@@ -92,7 +92,7 @@ Planned:
 
 Goal:
 
-- expose workflow runtime tools through one daemon-owned Arroba MCP surface
+- expose workflow runtime tools through one daemon-owned Chariox MCP surface
 - automate MCP attachment for managed provider runs
 - keep tool semantics provider-agnostic while leaving adapter-owned projection details per provider
 
@@ -101,7 +101,7 @@ Status: **Partially Complete**
 Shipped:
 
 - shared transport-owned runtime-tool dispatch reused by local APIs and MCP
-- daemon-owned Arroba MCP server for runtime tools
+- daemon-owned Chariox MCP server for runtime tools
 - automated managed-run MCP attachment for supported Codex and OpenCode runs
 - live-managed MCP path verified for:
   - `ack_workflow_turn`

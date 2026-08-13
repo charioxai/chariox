@@ -9,7 +9,7 @@
 ## Objective
 
 Take metaagents from a solid kernel-backed feature to professional-grade
-software across `arroba` and `arroba-cloud`.
+software across `chariox` and `chariox-cloud`.
 
 The target state is:
 
@@ -36,7 +36,7 @@ The current implementation has the right shape:
 - Metaagents can inspect session state, list/read/ack events, inspect turns, run
   scoped commands, prompt owned regular agents, and resolve owned regular-agent
   runtime interactions.
-- `arroba-cloud` can create metaagent sessions/agents, marks metaagents in the
+- `chariox-cloud` can create metaagent sessions/agents, marks metaagents in the
   terminal footer, and excludes metaagents from workflow node selection.
 
 The remaining gap is not concept. It is product hardening: durability, audit,
@@ -152,7 +152,7 @@ Keep metaagent awareness prompt-first and visible.
 Target work:
 
 - Treat runtime-origin metaagent event prompts as visible prompts in the
-  transcript, clearly marked as Arroba runtime events.
+  transcript, clearly marked as Chariox runtime events.
 - Track prompt delivery status on each metaagent event:
   - recorded
   - submitted
@@ -196,9 +196,9 @@ Acceptance:
 - Collaboration rules are enforced in kernel tests, not just UI behavior.
 - Remote metaagent behavior is covered by home/worker tests and drills.
 
-## Phase 6: Arroba Cloud Product Experience
+## Phase 6: Chariox Cloud Product Experience
 
-Turn metaagents into a first-class supervisory surface in `arroba-cloud`.
+Turn metaagents into a first-class supervisory surface in `chariox-cloud`.
 
 Current state:
 
@@ -230,7 +230,7 @@ Target work:
   - focus agent
   - spawn regular helper agent
   - rename/delete owned regular agent
-- Add a command palette backed by `arroba.meta.search_commands`.
+- Add a command palette backed by `chariox.meta.search_commands`.
 - Add turn inspection:
   - call `turn_overview`
   - show trace items compactly

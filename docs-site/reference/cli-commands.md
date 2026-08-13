@@ -1,6 +1,6 @@
 # CLI Commands
 
-This page tracks the current user-facing slash commands and keyboard shortcuts in the Arroba CLI.
+This page tracks the current user-facing slash commands and keyboard shortcuts in the Chariox CLI.
 
 The source of truth is the current TypeScript CLI implementation in:
 
@@ -27,23 +27,23 @@ Leave the current workspace/session view and return to the waiting room.
 
 ## Native TUI Agents
 
-### `arroba codex [session-ref]`
+### `chariox codex [session-ref]`
 
-Launch a Codex-native TUI agent managed by Arroba.
+Launch a Codex-native TUI agent managed by Chariox.
 
-If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new Codex native TUI agent to that Arroba session.
-
-By default the native TUI launcher connects to `ws://127.0.0.1:43119/kernel`. Use `--kernel-port <port>` for another local kernel port, or `--kernel-url <url>` for a full endpoint.
-
-### `arroba opencode [session-ref]`
-
-Launch an OpenCode-native TUI agent managed by Arroba.
-
-If `session-ref` is omitted, Arroba creates a new session. If it is provided, Arroba adds a new OpenCode native TUI agent to that Arroba session.
+If `session-ref` is omitted, Chariox creates a new session. If it is provided, Chariox adds a new Codex native TUI agent to that Chariox session.
 
 By default the native TUI launcher connects to `ws://127.0.0.1:43119/kernel`. Use `--kernel-port <port>` for another local kernel port, or `--kernel-url <url>` for a full endpoint.
 
-For native TUI agents, model and variant are controlled from the provider TUI. Arroba CLIs observe the run and can send prompts, but they do not mutate those parameters.
+### `chariox opencode [session-ref]`
+
+Launch an OpenCode-native TUI agent managed by Chariox.
+
+If `session-ref` is omitted, Chariox creates a new session. If it is provided, Chariox adds a new OpenCode native TUI agent to that Chariox session.
+
+By default the native TUI launcher connects to `ws://127.0.0.1:43119/kernel`. Use `--kernel-port <port>` for another local kernel port, or `--kernel-url <url>` for a full endpoint.
+
+For native TUI agents, model and variant are controlled from the provider TUI. Chariox CLIs observe the run and can send prompts, but they do not mutate those parameters.
 
 ### `/provider <name>`
 

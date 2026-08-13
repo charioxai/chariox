@@ -2,7 +2,7 @@
 
 Status: validated on 2026-04-23.
 
-This spike validates whether Arroba can own shell-style execution permissions
+This spike validates whether Chariox can own shell-style execution permissions
 and mid-turn user interactions in a provider-independent way, before
 implementing that control path in production kernel/runtime code.
 
@@ -10,9 +10,9 @@ implementing that control path in production kernel/runtime code.
 
 Prove these claims:
 
-- Arroba-controlled command execution can feel close enough to provider-native
+- Chariox-controlled command execution can feel close enough to provider-native
   bash for normal agent work.
-- Arroba can enforce a simple, provider-independent permission model:
+- Chariox can enforce a simple, provider-independent permission model:
   `limited`, `yolo`, `yolo+rm`.
 - `yolo` can block deletion of paths not created by the same agent while still
   allowing normal iterative work.
@@ -33,14 +33,14 @@ Prove these claims:
 
 ## Decision Under Test
 
-Arroba should own the execution gate for any operation that must obey a common
+Chariox should own the execution gate for any operation that must obey a common
 permission policy across providers.
 
-That means testing an Arroba-supervised command tool instead of relying on
+That means testing a Chariox-supervised command tool instead of relying on
 Codex/OpenCode native shell permissions.
 
 If the spike fails, v1 should not promise uniform permissions across providers.
-In that case, Arroba would fall back to provider-native execution behavior and
+In that case, Chariox would fall back to provider-native execution behavior and
 limit itself to coarse launch-time sandbox settings.
 
 ## Permission Model Under Test
@@ -55,11 +55,11 @@ The spike validates this user-facing model:
   - execution auto-allowed
   - writes auto-allowed
   - delete allowed only for paths created by the same agent during the current
-    session lifetime tracked by Arroba
+    session lifetime tracked by Chariox
 - `yolo+rm`
   - execution and file deletion fully auto-allowed
 
-The important rule is that these are Arroba permissions, not provider
+The important rule is that these are Chariox permissions, not provider
 permissions.
 
 ## Prototype Location
@@ -77,7 +77,7 @@ experiments/controlled-exec-spike/
   artifacts/
 ```
 
-The prototype should be Node-based so it can reuse existing Arroba drill
+The prototype should be Node-based so it can reuse existing Chariox drill
 conventions and local provider binaries quickly.
 
 ## Architecture Hypothesis
@@ -86,7 +86,7 @@ The spike tests this boundary:
 
 ```text
 provider/model
-  asks for command execution through an Arroba-like runtime tool
+  asks for command execution through a Chariox-like runtime tool
 
 controlled exec gateway
   validates policy
@@ -107,14 +107,14 @@ permission ledger
 
 The spike must answer:
 
-1. Can agents do normal command-driven work through Arroba-controlled exec
+1. Can agents do normal command-driven work through Chariox-controlled exec
    without the experience degrading too much?
 2. Is a simple permission gate sufficient for the common cases?
 3. Can `yolo` path ownership checks be implemented with a lightweight ledger?
 4. Can a command pause on approval and continue in the same turn?
 5. Can the same pause/resume path handle non-permission multiple-choice
    interactions?
-6. Which operations, besides shell execution, must move under Arroba control to
+6. Which operations, besides shell execution, must move under Chariox control to
    keep the permission story coherent?
 
 ## Scenarios
@@ -201,7 +201,7 @@ Success:
 Use one real Codex run and one real OpenCode run with a tightly constrained
 prompt:
 
-- instruct the agent to use only the Arroba-like controlled exec tool
+- instruct the agent to use only the Chariox-like controlled exec tool
 - perform harmless shell work
 - trigger one approval
 - trigger one simple choice question
@@ -313,15 +313,15 @@ Adopt this direction for production M12.
 
 The spike shows that:
 
-- Arroba can own the execution gate without breaking normal command-driven work
-- the `limited` / `yolo` / `yolo+rm` model is implementable at the Arroba layer
+- Chariox can own the execution gate without breaking normal command-driven work
+- the `limited` / `yolo` / `yolo+rm` model is implementable at the Chariox layer
 - same-turn confirmation and single-choice interactions are viable through the
   runtime MCP boundary
 - synchronous popup interactions are viable through the same blocking tool-call
   model, including timeout/default fallback
 
 The remaining production question is not feasibility but scope: which
-provider-native operations must be suppressed or replaced so the Arroba
+provider-native operations must be suppressed or replaced so the Chariox
 permission model remains coherent for end users.
 
 ## Failure Criteria
@@ -331,14 +331,14 @@ The spike fails if:
 - command behavior is too degraded compared to provider-native bash
 - same-turn continuation after approval/choice is too unreliable
 - path-ownership checks become too brittle or expensive
-- too many additional operations must move under Arroba control just to make
+- too many additional operations must move under Chariox control just to make
   the permission model coherent
 
 ## Expected Follow-Up If The Spike Passes
 
 Production M12 should then implement:
 
-- Arroba-owned permission levels on agents
+- Chariox-owned permission levels on agents
 - controlled execution through the runtime MCP
 - client-rendered interaction prompts in CLI and shell
 - provider launch changes that discourage or disable direct provider-native

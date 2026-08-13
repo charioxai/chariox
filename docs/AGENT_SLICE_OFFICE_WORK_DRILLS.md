@@ -1,13 +1,13 @@
 # Agent Slice Office Work Drills
 
-These drills evaluate how far an Arroba agent in a slice can perform real
+These drills evaluate how far a Chariox agent in a slice can perform real
 office work on behalf of a user with runtime MCP slice controls, extension
-creation, and Arroba vault-backed credentials.
+creation, and Chariox vault-backed credentials.
 
 ## 1. Email-Gated SaaS Onboarding
 
 - Start a slice-backed agent with browser tools and vault tools.
-- Store the Gmail credential through the Arroba vault.
+- Store the Gmail credential through the Chariox vault.
 - Ask the agent to log into Gmail using `paste_secret_to_slice`.
 - Ask the agent to register for a service that requires email confirmation.
 - The agent should find the confirmation email, complete onboarding, and report

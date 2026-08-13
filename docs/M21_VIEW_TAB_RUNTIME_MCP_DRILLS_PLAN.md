@@ -2,7 +2,7 @@
 
 ## Goal
 
-Validate from the Arroba Cloud web terminal View tab that a slice-backed agent can discover and use Arroba runtime MCP tools to operate the slice browser and screen on behalf of the user.
+Validate from the Chariox Cloud web terminal View tab that a slice-backed agent can discover and use Chariox runtime MCP tools to operate the slice browser and screen on behalf of the user.
 
 The drills must be run from the web terminal View tab, with the slice screen, prompt area, and agent pane/traces visible. Evidence screenshots must be saved under `./.artifacts`.
 
@@ -30,7 +30,7 @@ Purpose: validate that the agent can inspect the slice display, open a site, rea
 Prompt:
 
 ```text
-You are running in an Arroba slice. Use the Arroba runtime MCP slice tools to inspect the slice screen, open Gmail in the slice browser, confirm whether the inbox is accessible, and summarize the visible inbox state.
+You are running in a Chariox slice. Use the Chariox runtime MCP slice tools to inspect the slice screen, open Gmail in the slice browser, confirm whether the inbox is accessible, and summarize the visible inbox state.
 
 Use browser DOM tools first. Also take a slice screenshot and use OCR or find-text once to verify visible screen text.
 ```
@@ -64,9 +64,9 @@ Purpose: validate that the agent can perform real browser work through the expos
 Prompt:
 
 ```text
-Use the runtime MCP tools available to you to drive the browser inside the Arroba slice. Do not rely on provider-native browser tools or manual operator actions.
+Use the runtime MCP tools available to you to drive the browser inside the Chariox slice. Do not rely on provider-native browser tools or manual operator actions.
 
-Open Gmail, compose an email to ma.gutierrez.estevez@gmail.com with subject "Arroba slice runtime MCP drill" and body "This email was sent by an Arroba agent driving Gmail inside a slice through runtime MCP tools from the web terminal View tab.", send it, and then verify from the browser state that the action completed.
+Open Gmail, compose an email to ma.gutierrez.estevez@gmail.com with subject "Chariox slice runtime MCP drill" and body "This email was sent by a Chariox agent driving Gmail inside a slice through runtime MCP tools from the web terminal View tab.", send it, and then verify from the browser state that the action completed.
 
 Use browser DOM tools first. If DOM tools are insufficient, fall back to slice OCR/find-text plus mouse/keyboard tools and explain why.
 ```
@@ -88,7 +88,7 @@ Required screenshots:
 
 Pass criteria:
 
-- The agent uses Arroba runtime MCP browser/screen tools to drive Gmail.
+- The agent uses Chariox runtime MCP browser/screen tools to drive Gmail.
 - The agent pane trace clearly shows the tool calls and results.
 - The View tab screenshot shows the sent/confirmation state or equivalent Gmail evidence.
 - No manual browser interaction is used for the task, except web terminal prompting.
@@ -100,7 +100,7 @@ Purpose: validate that the vault-to-browser path can place a secret into a brows
 Prompt:
 
 ```text
-Use the runtime MCP tools available to you to open a simple password-field test page in the slice browser, identify the password field, and use paste_secret_to_slice with an Arroba vault credential. Do not print, reveal, or infer the secret value. Verify only that the field is filled/redacted.
+Use the runtime MCP tools available to you to open a simple password-field test page in the slice browser, identify the password field, and use paste_secret_to_slice with a Chariox vault credential. Do not print, reveal, or infer the secret value. Verify only that the field is filled/redacted.
 ```
 
 Expected tool usage:

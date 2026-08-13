@@ -10,7 +10,7 @@ This milestone is not a substrate bakeoff. Docker is the required implementation
 
 ## Working Hypothesis
 
-Docker may be sufficient if Arroba preserves the correct browser and OS identity state. A simple container image commit is not enough when important state is stored in bind mounts, volumes, tmpfs, keyrings, or runtime-only browser profile directories.
+Docker may be sufficient if Chariox preserves the correct browser and OS identity state. A simple container image commit is not enough when important state is stored in bind mounts, volumes, tmpfs, keyrings, or runtime-only browser profile directories.
 
 The browser state that may matter includes:
 
@@ -24,7 +24,7 @@ The browser state that may matter includes:
 ## Non-Goals
 
 - Do not add VM-backed slices in this milestone or use VMs as a fallback.
-- Do not add Arroba-managed live sync beyond copying the bonded workspace into the slice.
+- Do not add Chariox-managed live sync beyond copying the bonded workspace into the slice.
 - Do not build generic browser automation abstractions beyond what is needed for the drill.
 - Do not make Gmail-specific product behavior. Gmail is the representative hard validation target, not a special case.
 
@@ -76,7 +76,7 @@ Required persisted state:
 Policy:
 
 - Bonded workspace files are copied into the slice according to the existing slice behavior.
-- Arroba does not add live sync by default.
+- Chariox does not add live sync by default.
 - Browser and keyring state are slice state, not workspace state.
 - Save must either stop relevant processes gracefully or refuse while managed agents are actively running.
 
@@ -133,7 +133,7 @@ Drill:
 1. Launch a Docker slice from the web terminal view page.
 2. Start an agent in the slice.
 3. Ask the agent to use runtime MCP tools to open Gmail in Chromium.
-4. Use Arroba vault injection for the Gmail password.
+4. Use Chariox vault injection for the Gmail password.
 5. Relay any Google confirmation code or number to the user and wait for confirmation.
 6. Once logged in, ask the agent to send a test email.
 7. Save the slice as the user from the web terminal view page.
@@ -156,17 +156,17 @@ Known acceptable outcome:
 
 ## Phase 5A: No-Intervention Webmail Drill
 
-Run this drill before the Gmail live drill. It validates the same Arroba-controlled behavior without depending on Google 2FA, CAPTCHA, phone approval, abuse checks, or external account risk scoring.
+Run this drill before the Gmail live drill. It validates the same Chariox-controlled behavior without depending on Google 2FA, CAPTCHA, phone approval, abuse checks, or external account risk scoring.
 
 This drill does not prove Google will preserve a Gmail session. It proves that Docker slice save/restore preserves the browser-authenticated web-app state needed for Gmail-like work when the service itself does not invalidate the session.
 
 Fixture:
 
-- Start an Arroba-owned test webmail fixture outside the slice.
+- Start a Chariox-owned test webmail fixture outside the slice.
 - The fixture exposes a browser UI with login, inbox, compose, sent mail, and logout.
 - The fixture sets realistic secure session cookies and uses localStorage or IndexedDB for client-side UI state.
 - The fixture stores sent messages server-side and exposes a test-only verification endpoint outside the agent's browser.
-- The fixture password is placed in Arroba vault and must be injected into the browser by runtime MCP secret insertion. The agent must not receive the password in its context.
+- The fixture password is placed in Chariox vault and must be injected into the browser by runtime MCP secret insertion. The agent must not receive the password in its context.
 - Optionally back the fixture with Mailpit for captured SMTP delivery evidence. Mailpit provides an SMTP server, web interface, and API suitable for email testing.
 
 References:
@@ -177,13 +177,13 @@ References:
 Drill:
 
 1. Launch the webmail fixture and record its base URL.
-2. Create a deterministic test account such as `agent@arroba.test`.
-3. Store the account password in Arroba vault.
+2. Create a deterministic test account such as `agent@chariox.test`.
+3. Store the account password in Chariox vault.
 4. Launch a Docker slice from the web terminal view page.
 5. Start an agent in the slice.
 6. Ask the agent to open the webmail fixture in Chromium using runtime MCP browser/slice tools.
 7. Ask the agent to log in using runtime MCP secret insertion from the vault.
-8. Ask the agent to compose and send a first message to `recipient@arroba.test`.
+8. Ask the agent to compose and send a first message to `recipient@chariox.test`.
 9. Verify outside the agent context that the message was received by the fixture or Mailpit.
 10. Save the slice as the user from the web terminal view page.
 11. Stop and fully remove the running slice container.
@@ -235,7 +235,7 @@ If any drill fails:
 - Identify the exact missing or corrupted state.
 - Fix the Docker slice persistence contract.
 - Rerun the failing drill.
-- Continue this loop until Docker satisfies the requirement or the remaining blocker is proven to be external-service policy outside Arroba's control.
+- Continue this loop until Docker satisfies the requirement or the remaining blocker is proven to be external-service policy outside Chariox's control.
 
 ## Evidence Requirements
 

@@ -18,8 +18,8 @@ fi
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 deployment_dir="${repository_dir}/deploy/event-publication"
 services_root="$(cd "${repository_dir}/.." && pwd)"
-aeds_repository="${services_root}/arroba-aeds"
-export ARROBA_BUILD_REVISION="${ARROBA_BUILD_REVISION:-$(git -C "${repository_dir}" rev-parse HEAD)-dirty}"
+aeds_repository="${services_root}/chariox-aeds"
+export CHARIOX_BUILD_REVISION="${CHARIOX_BUILD_REVISION:-$(git -C "${repository_dir}" rev-parse HEAD)-dirty}"
 "${deployment_dir}/prepare-secrets.sh"
 set -a
 # shellcheck disable=SC1091
@@ -46,7 +46,7 @@ stop_aegs() {
 
 wait_for_aeds_ready() {
   for attempt in {1..30}; do
-    if curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/readyz"; then
+    if curl --fail --silent "http://127.0.0.1:${CHARIOX_AEDS_PRODUCER_PORT}/readyz"; then
       return 0
     fi
     sleep 1
@@ -62,8 +62,8 @@ authorization="$(
   curl --fail --silent \
     -H "authorization: Bearer ${dummy_management_token}" \
     -H "content-type: application/json" \
-    --data '{"generator_id":"dev.arroba.dummy"}' \
-    "http://127.0.0.1:${ARROBA_DUMMY_AEGS_PORT}/v1/authorizations"
+    --data '{"generator_id":"dev.chariox.dummy"}' \
+    "http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/authorizations"
 )"
 if ! grep -q '"connection_id":"local-dummy"' <<< "${authorization}"; then
   printf 'Dummy AEGS authorization did not return its opaque connection\n' >&2
@@ -73,28 +73,28 @@ resources="$(
   curl --fail --silent \
     -H "authorization: Bearer ${dummy_management_token}" \
     -H "content-type: application/json" \
-    --data '{"generator_id":"dev.arroba.dummy","connection_id":"local-dummy","limit":20}' \
-    "http://127.0.0.1:${ARROBA_DUMMY_AEGS_PORT}/v1/resources/query"
+    --data '{"generator_id":"dev.chariox.dummy","connection_id":"local-dummy","limit":20}' \
+    "http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/resources/query"
 )"
 if ! grep -q '"connection_scope":"default"' <<< "${resources}"; then
   printf 'Dummy AEGS resource enumeration did not return its provider scope\n' >&2
   exit 1
 fi
 
-ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
-ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
-ARROBA_DRILL_AEGS_URL="http://127.0.0.1:${ARROBA_DUMMY_AEGS_PORT}/v1/emit" \
+CHARIOX_DRILL_KERNEL_TOKEN="${kernel_token}" \
+CHARIOX_DRILL_AEDS_URL="ws://127.0.0.1:${CHARIOX_AEDS_KERNEL_PORT}" \
+CHARIOX_DRILL_AEGS_URL="http://127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT}/v1/emit" \
   cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
     --example deployment_drill
 stop_aegs dummy-aegs
 
 provider_specs=(
-  "github-aegs|github|GITHUB|ARROBA_GITHUB_AEGS_PORT|github"
-  "jira-aegs|jira-cloud|JIRA|ARROBA_JIRA_AEGS_PORT|jira"
-  "linear-aegs|linear|LINEAR|ARROBA_LINEAR_AEGS_PORT|linear"
-  "gitlab-aegs|gitlab|GITLAB|ARROBA_GITLAB_AEGS_PORT|gitlab"
-  "sentry-aegs|sentry|SENTRY|ARROBA_SENTRY_AEGS_PORT|sentry"
-  "slack-aegs|slack|SLACK|ARROBA_SLACK_AEGS_PORT|slack"
+  "github-aegs|github|GITHUB|CHARIOX_GITHUB_AEGS_PORT|github"
+  "jira-aegs|jira-cloud|JIRA|CHARIOX_JIRA_AEGS_PORT|jira"
+  "linear-aegs|linear|LINEAR|CHARIOX_LINEAR_AEGS_PORT|linear"
+  "gitlab-aegs|gitlab|GITLAB|CHARIOX_GITLAB_AEGS_PORT|gitlab"
+  "sentry-aegs|sentry|SENTRY|CHARIOX_SENTRY_AEGS_PORT|sentry"
+  "slack-aegs|slack|SLACK|CHARIOX_SLACK_AEGS_PORT|slack"
 )
 if [[ "${core_only}" != "true" ]]; then
   for provider_spec in "${provider_specs[@]}"; do
@@ -102,43 +102,43 @@ if [[ "${core_only}" != "true" ]]; then
     port="${!port_variable}"
     start_aegs "${service}"
     env \
-      ARROBA_DRILL_PROVIDERS="${fixture}" \
-      ARROBA_DRILL_KERNEL_TOKEN="${kernel_token}" \
-      ARROBA_DRILL_AEDS_URL="ws://127.0.0.1:${ARROBA_AEDS_KERNEL_PORT}" \
-      "ARROBA_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
-      "ARROBA_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
-      "ARROBA_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
+      CHARIOX_DRILL_PROVIDERS="${fixture}" \
+      CHARIOX_DRILL_KERNEL_TOKEN="${kernel_token}" \
+      CHARIOX_DRILL_AEDS_URL="ws://127.0.0.1:${CHARIOX_AEDS_KERNEL_PORT}" \
+      "CHARIOX_DRILL_${prefix}_AEGS_URL=http://127.0.0.1:${port}" \
+      "CHARIOX_DRILL_${prefix}_MANAGEMENT_TOKEN=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-management-token")" \
+      "CHARIOX_DRILL_${prefix}_WEBHOOK_SECRET=$(tr -d '\r\n' < "${deployment_dir}/secrets/${secret_stem}-aegs-webhook-secret")" \
       cargo run --quiet --manifest-path "${aeds_repository}/Cargo.toml" \
         --example first_wave_provider_drill
     stop_aegs "${service}"
   done
 fi
 
-curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics"
+curl --fail --silent "http://127.0.0.1:${CHARIOX_AEDS_PRODUCER_PORT}/metrics"
 "${compose[@]}" restart aeds
 wait_for_aeds_ready
-metrics="$(curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics")"
-if ! grep -q '^arroba_aeds_active_routes 1$' <<< "${metrics}"; then
+metrics="$(curl --fail --silent "http://127.0.0.1:${CHARIOX_AEDS_PRODUCER_PORT}/metrics")"
+if ! grep -q '^chariox_aeds_active_routes 1$' <<< "${metrics}"; then
   printf 'AEDS route state did not survive restart\n%s\n' "${metrics}" >&2
   exit 1
 fi
 printf '%s\n' "${metrics}"
 
 backup_path="$(
-  ARROBA_AEDS_COMPOSE_FILE="${deployment_dir}/compose.yaml" \
-  ARROBA_AEDS_COMPOSE_PROJECT_DIRECTORY="${deployment_dir}" \
-  ARROBA_AEDS_COMPOSE_PROJECT="arroba-event-publication" \
-  ARROBA_AEDS_BACKUP_DIR="${aeds_repository}/backups" \
+  CHARIOX_AEDS_COMPOSE_FILE="${deployment_dir}/compose.yaml" \
+  CHARIOX_AEDS_COMPOSE_PROJECT_DIRECTORY="${deployment_dir}" \
+  CHARIOX_AEDS_COMPOSE_PROJECT="chariox-event-publication" \
+  CHARIOX_AEDS_BACKUP_DIR="${aeds_repository}/backups" \
     "${aeds_repository}/deploy/backup.sh"
 )"
-ARROBA_AEDS_COMPOSE_FILE="${deployment_dir}/compose.yaml" \
-ARROBA_AEDS_COMPOSE_PROJECT_DIRECTORY="${deployment_dir}" \
-ARROBA_AEDS_COMPOSE_PROJECT="arroba-event-publication" \
-ARROBA_AEDS_BACKUP_DIR="${aeds_repository}/backups" \
+CHARIOX_AEDS_COMPOSE_FILE="${deployment_dir}/compose.yaml" \
+CHARIOX_AEDS_COMPOSE_PROJECT_DIRECTORY="${deployment_dir}" \
+CHARIOX_AEDS_COMPOSE_PROJECT="chariox-event-publication" \
+CHARIOX_AEDS_BACKUP_DIR="${aeds_repository}/backups" \
   "${aeds_repository}/deploy/restore.sh" --yes "$(basename "${backup_path}")"
 wait_for_aeds_ready
-restored_metrics="$(curl --fail --silent "http://127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT}/metrics")"
-if ! grep -q '^arroba_aeds_active_routes 1$' <<< "${restored_metrics}"; then
+restored_metrics="$(curl --fail --silent "http://127.0.0.1:${CHARIOX_AEDS_PRODUCER_PORT}/metrics")"
+if ! grep -q '^chariox_aeds_active_routes 1$' <<< "${restored_metrics}"; then
   printf 'AEDS route state did not survive backup/restore\n%s\n' "${restored_metrics}" >&2
   exit 1
 fi

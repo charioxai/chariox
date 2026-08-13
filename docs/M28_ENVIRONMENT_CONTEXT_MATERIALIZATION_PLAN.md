@@ -1,12 +1,12 @@
 # M28: Environment Context Materialization
 
 Status: proposed  
-Scope: `arroba` runtime, slices, independently authoritative managed kernels  
-Cloud companion: `arroba-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`
+Scope: `chariox` runtime, slices, independently authoritative managed kernels
+Cloud companion: `chariox-cloud/docs/C9_MANAGED_REMOTE_KERNELS_MILESTONE.md`
 
 ## 1. Outcome
 
-Arroba should be able to turn an empty execution environment into one in which an
+Chariox should be able to turn an empty execution environment into one in which an
 agent can work correctly without the user manually recreating their development
 setup.
 
@@ -16,8 +16,8 @@ The same mechanism serves two different runtime topologies:
    instructions, an exact logical replica of the parent kernel's agent
    capabilities and Vault, and the network access needed by the agents assigned
    to that slice. The parent kernel remains authoritative.
-2. **Managed remote kernel context**: Arroba Cloud provisions a machine and an
-   independent Arroba kernel there. That kernel owns its own sessions, agents,
+2. **Managed remote kernel context**: Chariox Cloud provisions a machine and an
+   independent Chariox kernel there. That kernel owns its own sessions, agents,
    history, workspaces, child slices, and provider runs. After bootstrap it does
    not depend on a user's laptop.
 
@@ -32,11 +32,11 @@ The user-facing operation is:
 > Create an execution environment for this project and make it ready for my
 > agents.
 
-The source computer is optional. Arroba supports two entry paths:
+The source computer is optional. Chariox supports two entry paths:
 
 - **From a current workspace**: use the local repository plus a reviewed overlay
   of uncommitted work and selected personal context.
-- **From a repository**: start from web, mobile, or any Arroba client; the new
+- **From a repository**: start from web, mobile, or any Chariox client; the new
   kernel clones the repository, reads its checked-in environment and agent
   declarations, and performs any provider/SCM/browser enrollment inside the
   remote environment.
@@ -44,11 +44,11 @@ The source computer is optional. Arroba supports two entry paths:
 The second path is the normal “I do not need a computer” flow. Context which exists
 only on a particular laptop cannot be inferred when that laptop is absent; it must
 instead live in the repository or be replicated from another reachable kernel.
-When no source kernel exists, Arroba creates the first managed kernel with its
+When no source kernel exists, Chariox creates the first managed kernel with its
 standard capability set and an empty Vault, then lets the user enroll additional
 capabilities and credentials directly there.
 
-Arroba must:
+Chariox must:
 
 - determine which context is required;
 - show the user what will be transferred or provisioned;
@@ -60,9 +60,9 @@ Arroba must:
 - preserve the environment according to its lifecycle policy; and
 - report anything that still needs a one-time user action.
 
-“Automatic” means that Arroba plans and performs the safe operations. It must not
+“Automatic” means that Chariox plans and performs the safe operations. It must not
 silently copy a home directory, browser profile, Keychain, SSH directory, ambient
-environment variables, or credentials outside the Arroba Vault. The Arroba Vault
+environment variables, or credentials outside the Chariox Vault. The Chariox Vault
 is different: it is a deliberately portable, encrypted kernel-owned object and is
 replicated as part of the kernel context contract.
 
@@ -117,9 +117,9 @@ startup tasks, explicit agent configuration, explicitly enrolled credentials,
 and persistent remote state. Its public documentation does not describe an
 automatic opaque copy of all local-machine context.
 
-## 4. Current Arroba foundation and gaps
+## 4. Current Chariox foundation and gaps
 
-Arroba already has most runtime primitives:
+Chariox already has most runtime primitives:
 
 - the kernel is the authority for sessions, agents, workspaces, history, provider
   runs, terminal events, and state transitions;
@@ -143,7 +143,7 @@ The gaps are:
 4. There is no readiness report explaining which capabilities work, which require
    login, and which cannot operate while the source machine is offline.
 5. Cloud can pair and describe user machines but does not yet provision an
-   independent, Arroba-managed kernel.
+   independent, Chariox-managed kernel.
 
 ## 5. Core abstraction
 
@@ -153,7 +153,7 @@ Introduce an `EnvironmentSpec`, a planned `ContextManifest`, and a realized
 ### 5.1 EnvironmentSpec
 
 The desired, reviewable configuration. It may be checked into the repository as
-`.arroba/environment.toml`, synthesized from a Dev Container, or created in the
+`.chariox/environment.toml`, synthesized from a Dev Container, or created in the
 TUI.
 
 ```toml
@@ -199,7 +199,7 @@ depends on the new shape, and a focused drill.
 The planner resolves the specification and current workspace into immutable,
 content-addressed inputs:
 
-- base runtime and Arroba runtime versions;
+- base runtime and Chariox runtime versions;
 - repository URL, revision, submodules, and sparse-checkout rules;
 - encrypted working-tree overlay digest;
 - Dev Container/Dockerfile/Compose inputs and lockfiles;
@@ -232,7 +232,7 @@ its environment differs from the source machine.
 ### 5.4 ContextBundle
 
 The “bundle” is one logical transfer, but it is not one indiscriminate archive.
-Keeping its parts separate lets Arroba cache safe inputs without caching secrets:
+Keeping its parts separate lets Chariox cache safe inputs without caching secrets:
 
 1. **Manifest**: signed metadata, digests, paths, policies, and requirements; no
    secret values.
@@ -242,7 +242,7 @@ Keeping its parts separate lets Arroba cache safe inputs without caching secrets
    skills, scripts, and connectors, including exact versions, configuration,
    package contents, and policy, all individually hashed.
 4. **Vault replica envelope**: a consistent encrypted snapshot of the complete
-   Arroba Vault, including entry metadata and policies, bound to the target kernel
+   Chariox Vault, including entry metadata and policies, bound to the target kernel
    identity. Secret values remain encrypted throughout transfer.
 5. **Bootstrap actions**: ordered, idempotent setup and readiness operations.
 
@@ -254,16 +254,16 @@ caches.
 ### 5.5 Exact kernel-context replication
 
 For a managed slice or managed remote kernel, capability choice is not a repeated
-per-environment checklist. Arroba takes a point-in-time logical snapshot of the
+per-environment checklist. Chariox takes a point-in-time logical snapshot of the
 source kernel and reproduces it by default:
 
-- the same compatible Arroba kernel release and protocol capabilities;
+- the same compatible Chariox kernel release and protocol capabilities;
 - every installed extension and its configuration;
 - every MCP registration, package/version, transport configuration, and secret
   handle reference;
 - every skill package and script with its content hash and precedence;
 - every connector definition, permission policy, and target metadata; and
-- the complete encrypted Arroba Vault with entry IDs, values, metadata, host/use
+- the complete encrypted Chariox Vault with entry IDs, values, metadata, host/use
   policies, and deletion markers.
 
 “Exact” means identical logical inventory and content hashes, not copying the
@@ -289,7 +289,7 @@ and revocation model.
 The source may itself be an already-managed remote kernel. Once the user's first
 managed kernel is running, it can create fully populated slices and additional
 managed kernels without involving a laptop. If no kernel containing the desired
-Vault is reachable, Arroba cannot conjure that Vault: the user must start with an
+Vault is reachable, Chariox cannot conjure that Vault: the user must start with an
 empty one, unlock an independently retained encrypted backup, or bring an existing
 kernel online. Cloud must not retain a decryptable master copy merely to hide this
 constraint.
@@ -300,19 +300,19 @@ The first iteration should feel like one operation even though provisioning and
 materialization have several internal stages:
 
 ```text
-arroba environment create --remote --from-current-workspace
+chariox environment create --remote --from-current-workspace
 
 Inspecting project .......... done
 Planning context ............ done
 Provisioning machine ........ running
 Preparing context bundle .... running
-Starting Arroba kernel ...... pending
+Starting Chariox kernel ...... pending
 Applying project context .... pending
 Checking agent readiness .... pending
 Opening remote session ...... pending
 ```
 
-Internally Arroba should:
+Internally Chariox should:
 
 1. inspect the current project and infer a draft spec;
 2. ask once to unlock/authorize the encrypted Vault snapshot and resolve any
@@ -337,7 +337,7 @@ materialization, readiness, and attachment step remains the same. The user may
 leave as soon as a managed remote kernel has accepted durable ownership of the
 operation; creation progress then remains visible from another client.
 
-Normal operation should require no questions. Arroba interrupts only for an
+Normal operation should require no questions. Chariox interrupts only for an
 unsafe ambiguity, explicit secret selection, provider/browser login, or a failed
 readiness requirement. The final screen says either “ready” or precisely which
 capability remains unavailable; it never leaves the user guessing whether a
@@ -376,7 +376,7 @@ topology actually differs.
 
 ### 6.2 Managed remote-kernel target
 
-- Cloud provisions a machine and bootstraps an independent Arroba kernel.
+- Cloud provisions a machine and bootstraps an independent Chariox kernel.
 - The remote kernel creates and owns its own userspace runtime records: sessions,
   agents, workspaces, child slices, provider runs, history, and terminal streams.
 - A source machine is only a provisioning client. It is not the home kernel for
@@ -416,7 +416,7 @@ Cloud may transport opaque bytes but cannot decrypt them.
 Resolution order:
 
 1. repository Dev Container configuration;
-2. repository `.arroba/environment.toml`;
+2. repository `.chariox/environment.toml`;
 3. a generated proposal based on lockfiles and tool-version files; or
 4. an explicit base-image selection plus setup tasks.
 
@@ -440,10 +440,10 @@ logs.
 - A managed remote kernel cannot be marked offline-ready when a required
   capability is source-kernel proxied.
 
-This deliberately preserves the current standard paired-worker contract. Arroba
+This deliberately preserves the current standard paired-worker contract. Chariox
 does not copy personal capabilities or Vault data to arbitrary user-operated
 workers; exact replication applies only to user-approved managed slices and
-Arroba-managed kernels.
+Chariox-managed kernels.
 
 ### 7.4 Provider harnesses
 
@@ -458,13 +458,13 @@ Authentication options, in preferred order:
 3. explicitly import the minimal provider-native credential artifact when that is
    supported and the user consents.
 
-Arroba must not normalize provider credentials into an Arroba-owned cloud token
+Chariox must not normalize provider credentials into a Chariox-owned cloud token
 store or become the owner of provider-internal session state.
 
 ### 7.5 Vault replication and external credentials
 
-The complete Arroba Vault is copied as the encrypted, revisioned snapshot described
-above. Credentials outside that Vault remain named requirements; Arroba does not
+The complete Chariox Vault is copied as the encrypted, revisioned snapshot described
+above. Credentials outside that Vault remain named requirements; Chariox does not
 discover them by scanning the home directory.
 
 Each requirement declares one delivery mode:
@@ -501,7 +501,7 @@ Every SSH requirement includes allowed host/port patterns, host-key policy,
 expiry, and whether agent forwarding is allowed. Default-deny forwarding and
 never copy `~/.ssh` wholesale.
 
-If the destination is reachable only through the user's laptop or LAN, Arroba must
+If the destination is reachable only through the user's laptop or LAN, Chariox must
 also provision durable connectivity: a WireGuard/Tailscale-style connector,
 customer network runner, VPN, or bastion. Credentials alone do not create network
 reachability.
@@ -511,12 +511,12 @@ reachability.
 The managed browser and its profile live in the slice or remote environment. The
 preferred flow is:
 
-1. open the remote headed browser through Arroba;
+1. open the remote headed browser through Chariox;
 2. let the user sign in once, optionally using a target-restricted vault action;
 3. persist the remote browser profile with the environment; and
 4. let agents and the user share that same remote browser session.
 
-Arroba should not automatically import the local Chrome/Firefox profile, cookies,
+Chariox should not automatically import the local Chrome/Firefox profile, cookies,
 password database, or platform-bound passkeys. Those artifacts can be encrypted
 to a device or OS account, carry broad ambient authority, and may violate website
 session policies. A future, per-site migration assistant may be explored, but it
@@ -556,7 +556,7 @@ content hashes.
 2. The relay remains an opaque scoped packet router.
 3. A managed remote kernel is an independent kernel, not a leased worker attached
    to the user's laptop.
-4. Only declared project context and the exact Arroba kernel context cross the
+4. Only declared project context and the exact Chariox kernel context cross the
    boundary. There is no implicit whole-home snapshot.
 5. Context bundles and Vault replicas are authenticated, content-addressed,
    encrypted to a target kernel identity, replay-protected, expiring in transport,
@@ -611,7 +611,7 @@ protocol-change rule and include a focused drill.
 ### Phase 0: contracts and threat model
 
 - Define trust classes: arbitrary paired worker, managed slice, independent
-  Arroba-managed kernel.
+  Chariox-managed kernel.
 - Specify `EnvironmentSpec`, `ContextManifest`, `EnvironmentReceipt`, sensitivity
   filters, target identity, bundle encryption, and deletion semantics.
 - Add protocol shape/version tests before wiring clients.
@@ -632,7 +632,7 @@ same application setup/test drill without manual copying.
 
 ### Phase 2: independent managed kernel
 
-- Bootstrap a signed Arroba runtime on an Arroba-managed VM.
+- Bootstrap a signed Chariox runtime on a Chariox-managed VM.
 - Give it an independent kernel identity, persistent kernel state, direct hosted
   relay connectivity, and a lifecycle controlled by Cloud.
 - Apply the same manifest and bundle used by slices.
@@ -705,7 +705,7 @@ This phase is explicitly outside the initial remote-environment product.
 - Importing browser password stores or cookies automatically.
 - Forwarding a local SSH agent as the default offline credential strategy.
 - Turning Cloud or the relay into runtime/session authority.
-- Storing normalized provider credentials in Arroba Cloud.
+- Storing normalized provider credentials in Chariox Cloud.
 - Changing the contract for arbitrary paired workers.
 - Migrating a live local session to a remote kernel in the first release.
 

@@ -1,6 +1,6 @@
-# Arroba Event Generation Server SDK
+# Chariox Event Generation Server SDK
 
-`arroba-aegs-sdk` is the public Rust SDK for first-party and third-party AEGS
+`chariox-aegs-sdk` is the public Rust SDK for first-party and third-party AEGS
 implementations. It provides:
 
 - manifest envelope and canonical digest validation;
@@ -14,7 +14,7 @@ implementations. It provides:
 Run the conformance tests with:
 
 ```sh
-cargo test -p arroba-event-protocol -p arroba-aegs-sdk -p arroba-aegs-dummy
+cargo test -p chariox-event-protocol -p chariox-aegs-sdk -p chariox-aegs-dummy
 ```
 
 An AEGS must expose `GET /healthz`, `GET /readyz`, `GET /version`, and the
@@ -24,10 +24,10 @@ the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
 
 The OSS repository intentionally contains no production AEDS and no
-Arroba-maintained production provider implementation. Those components live in
-the private `arroba-aeds` and `arroba-aegs-<provider>` repositories, consume
+Chariox-maintained production provider implementation. Those components live in
+the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
 this SDK, and run the same public conformance contracts. The only runnable AEGS
-kept here is `arroba-aegs-dummy` for deterministic local development.
+kept here is `chariox-aegs-dummy` for deterministic local development.
 
 Reconciliation is authoritative only for the request's `owner_id`. An AEGS
 must not deactivate subscriptions owned by another kernel when one kernel
@@ -44,13 +44,13 @@ Publisher paths:
 
 - `official_provider`: reserved for an implementation signed and operated by
   the named service provider;
-- `arroba`: an Arroba-maintained implementation, displayed as “Provider by
-  Arroba” and never presented as official;
+- `chariox`: a Chariox-maintained implementation, displayed as “Provider by
+  Chariox” and never presented as official;
 - `verified_community` or `community`: independently published and signed;
 - `self_hosted`: locally registered by an operator and clearly scoped to that
   environment.
 
-Generator IDs are publisher-scoped. Arroba uses `dev.arroba.<provider>` and
+Generator IDs are publisher-scoped. Chariox uses `dev.chariox.<provider>` and
 does not claim the provider's official namespace. Registry promotion requires
 signed manifests, conformance, live provider evidence, and the deployment
 failure matrix described in `EVENT_BASED_PUBLICATION_SURFACE_PLAN.html`.

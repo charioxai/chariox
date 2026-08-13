@@ -803,7 +803,7 @@
     <header class="masthead">
       <p class="eyebrow">Cross-repository implementation and validation plan / revised 2026-07-19</p>
       <h1>Deployed Workflows and Agent App Hosting</h1>
-      <p class="lede">Turn an immutable Arroba workflow release into a customer-owned, claimable agent application with managed runtime, WorkOS-backed identity, enterprise handoff, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
+      <p class="lede">Turn an immutable Chariox workflow release into a customer-owned, claimable agent application with managed runtime, WorkOS-backed identity, enterprise handoff, audience access, bring-your-own provider credentials, release promotion, and custom domains.</p>
       <div class="meta-strip" aria-label="Plan metadata">
         <span>OSS branch: codex/deployed-workflows-console-wizard-workos</span>
         <span>Cloud branch: codex/deployed-workflows-console-wizard-workos</span>
@@ -845,9 +845,9 @@
           <h2>Ship a customer-owned deployment product, not a larger sidebar.</h2>
           <div class="decision">
             <strong>Recommended thesis</strong>
-            Arroba should become the managed host for provider-native agent apps. A builder publishes an immutable release; a customer claims a deployment into their organization, connects their own provider and integration credentials, controls who may use it, and operates it on an Arroba-managed URL or their own domain.
+            Chariox should become the managed host for provider-native agent apps. A builder publishes an immutable release; a customer claims a deployment into their organization, connects their own provider and integration credentials, controls who may use it, and operates it on a Chariox-managed URL or their own domain.
           </div>
-          <p>The differentiated product is a <strong>claimable agent app release</strong>. It is narrower and more defensible than trying to match every n8n workflow-building feature. Arroba can own the deployment, handoff, runtime, authentication, credential binding, and operational experience for developers and agencies that do not want custom infrastructure.</p>
+          <p>The differentiated product is a <strong>claimable agent app release</strong>. It is narrower and more defensible than trying to match every n8n workflow-building feature. Chariox can own the deployment, handoff, runtime, authentication, credential binding, and operational experience for developers and agencies that do not want custom infrastructure.</p>
 
           <div class="principles">
             <div class="principle">
@@ -914,7 +914,7 @@
                   <td>Publication package</td>
                   <td><span class="status have">Landed</span> Package v3 exports a digest-bound deployment contract with provenance, protocol floor, routes, credential slots, resource hints, network ceilings and provider bundle references.</td>
                   <td>Keep legacy v1/v2 adapters for local compatibility, but admit managed hosting only through verified immutable v3 artifacts and compatible runtimes.</td>
-                  <td><code>arroba</code></td>
+                  <td><code>chariox</code></td>
                 </tr>
                 <tr>
                   <td>Runtime</td>
@@ -926,13 +926,13 @@
                   <td>Deployment record</td>
                   <td><span class="status have">Landed</span> Projects, releases, environments, promotions, claims, access, credentials, domains, audit and usage are distinct records with account-scoped services.</td>
                   <td><span class="status have">Accepted</span> Migration, desired/observed reconciliation, recovery, rollback, and cross-surface projection passed the final affected suites and drills.</td>
-                  <td><code>arroba-cloud</code></td>
+                  <td><code>chariox-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Web UI</td>
                   <td><span class="status have">Landed on integration branch</span> A compact Deployed sidebar and dedicated <code>/deployed</code> portfolio/detail route share one controller and service projection, including canonical deep links and safe lifecycle actions.</td>
                   <td><span class="status have">Accepted for this increment</span> Exact-head web/TUI parity passed in both directions; representative desktop and mobile screenshots were inspected with no blank state, incoherent overlap, or unreachable action.</td>
-                  <td><code>arroba-cloud</code></td>
+                  <td><code>chariox-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Deployment initiation</td>
@@ -942,9 +942,9 @@
                 </tr>
                 <tr>
                   <td>Human identity</td>
-                  <td><span class="status have">Core controls landed</span> Cloud has a provider-neutral verified identity shape, official WorkOS adapter, sealed browser sessions, exact-session browser-approved CLI exchange, Auth0/WorkOS dual mode, organization controls, handoff/audience enforcement, durable membership tombstones, and signed idempotent lifecycle webhooks. Arroba accounts and roles remain authoritative.</td>
+                  <td><span class="status have">Core controls landed</span> Cloud has a provider-neutral verified identity shape, official WorkOS adapter, sealed browser sessions, exact-session browser-approved CLI exchange, Auth0/WorkOS dual mode, organization controls, handoff/audience enforcement, durable membership tombstones, and signed idempotent lifecycle webhooks. Chariox accounts and roles remain authoritative.</td>
                   <td>Configure and prove the real Scalingo/WorkOS environment, then complete customer role/group mapping, deployed-app interactive login, mobile session design, and enterprise cross-surface E2E evidence.</td>
-                  <td><code>arroba-cloud</code></td>
+                  <td><code>chariox-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Credentials</td>
@@ -962,7 +962,7 @@
                   <td>Domains</td>
                   <td><span class="status have">Landed</span> Stable default routes, verified custom hosts, activation proof, TLS/canonical state and removal behavior.</td>
                   <td><span class="status have">Accepted</span> Public <code>sslip.io</code> default/custom hosts passed trusted TLS, canonical redirect, auth, HTTP/SSE/WebSocket/MCP, revocation, and complete Caddy restoration.</td>
-                  <td><code>arroba-cloud</code></td>
+                  <td><code>chariox-cloud</code></td>
                 </tr>
                 <tr>
                   <td>Hosted egress</td>
@@ -976,20 +976,20 @@
 
           <h3>Code landmarks</h3>
           <ul>
-            <li>Package v3 generation and contract: <code>arroba/apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code> and <code>arroba/packages/kernel-client/src/workflow-publication-deployment-contract.ts</code>.</li>
-            <li>Runtime and credential callback contract: <code>arroba/docs/PROTOCOL.md</code> and <code>arroba/apps/kernel/src/runtime/credential_enrollment_control.rs</code>.</li>
-            <li>Relay service-key proof of possession: <code>arroba/apps/kernel/src/transport/relay_client/daemon_requests.rs</code> (committed at <code>b6c58cec2</code>).</li>
-            <li>Publication images: <code>arroba/docker/publication/Dockerfile</code>, <code>arroba/docker/publication/entrypoint.sh</code> and <code>arroba/docker/publication-egress/</code>.</li>
-            <li>Cloud model: <code>arroba-cloud/packages/db/prisma/models.prisma</code>.</li>
-            <li>Contract and activation admission: <code>arroba-cloud/apps/api/src/publication/deployment-runtime-compatibility.ts</code> and <code>arroba-cloud/apps/api/src/publication/publication-egress-policy.ts</code>.</li>
-            <li>Credential callback claim binding: <code>arroba-cloud/apps/api/src/publication/deployment-credential-callback-channel-repository.ts</code>.</li>
-            <li>Runner: <code>arroba-cloud/apps/worker/src/publication-runner.ts</code>.</li>
-            <li>Current Deployed web mount: <code>arroba-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
-            <li>Current draft deploy modal: <code>arroba-cloud/apps/web/src/react/workflows/WorkflowActionButtonsMount.tsx</code>; current publication form: <code>WorkflowEndpointPublicationInspector.tsx</code>.</li>
+            <li>Package v3 generation and contract: <code>chariox/apps/kernel/src/runtime/state/workflow_publication_owned_state/package.rs</code> and <code>chariox/packages/kernel-client/src/workflow-publication-deployment-contract.ts</code>.</li>
+            <li>Runtime and credential callback contract: <code>chariox/docs/PROTOCOL.md</code> and <code>chariox/apps/kernel/src/runtime/credential_enrollment_control.rs</code>.</li>
+            <li>Relay service-key proof of possession: <code>chariox/apps/kernel/src/transport/relay_client/daemon_requests.rs</code> (committed at <code>b6c58cec2</code>).</li>
+            <li>Publication images: <code>chariox/docker/publication/Dockerfile</code>, <code>chariox/docker/publication/entrypoint.sh</code> and <code>chariox/docker/publication-egress/</code>.</li>
+            <li>Cloud model: <code>chariox-cloud/packages/db/prisma/models.prisma</code>.</li>
+            <li>Contract and activation admission: <code>chariox-cloud/apps/api/src/publication/deployment-runtime-compatibility.ts</code> and <code>chariox-cloud/apps/api/src/publication/publication-egress-policy.ts</code>.</li>
+            <li>Credential callback claim binding: <code>chariox-cloud/apps/api/src/publication/deployment-credential-callback-channel-repository.ts</code>.</li>
+            <li>Runner: <code>chariox-cloud/apps/worker/src/publication-runner.ts</code>.</li>
+            <li>Current Deployed web mount: <code>chariox-cloud/apps/web/src/react/deployments/DeployedWorkflowsSidebarPanelMount.tsx</code>.</li>
+            <li>Current draft deploy modal: <code>chariox-cloud/apps/web/src/react/workflows/WorkflowActionButtonsMount.tsx</code>; current publication form: <code>WorkflowEndpointPublicationInspector.tsx</code>.</li>
             <li>Current dedicated route pattern and local runtime controls: <code>PublishedWorkflowsRouteMount.tsx</code>, <code>PublishedWorkflowsSidebarPanelMount.tsx</code>, and <code>terminal-browser-publication-controller.ts</code>.</li>
-            <li>Provider-neutral identity and WorkOS adapter: <code>arroba-cloud/packages/auth/src/index.ts</code> and <code>packages/auth/src/workos.ts</code>; browser session integration: <code>apps/api/src/http/workos-browser-auth.ts</code>.</li>
-            <li>Local identity and authorization records: <code>arroba-cloud/packages/db/prisma/models.prisma</code>; WorkOS organization, membership, session-provenance, webhook-journal, and tombstone migration: <code>packages/db/prisma/migrations/20260719100000_workos_external_organizations/migration.sql</code>.</li>
-            <li>Identity lifecycle boundary: <code>arroba-cloud/apps/api/src/account/workos-identity-webhook.ts</code> and signed raw-body route <code>apps/api/src/routes/workos-webhook.ts</code>.</li>
+            <li>Provider-neutral identity and WorkOS adapter: <code>chariox-cloud/packages/auth/src/index.ts</code> and <code>packages/auth/src/workos.ts</code>; browser session integration: <code>apps/api/src/http/workos-browser-auth.ts</code>.</li>
+            <li>Local identity and authorization records: <code>chariox-cloud/packages/db/prisma/models.prisma</code>; WorkOS organization, membership, session-provenance, webhook-journal, and tombstone migration: <code>packages/db/prisma/migrations/20260719100000_workos_external_organizations/migration.sql</code>.</li>
+            <li>Identity lifecycle boundary: <code>chariox-cloud/apps/api/src/account/workos-identity-webhook.ts</code> and signed raw-body route <code>apps/api/src/routes/workos-webhook.ts</code>.</li>
           </ul>
         </section>
 
@@ -1041,7 +1041,7 @@
                   <td>WorkOS / connected IdP</td>
                   <td>Authentication assertions, enterprise connection configuration, and provisioning events.</td>
                   <td>Authenticate people, establish verified subject and organization context, and report SSO/directory lifecycle changes.</td>
-                  <td>Arroba authorization policy, provider credentials, workflow/runtime data, invocation payloads, or relay traffic.</td>
+                  <td>Chariox authorization policy, provider credentials, workflow/runtime data, invocation payloads, or relay traffic.</td>
                 </tr>
               </tbody>
             </table>
@@ -1058,7 +1058,7 @@
           <pre aria-label="Control plane relationship">Builder / customer browser
         |
         v
-Arroba Cloud control plane ---- deployment commands ----> runner
+Chariox Cloud control plane ---- deployment commands ----> runner
   | auth, metadata, audit                               | containers, volumes
   | no provider credential bytes                       | provider-native login
   | no long runtime stream proxy                       v
@@ -1143,12 +1143,12 @@ Provider egress: per-revision internal network -> dedicated CONNECT gateway -> p
                 </tr>
                 <tr>
                   <td>ExternalIdentity</td>
-                  <td>Provider-neutral link between a verified login and one Arroba user.</td>
+                  <td>Provider-neutral link between a verified login and one Chariox user.</td>
                   <td>Provider, issuer, subject, provider user ID, verified-email metadata, link status, first/last authentication. Unique issuer/subject; never use email as the durable identity key.</td>
                 </tr>
                 <tr>
                   <td>ExternalOrganizationBinding</td>
-                  <td>Maps a WorkOS organization to one Arroba account.</td>
+                  <td>Maps a WorkOS organization to one Chariox account.</td>
                   <td>Provider organization ID, account ID, environment, provisioning mode and lifecycle state. Mapping is explicit and cannot be inferred from display name or email domain.</td>
                 </tr>
                 <tr>
@@ -1226,7 +1226,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li>Derive actor and account membership from the authenticated browser/API session; do not trust body/query identity fields.</li>
             <li>Apply CSRF protection to browser mutations and explicit bearer/scoped credentials to machine APIs.</li>
             <li>Define control roles: owner, admin, deployer, operator, viewer, billing. Enforce them in repository/service policy, not only React.</li>
-            <li>Verify WorkOS assertions only at the Cloud identity boundary, map them to an Arroba principal, and authorize from local account/deployment membership. Never treat an IdP role or organization claim as sufficient authority by itself.</li>
+            <li>Verify WorkOS assertions only at the Cloud identity boundary, map them to a Chariox principal, and authorize from local account/deployment membership. Never treat an IdP role or organization claim as sufficient authority by itself.</li>
             <li>Scope every lookup and mutation by destination account and deployment ID. Add cross-account denial tests.</li>
             <li>Hash claim and API-key tokens at rest, display secrets once, support expiry and revocation, and log security events without token content.</li>
             <li>Move destructive or sensitive operations through auditable service methods with idempotency keys.</li>
@@ -1236,7 +1236,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
           <ul class="checklist">
             <li>Resolve a globally unique verified host to one deployment/environment; never select the latest matching slug.</li>
             <li>Authenticate before HTTP, SSE, WebSocket, and MCP upgrade/stream creation.</li>
-            <li>Strip caller-supplied identity and internal Arroba headers, then inject a short-lived signed invocation envelope.</li>
+            <li>Strip caller-supplied identity and internal Chariox headers, then inject a short-lived signed invocation envelope.</li>
             <li>Include <code>deployment_id</code>, <code>environment_id</code>, <code>sub</code>, <code>org</code>, <code>roles</code>, <code>aud</code>, expiry, nonce, and invocation ID in trusted claims.</li>
             <li>Verify claims again at the runtime boundary and enforce the package route's <code>required_role</code>.</li>
             <li>Keep identity structured. Do not automatically splice identity claims into model-visible prompt text.</li>
@@ -1261,12 +1261,12 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
 
         <section id="identity">
           <p class="eyebrow">06A / Identity platform</p>
-          <h2>Use WorkOS to authenticate people; keep Arroba authoritative for access.</h2>
-          <p>WorkOS AuthKit is the selected human-identity platform for the Cloud control plane, future React Native clients, and the default interactive identity option for deployed Agent Apps. This replaces the Auth0-specific integration and the current development shortcut. It does not move account ownership, deployment roles, audience policy, runtime sessions, relay tokens, provider credentials, or billing authority out of Arroba.</p>
+          <h2>Use WorkOS to authenticate people; keep Chariox authoritative for access.</h2>
+          <p>WorkOS AuthKit is the selected human-identity platform for the Cloud control plane, future React Native clients, and the default interactive identity option for deployed Agent Apps. This replaces the Auth0-specific integration and the current development shortcut. It does not move account ownership, deployment roles, audience policy, runtime sessions, relay tokens, provider credentials, or billing authority out of Chariox.</p>
 
           <div class="decision">
             <strong>Selected architecture</strong>
-            <p>WorkOS proves who the person is and supplies organization, SSO, and directory lifecycle context. Arroba maps that verified subject to its own <code>User</code>, maps a WorkOS organization to its own <code>Account</code>, and evaluates every control-plane and deployment authorization from local membership and policy. Cloud then mints narrowly scoped Arroba sessions and invocation claims. WorkOS tokens never enter the kernel, relay, hosted workflow container, provider CLI, or publication package.</p>
+            <p>WorkOS proves who the person is and supplies organization, SSO, and directory lifecycle context. Chariox maps that verified subject to its own <code>User</code>, maps a WorkOS organization to its own <code>Account</code>, and evaluates every control-plane and deployment authorization from local membership and policy. Cloud then mints narrowly scoped Chariox sessions and invocation claims. WorkOS tokens never enter the kernel, relay, hosted workflow container, provider CLI, or publication package.</p>
           </div>
 
           <div class="callout info">
@@ -1276,20 +1276,20 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
 
           <div class="callout success">
             <strong>Enterprise handoff and audience checkpoint / Cloud 25269426f</strong>
-            <p>The Deployed sidebar and full management route now expose WorkOS organization creation and switching, invitations, SSO and Directory readiness, Admin Portal entry, session inspection and revocation, customer claim destination review, and WorkOS-backed audience controls. Verified organization domains are projected separately from pending domains. WorkOS sessions can grant only their authenticated Arroba account or a domain WorkOS currently reports as verified; the API enforces this rule and fails closed when WorkOS domain verification is unavailable, while bounded Auth0 migration and non-WorkOS local/self-hosted behavior remain compatible. Cloud web build and lint pass; focused web tests pass <code>44/44</code>, audience and enterprise route tests pass <code>9/9</code>, and WorkOS adapter tests pass <code>4/4</code>. Deployed-app interactive login, role/group mapping, hosted configuration, disruption drills, and cross-surface E2E remain pending.</p>
+            <p>The Deployed sidebar and full management route now expose WorkOS organization creation and switching, invitations, SSO and Directory readiness, Admin Portal entry, session inspection and revocation, customer claim destination review, and WorkOS-backed audience controls. Verified organization domains are projected separately from pending domains. WorkOS sessions can grant only their authenticated Chariox account or a domain WorkOS currently reports as verified; the API enforces this rule and fails closed when WorkOS domain verification is unavailable, while bounded Auth0 migration and non-WorkOS local/self-hosted behavior remain compatible. Cloud web build and lint pass; focused web tests pass <code>44/44</code>, audience and enterprise route tests pass <code>9/9</code>, and WorkOS adapter tests pass <code>4/4</code>. Deployed-app interactive login, role/group mapping, hosted configuration, disruption drills, and cross-surface E2E remain pending.</p>
           </div>
 
           <div class="callout success">
             <strong>Browser-approved CLI session checkpoint / Cloud 0139d3ea1</strong>
-            <p>The web activation controller now establishes an Arroba Cloud browser session before approving a CLI/TUI device code. The public approval body accepts only the one-time user code; the API derives email, provider identity, organization, exact WorkOS session, local account, and membership from the authenticated browser and Cloud sessions. Any provider/user/organization/session mismatch fails closed, and WorkOS cookies, authorization codes, access tokens, and refresh tokens never enter terminal state. The CLI continues to receive only short-lived Arroba Cloud session and machine credentials through the existing device poll. Authorization policy was moved out of route wiring into named HTTP modules. Cloud API build, web build and lint pass; focused authorization/architecture tests pass <code>28/28</code>, browser controller tests pass <code>5/5</code>, and the complete API suite passes <code>353/353</code>.</p>
+            <p>The web activation controller now establishes a Chariox Cloud browser session before approving a CLI/TUI device code. The public approval body accepts only the one-time user code; the API derives email, provider identity, organization, exact WorkOS session, local account, and membership from the authenticated browser and Cloud sessions. Any provider/user/organization/session mismatch fails closed, and WorkOS cookies, authorization codes, access tokens, and refresh tokens never enter terminal state. The CLI continues to receive only short-lived Chariox Cloud session and machine credentials through the existing device poll. Authorization policy was moved out of route wiring into named HTTP modules. Cloud API build, web build and lint pass; focused authorization/architecture tests pass <code>28/28</code>, browser controller tests pass <code>5/5</code>, and the complete API suite passes <code>353/353</code>.</p>
           </div>
 
           <h3>Environment and URL contract</h3>
           <ul class="checklist">
-            <li data-status="done">Support explicit <code>ARROBA_CLOUD_BROWSER_AUTH_MODE</code> values <code>auth0</code>, <code>dual-workos-primary</code>, and <code>workos</code>; keep dual mode reversible until migration evidence closes the rollback window.</li>
+            <li data-status="done">Support explicit <code>CHARIOX_CLOUD_BROWSER_AUTH_MODE</code> values <code>auth0</code>, <code>dual-workos-primary</code>, and <code>workos</code>; keep dual mode reversible until migration evidence closes the rollback window.</li>
             <li data-status="done">Require <code>WORKOS_API_KEY</code>, <code>WORKOS_CLIENT_ID</code>, <code>WORKOS_COOKIE_PASSWORD</code>, <code>WORKOS_CALLBACK_URL</code>, and <code>WORKOS_WEBHOOK_SECRET</code> when WorkOS is enabled; accept only a positive optional <code>WORKOS_WEBHOOK_TOLERANCE_MS</code>.</li>
             <li data-status="done">Use <code>/auth/workos/callback</code> in dual mode and <code>/auth/webhooks/workos</code> for signed lifecycle events. Reject a dual-mode WorkOS callback configured at the legacy Auth0 <code>/auth/callback</code> path.</li>
-            <li>Configure only <code>http://localhost:&lt;port&gt;/auth/workos/callback</code> for isolated local drills and <code>https://arroba-cloud-staging.osc-fr1.scalingo.io/auth/workos/callback</code> for current hosted staging. Do not invent or register an Arroba-owned domain before one exists.</li>
+            <li>Configure only <code>http://localhost:&lt;port&gt;/auth/workos/callback</code> for isolated local drills and <code>https://chariox-cloud-staging.osc-fr1.scalingo.io/auth/workos/callback</code> for current hosted staging. Do not invent or register a Chariox-owned domain before one exists.</li>
             <li>Use the available European WorkOS environment/region, preferring Germany or France where the provider exposes a choice, and record any actual residency limitation before enterprise launch.</li>
             <li>Store hosted values in Scalingo/WorkOS secret configuration, verify presence without printing values, rotate any value exposed during setup, and keep credentials out of source, logs, screenshots, relay traffic, runtime state, and evidence archives.</li>
           </ul>
@@ -1305,12 +1305,12 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
               </thead>
               <tbody>
                 <tr><td>Human sign-in</td><td>WorkOS AuthKit</td><td>Email/social login, enterprise SSO, verified subject and organization context.</td></tr>
-                <tr><td>Accounts and control roles</td><td>Arroba Cloud</td><td><code>Account</code>, <code>AccountMembership</code>, deployment roles and policy remain canonical.</td></tr>
-                <tr><td>Enterprise provisioning</td><td>WorkOS events, applied by Arroba</td><td>Directory and membership events enter an idempotent inbox; local policy decides their effect.</td></tr>
-                <tr><td>Deployed-app audience</td><td>Arroba policy</td><td>WorkOS is the default interactive provider; generic OIDC/JWT, API keys, webhooks, public and allowlist modes remain available.</td></tr>
-                <tr><td>Browser, mobile, and CLI sessions</td><td>Arroba Cloud after WorkOS verification</td><td>Separate host/client sessions, rotation and revocation; no cross-domain shared cookie.</td></tr>
-                <tr><td>Runtime invocation</td><td>Arroba ingress and kernel</td><td>Short-lived Arroba invocation envelope only; runtime re-verifies route roles and caller isolation.</td></tr>
-                <tr><td>Billing and entitlements</td><td>Arroba plus Stripe/local ledger</td><td>WorkOS billing integration may synchronize metadata later, but it is not the financial source of truth.</td></tr>
+                <tr><td>Accounts and control roles</td><td>Chariox Cloud</td><td><code>Account</code>, <code>AccountMembership</code>, deployment roles and policy remain canonical.</td></tr>
+                <tr><td>Enterprise provisioning</td><td>WorkOS events, applied by Chariox</td><td>Directory and membership events enter an idempotent inbox; local policy decides their effect.</td></tr>
+                <tr><td>Deployed-app audience</td><td>Chariox policy</td><td>WorkOS is the default interactive provider; generic OIDC/JWT, API keys, webhooks, public and allowlist modes remain available.</td></tr>
+                <tr><td>Browser, mobile, and CLI sessions</td><td>Chariox Cloud after WorkOS verification</td><td>Separate host/client sessions, rotation and revocation; no cross-domain shared cookie.</td></tr>
+                <tr><td>Runtime invocation</td><td>Chariox ingress and kernel</td><td>Short-lived Chariox invocation envelope only; runtime re-verifies route roles and caller isolation.</td></tr>
+                <tr><td>Billing and entitlements</td><td>Chariox plus Stripe/local ledger</td><td>WorkOS billing integration may synchronize metadata later, but it is not the financial source of truth.</td></tr>
               </tbody>
             </table>
           </div>
@@ -1320,7 +1320,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li data-status="done">Inventory every Auth0-specific package type, middleware branch, route, environment variable, test fixture, database enum, callback, logout path, and development bypass before changing behavior.</li>
             <li data-status="done">Introduce a small <code>HumanIdentityProvider</code> boundary for authorization URL creation, callback verification, logout, user/organization lookup, and signed event verification. Keep policy and database mutation outside the adapter.</li>
             <li data-status="done">Replace <code>Auth0IdentityProfile</code> in shared application contracts with a provider-neutral verified identity shape carrying issuer, subject, provider user ID, verified emails, display metadata, and organization context.</li>
-            <li data-status="done">Evolve the external-identity schema to support both legacy <code>AUTH0</code> and <code>WORKOS</code> records during migration. Preserve existing Arroba user, account, membership, deployment, audit, and billing IDs.</li>
+            <li data-status="done">Evolve the external-identity schema to support both legacy <code>AUTH0</code> and <code>WORKOS</code> records during migration. Preserve existing Chariox user, account, membership, deployment, audit, and billing IDs.</li>
             <li>Implement explicit identity-linking rules. Never merge users only because email strings match; require verified evidence and an auditable confirmation path for collisions or multiple identities.</li>
             <li data-status="done">Run Auth0 and WorkOS callbacks side by side behind configuration during a bounded migration window. Keep reconciliation reporting, rollback instructions, and a cutover metric pending until real staging identities exist.</li>
             <li data-status="done">Confine deterministic identity fixtures to an explicit insecure-development gate, make authenticated sessions authoritative by default, and reject production startup when required WorkOS configuration is missing or unsafe.</li>
@@ -1330,9 +1330,9 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
           <h3>WorkOS organizations and enterprise controls</h3>
           <ul class="checklist">
             <li>Create isolated WorkOS development/staging and production environments, with separate secrets, webhook keys, redirect/logout allowlists, custom auth-domain configuration, and one application registration per web or native client.</li>
-            <li data-status="done">Map every WorkOS organization to exactly one Arroba account through <code>ExternalOrganization</code>. Never infer ownership from organization name, email domain, or a request parameter.</li>
+            <li data-status="done">Map every WorkOS organization to exactly one Chariox account through <code>ExternalOrganization</code>. Never infer ownership from organization name, email domain, or a request parameter.</li>
             <li>Implement organization creation/selection, invitations, multi-organization switching, guest/contractor membership, and explicit account-creation policy without granting deployment access implicitly.</li>
-            <li>Map WorkOS roles or directory groups through customer-configured rules into Arroba control and deployment roles. Local role policy remains authoritative and denies unmapped or broadened claims.</li>
+            <li>Map WorkOS roles or directory groups through customer-configured rules into Chariox control and deployment roles. Local role policy remains authoritative and denies unmapped or broadened claims.</li>
             <li data-status="done">Expose WorkOS Admin Portal launch links for authorized customer admins to configure available SSO and Directory Sync connections. Return setup/readiness state to the Deployed access and handoff screens. Cloud <code>60518012a</code> and <code>25269426f</code>.</li>
             <li data-status="done">Receive signed WorkOS webhooks through an idempotent, replay-safe inbox. Handle duplicate, stale, delayed, reordered, retried, organization, membership, and user lifecycle events without persisting raw payloads. Unknown future event families remain an explicit compatibility task.</li>
             <li data-status="done">Make organization and membership deprovisioning effective locally: deactivate the external binding, revoke matching Cloud sessions and project membership, preserve data and a non-secret tombstone, and refuse stale session bootstrap. Invocation grants and independent machine credentials retain their own lifecycle.</li>
@@ -1344,18 +1344,18 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li data-status="done">Complete WorkOS browser Authorization Code login with signed state, strict callback origin/path validation, secure sealed host-only sessions, transparent refresh, provider logout, invalid-session clearing, and exact provider-session revocation.</li>
             <li>Register distinct iOS and Android applications and use the system browser with Authorization Code plus PKCE, Universal Links/App Links or validated custom schemes, and OS secure storage. Do not embed a password form or share web cookies.</li>
             <li>Define one mobile session contract for foreground/background refresh, offline expiry, account/organization switching, lost-device revocation, biometric gate policy, and logout across all devices.</li>
-            <li data-status="done">Keep TUI/CLI authorization as a browser approval exchange: WorkOS authenticates the browser user, Cloud binds the exact browser provider/user/organization/session and current Arroba account, then returns only a short-lived Arroba CLI session and machine credential. The approval body accepts only the one-time user code; no WorkOS token enters terminal state. Cloud <code>0139d3ea1</code>.</li>
+            <li data-status="done">Keep TUI/CLI authorization as a browser approval exchange: WorkOS authenticates the browser user, Cloud binds the exact browser provider/user/organization/session and current Chariox account, then returns only a short-lived Chariox CLI session and machine credential. The approval body accepts only the one-time user code; no WorkOS token enters terminal state. Cloud <code>0139d3ea1</code>.</li>
             <li>Project identity, selected organization, session expiry, reauthentication requests, permission prompts, and revocation consistently to web terminal and TUI without exposing provider token payloads.</li>
           </ul>
 
           <h3>Deployment audience and handoff</h3>
           <ul class="checklist">
-            <li>Require a verified WorkOS identity and explicit destination Arroba account before accepting a customer claim. Bind acceptance to the claim, user, account, intended role, expiry, and one idempotency key.</li>
+            <li>Require a verified WorkOS identity and explicit destination Chariox account before accepting a customer claim. Bind acceptance to the claim, user, account, intended role, expiry, and one idempotency key.</li>
             <li>Offer WorkOS AuthKit as the smooth default for interactive Agent App users, including invitation, verified-domain, organization, SSO, and directory-backed access where configured.</li>
-            <li>Use shared WorkOS applications per Arroba product surface and environment, with deployment/environment identity bound in signed state and local audience policy. Do not create one WorkOS application per deployment by default; reserve dedicated identity tenants/applications for a separately validated isolation tier.</li>
+            <li>Use shared WorkOS applications per Chariox product surface and environment, with deployment/environment identity bound in signed state and local audience policy. Do not create one WorkOS application per deployment by default; reserve dedicated identity tenants/applications for a separately validated isolation tier.</li>
             <li>Keep generic customer OIDC/JWT, scoped API key, webhook HMAC, public, and explicit allowlist modes as first-class deployment policies. WorkOS must not become mandatory for machine-to-machine or customer-embedded authentication.</li>
             <li>Store identity-provider and role/group mapping per deployment environment so preview can use test identity while production uses the customer connection. Promotion cannot silently broaden access.</li>
-            <li>Use the current Scalingo callback as the only hosted callback until an owned canonical auth domain exists. Before custom deployed domains launch, bind signed state to the exact deployment, environment, destination host, and browser nonce, then exchange a one-time code at that host for a host-only Arroba session.</li>
+            <li>Use the current Scalingo callback as the only hosted callback until an owned canonical auth domain exists. Before custom deployed domains launch, bind signed state to the exact deployment, environment, destination host, and browser nonce, then exchange a one-time code at that host for a host-only Chariox session.</li>
             <li>Make builder revocation independent of customer organization membership, end-user access, credentials, domains, billing, and runtime availability so handoff never depends on the builder's identity provider session.</li>
           </ul>
 
@@ -1365,7 +1365,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li>Cache verified signing keys only within a bounded policy; test key rotation, unknown key IDs, issuer/audience mismatch, clock skew, stale keys, network failure, and emergency revocation.</li>
             <li>Test callback interruption, duplicate callback, state/nonce/PKCE replay, login CSRF, open redirect, session fixation, cross-organization confusion, account-link collision, and logout propagation.</li>
             <li data-status="done">Test delayed, duplicated, reordered, forged, and temporarily failed webhooks; prove stale events and stale browser sessions cannot reactivate or broaden local access. A hosted reconciliation pull after a prolonged outage remains pending.</li>
-            <li>Measure directory deprovisioning latency through ingress denial and session revocation, document the maximum supported window, and provide an immediate Arroba-side emergency revoke.</li>
+            <li>Measure directory deprovisioning latency through ingress denial and session revocation, document the maximum supported window, and provide an immediate Chariox-side emergency revoke.</li>
             <li data-status="done">Keep authorization codes, access/refresh tokens, session secrets, webhook secrets, and raw identity payloads out of the webhook journal, application contracts, runtime protocol, relay, and provider execution. Repeat log, trace, screenshot, and support-bundle scans during exact-head acceptance.</li>
             <li>Complete security, privacy, DPA, data-residency, retention, SLA, support, pricing, and incident-response review before making WorkOS-backed SSO or directory guarantees to enterprise customers.</li>
           </ul>
@@ -1373,7 +1373,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
           <h3>Guardrails and deferred options</h3>
           <ul>
             <li>Do not combine Clerk and WorkOS. One human-identity integration plus a neutral adapter is easier to secure, migrate, test, and support.</li>
-            <li>Do not make WorkOS roles, entitlements, organization membership, or billing the sole authorization or commercial authority. They are verified inputs to Arroba-owned policy.</li>
+            <li>Do not make WorkOS roles, entitlements, organization membership, or billing the sole authorization or commercial authority. They are verified inputs to Chariox-owned policy.</li>
             <li>Do not add WorkOS concepts to the OSS daemon protocol unless a client-visible serialized contract genuinely changes; most identity work belongs in Cloud and ingress.</li>
             <li>Evaluate WorkOS Agent Registration, Connect, or a Stripe add-on only as later product increments after browser/mobile identity, enterprise handoff, and deployed-audience isolation are stable.</li>
           </ul>
@@ -1385,13 +1385,13 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
           <p class="eyebrow">07 / Customer handoff</p>
           <h2>A claim flow should replace credential and ownership copying.</h2>
           <ol>
-            <li><strong>Create release.</strong> Builder publishes an immutable release and selects "Deploy for customer." Arroba validates the package contract before issuing an invitation.</li>
+            <li><strong>Create release.</strong> Builder publishes an immutable release and selects "Deploy for customer." Chariox validates the package contract before issuing an invitation.</li>
             <li><strong>Review invitation.</strong> Customer sees the app identity, builder, required providers and integrations, capabilities, data/egress implications, runtime mode, estimated cost and offered builder role.</li>
-            <li><strong>Claim ownership.</strong> Customer authenticates through WorkOS, chooses or creates the explicitly mapped Arroba account, accepts terms, selects billing ownership, and creates the deployment project. The local claim remains single-use, expiring, destination-bound, and idempotent.</li>
+            <li><strong>Claim ownership.</strong> Customer authenticates through WorkOS, chooses or creates the explicitly mapped Chariox account, accepts terms, selects billing ownership, and creates the deployment project. The local claim remains single-use, expiring, destination-bound, and idempotent.</li>
             <li><strong>Connect dependencies.</strong> Customer supplies typed configuration, provider credentials and integration credentials. Builder secrets are never transferred.</li>
             <li><strong>Set audience.</strong> Customer selects WorkOS-backed invitation/organization/SSO, public, explicit allowlist, generic OIDC/JWT, or machine access and maps identities to published route roles.</li>
-            <li><strong>Choose address.</strong> Arroba assigns a stable default hostname. Customer may attach and verify a custom domain.</li>
-            <li><strong>Private preview.</strong> Arroba runs contract checks and a smoke invocation in preview. Activation stays blocked until all required checks are green.</li>
+            <li><strong>Choose address.</strong> Chariox assigns a stable default hostname. Customer may attach and verify a custom domain.</li>
+            <li><strong>Private preview.</strong> Chariox runs contract checks and a smoke invocation in preview. Activation stays blocked until all required checks are green.</li>
             <li><strong>Activate.</strong> Customer promotes the verified release/configuration snapshot to production.</li>
             <li><strong>Maintain.</strong> Builder proposes future releases. Customer reviews the release and config diff, then promotes or declines it. Rollback is always available.</li>
             <li><strong>Revoke cleanly.</strong> Customer may remove builder access without breaking runtime ownership, credentials, domain, history, or production availability.</li>
@@ -1441,7 +1441,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li>Cloud persists an immutable callback route bound to the destination account, live job claim, runner, realm, kernel, session, focused agent and arming user. Bootstrap mints a short-lived relay token for service subject <code>deployment-credential-enrollment:&lt;enrollment_id&gt;</code>, the exact kernel target and the helper's ephemeral public-key thumbprint.</li>
             <li>For a relay <code>Service</code> identity carrying <code>public_key_thumbprint</code>, the kernel must compare that claim with <code>SHA-256(sender_public_key)</code> before decryption or dispatch. A different helper key fails closed without changing ordinary client behavior.</li>
             <li>The hosted helper sends the Claude authorization URL in an end-to-end encrypted relay request directly to the kernel. Cloud and the relay do not receive the URL or callback value.</li>
-            <li>The kernel atomically consumes the one-time in-memory arm and creates one secret <code>RuntimeInteraction</code> visible to every attached Arroba web/TUI client. First valid reply wins; cancel and timeout yield no callback.</li>
+            <li>The kernel atomically consumes the one-time in-memory arm and creates one secret <code>RuntimeInteraction</code> visible to every attached Chariox web/TUI client. First valid reply wins; cancel and timeout yield no callback.</li>
             <li>The callback exists only in the encrypted helper response and is written to the waiting official Claude CLI. It is excluded from session state, command caches, ordinary API fields, logs and reprojection.</li>
           </ol>
           <div class="callout info">
@@ -1455,7 +1455,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li><strong>Integration secrets:</strong> GitHub, Slack, databases, third-party APIs, MCPs and connectors.</li>
             <li><strong>Audience identity:</strong> end-user sessions, OIDC claims, API keys and webhook signatures.</li>
             <li><strong>Control-plane identity:</strong> customer administrators, builders and operators.</li>
-            <li><strong>Billing identity:</strong> who pays Arroba and, separately, who pays the provider.</li>
+            <li><strong>Billing identity:</strong> who pays Chariox and, separately, who pays the provider.</li>
           </ul>
 
           <h3>Credential operations</h3>
@@ -1499,8 +1499,8 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
                 </tr>
                 <tr>
                   <td>Organization</td>
-                  <td>Existing Arroba customer team.</td>
-                  <td>Explicit WorkOS-organization-to-Arroba-account binding; local account membership projects to app roles through policy.</td>
+                  <td>Existing Chariox customer team.</td>
+                  <td>Explicit WorkOS-organization-to-Chariox-account binding; local account membership projects to app roles through policy.</td>
                 </tr>
                 <tr>
                   <td>OIDC / SAML</td>
@@ -1576,7 +1576,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
                 <tr><td>1. Source</td><td>Workflow revision, change summary, endpoint readiness, unresolved validation, and snapshot intent.</td><td>Publication identity, digest, provenance, source revision, compatibility, and revocation state.</td></tr>
                 <tr><td>2. Interface</td><td>Select endpoint and queue; configure HTTP, API SSE JSON, WebSocket JSON, MCP, or schedule-only transport; route, methods, parser, response mode, input schema, trace exposure, timeout, and polling.</td><td>Read-only summary of the publication contract. Return to the draft to change interface semantics; create a new publication rather than mutating this one.</td></tr>
                 <tr><td>3. Release</td><td>Review provider bundles, extension and credential slots, Agent App assets, resource/network ceilings, package digest, and compatibility preflight before publication.</td><td>Verify the existing package and deployment contract; select an existing Cloud release when already imported, otherwise import it once by digest.</td></tr>
-                <tr><td>4. Target</td><td colspan="2">Choose hosted Arroba container or ingress-only local runtime, organization/project, environment, region, size, replicas, concurrency, schedule behavior, and update strategy.</td></tr>
+                <tr><td>4. Target</td><td colspan="2">Choose hosted Chariox container or ingress-only local runtime, organization/project, environment, region, size, replicas, concurrency, schedule behavior, and update strategy.</td></tr>
                 <tr><td>5. Ownership and access</td><td colspan="2">Choose internal, customer-owned, or builder-managed ownership; select the mapped WorkOS organization; configure public, WorkOS invitation/organization/SSO, explicit allowlist, generic OIDC/JWT, or machine access; define route-role mapping and surface enterprise connection readiness.</td></tr>
                 <tr><td>6. Credentials</td><td colspan="2">Show declared provider/integration slots; bind destination-owned profiles, start enrollment, or leave activation explicitly blocked until the owner completes setup. Never copy builder credential bytes.</td></tr>
                 <tr><td>7. Network and URL</td><td colspan="2">Choose default URL or custom domain setup, canonical host, declared egress policy, budgets, rate/concurrency limits, retention, and alerts.</td></tr>
@@ -1661,7 +1661,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
           <h3>Transport correctness</h3>
           <ul>
             <li>Preserve HTTP methods, encoded paths, request bodies, SSE flush behavior, WebSocket close codes/reasons and MCP semantics.</li>
-            <li>Scope cookies to the effective host. During current development, route interactive login through the exact localhost or Scalingo callback allowlist. Before accepting custom deployed hosts, add an owned central callback host, bind signed state to the exact destination host, and exchange a one-time host-bound code for a host-only Arroba session. Never share a parent-domain cookie or accept an arbitrary return URL.</li>
+            <li>Scope cookies to the effective host. During current development, route interactive login through the exact localhost or Scalingo callback allowlist. Before accepting custom deployed hosts, add an owned central callback host, bind signed state to the exact destination host, and exchange a one-time host-bound code for a host-only Chariox session. Never share a parent-domain cookie or accept an arbitrary return URL.</li>
             <li>Treat the WorkOS custom authentication domain and each deployed application's custom domain as separate concerns. One central trusted auth domain may serve many verified Agent App hosts.</li>
             <li>Validate CORS, CSRF, WebSocket Origin, redirect allowlists, forwarded host/proto, HSTS and certificate failure behavior.</li>
             <li>Cache only immutable content-hashed static assets. Never CDN-cache invocation POSTs, auth, personalized HTML, SSE, WebSockets, MCP, traces or overlays.</li>
@@ -1726,7 +1726,7 @@ publication container (no direct public route)</pre>
 
           <h3>Identity dependency behavior</h3>
           <ul class="checklist">
-            <li>Keep running deployment processes and calls backed by still-valid Arroba invocation sessions independent from WorkOS availability.</li>
+            <li>Keep running deployment processes and calls backed by still-valid Chariox invocation sessions independent from WorkOS availability.</li>
             <li>Fail new login, claim acceptance, reauthentication, and privileged identity-dependent mutations closed during a WorkOS outage, with retryable status and no partial membership mutation.</li>
             <li>Reconcile identity events, session revocations, and organization membership after recovery without duplicate effects or access broadening.</li>
             <li>Expose WorkOS dependency health and last successful reconciliation in operational diagnostics without exposing subjects, tokens, or webhook payloads.</li>
@@ -1883,7 +1883,7 @@ publication container (no direct public route)</pre>
                   <li data-status="done">Create fresh OSS and Cloud integration worktrees from then-current <code>origin/main</code>, merge the frozen feature heads without rebasing, and manually reconcile conflicts so newer main reliability/history/terminal semantics remain authoritative. Both validated integration commits are now canonical main.</li>
                   <li data-status="done">Add the compact searchable Deployed sidebar and dedicated <code>/deployed</code> portfolio/detail route on one shared state/service projection. Completed in Cloud <code>cd37b35ac</code>; the shared controller now drives both surfaces, canonical deep links preserve project/environment/section selection, inaccessible selections fail closed, and authenticated route handling uses the central route manifest. Evidence: web lint, <code>3591/3591</code> web tests, <code>283/283</code> API tests, desktop browser inspection, and a failure/retry drill that caught and fixed re-entrant initial loads.</li>
                   <li data-status="done">Replace the draft deploy modal with the conditional wizard and expose the same wizard from Published Workflows, backed by a durable idempotent deployment setup state machine. Cloud commits <code>449a32613</code>, <code>d73639d87</code>, <code>8f5005839</code>, and <code>f1a30cbed</code>; OSS commits <code>8793db6b4</code> and <code>827ef9267</code>.</li>
-                  <li data-status="done">Complete local ingress deployment binding so selecting ingress-only local runtime starts or materializes the approved immutable publication from web/TUI and binds it to the Cloud environment without an undocumented manual <code>arroba serve</code> step. Cloud <code>813ca30b5</code>; OSS <code>42c182aec</code> and <code>bfc7112e2</code>.</li>
+                  <li data-status="done">Complete local ingress deployment binding so selecting ingress-only local runtime starts or materializes the approved immutable publication from web/TUI and binds it to the Cloud environment without an undocumented manual <code>chariox serve</code> step. Cloud <code>813ca30b5</code>; OSS <code>42c182aec</code> and <code>bfc7112e2</code>.</li>
                   <li data-status="done">Add migrations, compatibility checks, focused route/wizard tests, and setup interruption/retry coverage. No shared daemon protocol shape changed, so no protocol version bump was required; the focused OSS setup suite passes <code>23/23</code>.</li>
                   <li data-status="done">Run the exact-head two-client acceptance matrix for draft/publication origins, hosted/local-ingress targets, duplicate submission, stage interruption, component restart, cross-surface continuation, visual states, resource guards, and complete cleanup. The full serial eight-cell matrix passed at OSS <code>17295c122</code> and Cloud <code>b8c1bdea7</code>; report: <code>.artifacts/deployed-workflows-hetzner-exact-head/b8c1bdea74-17295c122-full-r1/matrix-report.json</code>.</li>
                 </ul>
@@ -1898,7 +1898,7 @@ publication container (no direct public route)</pre>
                 <h4>Deliver</h4>
                 <ul class="checklist">
                   <li data-status="done">Start from the paired worktrees created directly from current pushed mains, land deployment integration first, and keep the WorkOS changes above the exact Phase 2A commits rather than on the stale historical feature branches.</li>
-                  <li data-status="done">Inventory and neutralize the Auth0-specific code and schema boundary, add reversible migrations, and preserve current Arroba user/account/membership IDs and authorization semantics. Cloud <code>1e8c38acb</code>, <code>52dfac733</code>, and <code>ba0cc7661</code>.</li>
+                  <li data-status="done">Inventory and neutralize the Auth0-specific code and schema boundary, add reversible migrations, and preserve current Chariox user/account/membership IDs and authorization semantics. Cloud <code>1e8c38acb</code>, <code>52dfac733</code>, and <code>ba0cc7661</code>.</li>
                   <li data-status="done">Add official WorkOS AuthKit support behind the neutral provider interface, with strict callback/logout configuration, signed webhook inbox, explicit organization binding, session provenance, and dual-provider migration controls. Cloud <code>b0966c951</code>, <code>28da2b723</code>, and <code>0c4697631</code>.</li>
                   <li data-status="done">Gate deterministic development identity explicitly, validate production startup, provide local signed identity/webhook fixtures, and fail closed when WorkOS configuration or signatures are invalid.</li>
                   <li data-status="done">Ship WorkOS-backed browser login, refresh, logout, provider-session revocation, organization-to-account bootstrap, and stale-membership denial.</li>
@@ -1914,7 +1914,7 @@ publication container (no direct public route)</pre>
                   <li data-status="done">Commit and push each meaningful green increment and redact external-service credentials and identity payloads; continue updating this plan with hosted and E2E evidence.</li>
                 </ul>
                 <h4>Exit</h4>
-                <p>A migrated user retains the same Arroba account, memberships, deployments, permissions, and audit identity after WorkOS reauthentication; a second organization completes enterprise claim and handoff; SSO/directory deprovision removes access within the documented bound; default and custom-domain Agent App login works; web terminal and TUI agree on identity/access/session state; browser and CLI sessions pass while the iOS/Android contract passes in a minimal harness before native beta; WorkOS disruption does not stop healthy running deployments; rollback to the dual-provider checkpoint remains possible; and both exact-head worktrees are clean and pushed.</p>
+                <p>A migrated user retains the same Chariox account, memberships, deployments, permissions, and audit identity after WorkOS reauthentication; a second organization completes enterprise claim and handoff; SSO/directory deprovision removes access within the documented bound; default and custom-domain Agent App login works; web terminal and TUI agree on identity/access/session state; browser and CLI sessions pass while the iOS/Android contract passes in a minimal harness before native beta; WorkOS disruption does not stop healthy running deployments; rollback to the dual-provider checkpoint remains possible; and both exact-head worktrees are clean and pushed.</p>
               </div>
             </details>
 
@@ -1923,7 +1923,7 @@ publication container (no direct public route)</pre>
               <div class="phase-body">
                 <h4>Deliver</h4>
                 <ul class="checklist">
-                  <li>Expiring one-time claim links and WorkOS-authenticated customer acceptance into an explicitly mapped Arroba account.</li>
+                  <li>Expiring one-time claim links and WorkOS-authenticated customer acceptance into an explicitly mapped Chariox account.</li>
                   <li>Customer-owned, builder-managed and internal-team ownership modes.</li>
                   <li>Deployment roles and revocable builder maintainer access.</li>
                   <li>WorkOS invitation/organization/SSO, email allowlist, verified domain, public, generic OIDC/JWT and scoped API-key audience modes.</li>
@@ -1957,7 +1957,7 @@ publication container (no direct public route)</pre>
                 <ul class="checklist">
                   <li data-status="done">Stable default host, domain binding and ownership verification services.</li>
                   <li data-status="done">Caddy approval endpoint, certificate state and canonical redirect policy.</li>
-                  <li>After an owned production domain exists, add the central WorkOS login callback, one-time host-bound Arroba session exchange, cookies, CORS, CSRF and WebSocket Origin behavior on custom hosts.</li>
+                  <li>After an owned production domain exists, add the central WorkOS login callback, one-time host-bound Chariox session exchange, cookies, CORS, CSRF and WebSocket Origin behavior on custom hosts.</li>
                   <li data-status="done">Optional immutable asset caching boundary with no dependency on a CDN vendor.</li>
                 </ul>
                 <h4>Exit</h4>
@@ -2042,7 +2042,7 @@ publication container (no direct public route)</pre>
         <section id="validation">
           <p class="eyebrow">15 / Validation program</p>
           <h2>Test the product as two people, not only as one API client.</h2>
-          <p>Run a dedicated local Arroba stack for these drills: start this worktree's own relay, kernel, server/Cloud API and publication ingress on dynamically probed unused ports with unique state roots. Do not reuse the user's active daemons, staging processes or state directories. Use the designated Hetzner machine for hosted runtime, remote-machine worker, managed-slice and collaborator drills. Pin and record both repository revisions and stable worktree fingerprints. Before remote work, review existing publication, resilience, provider, remote-agent and slice drills for exact credential transfer, process ownership, port, evidence and cleanup guidance.</p>
+          <p>Run a dedicated local Chariox stack for these drills: start this worktree's own relay, kernel, server/Cloud API and publication ingress on dynamically probed unused ports with unique state roots. Do not reuse the user's active daemons, staging processes or state directories. Use the designated Hetzner machine for hosted runtime, remote-machine worker, managed-slice and collaborator drills. Pin and record both repository revisions and stable worktree fingerprints. Before remote work, review existing publication, resilience, provider, remote-agent and slice drills for exact credential transfer, process ownership, port, evidence and cleanup guidance.</p>
 
           <div class="callout danger">
             <strong>End-to-end requirement</strong>
@@ -2088,7 +2088,7 @@ publication container (no direct public route)</pre>
             <li><strong>Draft-to-hosted wizard:</strong> start with an unpublished workflow, select endpoint/queue/transport and publication options, review the package contract, configure hosted runtime/access/credentials/domain/limits, deploy, and prove exactly one immutable publication and release were created.</li>
             <li><strong>Publication-to-local-ingress wizard:</strong> deploy an existing publication without recreating it, start or materialize its local runtime directly from an authorized web/TUI action, bind global ingress, interrupt each stage in separate cases, and resume to the same project/environment IDs.</li>
             <li><strong>Wizard concurrency and recovery:</strong> keep web and TUI attached, alternate edits and continuation between them, submit duplicate commands, disconnect each client, restart coordinator components, reject stale conflicting edits, and verify one authoritative setup state with no duplicate side effects.</li>
-            <li><strong>Auth0-to-WorkOS migration:</strong> migrate existing users with single and multiple account memberships, force controlled reauthentication, resolve safe linking and collision cases, and prove stable Arroba IDs, memberships, deployment access, billing ownership, audit attribution, rollback, and eventual Auth0 retirement.</li>
+            <li><strong>Auth0-to-WorkOS migration:</strong> migrate existing users with single and multiple account memberships, force controlled reauthentication, resolve safe linking and collision cases, and prove stable Chariox IDs, memberships, deployment access, billing ownership, audit attribution, rollback, and eventual Auth0 retirement.</li>
             <li><strong>WorkOS organization handoff:</strong> builder publishes and sends a destination-bound claim; customer authenticates through WorkOS, selects or creates the mapped account, connects dependencies, invites users, activates, then revokes builder while calls continue.</li>
             <li><strong>Enterprise identity lifecycle:</strong> configure a real test SSO connection and directory through Admin Portal, map groups to local roles, exercise JIT and pre-provisioned users, then suspend/remove the user and measure local session, control, and invocation revocation.</li>
             <li><strong>Identity session parity:</strong> alternate login, organization switching, reauthentication, permission request, session revocation, and logout between web and TUI; add iOS and Android clients when available and prove the same selected account and bounded propagation without shared refresh tokens.</li>
@@ -2184,8 +2184,8 @@ publication container (no direct public route)</pre>
             <li>Every managed hosted release is an immutable verified package v3 contract admitted only to a compatible immutable runtime image; legacy packages cannot activate hosted.</li>
             <li>The production runtime image pins and verifies supported official provider CLI bundles, and activation rejects undeclared, unsupported or substituted bundle references.</li>
             <li>A customer can claim and operate a deployment without source-workflow or builder-account dependency.</li>
-            <li>WorkOS AuthKit is integrated behind a provider-neutral boundary; migrated users retain stable Arroba user/account/membership/deployment IDs, authorization, billing ownership and audit attribution through cutover and rollback.</li>
-            <li>Every WorkOS organization maps explicitly to one Arroba account, and all control/deployment authorization remains local; WorkOS claims alone cannot grant access.</li>
+            <li>WorkOS AuthKit is integrated behind a provider-neutral boundary; migrated users retain stable Chariox user/account/membership/deployment IDs, authorization, billing ownership and audit attribution through cutover and rollback.</li>
+            <li>Every WorkOS organization maps explicitly to one Chariox account, and all control/deployment authorization remains local; WorkOS claims alone cannot grant access.</li>
             <li>Organization selection, invitation, account switching, SSO/Admin Portal setup, Directory Sync, role/group mapping, deprovisioning, ownership recovery and builder revocation pass with a real enterprise test connection.</li>
             <li>Browser and browser-approved TUI/CLI login/session/logout/revocation pass without sharing WorkOS refresh tokens or cookies. The React Native iOS/Android PKCE contract passes in a minimal harness before native beta, and full client parity is a native-release gate rather than a blocker for the first web beta.</li>
             <li>Default and custom-host Agent App login use the central trusted auth callback and one-time host-bound exchange; callback replay, arbitrary return URLs, cross-host cookies and cross-deployment confusion fail.</li>
@@ -2231,21 +2231,21 @@ publication container (no direct public route)</pre>
                 <tr><td>App data</td><td>External database/connectors first; ephemeral files bounded.</td><td>Repeated customer use cases justify managed KV/blob/database primitives.</td></tr>
                 <tr><td>Custom domains</td><td>Caddy direct origin; no CDN dependency.</td><td>Measured domain volume, WAF, certificate burden or static latency justifies managed SaaS domains.</td></tr>
                 <tr><td>Auth vendor</td><td>WorkOS AuthKit behind a provider-neutral identity adapter; retain Auth0 only for the bounded migration window.</td><td>The staging proof fails a launch-critical security, React Native, SSO/directory, custom-domain, availability, residency, support or pricing requirement that cannot be mitigated.</td></tr>
-                <tr><td>Authorization authority</td><td>Arroba local users, accounts, memberships, deployment roles and audience policy.</td><td>Do not revisit merely to mirror vendor roles; external roles/groups remain policy inputs.</td></tr>
+                <tr><td>Authorization authority</td><td>Chariox local users, accounts, memberships, deployment roles and audience policy.</td><td>Do not revisit merely to mirror vendor roles; external roles/groups remain policy inputs.</td></tr>
                 <tr><td>Enterprise packaging</td><td>WorkOS SSO, Directory Sync and Admin Portal enabled per paying customer/connection, with a local emergency revoke.</td><td>Validated pricing and target-customer demand determine plan limits and included connections.</td></tr>
-                <tr><td>Session policy</td><td>Short Arroba control/invocation sessions with rotation and explicit device revocation; running deployments do not depend on live WorkOS calls.</td><td>Security review and measured mobile/offline behavior set exact lifetimes and grace windows.</td></tr>
-                <tr><td>Auth domain</td><td>Localhost for isolated drills and the existing Scalingo application callback for staging. Do not configure an Arroba-owned hostname before the domain exists; add one owned central callback with a one-time host-bound exchange before custom-domain production launch.</td><td>A domain is registered and DNS/TLS ownership is operationally ready, or WorkOS callback constraints require another centralized hostname pattern.</td></tr>
+                <tr><td>Session policy</td><td>Short Chariox control/invocation sessions with rotation and explicit device revocation; running deployments do not depend on live WorkOS calls.</td><td>Security review and measured mobile/offline behavior set exact lifetimes and grace windows.</td></tr>
+                <tr><td>Auth domain</td><td>Localhost for isolated drills and the existing Scalingo application callback for staging. Do not configure a Chariox-owned hostname before the domain exists; add one owned central callback with a one-time host-bound exchange before custom-domain production launch.</td><td>A domain is registered and DNS/TLS ownership is operationally ready, or WorkOS callback constraints require another centralized hostname pattern.</td></tr>
                 <tr><td>Mobile</td><td>Separate WorkOS iOS/Android applications using system browser, Authorization Code plus PKCE, validated app links and OS secure storage.</td><td>Native SDK behavior or platform policy requires a narrower implementation while preserving the session boundary.</td></tr>
-                <tr><td>WorkOS application cardinality</td><td>Shared applications per Arroba product surface and environment; deployment identity remains an Arroba policy/state binding.</td><td>A validated enterprise isolation/branding tier justifies dedicated applications or environments and their operational cost.</td></tr>
+                <tr><td>WorkOS application cardinality</td><td>Shared applications per Chariox product surface and environment; deployment identity remains a Chariox policy/state binding.</td><td>A validated enterprise isolation/branding tier justifies dedicated applications or environments and their operational cost.</td></tr>
                 <tr><td>Identity operations</td><td>EU-compatible WorkOS environment/contract where available, bounded event retention, audited support and documented break-glass recovery.</td><td>Legal/privacy review, customer residency needs, SLA or incident-response terms require a different environment or provider.</td></tr>
                 <tr><td>Source/IP</td><td>Customer receives runtime rights to immutable release, not builder source by default.</td><td>Product/legal policy defines export, resale, revocation and marketplace licenses.</td></tr>
-                <tr><td>Billing</td><td>Customer pays Arroba and connects their provider account; builder-managed is explicit.</td><td>Bundled provider usage becomes legally and economically viable.</td></tr>
+                <tr><td>Billing</td><td>Customer pays Chariox and connects their provider account; builder-managed is explicit.</td><td>Bundled provider usage becomes legally and economically viable.</td></tr>
               </tbody>
             </table>
           </div>
 
           <div class="footer">
-            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-243 callback path, service-key proof of possession, fail-closed egress, dedicated Deployed route, durable two-origin wizard, direct recoverable local-ingress binding, resumable TUI setup, customer handoff, audience access, provider credentials, domains, observability, and Agent App hosting are implemented. The clean exact heads Cloud <code>b8c1bdea7</code> and OSS <code>17295c122</code> pass the full eight-cell web/TUI remote-machine, managed-slice, collaborator, and hosted-fault matrix with visual and resource evidence and exact cleanup. WorkOS remains the selected provider behind Arroba authorization; real Scalingo/WorkOS enterprise login, public-ingress/custom-host session exchange, role/group mapping, ownership recovery, browser-approved CLI production configuration, React Native PKCE harnesses, and production service onboarding are still required. Keep production activation conditional on those gates and production-grade provider-secret custody; optional CDN, object store, mail, billing, or observability vendors must not block earlier implementation.
+            <strong>Current implementation point:</strong> the immutable v3 product path, shared caller authority, provider bundle pinning, runtime isolation/supervision, protocol-243 callback path, service-key proof of possession, fail-closed egress, dedicated Deployed route, durable two-origin wizard, direct recoverable local-ingress binding, resumable TUI setup, customer handoff, audience access, provider credentials, domains, observability, and Agent App hosting are implemented. The clean exact heads Cloud <code>b8c1bdea7</code> and OSS <code>17295c122</code> pass the full eight-cell web/TUI remote-machine, managed-slice, collaborator, and hosted-fault matrix with visual and resource evidence and exact cleanup. WorkOS remains the selected provider behind Chariox authorization; real Scalingo/WorkOS enterprise login, public-ingress/custom-host session exchange, role/group mapping, ownership recovery, browser-approved CLI production configuration, React Native PKCE harnesses, and production service onboarding are still required. Keep production activation conditional on those gates and production-grade provider-secret custody; optional CDN, object store, mail, billing, or observability vendors must not block earlier implementation.
           </div>
         </section>
       </article>

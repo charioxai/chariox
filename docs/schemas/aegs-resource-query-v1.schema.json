@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/aegs-resource-query-v1.schema.json",
-  "title": "Arroba AEGS Provider Resource Query",
+  "$id": "https://chariox.com/schemas/aegs-resource-query-v1.schema.json",
+  "title": "Chariox AEGS Provider Resource Query",
   "type": "object",
   "additionalProperties": false,
   "required": ["generator_id", "connection_id", "limit"],

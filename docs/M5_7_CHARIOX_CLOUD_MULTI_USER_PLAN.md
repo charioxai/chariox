@@ -1,8 +1,8 @@
-# M5.7 Arroba Cloud Multi-User Bridge
+# M5.7 Chariox Cloud Multi-User Bridge
 
 ## Goal
 
-Use Arroba Cloud to make multi-user collaboration easy to enter: users log in through device login, invite collaborators to a session, and connect through hosted relay without manually sharing relay credentials.
+Use Chariox Cloud to make multi-user collaboration easy to enter: users log in through device login, invite collaborators to a session, and connect through hosted relay without manually sharing relay credentials.
 
 This milestone is the cloud bridge into the kernel collaboration model. The kernel remains the authority for sessions, workflow authorization, provider ownership, caller-scoped projections, and workspace live sync.
 
@@ -28,14 +28,14 @@ M6.5 covers kernel collaboration semantics:
 - stale workflow edit rejection
 - workspace links and workspace live sync coordination
 
-M5.7 connects those two pieces through Arroba Cloud.
+M5.7 connects those two pieces through Chariox Cloud.
 
 ## Product Flow
 
 1. User A logs in with `/relay cloud login`.
-2. User A creates or opens a local Arroba session.
+2. User A creates or opens a local Chariox session.
 3. User A runs a cloud invite command for that session.
-4. Arroba Cloud returns an invite URL/token.
+4. Chariox Cloud returns an invite URL/token.
 5. User B opens the invite URL, logs in or registers, and accepts.
 6. User B's local CLI/kernel receives cloud identity and session membership context.
 7. User B joins the shared session through hosted relay.
@@ -43,7 +43,7 @@ M5.7 connects those two pieces through Arroba Cloud.
 
 ## Cloud Responsibilities
 
-Arroba Cloud should own:
+Chariox Cloud should own:
 
 - cloud users and accounts
 - device-login cloud sessions
@@ -53,7 +53,7 @@ Arroba Cloud should own:
 - hosted relay credential issuance for invited members
 - route admission for hosted relay connections
 
-Arroba Cloud must not own:
+Chariox Cloud must not own:
 
 - workflow graph authorization
 - provider or model visibility
@@ -106,14 +106,14 @@ The CLI should keep browser-first behavior where useful:
 
 ## Current Implementation Status
 
-- Cloud service API and Prisma persistence are implemented in `arroba-cloud`: shared-session invites, members, invite expiry/max-use handling, creator-only revoke, and collaborator history are available.
+- Cloud service API and Prisma persistence are implemented in `chariox-cloud`: shared-session invites, members, invite expiry/max-use handling, creator-only revoke, and collaborator history are available.
 - OSS kernel IPC now exposes cloud session invite create/show/accept/revoke, cloud session member listing, and recent collaborator listing through the persisted cloud relay session token.
 - TUI slash commands are wired:
   - `/cloud invite create [max-uses|--max-uses n]`
   - `/cloud invite accept <invite-token-or-url>`
   - `/cloud members`
   - `/cloud collaborators`
-- `arroba-shell` shared executor supports:
+- `chariox-shell` shared executor supports:
   - `cloud invite create [max-uses]`
   - `cloud invite accept <cloud-invite-token> [local-invite-token]`
   - `cloud members`
@@ -152,7 +152,7 @@ The kernel needs persisted or projected fields for:
 
 Required before closing M5.7:
 
-- two cloud users accept one session invite and join through hosted relay: **covered by `pnpm --filter @arroba/cli run cloud-relay:drill`**
+- two cloud users accept one session invite and join through hosted relay: **covered by `pnpm --filter @chariox/cli run cloud-relay:drill`**
 - user B cannot see user A's freeform providers or agents
 - user B can see user A's public workflow node label
 - user B can add an edge involving one of B's own nodes and user A's node

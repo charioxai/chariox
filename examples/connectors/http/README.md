@@ -11,7 +11,7 @@ Register:
 Test:
 
 ```text
-/connector test httpbin get --allow read --input '{"topic":"arroba"}'
+/connector test httpbin get --allow read --input '{"topic":"chariox"}'
 ```
 
 Grant:

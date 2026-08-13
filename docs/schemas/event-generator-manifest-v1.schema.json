@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/event-generator-manifest-v1.schema.json",
-  "title": "Arroba Event Generator Manifest",
+  "$id": "https://chariox.com/schemas/event-generator-manifest-v1.schema.json",
+  "title": "Chariox Event Generator Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "generator_id", "version", "name", "publisher", "protocol_version", "events", "signature"],
@@ -13,7 +13,7 @@
     "summary": { "type": "string", "maxLength": 1000 },
     "provider": { "type": "string", "minLength": 1, "maxLength": 200 },
     "publisher": { "$ref": "#/$defs/party" },
-    "protocol_version": { "type": "integer", "minimum": 1 },
+    "protocol_version": { "const": 2 },
     "categories": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
     "authorization": {
       "type": "object",

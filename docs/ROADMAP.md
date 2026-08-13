@@ -1,4 +1,4 @@
-# Arroba Roadmap
+# Chariox Roadmap
 
 ## Status
 
@@ -14,8 +14,8 @@ Current milestone status:
 - M4.5 is now the kernel runtime refactor phase: the daemon implementation is actively moving from a global `DaemonApp` lock toward an actor/event/projection kernel before relay scale-out
 - M5 is now the relay and remote-transport phase: relay infrastructure, remote terminal attachment, and daemon identity are the next major delivery target
 - M5.5 is the relay identity hardening phase: relay realms, pairing, scoped tokens, caller identity propagation, and hosted issuer compatibility are planned in `docs/M5_5_RELAY_IDENTITY_PLAN.md`
-- M5.6 completed on 2026-04-21: hosted Arroba Cloud device login, kernel-owned cloud relay onboarding, token minting, pairing, logout, and live cloud relay drill coverage are landed
-- M5.7 is the Arroba Cloud multi-user bridge: cloud-backed session invites, cloud user identity propagation, collaborator history, and hosted relay admission for multi-user sessions are planned in `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`
+- M5.6 completed on 2026-04-21: hosted Chariox Cloud device login, kernel-owned cloud relay onboarding, token minting, pairing, logout, and live cloud relay drill coverage are landed
+- M5.7 is the Chariox Cloud multi-user bridge: cloud-backed session invites, cloud user identity propagation, collaborator history, and hosted relay admission for multi-user sessions are planned in `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`
 - M6.5 is the kernel multi-user collaboration phase: session-scoped invites, user-owned agents/providers, shared workflow graph collaboration, endpoint ownership, caller-scoped redaction, workflow edit conflict rejection, and workspace links are planned in `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`
 
 ## 1. Roadmap Goals
@@ -40,13 +40,13 @@ Current milestone status:
 - M4.5: Kernel Runtime Refactor
 - M5: Relay and Remote Transport
 - M5.5: Relay Realms, Pairing, and Scoped Tokens. See `docs/M5_5_RELAY_IDENTITY_PLAN.md`.
-- M5.6: Arroba Cloud Device Login and Relay Onboarding. Completed on 2026-04-21.
-- M5.7: Arroba Cloud Multi-User Bridge. See `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`.
+- M5.6: Chariox Cloud Device Login and Relay Onboarding. Completed on 2026-04-21.
+- M5.7: Chariox Cloud Multi-User Bridge. See `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`.
 - M6: Remote Agents and Machine Membership
 - M6.5: Multi-User Collaboration. See `docs/M6_5_MULTI_USER_COLLABORATION_PLAN.md`.
-- M7: Arroba-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
-- M7.5: Arroba Shell. New milestone for a kernel-facing `arroba-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_ARROBA_SHELL_PLAN.md`.
-- M14B: Native TUI validation and remote/slice parity. Deferred milestone for Arroba-managed Codex, OpenCode, and Claude Code native TUIs across local, standard remote, and slice scenarios. See `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`.
+- M7: Chariox-owned MCP and skill management. In progress: MCP/skill registries, slash-command install/list/show/import/grant/revoke/grants, Codex/OpenCode MCP and skill import, per-agent grants, local Codex/OpenCode MCP rendering, granted-skill summary injection, local explicit full skill-body injection, runtime discovery/request tools, and strict local MCP/skill drills are landed; remote materialization remains open.
+- M7.5: Chariox Shell. New milestone for a kernel-facing `chariox-shell` command REPL, script runner, shared command executor, and workspace-pane shell integration. See `docs/M7_5_CHARIOX_SHELL_PLAN.md`.
+- M14B: Native TUI validation and remote/slice parity. Deferred milestone for Chariox-managed Codex, OpenCode, and Claude Code native TUIs across local, standard remote, and slice scenarios. See `docs/M14B_NATIVE_TUI_VALIDATION_PLAN.md`.
 - M8: Workflow Interconnection
 - M9: Multi-Provider Expansion and Adapter Generalization
 - M10: v1 Stabilization and Launch
@@ -62,11 +62,11 @@ Rollout priority:
 - then remove the daemon hot-path dependency on one shared `DaemonApp` lock by introducing actor-owned mutation, command routing, ordered kernel events, and query projections
 - then add relay-backed remote transport
 - then harden relay identity with realms, pairing, scoped tokens, and caller identity propagation
-- then add Arroba Cloud hosted onboarding and cloud-backed identity/session invitations for users who do not self-host relay identity services
+- then add Chariox Cloud hosted onboarding and cloud-backed identity/session invitations for users who do not self-host relay identity services
 - then add remote agents and machine membership on top of relay
 - then add session-scoped multi-user collaboration on top of the shared session and relay model
-- then add Arroba-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
-- then add `arroba-shell` as a kernel-facing command REPL and scriptable command surface sharing command execution with the TUI slash-command layer
+- then add Chariox-owned MCP and skill management with per-agent grants, provider-native MCP rendering, skill prompt injection, and provider import paths; the local registry/grant/rendering baseline is now in progress and partially landed
+- then add `chariox-shell` as a kernel-facing command REPL and scriptable command surface sharing command execution with the TUI slash-command layer
 - then add additional clients on the same daemon/protocol model
 - then complete native TUI parity for Codex, OpenCode, and Claude Code across local, standard remote, and slice scenarios
 - then add workflow interconnection on top of remote agent connectivity
@@ -155,7 +155,7 @@ Outcomes:
 - screenshot capture capability
 - git/worktree inspection capability
 - file transfer + attach-transferred workflow
-- daemon-owned slash-command dispatch for Arroba capabilities
+- daemon-owned slash-command dispatch for Chariox capabilities
 - workflow-compatible local capability design so later multi-agent execution can reuse the same surfaces
 - keep provider breadth intentionally fixed to OpenCode while this cycle is being closed
 
@@ -210,11 +210,11 @@ Outcomes:
 
 Delivered in the current M4 slice:
 
-- multiple top-level Arroba-managed agents inside one session, each with its own focused-agent targeting, provider-run ownership, and agent-scoped history/runtime metadata
+- multiple top-level Chariox-managed agents inside one session, each with its own focused-agent targeting, provider-run ownership, and agent-scoped history/runtime metadata
 - `Tab` and `/agent cycle` switch the active agent for direct interaction, not only footer metadata
 - prompts and provider output route through the focused agent's runtime context for the local daemon + CLI path
 - TypeScript CLI `individual` and `split` response modes with visible per-agent panes/previews for the current local path
-- explicit distinction between Arroba-managed top-level agents and provider-native subagents in the local runtime/data model
+- explicit distinction between Chariox-managed top-level agents and provider-native subagents in the local runtime/data model
 - kernel-hosted WebSocket transport now exists for the primary TypeScript CLI path, while the older local IPC path remains for harnessing/tests
 - the first OpenCode-specific endpoint abstraction now exists in code through managed vs external endpoint binding, with OpenCode already supporting both modes
 - layered interaction testing now exists for the kernel/CLI path:
@@ -242,7 +242,7 @@ Still pending in M4:
   - safe teardown of idle/orphaned managed provider processes without breaking attached sessions
   - blocker-aware safe-teardown reporting in the CLI
   - late-stage daemon identity and manager semantics:
-    - persisted daemon runtime record under `.arroba/runtime/daemon`
+    - persisted daemon runtime record under `.chariox/runtime/daemon`
     - single-active-daemon lock per workspace/worktree
     - CLI attach-or-start behavior against the workspace daemon record
     - managed child stamping with daemon instance id
@@ -303,11 +303,11 @@ Exit criteria:
 Status:
 
 - ownership closed as of 2026-04-15
-- architectural target is documented in [ARCHITECTURE.md](/Users/miguel/arroba/docs/ARCHITECTURE.md)
-- implementation plan is documented in [M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md](/Users/miguel/arroba/docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md)
+- architectural target is documented in [ARCHITECTURE.md](/Users/miguel/chariox/docs/ARCHITECTURE.md)
+- implementation plan is documented in [M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md](/Users/miguel/chariox/docs/M4_5_KERNEL_RUNTIME_REFACTOR_PLAN.md)
 - first implementation slices are landed: kernel command/event envelopes, event replay gaps, projection metadata, command routing, bounded interactive routing, typed CLI replay-gap handling, command-id retry/fanout safety, inbound WebSocket admission bounds, provider-run actor runtime isolation, provider actor enqueue error propagation, reserved-listener websocket tests, `KernelSessionService` ownership for public session creation/default-agent bootstrap plus session lifecycle/focus/resize/end/delete operations, `KernelAgentService` ownership for prompt submit/cancel/complete/queue-advance lifecycle operations, per-agent prompt command mailboxes, session-runtime create plus per-session attach/focus/resize/end/delete command mailboxes with cleanup on session close, session-scoped agent lifecycle routing through `SessionRuntime`, a focused-agent projection refreshed by session mailboxes and agent lifecycle responses for untargeted prompt routing, warmed projections for `GetSessionState`, `ListSessions`, `GetSessionHistory`, `GetProviderRun`, `ListProviderProcesses`, `GetProviderCatalog`, and agent/workflow inspection reads, shared kernel `PromptStateOwner` ownership for active/queued prompt mutation with compatibility session mirroring, owner-backed prompt routing and queue-front reads from `AgentRuntime`, prompt lifecycle publication into the shared session projection, agent-mailbox completion consuming lifecycle-published projections, one shared agent-runtime active/queued prompt projection read model, session response-borne projection refresh/removal from the session mailbox, explicit session request handling through the session-runtime boundary, explicit agent request handling through the agent-runtime boundary, legacy generic interactive fallback rejection, workflow-lane missing-session rejection from warmed projections, workflow response-borne projection refresh, explicit workflow request handling through the workflow-runtime boundary, daemon-health projection invariant drift reporting between session and agent-runtime prompt projections, a dedicated flattened `PromptRuntimeState` session prompt-runtime module for compatibility prompt mirrors/projections, daemon health projection snapshots for actor queues, provider runtime lanes, prompt counts, provider-catalog cache state, kernel websocket transport pressure, workspace worktree-collision state, `WorkspaceCoordinator` write-claim enforcement for explicit file-writing capabilities, and workflow node dispatch blocking/retry on workspace claims
 - post-slice live drills passed for manual multi-agent routing, shared-endpoint multi-agent routing, workflow progression, workflow scheduling, workflow workspace-claim retry, and CLI graph/outline drill catalogs
-- the seven ownership points are closed: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now use owned runtime paths. The M4.5 dead-code purge removed unused app-backed helper surfaces and obsolete runtime-tool compatibility dispatch. Workspace Live Sync managed mode is landed for Arroba-managed Codex/OpenCode sessions, with local and remote drills passing. Remaining coordination work is post-v1: port claims, unsafe-mode policy commands, optional integration checks, and artifact-specific region models beyond opaque whole-file locking
+- the seven ownership points are closed: direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion now use owned runtime paths. The M4.5 dead-code purge removed unused app-backed helper surfaces and obsolete runtime-tool compatibility dispatch. Workspace Live Sync managed mode is landed for Chariox-managed Codex/OpenCode sessions, with local and remote drills passing. Remaining coordination work is post-v1: port claims, unsafe-mode policy commands, optional integration checks, and artifact-specific region models beyond opaque whole-file locking
 
 Problem statement:
 
@@ -373,13 +373,13 @@ Exit criteria:
 - the relay remains a transport broker, not a workspace/workflow authority
 - open-source self-hosted relay usage does not depend on any external managed service
 
-## M5.6 - Arroba Cloud Device Login And Relay Onboarding
+## M5.6 - Chariox Cloud Device Login And Relay Onboarding
 
 Status:
 
 - completed on 2026-04-21
 - closed scope is hosted relay onboarding, not multi-user collaboration
-- default hosted path is browser/device login through Arroba Cloud
+- default hosted path is browser/device login through Chariox Cloud
 - kernel owns cloud relay profile state, cloud device polling, hosted relay pairing, runtime-token minting, client-token minting, relay configuration, and logout
 - CLI owns presentation only for the default hosted path: browser open, URL/code fallback, notices, and profile display mirror
 
@@ -387,13 +387,13 @@ The default hosted-relay onboarding path should be browser/device login, not ter
 
 Target flow:
 
-- the waiting room exposes `Connect to Arroba Cloud`
+- the waiting room exposes `Connect to Chariox Cloud`
 - `/relay cloud login` with no arguments starts device login
 - the CLI asks the kernel to start cloud login with stable local CLI and machine ids
-- Arroba Cloud returns a verification URL, short user code, device code, expiry, and polling interval
+- Chariox Cloud returns a verification URL, short user code, device code, expiry, and polling interval
 - the CLI opens the browser to the verification URL
 - if browser launch fails, the CLI prints the URL and code and keeps polling
-- the user logs in or registers in Arroba Cloud, chooses or creates an account, and approves the local device
+- the user logs in or registers in Chariox Cloud, chooses or creates an account, and approves the local device
 - the kernel polls cloud until approved
 - cloud returns account/user/realm profile, paired client/machine ids, and a revocable cloud session token
 - the kernel persists cloud auth state, mints short-lived relay runtime tokens, configures relay, and remote machines appear in the normal waiting-room machine surface
@@ -406,13 +406,13 @@ Logout is part of v1:
 
 Delivered implementation:
 
-- Arroba Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
+- Chariox Cloud exposes device start/poll/approve and logout endpoints, including cloud session tokens
 - the kernel owns device-login start, poll, persisted cloud profile state, and logout
 - the CLI no-argument `/relay cloud login` path calls the kernel for device login and opens the browser with URL/code fallback
 - the waiting room `Relay` action starts `/relay cloud login` instead of raw self-hosted token entry
 - the kernel owns hosted relay client pairing, machine pairing, relay connect/runtime-token minting, and client-token minting
 - the CLI default hosted path is now presentation only: it opens the browser, mirrors the returned profile for display/preferences, and renders notices
-- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Arroba Cloud, then verifies kernel-owned pair/connect/client-token and remote session attach
+- the live cloud relay drill now rebuilds the kernel, drives `/relay cloud login` through the kernel device-login start/poll requests, approves through Chariox Cloud, then verifies kernel-owned pair/connect/client-token and remote session attach
 - the old terminal email bootstrap helper remains only as a dev/manual compatibility path
 - if server logout fails, local logout still completes and the CLI warns that remote revocation was not confirmed
 
@@ -422,21 +422,21 @@ Self-hosted relay discovery remains identity-less:
 - no cloud user directory, collaborator history, account membership, or identity service is implied for self-hosted relays
 - trust and approval remain local kernel state
 
-Once multi-user collaboration exists, Arroba Cloud should keep a collaborator history:
+Once multi-user collaboration exists, Chariox Cloud should keep a collaborator history:
 
 - previous collaborators can be suggested when adding users to a future session
 - collaborator history is convenience only, not authorization
 - every new session still requires an explicit invite/accept unless a later team/org policy changes that
 
-## M5.7 - Arroba Cloud Multi-User Bridge
+## M5.7 - Chariox Cloud Multi-User Bridge
 
 Implementation plan:
 
-- `docs/M5_7_ARROBA_CLOUD_MULTI_USER_PLAN.md`
+- `docs/M5_7_CHARIOX_CLOUD_MULTI_USER_PLAN.md`
 
 Goal:
 
-Connect the hosted Arroba Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and workspace live sync authority.
+Connect the hosted Chariox Cloud identity/relay service to the existing kernel multi-user collaboration model. M5.7 is the cloud bridge, not the full collaboration policy layer: the kernel remains the session, workflow, provider, projection-redaction, and workspace live sync authority.
 
 Scope:
 
@@ -454,7 +454,7 @@ Non-goals:
 - enterprise SSO, org policy, audit history/search, or admin-managed teams
 - public user/agent marketplace
 - self-hosted relay identity service
-- moving workflow authorization or provider ownership into Arroba Cloud
+- moving workflow authorization or provider ownership into Chariox Cloud
 
 Exit criteria:
 
@@ -469,9 +469,9 @@ Exit criteria:
 
 ## M5 Docker Remote-Machine Lab
 
-The Docker lab is part of validating M5/M6 locally before requiring real separate machines. The repository should provide an Arroba base image that includes all Arroba apps (`arroba` CLI, daemon/kernel, and relay) plus required runtime dependencies. Provider installation and provider login remain the user's responsibility inside each container. Containers must have outbound internet for provider model calls, provider installation, hosted relay access, and provider login. Browser-based provider login is handled as a provider compatibility concern: the base image may include URL-printing browser shims, and each launch provider is tested/documented individually for Linux/container login behavior, callback ports, credential persistence, and normal prompt execution after restart.
+The Docker lab is part of validating M5/M6 locally before requiring real separate machines. The repository should provide a Chariox base image that includes all Chariox apps (`chariox` CLI, daemon/kernel, and relay) plus required runtime dependencies. Provider installation and provider login remain the user's responsibility inside each container. Containers must have outbound internet for provider model calls, provider installation, hosted relay access, and provider login. Browser-based provider login is handled as a provider compatibility concern: the base image may include URL-printing browser shims, and each launch provider is tested/documented individually for Linux/container login behavior, callback ports, credential persistence, and normal prompt execution after restart.
 
-The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Arroba as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`. It includes a smoke runner, Codex/OpenCode installation helper, and a remote-CLI-to-host drill; provider account login remains manual.
+The lab should support multiple persistent worker containers so users can keep separate accounts for the same provider active at the same time and select them in Chariox as machine-qualified providers such as `Codex (work-container)` and `Codex (personal-container)`. It includes a smoke runner, Codex/OpenCode installation helper, and a remote-CLI-to-host drill; provider account login remains manual.
 
 ## M6 - Remote Agents and Machine Membership
 
@@ -479,7 +479,7 @@ Outcomes:
 
 - remote machine registration on top of relay connectivity, with machine status displayed in the waiting room; pending machines are shown inline in the machine section rather than as a separate mode
 - all machine management operations are available as in-CLI slash commands: `/machine list`, `/machine kernels <machine-ref>`, `/machine approve <machine-ref>`, `/machine forget <machine-ref>`, and `/machine rename <machine-ref> <alias>`
-- remote daemons can host top-level Arroba-managed agents for the same logical collaboration model
+- remote daemons can host top-level Chariox-managed agents for the same logical collaboration model
 - session membership spanning multiple machines
 - remote agent routing and lifecycle ownership
 - provider-run ownership and state reporting for remote nodes
@@ -517,7 +517,7 @@ Outcomes:
 - caller-scoped protocol projections redact provider/model/private agent configuration before data reaches clients
 - optimistic workflow revision checks reject stale simultaneous workflow edits with a clear refresh/retry message
 - session-scoped workspace links let users explicitly coordinate workspace live sync across separate worktrees, forks, branches, or repositories
-- `arroba-shell` supports the same collaboration and workspace-link command families as the TUI/slash-command surface
+- `chariox-shell` supports the same collaboration and workspace-link command families as the TUI/slash-command surface
 
 Exit criteria:
 
@@ -535,7 +535,7 @@ Exit criteria:
 
 Outcomes:
 
-- polished TypeScript CLI as the reference Arroba client for both local and relay-backed use
+- polished TypeScript CLI as the reference Chariox client for both local and relay-backed use
 - refined split-pane and multi-agent transcript UX
 - session-scoped E2E encryption for user-generated in-transit payloads
 - operational metadata storage boundaries enforced
@@ -547,7 +547,7 @@ Exit criteria:
 - the TypeScript CLI is the polished reference client for the local and relay-backed runtime model
 - additional client surfaces consume the same daemon/protocol semantics rather than introducing surface-specific runtime logic
 
-## M7 - Arroba-Owned MCP and Skill Management
+## M7 - Chariox-Owned MCP and Skill Management
 
 Status:
 
@@ -557,8 +557,8 @@ Status:
 
 Outcomes:
 
-- Arroba-owned MCP registry stored outside provider-scanned config
-- Arroba-owned skill registry stored outside provider-scanned paths
+- Chariox-owned MCP registry stored outside provider-scanned config
+- Chariox-owned skill registry stored outside provider-scanned paths
 - provider import for existing MCPs and skills
 - per-agent MCP and skill grants
 - provider-native MCP rendering at agent launch, pending spike validation for dynamic per-agent activation
@@ -570,7 +570,7 @@ Outcomes:
 Exit criteria:
 
 - local Codex and OpenCode agents see only their granted MCPs and skills, with MCP grant strictness validated by the isolation spike before production activation proceeds
-- imported provider MCPs and skills work as Arroba-owned copies
+- imported provider MCPs and skills work as Chariox-owned copies
 - workflows reuse agent grants without overriding them
 - remote agents have an explicit design and implementation path for MCP/skill availability
 
@@ -607,7 +607,7 @@ Outcomes:
 - dual memory model implementation:
   - short-term memory
   - long-term memory
-- user-triggered Arroba context compaction flow (`/compact`)
+- user-triggered Chariox context compaction flow (`/compact`)
 - agent-scoped extension registry for skills, MCPs, command packs, and related provider assets
 - daemon-managed MCP runtime with per-agent binding and visibility
 
@@ -627,7 +627,7 @@ Outcomes:
 - release process and upgrade guidance
 - completion of the v1 workflow rollout, with circular topology delivered earlier and hierarchical topology completed later in v1
 - MCP runtime-tool hardening before release:
-  - one daemon-owned Arroba MCP server
+  - one daemon-owned Chariox MCP server
   - automatic MCP attachment for managed provider runs
   - dynamic per-turn tool scoping and stronger per-run isolation
   - reconnect/health monitoring for MCP-bound provider runs
@@ -669,6 +669,6 @@ Exit criteria:
 
 - richer workflow automation and policy hooks
 - broader messaging-client integrations
-- provider command driver registration so future adapters can install command catalogs into Arroba without hardcoding them in the CLI
+- provider command driver registration so future adapters can install command catalogs into Chariox without hardcoding them in the CLI
 - advanced machine migration orchestration
 - optional content persistence with explicit governance

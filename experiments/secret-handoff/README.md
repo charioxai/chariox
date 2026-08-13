@@ -1,7 +1,7 @@
 # Secret Handoff Spike
 
 This disposable spike proves the v1 secret handoff boundary before production
-Arroba integration.
+Chariox integration.
 
 The target behavior is practical obfuscation and accidental-exposure
 prevention, not a complete security jail:
@@ -56,7 +56,7 @@ instead of failing the deterministic test suite.
 
 ## Transfer
 
-If the tests pass, port the model into Arroba as:
+If the tests pass, port the model into Chariox as:
 
 - credential handles and sources
 - provider launch env scrubber

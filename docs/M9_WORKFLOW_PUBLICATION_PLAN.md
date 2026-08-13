@@ -84,7 +84,7 @@ published-workflow/
 
 `publication.json` describes hooks, default host/port behavior, package
 version, and generated app assets. `workflow.snapshot.json` stores the captured
-workflow/session-derived runtime state using existing Arroba concepts.
+workflow/session-derived runtime state using existing Chariox concepts.
 `requirements.json` lists required extensions and credentials. Local provider
 and model substitutions are stored outside the package in a local binding file.
 
@@ -94,7 +94,7 @@ scheduling, queues, agents, provider runs, outputs, artifacts, and state.
 
 ## M9.2 Serve Lifecycle
 
-`arroba serve <publication-package-or-ref> <port>` starts a published workflow.
+`chariox serve <publication-package-or-ref> <port>` starts a published workflow.
 
 Serve sequence:
 
@@ -289,7 +289,7 @@ At serve/deploy time the kernel must verify:
 - required credentials exist in the configured vault
 
 Provider/model substitutions remain supported. If the exact captured
-provider/model is unavailable, `arroba serve` prompts the user for a replacement
+provider/model is unavailable, `chariox serve` prompts the user for a replacement
 from available kernel providers/models and persists that choice in local
 bindings. Additional commands must allow editing bindings per workflow node for
 future runs.
@@ -298,10 +298,10 @@ future runs.
 
 ### Localhost
 
-`arroba serve` binds `127.0.0.1` by default. Local callers access the published
+`chariox serve` binds `127.0.0.1` by default. Local callers access the published
 transport directly.
 
-Remote Arroba terminals and Arroba Cloud may call locally available published
+Remote Chariox terminals and Chariox Cloud may call locally available published
 workflows through a relay/kernel tunnel. The caller still uses the published
 transport shape; the kernel relays the transport request and response on behalf
 of the remote user.
@@ -313,7 +313,7 @@ publication tunnel to a local workflow runtime. The local machine keeps running
 the kernel and published workflow. External callers should not be able to tell
 whether the URL terminates at ingress-only hosting or a full hosted container.
 
-This mode can be offered by Arroba Cloud or self-hosted by users, analogous to
+This mode can be offered by Chariox Cloud or self-hosted by users, analogous to
 self-hosted relay.
 
 ### Hosted Container
@@ -327,16 +327,16 @@ A container includes:
 - packaged scripts/assets
 - startup config
 
-It can run in Arroba Cloud or any user-managed environment. It should not
+It can run in Chariox Cloud or any user-managed environment. It should not
 depend on the original user's machine being online.
 
 ### Access Policy
 
 Access policy is separate from deployment mode:
 
-- `personal`: only the owner can access through Arroba auth or local-only access
-- `public`: no Arroba auth required; dangerous and must be explicit
-- `authorized`: user-managed or future Arroba-managed team/user access
+- `personal`: only the owner can access through Chariox auth or local-only access
+- `public`: no Chariox auth required; dangerous and must be explicit
+- `authorized`: user-managed or future Chariox-managed team/user access
 
 For v1 local serve, bind localhost by default. Public exposure requires an
 explicit host/config choice and should warn loudly.
@@ -401,7 +401,7 @@ unless the user also publishes a status/output UI hook.
   session-bound gateway config.
 - Add snapshot validation for endpoints, queues, agents, provider/model
   availability, and extension requirements.
-- Add provider/model override prompts in `arroba serve`.
+- Add provider/model override prompts in `chariox serve`.
 - Add publication configuration commands for per-node provider/model bindings.
 
 ### Phase 3: Publication Runtime Sessions
@@ -419,7 +419,7 @@ unless the user also publishes a status/output UI hook.
 - Implement `GET /<prompt>` -> enqueue -> HTML/SSE status page.
 - Implement `GET /` input/upload form.
 - Implement SSE event stream for queued/running/partial/final output.
-- Implement local `arroba serve <package-or-ref> <port>`.
+- Implement local `chariox serve <package-or-ref> <port>`.
 - Add local end-to-end drill: publish, serve, open browser URL, verify HTML and
   SSE final output by screenshot.
 - Add web-terminal tunnel drill: invoke local `human_http` publication from web
@@ -450,14 +450,14 @@ unless the user also publishes a status/output UI hook.
 - Add local-to-cloud/web-terminal tunnel support for published transports.
 - Add Cloud Published Workflows tab and controls.
 - Add remote ingress/local runtime design and drill.
-- Add hosted-container packaging for Arroba Cloud and self-hosted deployment.
+- Add hosted-container packaging for Chariox Cloud and self-hosted deployment.
 
 ## M9.11 Validation Matrix
 
 Required before considering the publication model complete:
 
 - publish package is portable and contains no secrets
-- `arroba serve` fails before listening when providers/extensions/credentials
+- `chariox serve` fails before listening when providers/extensions/credentials
   are missing
 - provider/model overrides are prompted and persisted locally
 - publication runtime sessions do not appear in normal session lists

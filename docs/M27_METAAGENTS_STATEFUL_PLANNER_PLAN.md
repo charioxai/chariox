@@ -10,7 +10,7 @@
 Update metaagents into stateful planning supervisors. A metaagent can read
 workspace context, use recall, maintain a task plan, provision capabilities, and
 delegate execution to regular agents. It always runs in provider plan mode, so
-Arroba should not duplicate direct implementation-tool denial policy beyond what
+Chariox should not duplicate direct implementation-tool denial policy beyond what
 plan mode and normal provider/runtime policy already enforce.
 
 Metaagents can have one active task at a time. The task is created from the
@@ -37,18 +37,18 @@ and supervise, but it should delegate implementation work to regular agents.
 Do not add a separate "deny implementation tools" layer for metaagents unless a
 provider exposes direct mutation while in plan mode. Plan mode is the primary
 enforcement mechanism for direct action. Runtime policy should focus on which
-Arroba tools exist for metaagents, not on making metaagents blind.
+Chariox tools exist for metaagents, not on making metaagents blind.
 
 ## Runtime MCP Task Artifacts
 
 Add metaagent-only runtime MCP calls for task artifacts:
 
-- `arroba.meta.read_task`
-- `arroba.meta.update_task`
-- `arroba.meta.read_plan`
-- `arroba.meta.update_plan`
-- `arroba.meta.complete_task`
-- `arroba.meta.mark_blocked`
+- `chariox.meta.read_task`
+- `chariox.meta.update_task`
+- `chariox.meta.read_plan`
+- `chariox.meta.update_plan`
+- `chariox.meta.complete_task`
+- `chariox.meta.mark_blocked`
 
 These calls are exposed only to metaagent provider runs and are scoped by
 session id plus metaagent id. The task prompt and plan documents are
@@ -61,7 +61,7 @@ Regular workspace file access remains normal planning context: metaagents may
 read workspace files, but implementation work is delegated to regular agents
 through plan-mode behavior and metaagent supervision.
 
-`arroba.read_artifact` should remain available to metaagents. Reading artifacts
+`chariox.read_artifact` should remain available to metaagents. Reading artifacts
 is observation, not execution.
 
 ## Task Lifecycle
@@ -88,7 +88,7 @@ Keep the system prompt in a markdown template loaded by the prompt assembly
 service, like the other system prompts. Keep it short. It should say:
 
 ```text
-You are an Arroba metaagent. Read workspace context and recall when useful,
+You are a Chariox metaagent. Read workspace context and recall when useful,
 maintain your task plan, delegate execution to regular agents, and supervise
 their results. Continue until the task is completed, paused, aborted, or
 genuinely blocked. If the user edits the task, revise your plan as needed and
@@ -122,7 +122,7 @@ Update the capabilities drill:
 - Assert recall search/query are available.
 - Assert artifact reads are available.
 - Assert the metaagent can read and update only its own task and plan documents
-  through `arroba.meta.*` task tools.
+  through `chariox.meta.*` task tools.
 - Assert task artifact calls fail for non-metaagents, other sessions, or other
   users' metaagents.
 - Assert execution mode is plan while permission level is inherited.

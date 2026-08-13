@@ -111,7 +111,7 @@ export function validateOptions(options) {
 export function validatePreflightEvidence(evidence, options) {
   if (
     evidence?.schemaVersion !== 1
-    || evidence?.kind !== "arroba-event-publication-hetzner-preflight"
+    || evidence?.kind !== "chariox-event-publication-hetzner-preflight"
   ) {
     throw new Error("preflight evidence has an unsupported contract")
   }
@@ -154,7 +154,7 @@ export function remoteAcceptanceCommand({
   restart,
 }) {
   if (!["aeds", "aegs"].includes(role)) throw new Error(`unsupported role: ${role}`)
-  const unit = role === "aeds" ? "arroba-aeds.service" : `arroba-aegs-${component}.service`
+  const unit = role === "aeds" ? "chariox-aeds.service" : `chariox-aegs-${component}.service`
   const markerRole = role
   const lines = [
     "set -eu",
@@ -163,13 +163,13 @@ export function remoteAcceptanceCommand({
     `unit=${shellQuote(unit)}`,
     `health_url=${shellQuote(`${url.replace(/\/+$/, "")}/readyz`)}`,
     "test \"$(cat /etc/machine-id)\" = \"$expected_machine\"",
-    "marker=/etc/arroba/event-publication/host-role",
+    "marker=/etc/chariox/event-publication/host-role",
     "test -r \"$marker\"",
     "test \"$(tr -d '\\r\\n' < \"$marker\")\" = \"$expected_role\"",
   ]
   if (role === "aegs") {
-    const units = [...components].map((name) => `arroba-aegs-${name}.service`)
-    const expectedUnits = activeComponents.map((name) => `arroba-aegs-${name}.service`)
+    const units = [...components].map((name) => `chariox-aegs-${name}.service`)
+    const expectedUnits = activeComponents.map((name) => `chariox-aegs-${name}.service`)
     lines.push(
       "active_units=",
       `expected_units=${shellQuote(`${expectedUnits.join("\n")}\n`)}`,
@@ -242,7 +242,7 @@ export async function runAcceptance(options, dependencies = {}) {
   }
   const record = {
     schemaVersion: 1,
-    kind: "arroba-event-publication-hetzner-acceptance",
+    kind: "chariox-event-publication-hetzner-acceptance",
     runId: options.runId,
     capturedAt: new Date().toISOString(),
     component: options.component,

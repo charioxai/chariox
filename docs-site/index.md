@@ -1,4 +1,4 @@
-# Arroba Docs
+# Chariox Docs
 
 This tree is for publishable user-facing documentation.
 

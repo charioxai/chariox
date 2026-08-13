@@ -96,7 +96,7 @@ async function handleConnect({ policy, request, clientSocket, head, resolveHost,
     target = parseConnectAuthority(request.url)
     destination = publicationEgressDestination(policy, target.host, target.port)
     addresses = validateResolvedPublicationAddresses(await resolveHost(target.host))
-    clientSocket.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: arroba-egress-v1\r\n\r\n")
+    clientSocket.write("HTTP/1.1 200 Connection Established\r\nProxy-Agent: chariox-egress-v1\r\n\r\n")
     responseStarted = true
     const clientHello = await readTlsClientHello(clientSocket, head)
     const serverName = canonicalDnsName(tlsClientHelloServerName(clientHello.buffer))
@@ -256,8 +256,8 @@ function defaultLog(entry) {
 }
 
 async function main() {
-  const policyPath = process.env.ARROBA_PUBLICATION_EGRESS_POLICY_FILE
-  if (!policyPath) throw new Error("ARROBA_PUBLICATION_EGRESS_POLICY_FILE is required")
+  const policyPath = process.env.CHARIOX_PUBLICATION_EGRESS_POLICY_FILE
+  if (!policyPath) throw new Error("CHARIOX_PUBLICATION_EGRESS_POLICY_FILE is required")
   const policy = JSON.parse(await readFile(policyPath, "utf8"))
   const gateway = await createPublicationEgressGateway({
     policy,

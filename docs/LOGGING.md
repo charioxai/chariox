@@ -1,4 +1,4 @@
-# Arroba Logging Guide
+# Chariox Logging Guide
 
 ## Status
 
@@ -6,7 +6,7 @@ Current local logging guide for the daemon and CLI runtime.
 
 ## 1. Purpose
 
-This document explains how Arroba logging works today:
+This document explains how Chariox logging works today:
 
 - where logs are written
 - how to enable or quiet them
@@ -18,8 +18,8 @@ This document explains how Arroba logging works today:
 
 The shared logging system currently covers:
 
-- `arroba-kernel`
-- the Rust `arroba-cli` launcher
+- `chariox-kernel`
+- the Rust `chariox-cli` launcher
 - the primary TypeScript CLI process in `apps/cli`
 - the Fastify server process in `apps/server`
 
@@ -27,7 +27,7 @@ Future work will extend the same logging model to provider-side helper processes
 
 ## 3. Log Format
 
-Arroba uses `NDJSON`:
+Chariox uses `NDJSON`:
 
 - one JSON object per line
 - one file per process
@@ -42,12 +42,12 @@ This makes it easy to:
 
 ## 4. Default Log Root
 
-Arroba resolves the log root in this order:
+Chariox resolves the log root in this order:
 
-1. `ARROBA_LOG_DIR`
-2. `XDG_STATE_HOME/arroba/logs`
-3. `~/.local/state/arroba/logs`
-4. `./.arroba/logs`
+1. `CHARIOX_LOG_DIR`
+2. `XDG_STATE_HOME/chariox/logs`
+3. `~/.local/state/chariox/logs`
+4. `./.chariox/logs`
 
 Each process writes its own `.ndjson` file under that root.
 
@@ -72,7 +72,7 @@ Current retention defaults:
 Set a custom log directory:
 
 ```bash
-export ARROBA_LOG_DIR=/absolute/path/to/arroba-logs
+export CHARIOX_LOG_DIR=/absolute/path/to/chariox-logs
 ```
 
 ### 6.2 Log Level
@@ -88,15 +88,15 @@ Supported values:
 Examples:
 
 ```bash
-export ARROBA_LOG_LEVEL=debug
+export CHARIOX_LOG_LEVEL=debug
 ```
 
 ```bash
-export ARROBA_LOG_LEVEL=warn
+export CHARIOX_LOG_LEVEL=warn
 ```
 
 ```bash
-export ARROBA_LOG_LEVEL=off
+export CHARIOX_LOG_LEVEL=off
 ```
 
 Notes:
@@ -113,38 +113,38 @@ Normal logging is already on by default.
 If you want to be explicit:
 
 ```bash
-export ARROBA_LOG_LEVEL=info
+export CHARIOX_LOG_LEVEL=info
 ```
 
 ### Enable verbose debugging
 
 ```bash
-export ARROBA_LOG_LEVEL=debug
+export CHARIOX_LOG_LEVEL=debug
 ```
 
 ### Reduce noise
 
 ```bash
-export ARROBA_LOG_LEVEL=warn
+export CHARIOX_LOG_LEVEL=warn
 ```
 
 or:
 
 ```bash
-export ARROBA_LOG_LEVEL=error
+export CHARIOX_LOG_LEVEL=error
 ```
 
 ### Disable log emission
 
 ```bash
-export ARROBA_LOG_LEVEL=off
+export CHARIOX_LOG_LEVEL=off
 ```
 
 If you want disabled logging plus an isolated runtime directory during debugging experiments:
 
 ```bash
-export ARROBA_LOG_LEVEL=off
-export ARROBA_LOG_DIR="$(pwd)/.arroba/logs"
+export CHARIOX_LOG_LEVEL=off
+export CHARIOX_LOG_DIR="$(pwd)/.chariox/logs"
 ```
 
 ## 8. Inspecting Logs
@@ -154,13 +154,13 @@ export ARROBA_LOG_DIR="$(pwd)/.arroba/logs"
 The primary inspection command is:
 
 ```bash
-arroba-cli logs
+chariox-cli logs
 ```
 
 Common examples:
 
 ```bash
-arroba-cli logs --follow
+chariox-cli logs --follow
 ```
 
 ```bash
@@ -184,17 +184,17 @@ pnpm run start:cli -- logs --session session-1
 ```
 
 ```bash
-arroba-cli logs --process-kind daemon --level error
+chariox-cli logs --process-kind daemon --level error
 ```
 
 ```bash
-arroba-cli logs --provider-run provider-run-3 --follow
+chariox-cli logs --provider-run provider-run-3 --follow
 ```
 
 Export a local debug bundle for one session or provider run:
 
 ```bash
-arroba-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/arroba-session-1-logs
+chariox-cli logs --session session-1 --provider-run provider-run-3 --bundle /tmp/chariox-session-1-logs
 ```
 
 From an attached TUI/web session, ask the kernel to export the current session logs without leaving the terminal:
@@ -231,45 +231,45 @@ Supported filters today:
 If you are launching through Cargo:
 
 ```bash
-cargo run --manifest-path apps/kernel/Cargo.toml --bin arroba-cli -- logs --follow
+cargo run --manifest-path apps/kernel/Cargo.toml --bin chariox-cli -- logs --follow
 ```
 
 If you are running the TypeScript CLI directly:
 
 ```bash
-pnpm --filter @arroba/cli run dev -- logs --follow
+pnpm --filter @chariox/cli run dev -- logs --follow
 ```
 
 ### 8.2 Standard Shell Tools
 
-Follow all local Arroba logs:
+Follow all local Chariox logs:
 
 ```bash
-tail -f ~/.local/state/arroba/logs/*.ndjson
+tail -f ~/.local/state/chariox/logs/*.ndjson
 ```
 
 Pretty-print records:
 
 ```bash
-jq . ~/.local/state/arroba/logs/*.ndjson
+jq . ~/.local/state/chariox/logs/*.ndjson
 ```
 
 Filter one session:
 
 ```bash
-jq 'select(.session_id=="session-1")' ~/.local/state/arroba/logs/*.ndjson
+jq 'select(.session_id=="session-1")' ~/.local/state/chariox/logs/*.ndjson
 ```
 
 Show only errors:
 
 ```bash
-jq 'select(.level=="error")' ~/.local/state/arroba/logs/*.ndjson
+jq 'select(.level=="error")' ~/.local/state/chariox/logs/*.ndjson
 ```
 
 Render a compact table:
 
 ```bash
-jq -r '[.timestamp_ms, .process_kind, .component, .level, .message] | @tsv' ~/.local/state/arroba/logs/*.ndjson
+jq -r '[.timestamp_ms, .process_kind, .component, .level, .message] | @tsv' ~/.local/state/chariox/logs/*.ndjson
 ```
 
 ## 9. Record Shape
@@ -292,7 +292,7 @@ Not every record will include every correlation field.
 
 ## 10. Logging Policy
 
-The shared logger is the only supported committed logging mechanism for Arroba runtime diagnostics.
+The shared logger is the only supported committed logging mechanism for Chariox runtime diagnostics.
 
 Do not add:
 

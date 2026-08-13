@@ -5,7 +5,7 @@ import { requestJson, waitForJsonHealth } from './http-json.mjs'
 import { renderOpenCodeConfig, reservePort } from './provider-launcher.mjs'
 
 export function resolveOpenCodeBinary() {
-  return process.env.ARROBA_OPENCODE_BIN || process.env.OPENCODE_BIN || 'opencode'
+  return process.env.CHARIOX_OPENCODE_BIN || process.env.OPENCODE_BIN || 'opencode'
 }
 
 export class OpenCodeServerRun {
@@ -27,7 +27,7 @@ export class OpenCodeServerRun {
     return requestJson(this.baseUrl, 'GET', '/mcp')
   }
 
-  async createSession({ directory = process.cwd(), title = `arroba-spike-${this.agentId}` } = {}) {
+  async createSession({ directory = process.cwd(), title = `chariox-spike-${this.agentId}` } = {}) {
     return requestJson(
       this.baseUrl,
       'POST',

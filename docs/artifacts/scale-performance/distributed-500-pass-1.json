@@ -26,7 +26,7 @@
   "leasedRemoteAgents": 500,
   "runningProviderAgents": 500,
   "syntheticProviderProcesses": 10,
-  "providerCapacityScope": "Arroba orchestration gate; provider child-process quotas and memory are measured separately",
+  "providerCapacityScope": "Chariox orchestration gate; provider child-process quotas and memory are measured separately",
   "homeRelayRouteProbed": true,
   "metrics": [
     {

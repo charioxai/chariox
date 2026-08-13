@@ -58,7 +58,7 @@ and **high** means HA, fleet, retention, or traffic can dominate platform cost.
 | Custom hostnames/CDN/DNS/TLS | A controlled public default hostname, DNS, TLS, and separate publication origin are required | **A domain/zone and TLS path must be designated**, but no managed custom-hostname/CDN vendor is required | DNS verification is implemented; edge provisioning is not |
 | Billing/metering | Admission budgets and a usage ledger are required; automated charging is not | **No** for a free or manually contracted pilot; **yes** before card checkout/subscription collection | Conditional charging; Stripe-shaped adapter, PostgreSQL usage ledger |
 | Logs/metrics/traces | Retained operational logs, durable metrics/alerts, paging, and incident ownership are required | **No specific vendor** if an existing/self-hosted stack meets the operating requirements; otherwise provision one | Required operational capability; current built-ins are insufficient alone; managed tracing is optional/later |
-| Secrets/KMS | Production custody and rotation for Arroba platform secrets are required | **No separate KMS registration** if approved PaaS secret injection and protected host storage meet the launch scope; **conditional yes** for hosted customer credentials if that model requires managed KMS/vault custody | Platform env/file secrets exist; no deployed-workflows KMS/vault adapter exists |
+| Secrets/KMS | Production custody and rotation for Chariox platform secrets are required | **No separate KMS registration** if approved PaaS secret injection and protected host storage meet the launch scope; **conditional yes** for hosted customer credentials if that model requires managed KMS/vault custody | Platform env/file secrets exist; no deployed-workflows KMS/vault adapter exists |
 | Relay/compute | Public WSS relay, publication ingress, and mode-appropriate runner capacity are required | **No new infrastructure vendor account** if existing Hetzner capacity is production-qualified; dedicated resources may still need provisioning | Required; relay pools are abstracted, hosted compute is Docker/host-specific |
 
 Therefore, no new external signup blocks local or designated-Hetzner acceptance. The
@@ -73,7 +73,7 @@ existing operator account or self-hosted resource if the criteria below are met.
 User-owned Codex, Claude, and OpenCode credentials remain in the official provider
 CLI's native runtime stores. They are created or imported under isolated runner homes,
 represented in Cloud only by metadata and `runtimeRef`, and mounted read-only into the
-runtime. Cloud secret storage is for Arroba platform secrets, not for provider login
+runtime. Cloud secret storage is for Chariox platform secrets, not for provider login
 payloads.
 
 The database model stores profile identity and lifecycle metadata, not credential bytes,
@@ -84,7 +84,7 @@ locations and secures profile trees in
 The publication runner mounts profiles read-only in
 [`publication-runner.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/publication-runner.ts).
 The browser Vault is a client of the kernel-owned vault path, not a Cloud credential
-database. This boundary also means Arroba does not need to register provider accounts on
+database. This boundary also means Chariox does not need to register provider accounts on
 behalf of users; users retain their provider relationship, billing, rotation, and
 revocation.
 
@@ -148,20 +148,20 @@ fallback. Database-backed package failure follows database failure behavior.
 
 **Exact configuration surfaces:**
 
-- Select database storage with `ARROBA_PUBLICATION_PACKAGE_STORE=database`; production
+- Select database storage with `CHARIOX_PUBLICATION_PACKAGE_STORE=database`; production
   also selects it implicitly when `DATABASE_URL` is present and no S3 bucket is set.
-- Select object storage with `ARROBA_PUBLICATION_PACKAGE_S3_BUCKET`,
-  `ARROBA_PUBLICATION_PACKAGE_S3_REGION`, `ARROBA_PUBLICATION_PACKAGE_S3_ENDPOINT`,
-  `ARROBA_PUBLICATION_PACKAGE_S3_PREFIX`,
-  `ARROBA_PUBLICATION_PACKAGE_S3_ACCESS_KEY_ID`,
-  `ARROBA_PUBLICATION_PACKAGE_S3_SECRET_ACCESS_KEY`,
-  `ARROBA_PUBLICATION_PACKAGE_S3_SESSION_TOKEN`, and
-  `ARROBA_PUBLICATION_PACKAGE_S3_FORCE_PATH_STYLE`.
+- Select object storage with `CHARIOX_PUBLICATION_PACKAGE_S3_BUCKET`,
+  `CHARIOX_PUBLICATION_PACKAGE_S3_REGION`, `CHARIOX_PUBLICATION_PACKAGE_S3_ENDPOINT`,
+  `CHARIOX_PUBLICATION_PACKAGE_S3_PREFIX`,
+  `CHARIOX_PUBLICATION_PACKAGE_S3_ACCESS_KEY_ID`,
+  `CHARIOX_PUBLICATION_PACKAGE_S3_SECRET_ACCESS_KEY`,
+  `CHARIOX_PUBLICATION_PACKAGE_S3_SESSION_TOKEN`, and
+  `CHARIOX_PUBLICATION_PACKAGE_S3_FORCE_PATH_STYLE`.
 - The object adapter falls back to `AWS_REGION`, `AWS_DEFAULT_REGION`,
   `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_SESSION_TOKEN`.
-- `ARROBA_PUBLICATION_PACKAGE_STORE_DIR` is local-only and is rejected as durable
+- `CHARIOX_PUBLICATION_PACKAGE_STORE_DIR` is local-only and is rejected as durable
   production storage. The local-browser counterpart is
-  `ARROBA_LOCAL_PUBLICATION_PACKAGE_STORE_DIR`.
+  `CHARIOX_LOCAL_PUBLICATION_PACKAGE_STORE_DIR`.
 - There is no external-object configuration surface for immutable v3 release artifacts
   yet; their `storageUri` is assigned in code.
 
@@ -231,7 +231,7 @@ Fail closed for authorization and new admissions.
   [`infra/docker-compose.yml`](https://github.com/charioxai/chariox-cloud/blob/main/infra/docker-compose.yml),
   ephemeral PGlite in
   [`ephemeral-postgres.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/test-support/ephemeral-postgres.ts),
-  and `ARROBA_LOCAL_DATABASE_URL` for the local browser service.
+  and `CHARIOX_LOCAL_DATABASE_URL` for the local browser service.
 - Backup, PITR, replica, and restore settings are infrastructure-provider configuration;
   no repository environment variables currently define them.
 
@@ -267,7 +267,7 @@ region.
 **Security and credential scope:** Use a production-only confidential web client with
 only the required callbacks, logout URLs, and web origins. Keep the client secret and
 session secret in the API secret store, rotate them independently, require strong MFA for
-tenant administrators, and restrict tenant admin roles. `ARROBA_CLOUD_DEV_AUTH_SECRET`
+tenant administrators, and restrict tenant admin roles. `CHARIOX_CLOUD_DEV_AUTH_SECRET`
 and test identity headers must be absent in production; there is no acceptable fail-open
 identity mode.
 
@@ -291,12 +291,12 @@ outage.
 - Required production values: `AUTH0_ISSUER_BASE_URL`, `AUTH0_BASE_URL`,
   `AUTH0_CLIENT_ID`, `AUTH0_CLIENT_SECRET`, and `AUTH0_SESSION_SECRET`.
 - Optional API audience: `AUTH0_AUDIENCE`.
-- Related Cloud browser security: `ARROBA_CLOUD_WEB_URL`,
-  `ARROBA_CLOUD_COOKIE_SECRET`, and `ARROBA_CLOUD_CSRF_HMAC_KEY`; the latter two must be
+- Related Cloud browser security: `CHARIOX_CLOUD_WEB_URL`,
+  `CHARIOX_CLOUD_COOKIE_SECRET`, and `CHARIOX_CLOUD_CSRF_HMAC_KEY`; the latter two must be
   configured together when overridden.
-- Cohort/admin restrictions: `ARROBA_CLOUD_ALLOWED_BROWSER_EMAILS`,
-  `ARROBA_CLOUD_ADMIN_ENABLED`, and `ARROBA_CLOUD_ADMIN_ROLES`.
-- Nonproduction only: `ARROBA_CLOUD_DEV_AUTH_SECRET` and injected test-auth options.
+- Cohort/admin restrictions: `CHARIOX_CLOUD_ALLOWED_BROWSER_EMAILS`,
+  `CHARIOX_CLOUD_ADMIN_ENABLED`, and `CHARIOX_CLOUD_ADMIN_ROLES`.
+- Nonproduction only: `CHARIOX_CLOUD_DEV_AUTH_SECRET` and injected test-auth options.
 - The current staging topology and US-tenant note are recorded in
   [`C5_HOSTED_DEPLOYMENT_MILESTONE.md`](https://github.com/charioxai/chariox-cloud/blob/main/docs/C5_HOSTED_DEPLOYMENT_MILESTONE.md).
 
@@ -349,7 +349,7 @@ state honestly and must not claim that mail was sent when only a token was creat
 
 **Exact configuration surfaces:** There are **no current email provider or SMTP environment
 variables**. Current configuration is the request-level `expiresInSeconds` plus fixed
-service bounds, and the web link uses the browser origin. `ARROBA_CLOUD_WEB_URL` is the
+service bounds, and the web link uses the browser origin. `CHARIOX_CLOUD_WEB_URL` is the
 canonical Cloud web deployment URL but is not an email adapter. Any future mail variables
 must be defined with the adapter rather than invented operationally.
 
@@ -364,11 +364,11 @@ operations, or global static latency justify it.
 
 **Why and abstraction status:**
 [`deployment-domain-policy.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-domain-policy.ts)
-normalizes hostnames and verifies the expected `_arroba-verification.<host>` TXT record
+normalizes hostnames and verifies the expected `_chariox-verification.<host>` TXT record
 and CNAME target using the system DNS resolver. The API exposes a protected domain
 approval endpoint suitable for a Caddy on-demand TLS ask check in
 [`deployment-domains.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/routes/deployment-domains.ts).
-Production also enforces a publication hostname distinct from `ARROBA_CLOUD_WEB_URL` in
+Production also enforces a publication hostname distinct from `CHARIOX_CLOUD_WEB_URL` in
 [`node-server.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/node-server.ts).
 There is no Caddyfile, DNS-provider API, ACME account configuration, CDN adapter, or edge
 infrastructure definition in the Cloud repository. DNS-state abstraction exists; edge
@@ -387,7 +387,7 @@ between EU origins without requiring product-level hostname changes.
 
 **Security and credential scope:** Use DNS credentials limited to the required zone and
 records, or perform DNS changes manually for the first cohort. Scope ACME/DNS challenge
-credentials separately from the Cloud API. Keep `ARROBA_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`
+credentials separately from the Cloud API. Keep `CHARIOX_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`
 between the edge and API, restrict the approval endpoint at the network layer, rotate the
 token, and do not expose it in browser-visible configuration. A domain must remain
 unserved until verification and TLS state are ready.
@@ -408,13 +408,13 @@ to route to another account or deployment.
 
 **Exact configuration surfaces:**
 
-- API/domain policy: `ARROBA_PUBLICATION_INGRESS_BASE_URL`,
-  `ARROBA_PUBLICATION_DEFAULT_DOMAIN`, `ARROBA_CLOUD_WEB_URL`, and
-  `ARROBA_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`.
-- Nonproduction only: `ARROBA_DEPLOYMENT_DOMAIN_VERIFICATION_MODE=test`; code rejects it
+- API/domain policy: `CHARIOX_PUBLICATION_INGRESS_BASE_URL`,
+  `CHARIOX_PUBLICATION_DEFAULT_DOMAIN`, `CHARIOX_CLOUD_WEB_URL`, and
+  `CHARIOX_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`.
+- Nonproduction only: `CHARIOX_DEPLOYMENT_DOMAIN_VERIFICATION_MODE=test`; code rejects it
   when `NODE_ENV=production`.
-- Worker ingress: `ARROBA_PUBLICATION_INGRESS_PUBLIC_PROTOCOL` and
-  `ARROBA_PUBLICATION_ROUTES_PATH`.
+- Worker ingress: `CHARIOX_PUBLICATION_INGRESS_PUBLIC_PROTOCOL` and
+  `CHARIOX_PUBLICATION_ROUTES_PATH`.
 - There are no current CDN, DNS-provider, Caddy, ACME, certificate-file, or managed
   custom-hostname environment surfaces in Cloud. Those remain deployment configuration.
 - The current two-surface Hetzner drill sets the ingress public protocol to `https` while
@@ -455,7 +455,7 @@ reliability and reconciliation, customer portal needs, fraud/dispute handling, d
 processing, support, and transaction economics. Validate the pricing model before
 building a provider-cost pass-through meter.
 
-**Region and data residency:** Keep Arroba entitlement and usage records in the EU Cloud
+**Region and data residency:** Keep Chariox entitlement and usage records in the EU Cloud
 database. Send the payment provider only the minimum billing/customer metadata required.
 Document unavoidable cross-border payment processing and retention. Never send prompts,
 outputs, package data, or provider-native credentials to the billing service.
@@ -488,12 +488,12 @@ Stripe.
   current billing implementation and are all required by current readiness.
 - Deployment usage and limits are database-backed fields, including
   `daily_usage_units`; they have no billing-vendor environment variable.
-- The resilient worker usage path uses `ARROBA_PUBLICATION_USAGE_SPOOL_PATH`,
-  `ARROBA_PUBLICATION_USAGE_SPOOL_SECRET`, and
-  `ARROBA_PUBLICATION_USAGE_MAX_PENDING` in
+- The resilient worker usage path uses `CHARIOX_PUBLICATION_USAGE_SPOOL_PATH`,
+  `CHARIOX_PUBLICATION_USAGE_SPOOL_SECRET`, and
+  `CHARIOX_PUBLICATION_USAGE_MAX_PENDING` in
   [`publication-ingress-usage-observer.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/publication-ingress-usage-observer.ts).
 - User provider consumption remains billed by the user's provider account through the
-  provider-native CLI relationship; it is not a Cloud-stored credential or current Arroba
+  provider-native CLI relationship; it is not a Cloud-stored credential or current Chariox
   billable meter.
 
 ## 7. Logs, Metrics, And Traces
@@ -560,17 +560,17 @@ state.
   by default in [`server.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/server.ts).
 - Deployment retention and alert thresholds are persisted in each environment's
   `operationsPolicy`; there is no external telemetry-provider env surface.
-- OSS kernel logging uses `ARROBA_LOG_DIR` and `ARROBA_LOG_LEVEL`; relay provenance can use
-  `ARROBA_BUILD_COMMIT`.
-- `ARROBA_PUBLICATION_CAPTURE_FAILED_CONTAINER_DIAGNOSTICS` is an opt-in runner diagnostic
+- OSS kernel logging uses `CHARIOX_LOG_DIR` and `CHARIOX_LOG_LEVEL`; relay provenance can use
+  `CHARIOX_BUILD_COMMIT`.
+- `CHARIOX_PUBLICATION_CAPTURE_FAILED_CONTAINER_DIAGNOSTICS` is an opt-in runner diagnostic
   surface and requires a redaction review. Publication containers use hard-coded Docker
   log rotation of `max-size=10m` and `max-file=3`.
-- `ARROBA_CLOUD_CSP_MODE` controls CSP report behavior but is not an observability backend.
+- `CHARIOX_CLOUD_CSP_MODE` controls CSP report behavior but is not an observability backend.
 
 ## 8. Secrets And KMS
 
 **Registration decision:** **Required for production secret custody; managed KMS/vault is
-conditional.** Production Arroba platform secrets need controlled injection, encryption
+conditional.** Production Chariox platform secrets need controlled injection, encryption
 at rest, rotation, access audit, and recovery before external production. Existing PaaS
 encrypted environment storage plus restricted, encrypted runner-host files can satisfy a
 bounded launch if the threat model and recovery drill accept them. For first external
@@ -626,24 +626,24 @@ do not fall back to development defaults, another tenant's profile, or Cloud pla
 
 - Cloud platform secrets include `DATABASE_URL`, `AUTH0_CLIENT_SECRET`,
   `AUTH0_SESSION_SECRET`, `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`,
-  `ARROBA_CLOUD_RELAY_TOKEN_SECRET`, `ARROBA_CLOUD_COOKIE_SECRET`,
-  `ARROBA_CLOUD_CSRF_HMAC_KEY`, `ARROBA_PUBLICATION_PLATFORM_RUNNER_KEYS_JSON`,
-  `ARROBA_PUBLICATION_MACHINE_AUTH_SECRET`,
-  `ARROBA_PUBLICATION_CALLER_CLAIMS_SECRET`,
-  `ARROBA_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`, and the package-store access credentials.
-- Runner/platform authentication uses `ARROBA_PUBLICATION_RUNNER_KEY`; the usage spool can
-  use `ARROBA_PUBLICATION_USAGE_SPOOL_SECRET`.
-- Provider-native material is located by `ARROBA_PUBLICATION_CREDENTIAL_PROFILES_DIR`,
-  `ARROBA_PUBLICATION_CREDENTIAL_PROFILE_SOURCES_DIR`, and
-  `ARROBA_PUBLICATION_CREDENTIAL_SOURCES_JSON`. These point to runner-local paths; they are
+  `CHARIOX_CLOUD_RELAY_TOKEN_SECRET`, `CHARIOX_CLOUD_COOKIE_SECRET`,
+  `CHARIOX_CLOUD_CSRF_HMAC_KEY`, `CHARIOX_PUBLICATION_PLATFORM_RUNNER_KEYS_JSON`,
+  `CHARIOX_PUBLICATION_MACHINE_AUTH_SECRET`,
+  `CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET`,
+  `CHARIOX_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`, and the package-store access credentials.
+- Runner/platform authentication uses `CHARIOX_PUBLICATION_RUNNER_KEY`; the usage spool can
+  use `CHARIOX_PUBLICATION_USAGE_SPOOL_SECRET`.
+- Provider-native material is located by `CHARIOX_PUBLICATION_CREDENTIAL_PROFILES_DIR`,
+  `CHARIOX_PUBLICATION_CREDENTIAL_PROFILE_SOURCES_DIR`, and
+  `CHARIOX_PUBLICATION_CREDENTIAL_SOURCES_JSON`. These point to runner-local paths; they are
   not credential-byte environment variables.
-- OSS relay verification uses `ARROBA_RELAY_SCOPED_HMAC_SECRET`; local shared-token mode
-  uses `ARROBA_RELAY_TOKEN`.
+- OSS relay verification uses `CHARIOX_RELAY_SCOPED_HMAC_SECRET`; local shared-token mode
+  uses `CHARIOX_RELAY_TOKEN`.
 - There is no current KMS, managed-vault, or external-secret-provider env/config surface.
-- Development-only bypasses such as `ARROBA_CLOUD_DEV_AUTH_SECRET`,
-  `ARROBA_PUBLICATION_ENABLE_DEV_STUB`,
-  `ARROBA_PUBLICATION_SELF_HOST_DEV_ALLOW_LEGACY_CREDENTIAL_SOURCE_FALLBACK`, and
-  `ARROBA_RELAY_ALLOW_OPEN_ACCESS` must be absent from production.
+- Development-only bypasses such as `CHARIOX_CLOUD_DEV_AUTH_SECRET`,
+  `CHARIOX_PUBLICATION_ENABLE_DEV_STUB`,
+  `CHARIOX_PUBLICATION_SELF_HOST_DEV_ALLOW_LEGACY_CREDENTIAL_SOURCE_FALLBACK`, and
+  `CHARIOX_RELAY_ALLOW_OPEN_ACCESS` must be absent from production.
 
 ## 9. Relay And Compute
 
@@ -712,30 +712,30 @@ unrestricted-network fallback.
 
 **Exact configuration surfaces:**
 
-- Cloud relay allocation/signing: `ARROBA_CLOUD_RELAY_URL`,
-  `ARROBA_CLOUD_ISSUER_ID`, `ARROBA_CLOUD_RELAY_TOKEN_SECRET`,
-  `ARROBA_CLOUD_RELAY_POOL_ID`, `ARROBA_CLOUD_RELAY_REGION`,
-  `ARROBA_CLOUD_RELAY_SIGNING_KEY_REF`, `ARROBA_CLOUD_RELAY_POOLS`, and
-  `ARROBA_CLOUD_RELAY_ENDPOINTS`.
-- OSS relay process: `ARROBA_RELAY_HOST`, `ARROBA_RELAY_PORT`,
-  `ARROBA_RELAY_SCOPED_ISSUER`, `ARROBA_RELAY_SCOPED_HMAC_SECRET`,
-  `ARROBA_RELAY_REVOCATION_URL`, `ARROBA_RELAY_REVOCATION_REALM`,
-  `ARROBA_RELAY_REVOCATION_INTERVAL_SECS`, `ARROBA_RELAY_DRAINING`, and
-  `ARROBA_RELAY_OUTGOING_QUEUE_CAPACITY`. `ARROBA_RELAY_TOKEN` is the simpler
+- Cloud relay allocation/signing: `CHARIOX_CLOUD_RELAY_URL`,
+  `CHARIOX_CLOUD_ISSUER_ID`, `CHARIOX_CLOUD_RELAY_TOKEN_SECRET`,
+  `CHARIOX_CLOUD_RELAY_POOL_ID`, `CHARIOX_CLOUD_RELAY_REGION`,
+  `CHARIOX_CLOUD_RELAY_SIGNING_KEY_REF`, `CHARIOX_CLOUD_RELAY_POOLS`, and
+  `CHARIOX_CLOUD_RELAY_ENDPOINTS`.
+- OSS relay process: `CHARIOX_RELAY_HOST`, `CHARIOX_RELAY_PORT`,
+  `CHARIOX_RELAY_SCOPED_ISSUER`, `CHARIOX_RELAY_SCOPED_HMAC_SECRET`,
+  `CHARIOX_RELAY_REVOCATION_URL`, `CHARIOX_RELAY_REVOCATION_REALM`,
+  `CHARIOX_RELAY_REVOCATION_INTERVAL_SECS`, `CHARIOX_RELAY_DRAINING`, and
+  `CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY`. `CHARIOX_RELAY_TOKEN` is the simpler
   local/self-hosted shared-token path.
-- Runner control: `ARROBA_CLOUD_API_BASE_URL`, `ARROBA_PUBLICATION_ACCOUNT_ID`,
-  `ARROBA_PUBLICATION_RUNNER_KEY`, `ARROBA_PUBLICATION_RUNNER_LABEL`,
-  `ARROBA_PUBLICATION_RUNNER_ROOT`, `ARROBA_PUBLICATION_IMAGE`,
-  `ARROBA_PUBLICATION_RUNNER_PORT_START`, and `ARROBA_PUBLICATION_DRAIN_MS`.
-- Runner ingress/audit: `ARROBA_PUBLICATION_INGRESS_BASE_URL`,
-  `ARROBA_PUBLICATION_AUDIT_BRIDGE_BIND_HOST`,
-  `ARROBA_PUBLICATION_AUDIT_BRIDGE_PORT`,
-  `ARROBA_PUBLICATION_AUDIT_BRIDGE_ADVERTISED_BASE_URL`,
-  `ARROBA_PUBLICATION_ROUTES_PATH`,
-  `ARROBA_PUBLICATION_CONTROL_PLANE_STALE_MS`, and the usage-spool variables listed above.
-- Hosted egress consumes `ARROBA_PUBLICATION_EGRESS_IMAGE`,
-  `ARROBA_PUBLICATION_EGRESS_UPLINK_NETWORK`, and
-  `ARROBA_PUBLICATION_EGRESS_HOST_FIREWALL_HELPER`; production must set, protect, and
+- Runner control: `CHARIOX_CLOUD_API_BASE_URL`, `CHARIOX_PUBLICATION_ACCOUNT_ID`,
+  `CHARIOX_PUBLICATION_RUNNER_KEY`, `CHARIOX_PUBLICATION_RUNNER_LABEL`,
+  `CHARIOX_PUBLICATION_RUNNER_ROOT`, `CHARIOX_PUBLICATION_IMAGE`,
+  `CHARIOX_PUBLICATION_RUNNER_PORT_START`, and `CHARIOX_PUBLICATION_DRAIN_MS`.
+- Runner ingress/audit: `CHARIOX_PUBLICATION_INGRESS_BASE_URL`,
+  `CHARIOX_PUBLICATION_AUDIT_BRIDGE_BIND_HOST`,
+  `CHARIOX_PUBLICATION_AUDIT_BRIDGE_PORT`,
+  `CHARIOX_PUBLICATION_AUDIT_BRIDGE_ADVERTISED_BASE_URL`,
+  `CHARIOX_PUBLICATION_ROUTES_PATH`,
+  `CHARIOX_PUBLICATION_CONTROL_PLANE_STALE_MS`, and the usage-spool variables listed above.
+- Hosted egress consumes `CHARIOX_PUBLICATION_EGRESS_IMAGE`,
+  `CHARIOX_PUBLICATION_EGRESS_UPLINK_NETWORK`, and
+  `CHARIOX_PUBLICATION_EGRESS_HOST_FIREWALL_HELPER`; production must set, protect, and
   validate these as part of the runner configuration.
 - Public TLS termination and host provisioning are outside the repository today.
 
@@ -743,10 +743,10 @@ unrestricted-network fallback.
 
 The provisional
 [`C1_DEPLOYMENT_TOPOLOGY.md`](https://github.com/charioxai/chariox-cloud/blob/main/docs/C1_DEPLOYMENT_TOPOLOGY.md)
-lists `ARROBA_PUBLICATION_RUNNER_TOKEN_SECRET`, `ARROBA_PUBLICATION_RUNNER_ID`, and
-`ARROBA_PUBLICATION_STAGING_CREDENTIAL_PROFILE`. Repository search finds no code consumer
+lists `CHARIOX_PUBLICATION_RUNNER_TOKEN_SECRET`, `CHARIOX_PUBLICATION_RUNNER_ID`, and
+`CHARIOX_PUBLICATION_STAGING_CREDENTIAL_PROFILE`. Repository search finds no code consumer
 for those names. The implemented runner contract instead uses
-`ARROBA_PUBLICATION_RUNNER_KEY`, `ARROBA_PUBLICATION_ACCOUNT_ID`, and the credential path
+`CHARIOX_PUBLICATION_RUNNER_KEY`, `CHARIOX_PUBLICATION_ACCOUNT_ID`, and the credential path
 surfaces listed above. Do not put values into the document-only names or treat them as a
 security boundary.
 
@@ -768,7 +768,7 @@ designated-Hetzner acceptance matrix:
 | Candidate | Nonblocking acceptance substitute |
 | --- | --- |
 | Object/package storage | Local file store outside production, PostgreSQL package blobs, or optional local MinIO/S3-compatible storage |
-| Database | Docker PostgreSQL 16, ephemeral PGlite for focused tests, `ARROBA_LOCAL_DATABASE_URL`, or the already-provisioned staging database |
+| Database | Docker PostgreSQL 16, ephemeral PGlite for focused tests, `CHARIOX_LOCAL_DATABASE_URL`, or the already-provisioned staging database |
 | Auth | Local signed/test identity and guarded nonproduction device approval; production-only Auth0 behavior remains a separate gate |
 | Email/invitations | Copy the expiring claim or audience link; a local mail sink may test a future adapter |
 | DNS/TLS/CDN | `.localhost`, hosts-file names, `sslip.io`, direct ports/tunnels, and Caddy on the designated Hetzner host; no managed CDN is needed |

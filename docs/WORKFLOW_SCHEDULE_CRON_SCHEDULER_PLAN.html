@@ -194,12 +194,12 @@
   <body>
     <main>
       <section class="hero">
-        <p class="eyebrow">Arroba workflow implementation plan</p>
+        <p class="eyebrow">Chariox workflow implementation plan</p>
         <h1>Workflow Schedule Rename and Cron Scheduler</h1>
         <p class="summary">
           Rename the runtime feature from watchdogs to workflow schedules, make
           <code>WorkflowSchedule</code> and <code>WorkflowScheduleDefinition</code> the canonical
-          types across <code>arroba</code> and <code>arroba-cloud</code>, and replace
+          types across <code>chariox</code> and <code>chariox-cloud</code>, and replace
           interval-only scheduling with a production scheduler that supports interval triggers and
           Unix cron triggers with seconds and explicit IANA timezone storage.
         </p>
@@ -371,7 +371,7 @@
         <li>Rename or replace <code>live-watchdog-drill.mjs</code> with <code>live-workflow-scheduler-drill.mjs</code>.</li>
         <li>Add cron mode to the live scheduler drill using a near-future seconds-capable cron expression and explicit <code>UTC</code>.</li>
         <li>Add TUI e2e drill: create workflow, add cron schedule, list, observe scheduled run, disable, remove.</li>
-        <li>Add web terminal e2e drill in <code>arroba-cloud</code>: open product frontend in the in-app browser, create a schedule through the modal, verify preview and scheduled run, then manage it through <code>/workflow schedule</code> commands.</li>
+        <li>Add web terminal e2e drill in <code>chariox-cloud</code>: open product frontend in the in-app browser, create a schedule through the modal, verify preview and scheduled run, then manage it through <code>/workflow schedule</code> commands.</li>
         <li>Add TUI/web parity drill: create in one surface, verify schedule and run state appears in the other.</li>
       </ul>
 

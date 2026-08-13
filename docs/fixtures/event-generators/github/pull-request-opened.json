@@ -4,13 +4,13 @@
     "number": 482,
     "title": "Validate event-based publication end to end",
     "updated_at": "2026-07-28T00:00:00Z",
-    "html_url": "https://github.com/arroba/arroba/pull/482"
+    "html_url": "https://github.com/charioxai/chariox/pull/482"
   },
   "repository": {
-    "full_name": "arroba/arroba",
-    "html_url": "https://github.com/arroba/arroba"
+    "full_name": "charioxai/chariox",
+    "html_url": "https://github.com/charioxai/chariox"
   },
   "sender": {
-    "login": "arroba-validation"
+    "login": "chariox-validation"
   }
 }

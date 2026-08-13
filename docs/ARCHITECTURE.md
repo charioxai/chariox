@@ -1,4 +1,4 @@
-# Arroba v1 Architecture
+# Chariox v1 Architecture
 
 ## Status
 
@@ -18,9 +18,9 @@ This document translates the v1 specification into an implementation-oriented ar
 
 Target architectural terms:
 
-- `Arroba Kernel`
+- `Chariox Kernel`
   - the authoritative orchestration/runtime kernel
-- `arroba-kernel`
+- `chariox-kernel`
   - the process that hosts the kernel on one machine/user context
 - `workspace`
   - the persistent collaboration domain
@@ -35,21 +35,21 @@ Current implementation note:
 
 ## 2. System Topology
 
-Arroba v1 is composed of five runtime components:
+Chariox v1 is composed of five runtime components:
 
 - Client
 - Machine
-- Arroba Kernel
+- Chariox Kernel
 - Relay Server
 - Directory Service
 
 High-level topology:
 
-`Client <-> Arroba Kernel <-> Agent Endpoint`
+`Client <-> Chariox Kernel <-> Agent Endpoint`
 
 Remote topology:
 
-`Remote Client <-> Relay Server <-> Arroba Kernel <-> Agent Endpoint`
+`Remote Client <-> Relay Server <-> Chariox Kernel <-> Agent Endpoint`
 
 Discovery topology:
 
@@ -57,8 +57,8 @@ Discovery topology:
 
 Current implementation mapping:
 
-- the kernel currently runs inside the Rust runtime in [apps/kernel](/Users/miguel/arroba/apps/kernel)
-- the primary client is the TypeScript CLI in [apps/cli](/Users/miguel/arroba/apps/cli)
+- the kernel currently runs inside the Rust runtime in [apps/kernel](/Users/miguel/chariox/apps/kernel)
+- the primary client is the TypeScript CLI in [apps/cli](/Users/miguel/chariox/apps/cli)
 - the current OpenCode adapter talks to a local OpenCode HTTP + SSE endpoint
 - the primary daemon-client transport is now a kernel WebSocket with pushed events; the local Unix-socket IPC surface remains for harnesses, compatibility, and local management paths
 - relay, directory, and unified node transport are later implementation work, not current code
@@ -81,7 +81,7 @@ Current implementation mapping:
 
 ## 2.2 Connectivity Model
 
-Arroba should model a kernel-hosted runtime domain that may contain both local and remote members.
+Chariox should model a kernel-hosted runtime domain that may contain both local and remote members.
 
 Members of the same workspace may include:
 
@@ -105,7 +105,7 @@ Normative rules:
 
 - a workspace may contain multiple workflow definitions
 - a workflow is a directed graph inside one workspace
-- graph nodes are top-level Arroba-managed agents
+- graph nodes are top-level Chariox-managed agents
 - graph edges define allowed message flow
 - each workflow definition may expose multiple endpoints
 - each workflow endpoint targets exactly one entry node in that workflow
@@ -126,8 +126,8 @@ Responsibilities:
 
 Current implementation note:
 
-- the primary local client is the TypeScript OpenTUI app in [apps/cli](/Users/miguel/arroba/apps/cli)
-- `arroba-cli` is currently a Rust launcher for that client
+- the primary local client is the TypeScript OpenTUI app in [apps/cli](/Users/miguel/chariox/apps/cli)
+- `chariox-cli` is currently a Rust launcher for that client
 - the primary local transport is the kernel WebSocket event stream; local IPC remains as a lower-level compatibility and harness surface
 - M4.5 session, agent, and workflow commands are routed through the kernel command router into bounded runtime lanes; local IPC, relay-proxied workflow requests, and actor workers delegate to explicit runtime request handlers while the legacy `DaemonApp` remains only as the current mutation mirror. Session runtime execution now reaches session lifecycle/config/alias mutations through `KernelSessionService` directly instead of broad app-level request helpers.
 
@@ -149,9 +149,9 @@ Remote-machine note:
 - provider availability is advertised from the worker kernel back through relay metadata
 - provider login remains local to the worker kernel; the home kernel consumes provider availability but does not proxy provider auth flows
 
-### 3.3 Arroba Kernel
+### 3.3 Chariox Kernel
 
-The Arroba Kernel is the runtime authority for live workspace state on one machine/user context.
+The Chariox Kernel is the runtime authority for live workspace state on one machine/user context.
 
 Responsibilities:
 
@@ -205,7 +205,7 @@ Current implementation note:
 - the current OpenCode adapter is already a provider-endpoint integration example
 - the current local CLI transport is now a long-lived WebSocket subscription with pushed kernel events
 - a generic WebSocket transport for agent endpoints is still intentionally deferred
-- the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while Workspace Live Sync managed mode owns fine-grained text coordination and opaque whole-file coordination for Arroba-managed provider sessions
+- the current `WorkspaceCoordinator` remains a coarse safety/scheduling boundary for worktree-level claims, while Workspace Live Sync managed mode owns fine-grained text coordination and opaque whole-file coordination for Chariox-managed provider sessions
 
 ### 3.3.1.1 Kernel Runtime and Workflow Details
 
@@ -236,8 +236,8 @@ Current architectural interpretation:
 - the same CLI should support local direct daemon operation and relay-mediated remote operation without becoming two apps
 - the CLI should always open the waiting room first; local sessions remain available even when relay is not configured or disconnected
 - relay connection is configured from slash commands or the waiting-room relay section, then auto-connects in the background
-- `/relay use <ws-url>` may read the token from `ARROBA_RELAY_TOKEN`; passing the token as a visible slash-command argument remains supported for self-hosted/manual testing but should not be the preferred documented path for shared terminals or screenshots
-- worker processes may receive `ARROBA_CLOUD_RELAY_CONFIG_JSON` only when the launcher intentionally delegates Cloud relay refresh authority to that worker; the normal env relay URL/token path remains scoped runtime relay configuration and must not imply access to home-owned Cloud credentials
+- `/relay use <ws-url>` may read the token from `CHARIOX_RELAY_TOKEN`; passing the token as a visible slash-command argument remains supported for self-hosted/manual testing but should not be the preferred documented path for shared terminals or screenshots
+- worker processes may receive `CHARIOX_CLOUD_RELAY_CONFIG_JSON` only when the launcher intentionally delegates Cloud relay refresh authority to that worker; the normal env relay URL/token path remains scoped runtime relay configuration and must not imply access to home-owned Cloud credentials
 - the waiting room groups relay status and relay actions together under `Relay`; it also groups machines and pending machine counts together under `Machines`
 - once relay connects, machine/provider availability updates automatically; if the user is already in a session, remote capability can become available silently with at most a small informational footer
 - waiting-room remote machine/kernel discovery must be projection-backed, not request-backed: the kernel refreshes relay presence in the background and publishes a daemon-owned remote-inventory projection; CLI/web waiting-room reads consume that projection and must not synchronously open new relay metadata sockets on the user-facing read path
@@ -251,12 +251,12 @@ Current architectural interpretation:
 
 ### Docker Remote-Machine Lab
 
-The Docker lab models containers as ordinary Arroba machines. The base image should include every Arroba app: CLI, daemon/kernel, and relay. It should not include provider credentials or manage provider login. Users install and authenticate provider CLIs inside each persistent container. This intentionally supports multiple concurrent accounts for the same provider by isolating each container's home directory, Arroba identity, provider config, and provider credentials.
+The Docker lab models containers as ordinary Chariox machines. The base image should include every Chariox app: CLI, daemon/kernel, and relay. It should not include provider credentials or manage provider login. Users install and authenticate provider CLIs inside each persistent container. This intentionally supports multiple concurrent accounts for the same provider by isolating each container's home directory, Chariox identity, provider config, and provider credentials.
 
 Required container properties:
 
 - outbound internet for provider APIs, package installation, hosted relay access, and auth flows
-- persistent `/home/arroba` or equivalent so machine identity and provider credentials survive restart
+- persistent `/home/chariox` or equivalent so machine identity and provider credentials survive restart
 - separate machine identity per container, derived from persisted config rather than baked into the image
 - optional URL-printing browser/`xdg-open` shims for provider login flows that request a browser
 - documented provider compatibility for the small launch-provider set, including login method, callback-port behavior, and tested CLI versions
@@ -280,7 +280,7 @@ It is distinct from relay:
 
 ### 3.6 Agent Endpoints
 
-An agent endpoint is the kernel-facing runtime interface implemented by a provider integration or Arroba-native agent runtime.
+An agent endpoint is the kernel-facing runtime interface implemented by a provider integration or Chariox-native agent runtime.
 
 Required endpoint modes:
 
@@ -293,12 +293,12 @@ Normative rules:
 
 - the kernel should depend on an endpoint contract, not only on child-process ownership
 - existing providers like OpenCode may keep native transport adapters
-- Arroba-native or third-party agent runtimes should eventually target a canonical daemon-facing agent protocol directly
+- Chariox-native or third-party agent runtimes should eventually target a canonical daemon-facing agent protocol directly
 - transport unification should happen at the kernel protocol/event model level, not by forcing every provider to mimic the same wire transport internally
 
 ### 3.7 Workspace Coordination
 
-If Arroba is to orchestrate multiple top-level agents without relying on a human to manually clean up merge conflicts, workspace coordination must be kernel-owned.
+If Chariox is to orchestrate multiple top-level agents without relying on a human to manually clean up merge conflicts, workspace coordination must be kernel-owned.
 
 Baseline responsibilities:
 
@@ -310,7 +310,7 @@ Baseline responsibilities:
 Near-term practical rule:
 
 - keep current worktree-level coordination as the near-term guardrail while the kernel refactor completes
-- use Workspace Live Sync managed mode for Arroba-managed provider-session writes; keep port claims, integration/merge checks, and post-v1 artifact-specific region models as future coordination work
+- use Workspace Live Sync managed mode for Chariox-managed provider-session writes; keep port claims, integration/merge checks, and post-v1 artifact-specific region models as future coordination work
 - the kernel should own integration policy rather than delegating all conflict discovery to late Git merges or human PR review
 
 Scope rule:
@@ -341,7 +341,7 @@ A session is bound to:
 
 A session may include:
 
-- many top-level Arroba-managed agents
+- many top-level Chariox-managed agents
 - many client attachments
 - parked provider runs
 - agent-scoped provider runs when multi-agent session mode or workflow mode is active
@@ -389,7 +389,7 @@ Required daemon-owned responsibilities:
 
 Current implementation note:
 
-- the local runtime already has session agent records, focused-agent metadata, and Arroba-owned `/agent ...` management commands
+- the local runtime already has session agent records, focused-agent metadata, and Chariox-owned `/agent ...` management commands
 - the current CLI footer/chrome reflects that state, but transcript routing and provider execution are still effectively single-agent
 - the next implementation step is to make focused-agent changes affect both prompt routing and visible per-agent panes/history
 
@@ -401,7 +401,7 @@ Responsibilities:
 
 - one append-only console per workflow definition
 - shared human-facing output stream separate from provider traces
-- readable/writable/clearable by workflow nodes through Arroba MCP tools
+- readable/writable/clearable by workflow nodes through Chariox MCP tools
 - rendered by the CLI in the workflow right-side panel via `/workflow terminal`
 
 Ownership split:
@@ -419,7 +419,7 @@ Boundary:
 
 ### 4.2.3 Persistent Session and Deletion Ownership
 
-Arroba session lifetime should be explicit and daemon-owned.
+Chariox session lifetime should be explicit and daemon-owned.
 
 Required rules:
 
@@ -437,7 +437,7 @@ Planned client behavior:
 
 - `/exit` detaches from the current session
 - explicit session deletion is handled through a dedicated session-management command or external control command
-- when the currently attached session is deleted, the client clears transcript/session chrome, renders an Arroba ASCII-art landing state, and returns to a reusable unattached shell state
+- when the currently attached session is deleted, the client clears transcript/session chrome, renders a Chariox ASCII-art landing state, and returns to a reusable unattached shell state
 
 Current local baseline:
 
@@ -527,7 +527,7 @@ Required rules:
 ### 5.2 Capability Lane
 
 - Carries daemon capability requests/results.
-- Used for shell, file ops, screenshot, git/worktree, schedules, transfers, and other Arroba-owned slash commands.
+- Used for shell, file ops, screenshot, git/worktree, schedules, transfers, and other Chariox-owned slash commands.
 
 ### 5.3 Control Lane
 
@@ -541,7 +541,7 @@ Canonical control operations in v1:
 
 `request_memory_update` and `request_compaction_summary` are daemon-owned and distinct from normal user prompt/response traffic.
 
-`/<provider> ...` commands are resolved by Arroba first, then dispatched into adapter-owned behavior through the control lane or adapter-specific execution hooks.
+`/<provider> ...` commands are resolved by Chariox first, then dispatched into adapter-owned behavior through the control lane or adapter-specific execution hooks.
 
 Provider authentication is not part of the control lane in v1; adapters probe and report auth state, but login itself remains a provider-native local CLI flow on the host machine.
 
@@ -549,21 +549,21 @@ Provider-facing extension projection is also adapter-owned: the daemon resolves 
 
 ### 5.3.1 Prompt Assembly Service
 
-The kernel owns prompt assembly. Clients, workflow schedulers, provider adapters, native TUI launchers, and utility-call helpers must not concatenate Arroba runtime instructions directly into provider prompt text.
+The kernel owns prompt assembly. Clients, workflow schedulers, provider adapters, native TUI launchers, and utility-call helpers must not concatenate Chariox runtime instructions directly into provider prompt text.
 
 The prompt assembly boundary produces a `PromptEnvelope` with these conceptual fields:
 
-- `visible_user_prompt`: the human or endpoint prompt that should appear in Arroba prompt history and prompt input surfaces
-- `hidden_system_context`: Arroba runtime instructions, workflow-level prompt, node-level instructions, granted MCP/skill summaries, runtime continuation instructions, and utility-specific instructions
+- `visible_user_prompt`: the human or endpoint prompt that should appear in Chariox prompt history and prompt input surfaces
+- `hidden_system_context`: Chariox runtime instructions, workflow-level prompt, node-level instructions, granted MCP/skill summaries, runtime continuation instructions, and utility-specific instructions
 - `attachments`: structured attachments, unchanged from the prompt submission path
 - `manifest`: prompt template ids, template versions or content hashes, assembly conditions, and the provider injection channel used for the turn
 
-Prompt text is loaded from the user-owned Arroba prompt registry under `~/.arroba/prompts`. The source tree may ship default templates, but those defaults are materialized into that registry and then read from disk. New prompt text should be added as a named template file, not as hardcoded Rust or TypeScript string literals. Template loading should fail loudly when a required template is missing or unreadable unless the caller is explicitly in a first-run/default-materialization path.
+Prompt text is loaded from the user-owned Chariox prompt registry under `~/.chariox/prompts`. The source tree may ship default templates, but those defaults are materialized into that registry and then read from disk. New prompt text should be added as a named template file, not as hardcoded Rust or TypeScript string literals. Template loading should fail loudly when a required template is missing or unreadable unless the caller is explicitly in a first-run/default-materialization path.
 
-The registry layout is intentionally ordinary markdown so later Arroba Cloud editing can operate on the same file model:
+The registry layout is intentionally ordinary markdown so later Chariox Cloud editing can operate on the same file model:
 
 ```text
-~/.arroba/prompts/
+~/.chariox/prompts/
   runtime/base.md
   runtime/workspace-live-sync.md
   runtime/native-permissions.md
@@ -587,10 +587,10 @@ Live drills against the installed provider harnesses confirmed OpenCode and Clau
 
 Visibility rules:
 
-- Arroba prompt blobs, terminal prompt history, and native TUI prompt input must show only `visible_user_prompt`.
-- Arroba must not implement hidden context by visibly prepending instructions and redacting them later.
+- Chariox prompt blobs, terminal prompt history, and native TUI prompt input must show only `visible_user_prompt`.
+- Chariox must not implement hidden context by visibly prepending instructions and redacting them later.
 - The manifest may be stored for audit/debug, but hidden prompt body text should not be rendered in prompt UI.
-- Provider-local histories may still expose provider-native hidden context. Codex history APIs, OpenCode message records, and Claude transcripts can all persist their hidden/system context internally; Arroba can keep its own UI clean but cannot make provider-local storage opaque.
+- Provider-local histories may still expose provider-native hidden context. Codex history APIs, OpenCode message records, and Claude transcripts can all persist their hidden/system context internally; Chariox can keep its own UI clean but cannot make provider-local storage opaque.
 
 Workflow prompt assembly keeps three semantic layers distinct:
 
@@ -600,25 +600,25 @@ Workflow prompt assembly keeps three semantic layers distinct:
 
 Those layers should only be deduplicated when the assembled text is literally identical after template expansion. Endpoint prompt and workflow/node prompts are not duplicate channels.
 
-Utility prompts such as commit-message generation, semantic recall/history, and vault-related calls use the same assembly service and focused provider run. Arroba should not start a separate provider conversation just to run a utility prompt unless the user explicitly requests that execution model.
+Utility prompts such as commit-message generation, semantic recall/history, and vault-related calls use the same assembly service and focused provider run. Chariox should not start a separate provider conversation just to run a utility prompt unless the user explicitly requests that execution model.
 
-The live validation path for this boundary is `pnpm --filter @arroba/cli run prompt-assembly:drill`. It runs real Codex, OpenCode, and Claude turns through the kernel with an edited temporary prompt registry, verifies the provider can use the hidden registry token, and verifies Arroba user-prompt history remains visible-prompt only.
+The live validation path for this boundary is `pnpm --filter @chariox/cli run prompt-assembly:drill`. It runs real Codex, OpenCode, and Claude turns through the kernel with an edited temporary prompt registry, verifies the provider can use the hidden registry token, and verifies Chariox user-prompt history remains visible-prompt only.
 
 ### 5.3.2 Native TUI Client Interface
 
-Some agents can be launched through a provider-native TUI client interface, for example `arroba codex [session-ref]`, `arroba opencode [session-ref]`, or `arroba claude [session-ref]`.
+Some agents can be launched through a provider-native TUI client interface, for example `chariox codex [session-ref]`, `chariox opencode [session-ref]`, or `chariox claude [session-ref]`.
 
 Boundary rules:
 
-- the kernel still owns the Arroba session, top-level agent, provider run, prompt history, output fanout, and active/idle state
+- the kernel still owns the Chariox session, top-level agent, provider run, prompt history, output fanout, and active/idle state
 - the provider TUI owns provider-native parameter controls and display semantics
 - the native TUI launcher is responsible for starting the provider UI process and local provider-facing proxy needed by that provider
 - the relay remains transport-only; it must not inspect or own provider-native traffic
-- Arroba clients must not mutate model/variant for a provider run marked `native_tui`
+- Chariox clients must not mutate model/variant for a provider run marked `native_tui`
 
 Remote native TUI mode is a composition of the existing local native TUI and
 remote leased-agent architectures. The home kernel remains the only session
-authority. Provider TUIs and Arroba TUIs attach to the home session, submit
+authority. Provider TUIs and Chariox TUIs attach to the home session, submit
 prompts through the home prompt path, and observe home session output. The home
 kernel dispatches execution to the worker through the existing leased-agent
 relay protocol. The worker kernel launches and drives the provider through the
@@ -627,7 +627,7 @@ provider-native proxy code is only an edge translator between home-kernel
 session events and provider-native UI protocol or PTY rendering; it must not
 own prompt state, history, permissions, attachments, or remote execution.
 Provider-native permission prompts follow the same rule: a provider request
-creates one kernel-owned `RuntimeInteraction`, projected to all Arroba clients,
+creates one kernel-owned `RuntimeInteraction`, projected to all Chariox clients,
 and provider-native approval replies are routed back to that interaction where
 the provider seam allows it.
 Provider-native Claude credential enrollment uses the same authority boundary.
@@ -640,7 +640,7 @@ callback only to the waiting helper. Callback-bearing requests and responses
 bypass command-result caching, and callback values never enter session state or
 event projection. Hosted `Service` identities are denied every other kernel
 request. Cloud and relay remain outside the encrypted provider URL and
-callback payload. This is an official Claude CLI callback bridge, not an Arroba
+callback payload. This is an official Claude CLI callback bridge, not a Chariox
 OAuth or PKCE implementation.
 Codex/OpenCode use provider protocol proxies where available. Claude Code uses
 a kernel-owned remote-rendered PTY because Claude Code's public integration
@@ -648,7 +648,7 @@ surface is terminal-first rather than a separable app-server protocol.
 Claude hidden prompt context for native TUI runs is delivered through Claude
 Code's `UserPromptSubmit` hook `additionalContext` response. Local launchers and
 worker kernels answer a scoped hook context request with the same granted-skill
-prompt context used by normal Arroba provider runs, while keeping that context
+prompt context used by normal Chariox provider runs, while keeping that context
 out of visible PTY input and native TUI transcript rendering.
 
 Managed Claude native interfaces keep fullscreen PTY redraw bytes separate from
@@ -665,16 +665,16 @@ TUI clients must not attach directly to a slice kernel for the product path.
 
 ### 5.3.3 OpenCode Structured Adapter
 
-OpenCode is the first provider where Arroba intentionally prefers a structured local provider protocol over PTY-only inference.
+OpenCode is the first provider where Chariox intentionally prefers a structured local provider protocol over PTY-only inference.
 
 Target runtime flow:
 
 - daemon launches `opencode serve` in the assigned worktree or workspace context
 - daemon waits for the local OpenCode server health endpoint
-- daemon creates or binds an OpenCode session for the Arroba provider run
+- daemon creates or binds an OpenCode session for the Chariox provider run
 - daemon submits prompts through the OpenCode session API
 - daemon subscribes to the OpenCode SSE event stream
-- daemon maps OpenCode session/message events into Arroba prompt lifecycle, notices, and client-facing output
+- daemon maps OpenCode session/message events into Chariox prompt lifecycle, notices, and client-facing output
 
 Target signal mapping:
 
@@ -726,7 +726,7 @@ Cryptographic context is session-scoped. A key compromise in one session must no
 
 ## 7.1 Dual Memory Model
 
-Arroba memory has two scopes:
+Chariox memory has two scopes:
 
 - short-term memory: recent transcript/task continuity
 - long-term memory: durable user/project guidance
@@ -734,11 +734,11 @@ Arroba memory has two scopes:
 ## 7.2 Memory Update Mechanism
 
 Daemon may call `request_memory_update` to refresh memory-relevant signals after provider compaction/reset or before transfer.
-Daemon may call `request_compaction_summary` during user-triggered Arroba compaction before starting a fresh warmed run.
+Daemon may call `request_compaction_summary` during user-triggered Chariox compaction before starting a fresh warmed run.
 
 Fallback:
 
-- if unsupported, daemon continues with Arroba-managed memory sources
+- if unsupported, daemon continues with Chariox-managed memory sources
 - memory refresh failure must not terminate provider run
 
 ## 7.3 Context Transfer Package
@@ -757,10 +757,10 @@ Requirements:
 
 ## 7.4 Extension Architecture
 
-Arroba manages extensions in two phases:
+Chariox manages extensions in two phases:
 
 - install: register an extension on the machine
-- bind: make that extension available to a top-level Arroba-managed agent or provider run
+- bind: make that extension available to a top-level Chariox-managed agent or provider run
 
 The daemon owns:
 
@@ -772,16 +772,16 @@ The daemon owns:
 
 Provider-native subagents are not separate extension targets; they inherit whatever their parent top-level provider run can access.
 
-### 7.5 Arroba-Driven Context Compaction
+### 7.5 Chariox-Driven Context Compaction
 
-Arroba provides a user-triggered compaction command: `/compact`.
+Chariox provides a user-triggered compaction command: `/compact`.
 
 Compaction sequence:
 
 1. daemon requests compaction summary via `request_compaction_summary`
 2. daemon stores summary as a session artifact/memory input
 3. daemon launches fresh provider run with empty context window
-4. daemon warms new run with compaction summary + selected Arroba memory/workspace context
+4. daemon warms new run with compaction summary + selected Chariox memory/workspace context
 
 This flow is daemon-orchestrated and separate from ordinary user prompt traffic.
 
@@ -795,7 +795,7 @@ Mandatory behavior:
 - workflow node failure propagation and retry policy MUST remain daemon-owned and explicit
 - workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
 - unsupported provider versions emit compatibility warnings but retain best-effort `/<provider> ...` completions
-- provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Arroba to take ownership of provider credentials
+- provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Chariox to take ownership of provider credentials
 - relay-mediated remote attachment must not change daemon authority over sessions, provider runs, or workflow state
 
 ## 9. Deployment and Evolution Notes
@@ -869,9 +869,9 @@ Current local runtime note:
 
 - M2 baseline: PTY-launched OpenCode wrapper path
 - current M3 direction: daemon-launched `opencode serve` plus local HTTP/SSE adapter
-- current implementation launches Arroba-owned OpenCode provider processes rather than attaching managed runtime sessions to external OpenCode endpoints
+- current implementation launches Chariox-owned OpenCode provider processes rather than attaching managed runtime sessions to external OpenCode endpoints
 - adapter-owned OpenCode session/event handling should remain behind daemon/provider abstractions so later providers can still use PTY or their own structured surfaces without changing client contracts
-- OpenCode remains the only agent-side structured transport that Arroba is currently tightening closely against; a generic agent WebSocket protocol is intentionally deferred until more agent integrations exist
+- OpenCode remains the only agent-side structured transport that Chariox is currently tightening closely against; a generic agent WebSocket protocol is intentionally deferred until more agent integrations exist
 
 ### 10.7 Governance
 
@@ -879,7 +879,7 @@ Implementation choices should be revised when they materially change runtime arc
 
 ### 10.8 Cross-Platform Terminal Consistency Strategy
 
-Arroba should use a shared terminal behavior contract while allowing platform-native implementation languages.
+Chariox should use a shared terminal behavior contract while allowing platform-native implementation languages.
 
 Approach:
 

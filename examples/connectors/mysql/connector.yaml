@@ -18,7 +18,7 @@ operations:
           type: integer
       additionalProperties: false
     config:
-      connection_url: mysql://127.0.0.1:3306/arroba
+      connection_url: mysql://127.0.0.1:3306/chariox
       query: "select id, email from users where id = ?"
       params:
         - "{{id}}"

@@ -58,7 +58,7 @@ export class McpClientProcess {
     const result = await this.request('initialize', {
       protocolVersion: '2024-11-05',
       capabilities: {},
-      clientInfo: { name: 'arroba-mcp-isolation-spike', version: '0.0.0' },
+      clientInfo: { name: 'chariox-mcp-isolation-spike', version: '0.0.0' },
     })
     this.notify('notifications/initialized')
     return result

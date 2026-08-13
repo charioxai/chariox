@@ -1,8 +1,8 @@
 # Event publication deployment
 
 This directory is a cross-repository local rehearsal while the dedicated
-Hetzner hosts are unavailable. It expects `arroba-aeds` and each
-`arroba-aegs-<provider>` checkout beside this OSS checkout. The services use
+Hetzner hosts are unavailable. It expects `chariox-aeds` and each
+`chariox-aegs-<provider>` checkout beside this OSS checkout. The services use
 separate identities, secrets, networks, limits, and durable data volumes. Host
 ports bind to loopback.
 
@@ -28,11 +28,11 @@ plain `docker compose up` starts only AEDS and cannot accidentally launch the
 whole integration matrix.
 
 `prepare-secrets.sh` also pins the selected loopback host ports in the ignored
-compose `.env` file. Set `ARROBA_AEDS_KERNEL_PORT`,
-`ARROBA_AEDS_PRODUCER_PORT`, `ARROBA_DUMMY_AEGS_PORT`,
-`ARROBA_GITHUB_AEGS_PORT`, `ARROBA_JIRA_AEGS_PORT`,
-`ARROBA_LINEAR_AEGS_PORT`, `ARROBA_GITLAB_AEGS_PORT`,
-`ARROBA_SENTRY_AEGS_PORT`, or `ARROBA_SLACK_AEGS_PORT` before running it when
+compose `.env` file. Set `CHARIOX_AEDS_KERNEL_PORT`,
+`CHARIOX_AEDS_PRODUCER_PORT`, `CHARIOX_DUMMY_AEGS_PORT`,
+`CHARIOX_GITHUB_AEGS_PORT`, `CHARIOX_JIRA_AEGS_PORT`,
+`CHARIOX_LINEAR_AEGS_PORT`, `CHARIOX_GITLAB_AEGS_PORT`,
+`CHARIOX_SENTRY_AEGS_PORT`, or `CHARIOX_SLACK_AEGS_PORT` before running it when
 the defaults are occupied.
 Subsequent compose rebuilds and restarts continue using those same ports.
 
@@ -40,10 +40,10 @@ Configure a local kernel after replacing `<stable-kernel-id>` in
 `secrets/aeds-kernel-tokens.json` with that kernel's persisted daemon identity:
 
 ```sh
-export ARROBA_AEDS_URL=ws://127.0.0.1:43130
-export ARROBA_AEDS_TOKEN="$(<secrets/local-kernel-token)"
-export ARROBA_EVENT_ENVIRONMENT_ID=local-container
-export ARROBA_AEGS_MANAGEMENT_TARGETS_FILE="$PWD/secrets/kernel-aegs-management-targets.json"
+export CHARIOX_AEDS_URL=ws://127.0.0.1:43130
+export CHARIOX_AEDS_TOKEN="$(<secrets/local-kernel-token)"
+export CHARIOX_EVENT_ENVIRONMENT_ID=local-container
+export CHARIOX_AEGS_MANAGEMENT_TARGETS_FILE="$PWD/secrets/kernel-aegs-management-targets.json"
 ```
 
 The synthetic deployment drill uses `local-container-kernel`; a real kernel always
@@ -68,13 +68,13 @@ cross-machine failure gates in the implementation plan.
 Create a consistent AEDS backup through the private AEDS repository:
 
 ```sh
-../../../arroba-aeds/deploy/backup.sh
+../../../chariox-aeds/deploy/backup.sh
 ```
 
 Restore an owned backup after checking its SHA-256 sidecar:
 
 ```sh
-../../../arroba-aeds/deploy/restore.sh --yes aeds-YYYYMMDDTHHMMSSZ.db
+../../../chariox-aeds/deploy/restore.sh --yes aeds-YYYYMMDDTHHMMSSZ.db
 ```
 
 Both scripts resolve the Compose-owned AEDS volume by labels and refuse an
@@ -103,7 +103,7 @@ node ./hetzner-acceptance.mjs \
   --aeds-host root@aeds.example \
   --aegs-host root@aegs.example \
   --relay-host root@relay.example \
-  --ssh-key ~/.ssh/arroba_event_staging \
+  --ssh-key ~/.ssh/chariox_event_staging \
   --aeds-url https://aeds.example \
   --aegs-url https://github-events.example
 ```

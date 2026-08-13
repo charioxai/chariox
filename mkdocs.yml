@@ -1,5 +1,5 @@
-site_name: Arroba Docs
-site_description: User-facing documentation for Arroba
+site_name: Chariox Docs
+site_description: User-facing documentation for Chariox
 docs_dir: docs-site
 site_dir: site
 theme:

@@ -1,4 +1,4 @@
-# Arroba v1 Protocol
+# Chariox v1 Protocol
 
 ## Status
 
@@ -32,7 +32,7 @@ Target direction:
 ## 2. Design Principles
 
 - preserve native provider interaction semantics, using PTY passthrough where required and structured local provider protocols where they are stronger and officially supported
-- reserve `/...` as the Arroba command namespace
+- reserve `/...` as the Chariox command namespace
 - keep structured control surface intentionally small
 - isolate capability/control errors from terminal stream
 - ensure all user-generated in-transit payloads are session-E2E encrypted on remote transport, including prompts, workflow inputs/outputs, and transferred/attached artifacts
@@ -51,7 +51,7 @@ Current sequencing note:
 - protocol and adapter boundaries should stay future-compatible, but they should not be generalized prematurely at the expense of finishing the OpenCode-first runtime
 - web/mobile clients come before multi-provider expansion in the current rollout order
 - same-kernel remote clients should fit the same kernel-owned protocol rather than a separate remote-only API
-- same-kernel remote agents remain part of the architecture, but their generic transport contract is intentionally deferred until Arroba has integrated more than one concrete agent family
+- same-kernel remote agents remain part of the architecture, but their generic transport contract is intentionally deferred until Chariox has integrated more than one concrete agent family
 
 ## 2.1 Node Roles
 
@@ -75,8 +75,8 @@ Purpose:
 Semantics:
 
 - byte-stream-like behavior
-- no requirement for structured parse by Arroba for ordinary non-command traffic
-- for providers with structured event streams, Arroba MAY render provider output into the client terminal without treating PTY bytes as the source of truth for turn lifecycle
+- no requirement for structured parse by Chariox for ordinary non-command traffic
+- for providers with structured event streams, Chariox MAY render provider output into the client terminal without treating PTY bytes as the source of truth for turn lifecycle
 - for same-kernel remote clients, the terminal lane should still be kernel-routed; relay changes the path, not the workspace authority
 
 Suggested events:
@@ -86,7 +86,7 @@ Suggested events:
 - `terminal.resize`
 
 `terminal.resize` carries the session id, dimensions, and an optional provider-run id. General
-Arroba clients may omit the provider-run id to resize the session's active run. Provider-native
+Chariox clients may omit the provider-run id to resize the session's active run. Provider-native
 clients must target their own provider run so concurrent native terminals cannot resize each
 other. When that run is projected from a leased worker, the home kernel forwards the resize to
 the worker PTY and reports success only after the worker applies the requested dimensions.
@@ -103,7 +103,7 @@ OpenCode-specific note:
 
 Purpose:
 
-- daemon-owned operations invoked from Arroba slash-command dispatch
+- daemon-owned operations invoked from Chariox slash-command dispatch
 
 Suggested request envelope:
 
@@ -135,7 +135,7 @@ Capabilities in v1:
 
 Slash-command routing rules:
 
-- `/...` is parsed by Arroba before PTY forwarding
+- `/...` is parsed by Chariox before PTY forwarding
 - `/<provider> ...` is resolved against the focused provider command catalog
 - ordinary non-command input continues through `terminal.input`
 - unsupported provider versions MAY produce warnings, but MUST NOT disable best-effort `/<provider> ...` completions by default
@@ -150,7 +150,7 @@ Canonical operations in v1:
 
 These operations are not typed by users into ordinary terminal traffic.
 
-Arroba MAY route `/<provider> ...` invocations into the control lane after resolving the focused provider command catalog.
+Chariox MAY route `/<provider> ...` invocations into the control lane after resolving the focused provider command catalog.
 
 OpenCode-specific structured adapter contract:
 
@@ -163,11 +163,11 @@ OpenCode-specific structured adapter contract:
 Provider hidden-context injection contract:
 
 - Prompt submission from the kernel to a provider adapter is conceptually a `PromptEnvelope`, not one concatenated string.
-- `visible_user_prompt` is the only prompt body that may be shown in Arroba prompt blobs, terminal input history, native provider prompt boxes, or user-facing prompt echoes.
-- `hidden_system_context` carries Arroba runtime/system prompt material: runtime instructions, Workspace Live Sync managed/tracked instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
+- `visible_user_prompt` is the only prompt body that may be shown in Chariox prompt blobs, terminal input history, native provider prompt boxes, or user-facing prompt echoes.
+- `hidden_system_context` carries Chariox runtime/system prompt material: runtime instructions, Workspace Live Sync managed/tracked instructions, native permission rules, workflow-level prompts, node-level instructions, granted capability summaries, continuation instructions, and utility-call instructions.
 - `attachments` remain structured prompt attachments and are not used to smuggle hidden system instructions.
 - `manifest` records prompt template ids, template hashes or versions, assembly conditions, and the provider injection channel selected for the turn; the manifest is audit/debug metadata, not prompt UI content.
-- Arroba MUST NOT implement hidden context by prepending text to `visible_user_prompt` and later redacting it from UI surfaces.
+- Chariox MUST NOT implement hidden context by prepending text to `visible_user_prompt` and later redacting it from UI surfaces.
 - The relay MUST treat prompt envelopes as opaque encrypted payloads and MUST NOT inspect, transform, redact, or split visible versus hidden prompt fields.
 
 Provider adapter hidden-context channels:
@@ -176,25 +176,25 @@ Provider adapter hidden-context channels:
 - OpenCode adapters MUST send turn-scoped hidden context through the provider session prompt request `system` field, currently `POST /session/{id}/prompt_async` body `system`.
 - Claude Code adapters MUST send turn-scoped hidden context through the `UserPromptSubmit` hook response `hookSpecificOutput.additionalContext`.
 - If a provider channel is unavailable, the adapter may run without hidden context for that turn or restart the provider process with an initialization-scoped system prompt only when the caller explicitly accepts that behavior; it must not silently fall back to visible prompt injection.
-- Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @arroba/cli run provider-context-injection:drill`.
-- End-to-end prompt assembly changes must also keep `pnpm --filter @arroba/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.arroba/prompts/runtime/base.md`, runs real Arroba provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Arroba user-prompt history does not contain the hidden token.
+- Live provider drills validate direct provider hidden-context channels in current supported harnesses. Prompt assembly changes that touch these channels must keep or update `pnpm --filter @chariox/cli run provider-context-injection:drill`.
+- End-to-end prompt assembly changes must also keep `pnpm --filter @chariox/cli run prompt-assembly:drill` passing. That drill edits a temporary `~/.chariox/prompts/runtime/base.md`, runs real Chariox provider turns for Codex/OpenCode/Claude, verifies the model sees the hidden registry token through the provider-native hidden channel on successive turns, and verifies Chariox user-prompt history does not contain the hidden token.
 
 Prompt template storage:
 
-- Arroba prompt templates are user-owned markdown files under `~/.arroba/prompts`.
+- Chariox prompt templates are user-owned markdown files under `~/.chariox/prompts`.
 - Source-controlled defaults may be materialized there for first run, but runtime assembly reads from the registry path rather than hardcoding prompt text in adapter code.
 - Required templates include runtime base instructions, Workspace Live Sync managed instructions, Workspace Live Sync tracked instructions, native permission instructions, slice runtime instructions, MCP/skill continuation instructions, workflow turn/completion/intermediate-output templates, and utility-call templates.
 - Cloud editing, if introduced later, edits this registry model and must not create a second prompt source of truth.
 
 Provider-local visibility caveat:
 
-- Arroba UI and protocol prompt blobs must hide `hidden_system_context`, but provider-local histories may still store it in provider-native form.
+- Chariox UI and protocol prompt blobs must hide `hidden_system_context`, but provider-local histories may still store it in provider-native form.
 - Current provider harnesses expose hidden context in internal histories/transcripts: Codex history APIs, OpenCode message `info.system`, and Claude transcript `hook_additional_context`.
-- The protocol guarantee is therefore “not visible in Arroba/native prompt input surfaces,” not “unrecoverable from provider-owned local state.”
+- The protocol guarantee is therefore “not visible in Chariox/native prompt input surfaces,” not “unrecoverable from provider-owned local state.”
 
 ## 3.3.1 Agent Endpoint Direction
 
-Longer-term agent runtimes compatible with Arroba should speak a daemon-facing endpoint contract rather than requiring the daemon to launch only local child processes.
+Longer-term agent runtimes compatible with Chariox should speak a daemon-facing endpoint contract rather than requiring the daemon to launch only local child processes.
 
 Required properties:
 
@@ -207,25 +207,25 @@ Existing providers like OpenCode may continue to be adapted through their native
 
 ## 3.3.2 Native TUI Agents
 
-Native TUI agents let a user run a familiar provider CLI UI while the Arroba kernel remains the session authority.
+Native TUI agents let a user run a familiar provider CLI UI while the Chariox kernel remains the session authority.
 
 Current commands:
 
-- `arroba codex [session-ref] [--kernel-port PORT|--kernel-url URL]`
-- `arroba opencode [session-ref] [--kernel-port PORT|--kernel-url URL]`
-- `arroba claude [session-ref] [--kernel-port PORT|--kernel-url URL]`
+- `chariox codex [session-ref] [--kernel-port PORT|--kernel-url URL]`
+- `chariox opencode [session-ref] [--kernel-port PORT|--kernel-url URL]`
+- `chariox claude [session-ref] [--kernel-port PORT|--kernel-url URL]`
 
 Semantics:
 
-- if no session ref is provided, Arroba creates a session and its first native TUI agent
-- if a session ref is provided, Arroba attaches a new top-level native TUI agent to that Arroba session
+- if no session ref is provided, Chariox creates a session and its first native TUI agent
+- if a session ref is provided, Chariox attaches a new top-level native TUI agent to that Chariox session
 - local native TUI launchers default to the web-dev kernel at `ws://127.0.0.1:43119/kernel`; `--kernel-port` selects another local kernel port
 - a native TUI launch never attaches to an existing provider run; every native TUI agent owns its own provider run
-- prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Arroba clients
-- prompts from Arroba clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
+- prompts from the provider TUI are intercepted and submitted through the same kernel prompt path as Chariox clients
+- prompts from Chariox clients are forwarded through the kernel-managed provider run so the provider TUI observes the same turns
 - native TUI provider runs are marked with `client_interface = native_tui`
-- Arroba clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Arroba-side parameter mutation is disabled for the active native TUI run
-- daemon health reports `duplicate_arroba_agent_bindings` when more than one active Arroba provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Arroba and native TUI provider runs are bound to the same session/agent
+- Chariox clients must treat model/variant controls for those runs as provider-controlled; provider-native changes may be recorded when observable, but Chariox-side parameter mutation is disabled for the active native TUI run
+- daemon health reports `duplicate_chariox_agent_bindings` when more than one active Chariox provider run is bound to one session/agent, and `multi_interface_agent_bindings` when active Chariox and native TUI provider runs are bound to the same session/agent
 - daemon health `provider_catalog` reports whether provider/model metadata is cached, expired, and how old it is; clients should surface stale catalog state near provider/session launch diagnostics
 - daemon-tracked provider process listings include PID and best-effort current RSS (`resident_set_bytes`) when the host can read it; clients should surface this beside teardown safety so provider memory pressure is diagnosable without external process tools
 - `ExportDebugBundle { session_id, bundle_label, limit }` is the shared session-scoped debug bundle request for TUI, web, and remote clients. The caller supplies only a session id, optional label, and optional record limit; the kernel filters current structured logs by `session_id`, sanitizes the label, writes `manifest.json` and `logs.ndjson` under its own debug-bundles root, and returns `DebugBundleExported { bundle_dir, manifest_path, logs_path, log_root, record_count, limit }`. Clients must display the returned paths as kernel-machine-local paths and must not send arbitrary output directories.
@@ -234,8 +234,8 @@ Semantics:
 Remote native TUI composition:
 
 - remote native TUI mode MUST compose existing protocol paths rather than create a second prompt/runtime protocol
-- provider-native TUIs and Arroba TUIs attach to the home kernel session through the same client/session attachment semantics used locally
-- provider-native TUI prompts MUST enter the home kernel through the same `SubmitPrompt` path as Arroba prompts
+- provider-native TUIs and Chariox TUIs attach to the home kernel session through the same client/session attachment semantics used locally
+- provider-native TUI prompts MUST enter the home kernel through the same `SubmitPrompt` path as Chariox prompts
 - the home kernel MUST dispatch remote execution through the existing leased-agent relay path (`SubmitLeasedPrompt`, remote prompt attachments, remote MCP/skill checks, and related completion/cancel paths)
 - `ExecutionLeaseCreated` MUST include `relay_peer_protocol_version`; the home kernel must reject a worker that omits it or advertises a lower version before `SpawnLeasedAgent`, so stale remote kernels fail with an upgrade/restart action instead of breaking during provider tool calls
 - the worker kernel MUST talk to the provider through the same kernel-provider adapter/server path used by ordinary worker-owned provider runs
@@ -247,24 +247,24 @@ Remote native TUI composition:
 - relay peer protocol v10 forwards provider-targeted terminal resizes to leased worker PTYs. The worker validates that the requested provider run belongs to the leased agent and acknowledges the applied dimensions; the home kernel does not report a remote resize as successful before that acknowledgement.
 - the provider-native proxy/launcher MAY translate home-kernel session output back into provider-native UI protocol or PTY rendering, but it must not become a session authority or bypass the home kernel prompt queue
 - the relay remains transport-only and must not inspect or transform provider-native prompts, outputs, attachments, permissions, or history
-- slice-backed native TUI mode follows the same contract: provider TUIs and Arroba TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
+- slice-backed native TUI mode follows the same contract: provider TUIs and Chariox TUIs attach to the home kernel session, `slice_ref` selects a home-managed worker execution environment, and the slice worker uses the same worker-owned provider adapter/server path as remote leased agents
 
 Native TUI MCP and skill placement:
 
 - local native TUI provider runs use the same agent-scoped grant filtering as ordinary local provider runs, so only MCPs and skills granted to that agent are injected or rendered for that run
 - standard home-worker native TUI may expose home-authorized remote extension manifests to the worker. Home-owned active extensions remain grant/revoke authoritative on the home kernel and execute on home through relay peer calls; the worker only advertises the manifest and forwards calls. Each forwarded call carries `invocation_id`, optional `provider_tool_call_id`, `attempt`, and optional `idempotency_key`; home reconstructs the current tool definition before execution and rejects stale or forged worker metadata, including calls from a worker provider run that is not the current remote binding.
 - when an extension is explicitly worker-local, the home kernel may still compute grant-derived remote MCP requirements and pass those requirements to the worker launch/prompt path so the worker can fail fast on missing or mismatched local worker definitions before provider execution
-- slice-backed native TUI may synchronize Arroba skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
-- slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Arroba vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
+- slice-backed native TUI may synchronize Chariox skill packages from the home kernel to the child worker because the slice is home-managed; this is not a general remote-machine install mechanism
+- slice-backed native TUI still executes worker-local MCP commands on the worker side, so worker-local MCP commands and environment must be available in the slice image or injected slice environment; Chariox vault credentials remain home-owned and are exposed to slice workers only through home-authorized credential proxy calls and one-operation secret injection
 - capability grants remain agent-scoped in all modes; native TUI launch must not expose ungranted local/user MCPs or skills just because the provider CLI can see them natively
 
 Native TUI permissions:
 
 - provider-native permission requests MUST be represented as one agent-scoped, kernel-owned `RuntimeInteraction`
-- that interaction MUST be projected to every Arroba TUI attached to the session, regardless of whether the current turn was submitted from an Arroba TUI or provider-native TUI
-- answering from an Arroba TUI resolves the kernel interaction and the provider adapter/proxy forwards the resulting decision to the provider
+- that interaction MUST be projected to every Chariox TUI attached to the session, regardless of whether the current turn was submitted from a Chariox TUI or provider-native TUI
+- answering from a Chariox TUI resolves the kernel interaction and the provider adapter/proxy forwards the resulting decision to the provider
 - where a provider-native TUI can submit an approval response through a stable proxy or hook seam, the native response MUST resolve the same kernel interaction rather than bypassing it; first valid resolution wins
-- if the provider only exposes the approval through a rendered PTY, Arroba may detect the rendered prompt and create the kernel interaction, then inject the resulting decision back into the PTY using the provider's native selection semantics
+- if the provider only exposes the approval through a rendered PTY, Chariox may detect the rendered prompt and create the kernel interaction, then inject the resulting decision back into the PTY using the provider's native selection semantics
 
 Provider-native credential enrollment callback bridge (local daemon protocol 241):
 
@@ -275,32 +275,32 @@ Provider-native credential enrollment callback bridge (local daemon protocol 241
 - the helper sends the provider authorization URL inside the encrypted kernel payload. Cloud and the transport-only relay receive no provider URL or callback content
 - the kernel creates one ordinary agent-scoped `RuntimeInteraction` containing the authorization URL, a `Cancel` choice, and a custom choice whose `input_kind` is `secret`. Every attached web or TUI client receives the same interaction, and the first valid response wins
 - cancel and timeout return terminal status without a callback. A submitted callback is returned only in the awaiting helper response; it is not stored in session state, projected as an event, included in command payload logging, or entered in the in-memory or persistent command-result cache
-- this bridge drives the official Claude CLI callback seam only. Arroba does not implement OAuth authorization, token exchange, PKCE generation, or provider credential storage
+- this bridge drives the official Claude CLI callback seam only. Chariox does not implement OAuth authorization, token exchange, PKCE generation, or provider credential storage
 
 Native TUI hidden context:
 
-- granted skill prompt context and other Arroba-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
+- granted skill prompt context and other Chariox-only prompt injections MUST be delivered on the provider-facing path without becoming visible provider-TUI text
 - Codex native TUI hidden context MUST use the same Codex turn-scoped `developer_instructions` channel as ordinary Codex provider runs
 - OpenCode native TUI hidden context MUST use the same OpenCode prompt request `system` field as ordinary OpenCode provider runs
-- Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Arroba CLI bridge or worker kernel writes the matching context response before the hook returns
+- Claude Code native TUI MUST use the `UserPromptSubmit` hook `additionalContext` path for hidden context; the hook emits a scoped context request id, and the Chariox CLI bridge or worker kernel writes the matching context response before the hook returns
 - Claude hook context responses are scoped to the session, agent, and provider run; they must not expose broad kernel authority or accept arbitrary provider-origin file paths
-- if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Arroba MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
+- if a Claude hook context response is unavailable before timeout, the provider-facing hidden context is empty and the native TUI remains coherent; Chariox MUST NOT fall back to visible PTY prompt injection for skill bodies or system prompt blocks
 - local Claude native TUI can answer hook context requests through the launcher bridge and home kernel; remote/slice Claude native TUI answers them on the provider-execution side so worker-local or slice-isolated skill material is used
 
 Provider-specific transport:
 
-- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Arroba provider run.
+- Codex uses a native WebSocket proxy in front of a Codex app-server endpoint and binds the observed Codex thread to the Chariox provider run.
 - OpenCode uses a native HTTP proxy in front of a launcher-managed `opencode serve` endpoint. The kernel binds its provider run to the proxy endpoint, while the provider TUI attaches to the same proxy/provider session.
-- Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Arroba session.
+- Claude Code has no stable provider UI/server split. Local and remote native TUI mode therefore use a kernel-owned PTY: the provider process runs where execution belongs, and the launcher streams/render-controls that PTY while the kernel projects prompts, output, attachments, status, and supported interactions back into the Chariox session.
 
 ## 3.3.3 Metaagent Event Prompts
 
-Metaagent event notifications are Arroba runtime-origin prompts. They are not
+Metaagent event notifications are Chariox runtime-origin prompts. They are not
 hidden provider context, and adapters MUST NOT deliver them through hidden
 system/developer channels. The visible prompt text should identify the message
-as an Arroba runtime event, summarize what happened, and point the metaagent to
-`arroba.meta.read_event`, `arroba.meta.turn_overview`, or
-`arroba.meta.turn_blob` for detail payloads that are too large for the prompt.
+as a Chariox runtime event, summarize what happened, and point the metaagent to
+`chariox.meta.read_event`, `chariox.meta.turn_overview`, or
+`chariox.meta.turn_blob` for detail payloads that are too large for the prompt.
 
 Each recorded event carries prompt-delivery state so a reconnecting metaagent
 can reconstruct what happened:
@@ -316,8 +316,8 @@ Provider-specific delivery behavior:
 
 - Codex: event prompts use the ordinary visible user-prompt path for the bound
   Codex thread. If the Codex run is active and supports same-turn steering,
-  Arroba may mark the event `steered`; otherwise the prompt remains queued and
-  visible in Arroba prompt history.
+  Chariox may mark the event `steered`; otherwise the prompt remains queued and
+  visible in Chariox prompt history.
 - OpenCode: event prompts use the provider session prompt API as visible
   prompt content. Hidden `system` context remains reserved for runtime
   instructions and MUST NOT carry event notifications. OpenCode event-stream
@@ -325,7 +325,7 @@ Provider-specific delivery behavior:
 - Claude Code: event prompts are submitted through the same visible prompt path
   used for user turns. `UserPromptSubmit.additionalContext` remains reserved for
   hidden context such as skill bodies and MUST NOT carry event notifications.
-  When Claude is exposed through a kernel-owned PTY, Arroba may render or steer
+  When Claude is exposed through a kernel-owned PTY, Chariox may render or steer
   the visible event prompt through that PTY only as provider-visible prompt
   input, not as a hidden hook response.
 
@@ -394,7 +394,7 @@ Transport scope (current definition):
 
 Current implementation notes:
 
-- the TypeScript CLI now defaults to `ws://127.0.0.1:${ARROBA_KERNEL_PORT:-43118}/kernel`
+- the TypeScript CLI now defaults to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel`
 - the Rust daemon process hosts that WebSocket listener directly
 - the older Unix-socket local IPC path still exists for daemon harnessing/tests and compatibility shims, but it is no longer the primary CLI transport
 - the current wire shape now supports request/response plus pushed kernel events over one long-lived connection
@@ -503,7 +503,7 @@ Architectural note:
 Current local runtime note:
 
 - the primary local CLI implementation is now a TypeScript OpenTUI client
-- `arroba-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
+- `chariox-cli` currently launches that TypeScript client through a small Rust compatibility wrapper
 - the Unix-socket local transport remains useful for daemon smoke coverage and compatibility shims, but it is no longer the primary local user path
 
 Current slice-management surface:
@@ -518,7 +518,7 @@ Current slice-management surface:
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
-- Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, and `slice.backup.create` creates a separate backup plus manual swap instructions. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Arroba slice state root. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
+- Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, and `slice.backup.create` creates a separate backup plus manual swap instructions. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
 - `slice.create.from_saved_state` may reference an existing saved-state id/name. Local Docker restore uses the saved image tag instead of the configured base image and extracts the saved home archive into the fresh slice home volume before normal provisioning continues. Restore still allocates fresh ports, relay identity, and worker identity through the normal slice start path.
 
 Current session-lifecycle note:
@@ -609,7 +609,7 @@ Deferred agent-endpoint note:
 
 - OpenCode remains adapter-owned and continues to use native local HTTP control plus SSE events
 - managed vs external OpenCode endpoint binding is the current agent-endpoint abstraction boundary in code
-- a generic WebSocket transport for agent endpoints is explicitly deferred until after Arroba has integrated more than one agent family and can derive a better common denominator from real integrations
+- a generic WebSocket transport for agent endpoints is explicitly deferred until after Chariox has integrated more than one agent family and can derive a better common denominator from real integrations
 
 Planned extension metadata fields:
 
@@ -670,10 +670,10 @@ Published workflow direction:
   publication runtime session.
 - v1 Cloud deployment supports two backend modes:
   - `local_runtime`: a public publication ingress routes to a user's local
-    `arroba serve` process over an outbound connector
+    `chariox serve` process over an outbound connector
   - `hosted_container`: a public publication ingress routes to one Docker
     container per deployment on the publication runner
-- Scalingo-hosted Arroba Cloud APIs own deployment records and control commands
+- Scalingo-hosted Chariox Cloud APIs own deployment records and control commands
   only. Runtime publication traffic should terminate at the dedicated
   publication ingress and route from there to the active backend.
 
@@ -700,7 +700,7 @@ Publication deployment record:
 - `last_error`
 
 Deployment records are operational metadata. They must not contain provider
-auth secrets, Arroba Cloud user session credentials, workflow prompt payloads,
+auth secrets, Chariox Cloud user session credentials, workflow prompt payloads,
 artifacts, outputs, or traces.
 
 Public deployment URL contract:
@@ -709,9 +709,9 @@ Public deployment URL contract:
 - `GET /` opens the human/browser-compatible viewer or form
 - `GET /<prompt>` invokes `human_http` with an address-bar prompt path
 - `POST /invoke` invokes `api_sse_json`
-- `/.well-known/arroba/publication/ws` invokes `websocket_json`
+- `/.well-known/chariox/publication/ws` invokes `websocket_json`
 - `POST /mcp` invokes the MCP publication endpoint
-- `GET /.well-known/arroba/publication/status` returns publication status
+- `GET /.well-known/chariox/publication/status` returns publication status
 
 The external contract is the same for `local_runtime` and `hosted_container`.
 The caller should not infer execution location from the URL.
@@ -800,7 +800,7 @@ Human HTTP renderable output:
 
 Remote terminal and Cloud invocation:
 
-- remote Arroba terminals must invoke a published workflow through its published
+- remote Chariox terminals must invoke a published workflow through its published
   transport, not by directly calling the workflow endpoint in the kernel
 - when a local-only published workflow is invoked remotely, the kernel/relay may
   tunnel the transport request and response between the remote terminal and the
@@ -817,7 +817,7 @@ Remote terminal and Cloud invocation:
   unavailable responses: human HTTP unavailable page, API SSE structured
   unavailable event/error, WebSocket close reason, and MCP structured error.
 - Hosted containers receive scoped deployment/runtime identity only. They must
-  not receive a general Arroba Cloud user account token.
+  not receive a general Chariox Cloud user account token.
 - Publication images and packages must not include provider credentials. Real
   provider hosted-container validation may use a staging credential profile
   mounted by the runner; arbitrary-user provider login and credential onboarding

@@ -123,8 +123,8 @@ export class SecretHandoffHarness {
         timestamp,
       ].join("\n")
       const signature = createHmac("sha256", secret).update(canonical).digest("hex")
-      requestHeaders[credential.injection.timestamp_header ?? "x-arroba-timestamp"] = timestamp
-      requestHeaders[credential.injection.signature_header ?? "x-arroba-signature"] = signature
+      requestHeaders[credential.injection.timestamp_header ?? "x-chariox-timestamp"] = timestamp
+      requestHeaders[credential.injection.signature_header ?? "x-chariox-signature"] = signature
     } else {
       throw new Error(`unsupported injection kind for ${credential_id}`)
     }

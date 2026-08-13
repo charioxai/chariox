@@ -1,6 +1,6 @@
 # Kernel-CLI Protocol
 
-This page describes the current local protocol between the Arroba Kernel and the TypeScript CLI.
+This page describes the current local protocol between the Chariox Kernel and the TypeScript CLI.
 
 It reflects the current implementation, not the long-term remote/federated design.
 
@@ -18,7 +18,7 @@ The primary local transport is a WebSocket connection from the CLI to the kernel
 
 Default endpoint:
 
-- `ws://127.0.0.1:${ARROBA_KERNEL_PORT}/kernel`
+- `ws://127.0.0.1:${CHARIOX_KERNEL_PORT}/kernel`
 
 The CLI still retains compatibility fallback logic for the older local socket path, but the main path is WebSocket and event-driven.
 
@@ -111,8 +111,8 @@ Request payload:
 ```json
 {
   "GetWorkspaceGitOverview": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "compare_ref": "origin/main"
   }
 }
@@ -124,10 +124,10 @@ Response payload:
 {
   "WorkspaceGitOverview": {
     "overview": {
-      "workspace_id": "/Users/miguel/arroba",
-      "worktree_id": "/Users/miguel/arroba",
-      "repo_root": "/Users/miguel/arroba",
-      "repo_label": "mgutierrez09/arroba",
+      "workspace_id": "/Users/miguel/chariox",
+      "worktree_id": "/Users/miguel/chariox",
+      "repo_root": "/Users/miguel/chariox",
+      "repo_label": "mgutierrez09/chariox",
       "branch": "main",
       "compare_ref": "origin/main",
       "compare_refs": [
@@ -156,8 +156,8 @@ Request payload:
 ```json
 {
   "ListWorkspaceFiles": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "path_prefix": "apps/kernel",
     "compare_ref": "origin/main",
     "limit": 500
@@ -171,8 +171,8 @@ Response payload:
 {
   "WorkspaceFilesListed": {
     "listing": {
-      "workspace_id": "/Users/miguel/arroba",
-      "worktree_id": "/Users/miguel/arroba",
+      "workspace_id": "/Users/miguel/chariox",
+      "worktree_id": "/Users/miguel/chariox",
       "path_prefix": "apps/kernel",
       "compare_ref": "origin/main",
       "total_entries": 42,
@@ -199,8 +199,8 @@ File content request payload:
 ```json
 {
   "GetWorkspaceFileContent": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "path": "apps/kernel/src/runtime/router.rs",
     "compare_ref": "origin/main",
     "known_fingerprint": "optional-last-fingerprint",
@@ -217,8 +217,8 @@ Response payload:
 {
   "WorkspaceFileContent": {
     "content": {
-      "workspace_id": "/Users/miguel/arroba",
-      "worktree_id": "/Users/miguel/arroba",
+      "workspace_id": "/Users/miguel/chariox",
+      "worktree_id": "/Users/miguel/chariox",
       "path": "apps/kernel/src/runtime/router.rs",
       "name": "router.rs",
       "language": "rust",
@@ -245,8 +245,8 @@ Not-modified response payload:
 ```json
 {
   "WorkspaceFileContentNotModified": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "path": "apps/kernel/src/runtime/router.rs",
     "fingerprint": "sha256-of-path-size-mtime",
     "generated_at_ms": 1778080000200
@@ -272,8 +272,8 @@ Run agent utility request:
     "kind": "WorkspaceCommitMessage",
     "input": {
       "WorkspaceCommitMessage": {
-        "workspace_id": "/Users/miguel/arroba",
-        "worktree_id": "/Users/miguel/arroba",
+        "workspace_id": "/Users/miguel/chariox",
+        "worktree_id": "/Users/miguel/chariox",
         "compare_ref": "origin/main"
       }
     }
@@ -307,8 +307,8 @@ Generate commit message request:
 ```json
 {
   "GenerateWorkspaceCommitMessage": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "compare_ref": "origin/main",
     "session_id": "session-id",
     "agent_id": "agent-id"
@@ -331,8 +331,8 @@ Commit request:
 ```json
 {
   "CommitWorkspaceChanges": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "message": "Update workspace git panel"
   }
 }
@@ -343,8 +343,8 @@ Push request:
 ```json
 {
   "PushWorkspaceBranch": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "force_with_lease": false
   }
 }
@@ -355,8 +355,8 @@ Commit-and-push request:
 ```json
 {
   "CommitAndPushWorkspaceChanges": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox",
     "message": "Update workspace git panel"
   }
 }
@@ -367,8 +367,8 @@ Delete worktree request:
 ```json
 {
   "DeleteWorkspaceWorktree": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba-feature",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox-feature",
     "force": false
   }
 }
@@ -379,8 +379,8 @@ Create pull request request:
 ```json
 {
   "CreateWorkspacePullRequest": {
-    "workspace_id": "/Users/miguel/arroba",
-    "worktree_id": "/Users/miguel/arroba-feature",
+    "workspace_id": "/Users/miguel/chariox",
+    "worktree_id": "/Users/miguel/chariox-feature",
     "title": "Update workspace git panel",
     "body": "Optional pull request body",
     "base_ref": "main",
@@ -395,8 +395,8 @@ Git action response:
 {
   "WorkspaceGitActionCompleted": {
     "result": {
-      "workspace_id": "/Users/miguel/arroba",
-      "worktree_id": "/Users/miguel/arroba",
+      "workspace_id": "/Users/miguel/chariox",
+      "worktree_id": "/Users/miguel/chariox",
       "action": "commit",
       "message": "committed workspace changes",
       "commit_sha": "abcdef...",
@@ -413,9 +413,9 @@ Pull request response:
 {
   "WorkspacePullRequestCreated": {
     "pull_request": {
-      "workspace_id": "/Users/miguel/arroba",
-      "worktree_id": "/Users/miguel/arroba-feature",
-      "branch": "arroba/feature",
+      "workspace_id": "/Users/miguel/chariox",
+      "worktree_id": "/Users/miguel/chariox-feature",
+      "branch": "chariox/feature",
       "base_ref": "main",
       "url": "https://github.com/example/repo/pull/1",
       "title": "Update workspace git panel",

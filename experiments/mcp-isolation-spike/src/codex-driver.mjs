@@ -4,7 +4,7 @@ import path from 'node:path'
 import { renderCodexMcpArgs, reservePort } from './provider-launcher.mjs'
 
 export function resolveCodexBinary() {
-  return process.env.ARROBA_CODEX_BIN || process.env.CODEX_BIN || 'codex'
+  return process.env.CHARIOX_CODEX_BIN || process.env.CODEX_BIN || 'codex'
 }
 
 function sleep(ms) {
@@ -46,7 +46,7 @@ class CodexJsonRpcSocket {
   async initialize() {
     await this.requestWithId(0, 'initialize', {
       protocolVersion: 2,
-      clientInfo: { name: 'arroba-mcp-isolation-spike', version: '0.0.0-spike' },
+      clientInfo: { name: 'chariox-mcp-isolation-spike', version: '0.0.0-spike' },
       capabilities: {},
       notifications: [],
     })
@@ -146,7 +146,7 @@ class CodexJsonRpcSocket {
       sandboxPolicy: { type: 'dangerFullAccess' },
       personality: 'pragmatic',
       ephemeral,
-      serviceName: 'arroba-mcp-isolation-spike',
+      serviceName: 'chariox-mcp-isolation-spike',
       cwd,
       model,
     })

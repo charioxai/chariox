@@ -1,9 +1,9 @@
 - generic [ref=e3]:
   - banner [ref=e4]:
-    - link "@ ARROBA" [ref=e5] [cursor=pointer]:
+    - link "@ CHARIOX" [ref=e5] [cursor=pointer]:
       - /url: /
       - generic [ref=e6]: "@"
-      - generic [ref=e7]: ARROBA
+      - generic [ref=e7]: CHARIOX
     - navigation "Primary navigation" [ref=e8]:
       - link "Products" [ref=e9] [cursor=pointer]:
         - /url: /
@@ -20,11 +20,11 @@
         - /url: /auth/login?returnTo=/waiting-room
       - button "Switch color theme" [pressed] [ref=e18] [cursor=pointer]
   - main [ref=e24]:
-    - heading "ARROBA Cloud" [level=1] [ref=e25]
+    - heading "CHARIOX Cloud" [level=1] [ref=e25]
     - generic [ref=e27]:
       - generic [ref=e28]:
         - generic [ref=e29]: browser control plane
-        - heading "Run ARROBA sessions from a faster React shell." [level=2] [ref=e30]
+        - heading "Run CHARIOX sessions from a faster React shell." [level=2] [ref=e30]
         - paragraph [ref=e31]: The web app is moving to a component architecture while preserving the current terminal workflows during the migration.
         - generic [ref=e32]:
           - link "Open waiting room" [ref=e33] [cursor=pointer]:

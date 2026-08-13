@@ -97,7 +97,7 @@ async function handle(message) {
         result: {
           protocolVersion,
           capabilities: { tools: {} },
-          serverInfo: { name: `arroba-spike-${name}`, version: '0.0.0-spike' },
+          serverInfo: { name: `chariox-spike-${name}`, version: '0.0.0-spike' },
         },
       })
       return

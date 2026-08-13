@@ -32,7 +32,7 @@
     {
       "name": "multi-20x50",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/multi-20x50.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/multi-20x50.json",
       "mode": "multi-session",
       "sessions": 20,
       "agentsPerSession": 50,
@@ -93,7 +93,7 @@
     {
       "name": "multi-50x20",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/multi-50x20.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/multi-50x20.json",
       "mode": "multi-session",
       "sessions": 50,
       "agentsPerSession": 20,
@@ -154,7 +154,7 @@
     {
       "name": "multi-100x10",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/multi-100x10.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/multi-100x10.json",
       "mode": "multi-session",
       "sessions": 100,
       "agentsPerSession": 10,
@@ -215,7 +215,7 @@
     {
       "name": "single-200",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/single-200.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/single-200.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 200,
@@ -276,7 +276,7 @@
     {
       "name": "single-500",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/single-500.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/single-500.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 500,
@@ -337,7 +337,7 @@
     {
       "name": "slow-client-200",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/slow-client-200.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/slow-client-200.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 200,
@@ -398,7 +398,7 @@
     {
       "name": "background-200",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/background-200.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/background-200.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 200,
@@ -459,7 +459,7 @@
     {
       "name": "disconnected-client-200",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/disconnected-client-200.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/disconnected-client-200.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 200,
@@ -520,7 +520,7 @@
     {
       "name": "retention-200",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/retention-200.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/retention-200.json",
       "mode": "single-session",
       "sessions": 1,
       "agentsPerSession": 200,
@@ -581,7 +581,7 @@
     {
       "name": "mixed-active-idle-100x10",
       "ok": true,
-      "summaryFile": "/tmp/arroba-scale-matrix-authoritative-1/mixed-active-idle-100x10.json",
+      "summaryFile": "/tmp/chariox-scale-matrix-authoritative-1/mixed-active-idle-100x10.json",
       "mode": "multi-session",
       "sessions": 100,
       "agentsPerSession": 10,

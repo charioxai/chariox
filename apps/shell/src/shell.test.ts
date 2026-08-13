@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, RuntimeSession } from "@arroba/kernel-client/kernel-types"
+import type { AgentInstance, RuntimeSession } from "@chariox/kernel-client/kernel-types"
 import { createInitialShellContext, defaultKernelEndpoint, executeShellScript, executeShellScriptLines, parseShellCliArgs, shellUsage } from "./shell.js"
 
 test("parseShellCliArgs parses kernel and context options", () => {
@@ -27,9 +27,9 @@ test("parseShellCliArgs rejects conflicting endpoints", () => {
 })
 
 test("parseShellCliArgs parses script-run mode", () => {
-  assert.deepEqual(parseShellCliArgs(["run", "setup.arroba", "--workspace", "/repo", "--var", "session=session-1", "--continue-on-error"]), {
+  assert.deepEqual(parseShellCliArgs(["run", "setup.chariox", "--workspace", "/repo", "--var", "session=session-1", "--continue-on-error"]), {
     mode: "run",
-    scriptPath: "setup.arroba",
+    scriptPath: "setup.chariox",
     workspace: "/repo",
     variables: { session: "session-1" },
     continueOnError: true,
@@ -49,22 +49,22 @@ test("createInitialShellContext defaults worktree to workspace", () => {
 })
 
 test("defaultKernelEndpoint honors env overrides", () => {
-  const previousUrl = process.env.ARROBA_KERNEL_URL
-  process.env.ARROBA_KERNEL_URL = "ws://example/kernel"
+  const previousUrl = process.env.CHARIOX_KERNEL_URL
+  process.env.CHARIOX_KERNEL_URL = "ws://example/kernel"
   try {
     assert.equal(defaultKernelEndpoint(), "ws://example/kernel")
   } finally {
     if (previousUrl === undefined) {
-      delete process.env.ARROBA_KERNEL_URL
+      delete process.env.CHARIOX_KERNEL_URL
     } else {
-      process.env.ARROBA_KERNEL_URL = previousUrl
+      process.env.CHARIOX_KERNEL_URL = previousUrl
     }
   }
 })
 
 test("shellUsage documents prompt commands without slash prefix", () => {
   const usage = shellUsage()
-  assert.match(usage, /arroba-shell/)
+  assert.match(usage, /chariox-shell/)
   assert.match(usage, /@ session list/)
   assert.match(usage, /@ context/)
   assert.match(usage, /@ pwd/)
@@ -151,7 +151,7 @@ test("executeShellScript can source a disk script into current context", async (
   const seen: Record<string, unknown>[] = []
   const output: string[] = []
   const result = await executeShellScript([
-    "source setup.arroba",
+    "source setup.chariox",
     "vars",
   ], createInitialShellContext({ workspace: "/repo", worktree: "/repo" }), {
     client: {
@@ -165,7 +165,7 @@ test("executeShellScript can source a disk script into current context", async (
     },
   }, (line) => output.push(line), {
     loadScript: async (scriptPath) => {
-      assert.equal(scriptPath, "/repo/setup.arroba")
+      assert.equal(scriptPath, "/repo/setup.chariox")
       return "session new --dir qa as sourced_session\n"
     },
   })
@@ -173,7 +173,7 @@ test("executeShellScript can source a disk script into current context", async (
   assert.equal(result.context.sessionId, "session-2")
   assert.equal(result.context.variables.sourced_session, "session-2")
   assert.equal(seen.length, 1)
-  assert.match(output.join(""), /@ source setup.arroba/)
+  assert.match(output.join(""), /@ source setup.chariox/)
   assert.match(output.join(""), /bound \$sourced_session = session-2/)
   assert.match(output.join(""), /\$sourced_session = session-2/)
 })

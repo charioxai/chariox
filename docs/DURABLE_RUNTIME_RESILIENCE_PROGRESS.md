@@ -2,10 +2,10 @@
 
 ## Baseline
 
-- OSS worktree: `arroba-runtime-projection-fix`
+- OSS worktree: `chariox-runtime-projection-fix`
 - OSS branch: `codex/durable-runtime-chaos-foundation`
 - OSS starting `main`: `afc233de00cca623d7641610c54d7a78a8ade0fc`
-- Cloud worktree: `arroba-cloud-resilience-validation`
+- Cloud worktree: `chariox-cloud-resilience-validation`
 - Cloud branch: `codex/durable-runtime-chaos-cloud`
 - Cloud starting `main`: `bdb254e65e12875b7f36a3eb11224118a7920182`
 
@@ -27,7 +27,7 @@ The OSS foundation supplies a seeded PRNG, fake clock, programmable transport fa
 
 ## Milestone 2: Browser Chaos And Contract Parity
 
-The Cloud foundation drives the production browser relay event handler through deterministic reverse-decrypt ordering, duplicate event replay, relay binding replacement, stale callbacks, route partition/reconnect, and snapshot fallback. The handler now serializes frames per subscription and rejects callbacks from superseded relay key generations. OSS and Cloud publish the same `arroba.drill.chaos_contract.v1` manifest, and both cross-repository gates can require exact replay-schema, fault-kind, and invariant parity. Cloud staging enables that requirement before running distributed evidence.
+The Cloud foundation drives the production browser relay event handler through deterministic reverse-decrypt ordering, duplicate event replay, relay binding replacement, stale callbacks, route partition/reconnect, and snapshot fallback. The handler now serializes frames per subscription and rejects callbacks from superseded relay key generations. OSS and Cloud publish the same `chariox.drill.chaos_contract.v1` manifest, and both cross-repository gates can require exact replay-schema, fault-kind, and invariant parity. Cloud staging enables that requirement before running distributed evidence.
 
 ## Milestone 3: Durable Prompt Admission
 
@@ -69,7 +69,7 @@ Provider PTY input uses a bounded per-process writer pump. App-lock paths enqueu
 
 Focused tests cover transcript matching, durable continuation generations, launch-failure preservation, response-loss replay, stale socket callbacks, bounded PTY queues, and lock-free confirmed writes. Full validation passed with 2,053 kernel tests and 813 kernel-client tests. Both local `SIGKILL` drills preserve the same active prompt, provider run identity, running workflow/node/scheduler state, grants, transcript, and recall history across restart.
 
-Provider limitation: official-provider continuation depends on a provider-native session id or discoverable local transcript. When neither exists, Arroba preserves delivered work instead of risking duplicate execution; dispatching work is redelivered only when the transcript scan finds no execution evidence. Remote provider recovery continues through the leased-agent idempotency path and remains part of the distributed live-drill gate.
+Provider limitation: official-provider continuation depends on a provider-native session id or discoverable local transcript. When neither exists, Chariox preserves delivered work instead of risking duplicate execution; dispatching work is redelivered only when the transcript scan finds no execution evidence. Remote provider recovery continues through the leased-agent idempotency path and remains part of the distributed live-drill gate.
 
 ## Milestone 7: Disposable Worker Runtime Recovery
 
@@ -79,7 +79,7 @@ Leased backing sessions are now explicitly ephemeral in the shared session store
 
 Focused tests cover orphan prompt replay and snapshot exclusion. The websocket reconnect drill now waits for the client-side `transport_resumed` event instead of racing the server-side second subscribe. Provider-thread drills fail immediately on terminal provider errors rather than polling until the global timeout.
 
-The repaired matrix scenarios pass: websocket drop resumes from event id 1; home restart preserves the original leased-agent id; worker restart and both-kernel restart each acquire one fresh lease and complete the post-restart prompt. Codex worker thread transfer also passes with provider session identity preserved. OpenCode could not be validated beyond Arroba launch/error projection: OpenCode Zen reports insufficient balance, and the OpenAI-backed OpenCode profile reports OAuth refresh `401`. Both are external account failures and now surface in seconds.
+The repaired matrix scenarios pass: websocket drop resumes from event id 1; home restart preserves the original leased-agent id; worker restart and both-kernel restart each acquire one fresh lease and complete the post-restart prompt. Codex worker thread transfer also passes with provider session identity preserved. OpenCode could not be validated beyond Chariox launch/error projection: OpenCode Zen reports insufficient balance, and the OpenAI-backed OpenCode profile reports OAuth refresh `401`. Both are external account failures and now surface in seconds.
 
 ## Milestone 8: Canonical Two-Client Workflow Projection
 
@@ -96,7 +96,7 @@ Cloud staging now accepts an external relay for this matrix and reconciles workf
 
 The Hetzner collaborator matrix passed relay restart, collaborator reattachment, worker restart with a fresh lease and provider run, and home-owned grant/revoke authority in 27.9 seconds. Cleanup found no run-owned process or temporary root. The worker used about 84 MB RSS, the relay about 12 MB, and the host retained about 4.8 GB free disk during the drill. Evidence is in `.artifacts/runtime-resilience-goal/hetzner-collab-c145b0eb6`.
 
-The hosted staging second-kernel matrix passed in 32.9 seconds through the normal Arroba prompt path. Its home and worker kernels each remained near 78 MB RSS after isolating the drill `HOME`; using the global `~/.arroba` database had previously caused an avoidable 1.9 GB startup spike. The multi-user hosted drill also passed peer-owned remote-agent home-proxy script, MCP, and connector execution, denied peer grant/revoke, and deleted all four temporary Cloud identities. Evidence is in `.artifacts/runtime-resilience-goal/hosted-second-kernel-managed-fix`.
+The hosted staging second-kernel matrix passed in 32.9 seconds through the normal Chariox prompt path. Its home and worker kernels each remained near 78 MB RSS after isolating the drill `HOME`; using the global `~/.chariox` database had previously caused an avoidable 1.9 GB startup spike. The multi-user hosted drill also passed peer-owned remote-agent home-proxy script, MCP, and connector execution, denied peer grant/revoke, and deleted all four temporary Cloud identities. Evidence is in `.artifacts/runtime-resilience-goal/hosted-second-kernel-managed-fix`.
 
 The local slice lifecycle matrix and real Codex save/restart drill pass. Saved-state cleanup now resets saved state before deleting a slice, so no drill-owned state image survives. The Hetzner, hosted Cloud, and slice fixes were derived by comparing the existing related drills and preserved evidence before changing runtime behavior.
 
@@ -115,6 +115,6 @@ Strict live results:
 
 All four preserve the provider session id, exact second-turn recall, and an active provider run through the assertion point. Worker runs preserve the exact workspace; slice runs preserve `/workspace`. Worker-side provider teardown now runs before kernel termination, followed by delayed idempotent temporary-root removal. Slice cleanup erases temporary Codex and OpenCode auth copies from retained artifact roots while preserving non-secret provider state, and removes the external Claude credential root. Post-run audits found no matching provider process, credential file or root, drill container, or saved-state image.
 
-Claude credentials are currently valid and both Claude drills pass. OpenCode remains externally blocked: Zen reports insufficient balance and the OpenAI OAuth profile fails refresh with `401`. Arroba correctly projects both failures and cleans up immediately; same-thread continuation cannot be claimed until one OpenCode account path is restored.
+Claude credentials are currently valid and both Claude drills pass. OpenCode remains externally blocked: Zen reports insufficient balance and the OpenAI OAuth profile fails refresh with `401`. Chariox correctly projects both failures and cleans up immediately; same-thread continuation cannot be claimed until one OpenCode account path is restored.
 
 The final OSS gates pass: 2,056 kernel unit tests plus integration and documentation tests, 1,346 CLI tests, 70 server tests, 13 shell tests, lint, formatting, and all 630 validation-suite checks.

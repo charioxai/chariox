@@ -193,13 +193,13 @@
       and added direct loaded lazy-history blob evidence.
     </p>
     <ul>
-      <li><code>pnpm --filter @arroba/cli run build</code> passed before the drill.</li>
+      <li><code>pnpm --filter @chariox/cli run build</code> passed before the drill.</li>
       <li>Drill manifest: <code>target/live-tui-web-parity-visual-session/latest.json</code>.</li>
       <li>Full parity evidence directory: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
       <li>Loaded-history evidence directory: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
       <li>Latest live assertions include <code>initial</code>, <code>attached-initial</code>, <code>blobs-initial</code>, <code>blob-expanded-layout</code>, <code>loaded-history</code>, <code>loaded-history-layout</code>, <code>post-raw-steer</code>, <code>waiting-room</code>, and <code>waiting-room-layout</code> through the visual-control automation socket.</li>
       <li>Generated terminal captures are saved under <code>terminal-captures/</code> as 80x24 and 120x32 text plus PNG files for attached, raw shortcut, expanded blob, loaded-history, and Waiting Room states.</li>
-      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code> passed with 150 focused tests, syntax checks, and drill JSON validation.</li>
+      <li><code>pnpm --filter @chariox/cli run tui-web-parity:drill</code> passed with 150 focused tests, syntax checks, and drill JSON validation.</li>
       <li><code>pnpm run validation:suite</code> passed with 534 shared non-live validation tests.</li>
       <li>The live PTY wrappers were exited cleanly after each run.</li>
     </ul>
@@ -644,7 +644,7 @@
       <li>Full live PTY evidence: <code>target/live-tui-web-parity-visual-session/71615-1782836922319/evidence</code>.</li>
       <li>Loaded-history live PTY evidence: <code>target/live-tui-web-parity-visual-session/74228-1782837422850/evidence</code>.</li>
       <li>Latest terminal captures: <code>terminal-captures/attached-initial.*</code>, <code>terminal-captures/post-raw-steer.*</code>, <code>terminal-captures/blob-expanded-layout.*</code>, <code>terminal-captures/loaded-history-layout.*</code>, and <code>terminal-captures/waiting-room-layout.*</code>.</li>
-      <li><code>pnpm --filter @arroba/cli run tui-web-parity:drill</code>: passed with 150 tests plus script syntax and drill JSON checks.</li>
+      <li><code>pnpm --filter @chariox/cli run tui-web-parity:drill</code>: passed with 150 tests plus script syntax and drill JSON checks.</li>
       <li><code>pnpm run validation:suite</code>: passed with 534 tests.</li>
     </ul>
 
@@ -655,9 +655,9 @@
     </p>
 
     <h3>Build and focused tests</h3>
-    <pre><code>cd /Users/miguel/arroba
-pnpm --filter @arroba/cli run build
-pnpm --filter @arroba/cli exec node --test \
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run build
+pnpm --filter @chariox/cli exec node --test \
   dist/transcript-collapsed-blob.test.js \
   dist/transcript-display.test.js \
   dist/queued-prompt-transcript.test.js \
@@ -674,34 +674,34 @@ pnpm --filter @arroba/cli exec node --test \
   dist/waiting-room-rows.test.js</code></pre>
 
     <h3>Existing TUI drills</h3>
-    <pre><code>cd /Users/miguel/arroba
-pnpm --filter @arroba/cli run tui-web-parity:drill
-pnpm --filter @arroba/cli run agent-footer-status:drill
-pnpm --filter @arroba/cli run history-outline:tui-drill
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run tui-web-parity:drill
+pnpm --filter @chariox/cli run agent-footer-status:drill
+pnpm --filter @chariox/cli run history-outline:tui-drill
 pnpm run validation:suite</code></pre>
 
     <h3>Live visual TUI session</h3>
-    <pre><code>cd /Users/miguel/arroba
-pnpm --filter @arroba/cli run tui-web-parity:visual-session
+    <pre><code>cd /Users/miguel/chariox
+pnpm --filter @chariox/cli run tui-web-parity:visual-session
 
 # In a second terminal while the live session is open:
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert --label initial
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label attached-initial
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label blob-expanded-layout
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action expand-history-blob --label loaded-history
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label loaded-history-layout
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action assert --label initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label attached-initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action assert-blobs --label blobs-initial
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action toggle-first-blob --label blob-expanded
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label blob-expanded-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action expand-history-blob --label loaded-history
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label loaded-history-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action steer-queued --label post-steer
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action cancel-queued --label post-cancel
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action toggle-first-turn --label turn-toggled
 
 # To validate terminal shortcut delivery, press Esc+s or Alt+S in the live PTY, then capture:
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label post-raw-steer
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label post-raw-steer
 
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action waiting-room --label waiting-room
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action capture-layouts --label waiting-room-layout
-pnpm --filter @arroba/cli run tui-web-parity:visual-control --action report</code></pre>
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action waiting-room --label waiting-room
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action capture-layouts --label waiting-room-layout
+pnpm --filter @chariox/cli run tui-web-parity:visual-control --action report</code></pre>
 
     <h3>Manual visual checklist</h3>
     <ul>

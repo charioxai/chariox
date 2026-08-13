@@ -4,4 +4,4 @@
 [m8-local-restart] workflow-invoked {"workflowId":"18c1582d0e329630","workflowRunId":"0000019f52ff1a6f"}
 [m8-local-restart] daemon-stopped
 [m8-local-restart] daemon-restarted
-[m8-local-restart] verified {"sessionId":"18c1582d05470bb0","agentId":"agent-2","workflowId":"18c1582d0e329630","workflowRunId":"0000019f52ff1a6f","historyEvents":1,"artifactRoot":"/Users/miguel/arroba-scale-efficiency/target/live-local-restart-persistence-drill/97462-1783803877393"}
+[m8-local-restart] verified {"sessionId":"18c1582d05470bb0","agentId":"agent-2","workflowId":"18c1582d0e329630","workflowRunId":"0000019f52ff1a6f","historyEvents":1,"artifactRoot":"/Users/miguel/chariox-scale-efficiency/target/live-local-restart-persistence-drill/97462-1783803877393"}

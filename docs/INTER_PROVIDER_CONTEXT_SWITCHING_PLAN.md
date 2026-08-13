@@ -2,7 +2,7 @@
 
 ## Goal
 
-When a user changes an agent from one provider/model to another, Arroba should carry enough recent context into the new provider session for the next provider-bound prompt to make sense. The handoff must be deterministic, bounded, and must not call an LLM unless the user explicitly asks for the provider switch and we later add an opt-in summary path.
+When a user changes an agent from one provider/model to another, Chariox should carry enough recent context into the new provider session for the next provider-bound prompt to make sense. The handoff must be deterministic, bounded, and must not call an LLM unless the user explicitly asks for the provider switch and we later add an opt-in summary path.
 
 ## Policy
 

@@ -2,7 +2,7 @@
 
 ## Goal
 
-Replace the current shared relay-token assumption with a real relay identity foundation that works for both self-hosted Arroba and the later hosted Arroba Cloud control plane.
+Replace the current shared relay-token assumption with a real relay identity foundation that works for both self-hosted Chariox and the later hosted Chariox Cloud control plane.
 
 M5 delivered relay-backed transport. M5.5 defines who is allowed to connect to a relay realm, which clients and kernels are paired, and what routing actions each connection may perform.
 
@@ -62,7 +62,7 @@ relay realm = one user's or team's private self-hosted routing namespace
 Hosted:
 
 ```text
-relay realm = one account, organization, or project namespace managed by Arroba Cloud
+relay realm = one account, organization, or project namespace managed by Chariox Cloud
 ```
 
 Every relay connection belongs to exactly one realm.
@@ -159,12 +159,12 @@ The relay verifier must support two issuer families:
    - suitable for open-source users running their own relay
 
 2. Hosted issuer
-   - Arroba Cloud
+   - Chariox Cloud
    - lives in the separate private cloud repo
    - handles account login, subscription state, organizations, and entitlements
    - issues the same token shape consumed by the open-source relay
 
-The open-source runtime must not depend on Arroba Cloud existing.
+The open-source runtime must not depend on Chariox Cloud existing.
 
 ## Pairing Model
 
@@ -184,10 +184,10 @@ Flow:
 Conceptual commands:
 
 ```bash
-arroba client invite create
-arroba client join <invite-token>
-arroba client list
-arroba client revoke <client-ref>
+chariox client invite create
+chariox client join <invite-token>
+chariox client list
+chariox client revoke <client-ref>
 ```
 
 ### Remote Machine Pairing
@@ -204,11 +204,11 @@ Flow:
 Conceptual commands:
 
 ```bash
-arroba machine invite create
-arroba machine join <invite-token>
-arroba machine list
-arroba machine approve <machine-ref>
-arroba machine revoke <machine-ref>
+chariox machine invite create
+chariox machine join <invite-token>
+chariox machine list
+chariox machine approve <machine-ref>
+chariox machine revoke <machine-ref>
 ```
 
 Existing `/machine approve`, `/machine rename`, and `/machine forget` semantics should be reconciled with this pairing model rather than duplicated.
@@ -255,9 +255,9 @@ M5.5 only needs enough identity to distinguish paired clients and machines. M6.5
 
 ## Hosted Cloud Boundary
 
-Arroba Cloud is a control plane, not a runtime authority.
+Chariox Cloud is a control plane, not a runtime authority.
 
-Arroba Cloud may:
+Chariox Cloud may:
 
 - authenticate users
 - manage retail and enterprise subscriptions
@@ -267,7 +267,7 @@ Arroba Cloud may:
 - register devices, clients, and machines
 - enforce hosted entitlements
 
-Arroba Cloud must not:
+Chariox Cloud must not:
 
 - own workflow execution
 - own provider execution
@@ -275,7 +275,7 @@ Arroba Cloud must not:
 - require plaintext prompts or provider output
 - bypass kernel authorization
 
-The open-source relay and kernel should define the issuer/verifier contract. Arroba Cloud implements a hosted issuer for that contract in a separate repository.
+The open-source relay and kernel should define the issuer/verifier contract. Chariox Cloud implements a hosted issuer for that contract in a separate repository.
 
 ## Backwards Compatibility
 
@@ -315,7 +315,7 @@ As of 2026-04-20:
 - Slice 4 is implemented for M5.5: kernel-owned paired-machine state is integrated with the existing remote-machine approval registry, and paired-client state can be recorded, listed, and revoked.
 - Slice 5 is implemented for M5.5: shell coverage exists for `client invite create`, `client join`, `client list`, `client record`, `client revoke`, `machine invite create`, `machine join`, `machine approve`, `machine rename`, and `machine revoke`. Invite tokens are self-contained bootstrap tokens in the open-source kernel path.
 - Slice 6 is implemented as a foundation: verified relay caller identity is attached to forwarded relay frames and mapped into `KernelCommand.caller` for relay-originated local API requests. Session and workflow authorization checks remain M6.5 work.
-- Slice 7 is implemented for the verifier contract: the relay can verify `arroba-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
+- Slice 7 is implemented for the verifier contract: the relay can verify `chariox-scoped-v1` HMAC-signed tokens against configured issuer metadata supplied by the embedding server/control plane. The open-source relay still defaults to shared-token bootstrap unless constructed with a scoped verifier.
 - Slice 8 is implemented for the relay identity surface: `live-relay-identity-security-drill.mjs` starts a real scoped-token relay and verifies paired/unpaired client and machine admission, action constraints, and cross-realm metadata/routing isolation. Full remote-provider CLI/machine drills still depend on physical remote machines.
 
 ### Closed Scope And Follow-Ups
@@ -330,7 +330,7 @@ M5.5 is closed for the open-source relay/kernel identity foundation:
 
 The following items are intentionally outside M5.5's closed scope:
 
-- Arroba Cloud issuing production runtime tokens; the contract is documented here and implemented in the separate `arroba-cloud` project
+- Chariox Cloud issuing production runtime tokens; the contract is documented here and implemented in the separate `chariox-cloud` project
 - one-time hosted invite redemption; open-source invites are self-contained bootstrap tokens
 - physical remote-provider CLI and remote-machine drills; these require available remote machines and belong to the live-drill track
 - M6.5 user/session membership and workflow ownership checks; those build on `KernelCommand.caller`
@@ -433,23 +433,23 @@ Exit criteria:
 
 ### Slice 7. Hosted Issuer Compatibility
 
-Document and test the hosted issuer contract without implementing Arroba Cloud in this repo.
+Document and test the hosted issuer contract without implementing Chariox Cloud in this repo.
 
 Exit criteria:
 
 - relay can verify tokens signed by configured issuer metadata
 - self-hosted issuer remains available
-- docs point hosted-control-plane implementation to the separate `arroba-cloud` repository
+- docs point hosted-control-plane implementation to the separate `chariox-cloud` repository
 
 Contract shipped in this repository:
 
-- Token format: `arroba-scoped-v1.<claims-base64url>.<signature-base64url>`.
+- Token format: `chariox-scoped-v1.<claims-base64url>.<signature-base64url>`.
 - Claims payload: JSON-serialized `RelayTokenClaims`.
 - Current verifier algorithm: HMAC-SHA256 over `<claims-base64url>`, using the configured secret for `claims.issuer`.
 - Verifier behavior: after signature verification, the relay enforces expiration, allowed action, and allowed target constraints before admitting or routing.
 - User identity hook: scoped claims may include `user_id`; when present, the relay forwards it as caller identity and the kernel maps it into `KernelCommand.caller.user_id` for M6.5 membership checks.
 - Integration boundary: hosted or self-hosted control planes instantiate `RelayAuthVerifier::scoped_hmac(...)` or an equivalent future verifier and pass it to `RelayServer::with_auth_verifier(...)`.
-- `arroba-cloud` should issue this token shape first, then can migrate to an asymmetric verifier without changing relay/kernel authorization semantics.
+- `chariox-cloud` should issue this token shape first, then can migrate to an asymmetric verifier without changing relay/kernel authorization semantics.
 
 ### Slice 8. Live Security Drills
 

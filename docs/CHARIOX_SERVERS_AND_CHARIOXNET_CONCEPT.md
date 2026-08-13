@@ -1,14 +1,14 @@
-# Arroba Servers And ArrobaNet Concept
+# Chariox Servers And CharioxNet Concept
 
-This document captures the product and architecture concept for Arroba Servers
-and ArrobaNet. It is not an implementation plan. It records the model that
+This document captures the product and architecture concept for Chariox Servers
+and CharioxNet. It is not an implementation plan. It records the model that
 should guide later shared-crate extraction, server-kernel work, Cloud resolver
 work, app bridge design, and validation drills.
 
 ## Summary
 
-An Arroba Server is a public, providerless Arroba kernel that admits client
-agents from other Arroba kernels into server-owned sessions and workflows.
+A Chariox Server is a public, providerless Chariox kernel that admits client
+agents from other Chariox kernels into server-owned sessions and workflows.
 
 The server kernel is the runtime authority for admission, workflow topology,
 endpoint invocation, structured output validation, participant visibility, and
@@ -17,33 +17,33 @@ agents owned by client kernels, routes structured application events to those
 client kernels, and receives validated structured outputs back through the same
 kernel-owned runtime path.
 
-ArrobaNet is the network layer and addressing model that lets users and agents
-discover and connect to public Arroba Servers. Arroba Cloud is the first
-resolver and registry authority. It maps Arroba addresses to server identities
+CharioxNet is the network layer and addressing model that lets users and agents
+discover and connect to public Chariox Servers. Chariox Cloud is the first
+resolver and registry authority. It maps Chariox addresses to server identities
 and public transport endpoints. Runtime traffic then flows directly between the
 client kernel and server kernel whenever possible; Cloud remains bootstrap and
 control plane, not the runtime proxy.
 
 The long-term architecture should avoid a divergent fork of the existing
-runtime. Arroba, Arroba Server, and Arroba Cloud should share protocol,
+runtime. Chariox, Chariox Server, and Chariox Cloud should share protocol,
 identity, kernel-core, workflow-core, extension-policy, slice-policy, and
 transport crates where behavior is common.
 
 ## Core Concepts
 
-### Arroba Kernel
+### Chariox Kernel
 
-The normal Arroba kernel remains the runtime authority for a user's local
+The normal Chariox kernel remains the runtime authority for a user's local
 sessions, agents, provider runs, workspaces, worktrees, prompt history,
 terminal events, extensions, and state transitions.
 
-In ArrobaNet, a normal user kernel can act as a client kernel. It can connect
-one of its agents to an Arroba Server after resolving the server address and
+In CharioxNet, a normal user kernel can act as a client kernel. It can connect
+one of its agents to a Chariox Server after resolving the server address and
 satisfying the server's admission and compliance requirements.
 
-### Arroba Server Kernel
+### Chariox Server Kernel
 
-An Arroba Server kernel is a server-oriented kernel profile with these
+A Chariox Server kernel is a server-oriented kernel profile with these
 differences from a normal user kernel:
 
 - it exposes a public admission surface for unknown client kernels
@@ -54,7 +54,7 @@ differences from a normal user kernel:
 - it exposes observer projections for human-readable views of server activity
 - it exposes an app bridge for deterministic server applications
 
-An Arroba Server is still a kernel, not a web app bolted around agents. All
+A Chariox Server is still a kernel, not a web app bolted around agents. All
 agent-triggering paths must go through the kernel, because the kernel is the
 authority that can route events to client kernels, fan out terminal state, apply
 workflow validation, and enforce compliance.
@@ -62,16 +62,16 @@ workflow validation, and enforce compliance.
 ### Client Kernel
 
 A client kernel owns the actual provider thread for an agent connected to an
-Arroba Server. When the server invokes a workflow endpoint targeting that
+Chariox Server. When the server invokes a workflow endpoint targeting that
 agent, the path is:
 
 ```text
 app server
-  -> Arroba server kernel
+  -> Chariox server kernel
   -> workflow endpoint
   -> client kernel
   -> client agent provider thread
-  -> Arroba terminals connected to the process
+  -> Chariox terminals connected to the process
 ```
 
 The server kernel must not bypass the client kernel and talk directly to a
@@ -81,7 +81,7 @@ provider-native state.
 
 ### App Server
 
-An app server is deterministic application code attached to an Arroba Server.
+An app server is deterministic application code attached to a Chariox Server.
 It can be a game engine, forum service, market simulator, coordination service,
 or discovery service.
 
@@ -91,18 +91,18 @@ application rules. For a poker app, the app server owns deck state, betting
 rules, turn order, balances, and observer state. Agents only submit legal action
 requests such as fold, check, call, bet, or raise.
 
-### ArrobaNet
+### CharioxNet
 
-ArrobaNet is the agent-facing internet built from:
+CharioxNet is the agent-facing internet built from:
 
-- public Arroba Server kernels
-- normal Arroba client kernels
-- Arroba Cloud resolver and registry services
+- public Chariox Server kernels
+- normal Chariox client kernels
+- Chariox Cloud resolver and registry services
 - signed kernel identities
 - direct server/client kernel connections
 - server-owned app bridges and observer projections
 
-ArrobaNet should support both user-driven connection and agent-driven
+CharioxNet should support both user-driven connection and agent-driven
 connection.
 
 ## Addressing And Discovery
@@ -110,7 +110,7 @@ connection.
 The canonical public address shape should be URL-like:
 
 ```text
-arroba://pokeragents.com
+chariox://pokeragents.com
 ```
 
 The CLI can support a shorthand for human convenience:
@@ -120,19 +120,19 @@ The CLI can support a shorthand for human convenience:
 ```
 
 The shorthand is only input syntax. Protocol records and durable state should
-store canonical Arroba URLs or structured Arroba addresses.
+store canonical Chariox URLs or structured Chariox addresses.
 
 For V1, addresses can be known ahead of time. Search, ranking, category pages,
 PageRank-style discovery, and recommendation services should be built later as
-Arroba Server applications on top of the base resolution and connection model.
+Chariox Server applications on top of the base resolution and connection model.
 
 ### Resolver Flow
 
 For user-driven connection:
 
 ```text
-user runs arroba connect arroba://pokeragents.com
-  -> client kernel asks Arroba Cloud resolver
+user runs chariox connect chariox://pokeragents.com
+  -> client kernel asks Chariox Cloud resolver
   -> Cloud returns server identity, public key, transport endpoint, protocol
      version, advertised capabilities, admission policy, and freshness
   -> client kernel connects directly to the server kernel
@@ -144,14 +144,14 @@ user runs arroba connect arroba://pokeragents.com
 For agent-driven connection:
 
 ```text
-agent calls Arroba runtime MCP to connect to arroba://pokeragents.com
+agent calls Chariox runtime MCP to connect to chariox://pokeragents.com
   -> client kernel resolves the address through the same resolver API
   -> server kernel returns compliance requirements
   -> client kernel may downgrade/reconfigure the same provider thread if safe
   -> client kernel connects the agent to the server
 ```
 
-The agent-driven path should still interact with an Arroba Server or Arroba
+The agent-driven path should still interact with a Chariox Server or Chariox
 runtime MCP surface, not arbitrary raw network endpoints. That matters because
 autonomous agents may end a turn before completing a multi-step task. A server
 can later trigger another turn through the kernel path; a raw endpoint cannot
@@ -161,7 +161,7 @@ reliably keep the agent alive.
 
 ### User-Driven Connection
 
-In the user-driven flow, the user chooses an Arroba address and optionally
+In the user-driven flow, the user chooses a Chariox address and optionally
 passes agent-creation parameters. If no existing session or agent is supplied,
 the client kernel creates a new session and agent using explicit creation
 parameters such as provider, model, variant, effort, slice, workspace, worktree,
@@ -175,11 +175,11 @@ defaults.
 ### Agent-Driven Connection
 
 In the agent-driven flow, an already-running autonomous agent asks to connect
-to a known Arroba address. This is not a new agent type. It is a capability of
-an autonomous Arroba agent to ask its kernel to make it compliant with an
-ArrobaNet service.
+to a known Chariox address. This is not a new agent type. It is a capability of
+an autonomous Chariox agent to ask its kernel to make it compliant with an
+CharioxNet service.
 
-The adaptation surface should be limited to ArrobaNet navigation. Other
+The adaptation surface should be limited to CharioxNet navigation. Other
 services should not be allowed to trigger the same configuration morphism.
 
 The important continuity requirement is provider-thread continuity. "Same
@@ -191,12 +191,12 @@ preserve the provider thread through provider resume state or fail safely.
 
 Servers may require constraints before admitting an agent. Examples:
 
-- agent must run in a standard Arroba slice
+- agent must run in a standard Chariox slice
 - agent must not have MCPs
 - agent may use skills but not MCPs, scripts, or connectors
 - agent must use a restricted write mode
 - agent must expose a signed kernel identity
-- agent must expose a slice attestation produced by an official Arroba slice
+- agent must expose a slice attestation produced by an official Chariox slice
 
 The client kernel, not the server kernel, applies the local configuration
 change. The server declares requirements. The client kernel either proves that
@@ -272,18 +272,18 @@ capture provider thread id and launch state
 
 The June 14, 2026 drills prove this local-to-slice transfer path for Codex,
 OpenCode, and Claude Code in the current environment: the local provider run is
-ended, provider state is copied into a local Docker slice, the same Arroba
+ended, provider state is copied into a local Docker slice, the same Chariox
 agent record is moved to the slice worker, the slice provider run resumes the
 same provider thread id, and the provider recalls pre-transfer conversation
 state.
 
 If this does not work reliably for a provider, V1 should require agents using
-that provider to already run in the standard Arroba slice when connecting to
+that provider to already run in the standard Chariox slice when connecting to
 strict slice-required servers.
 
 ## App Bridge
 
-Arroba Server needs a server-only kernel connection lane for deterministic app
+Chariox Server needs a server-only kernel connection lane for deterministic app
 services. This lane is distinct from terminal, provider, and kernel-to-kernel
 connections.
 
@@ -308,13 +308,13 @@ runtime state.
 
 Current code already has a hosted-service caller concept, which is a good fit
 for app bridge authorization. Current workflow endpoint invocation already has
-the right general shape, but Arroba Server needs structured event/action input
+the right general shape, but Chariox Server needs structured event/action input
 and server-app authorization rather than a publication-only route wrapper.
 
 ## Programming Model
 
 The first programming model should be a TypeScript SDK over the app bridge,
-not a new Arroba Server language.
+not a new Chariox Server language.
 
 Shell commands remain useful for manual setup, inspection, admin operations,
 and drills. They are not enough for dynamic server apps because app behavior
@@ -404,7 +404,7 @@ the deterministic application state.
 
 ## Workflow Topology
 
-Arroba Server apps should not assume one workflow topology.
+Chariox Server apps should not assume one workflow topology.
 
 For poker, each seated agent can be an independent workflow node with its own
 endpoint. The deterministic game app invokes only the active seat's endpoint on
@@ -426,42 +426,42 @@ server OS.
 
 ## Observer Frontends
 
-Humans should be able to observe Arroba Server activity through a frontend.
+Humans should be able to observe Chariox Server activity through a frontend.
 This frontend is an observation window, not the primary control authority.
 
 For a poker app, the observer frontend can render a table, seats, cards,
 actions, stack sizes, and history. Humans should not directly click buttons to
 play for the agents unless a specific app intentionally grants that role.
 
-The observer projection should be served by the Arroba Server app side, based
+The observer projection should be served by the Chariox Server app side, based
 on kernel and app events. It should not require humans to inspect provider
 traces to understand what happened.
 
-Long term, an Arroba-specific browser or viewer may make sense, but that is a
+Long term, a Chariox-specific browser or viewer may make sense, but that is a
 later product layer. V1 can use normal web technology and a non-authoritative
 observer UI.
 
 ## Identity And Attestation
 
-ArrobaNet needs official kernel identity signing. This is separate from full
+CharioxNet needs official kernel identity signing. This is separate from full
 hardware or operating-system attestation.
 
 For the proof of concept, the realistic target is:
 
-- official Arroba distributions generate or receive kernel identity keys
+- official Chariox distributions generate or receive kernel identity keys
 - kernels sign connection and policy claims
-- Arroba Cloud verifies known official kernel identities
+- Chariox Cloud verifies known official kernel identities
 - server policies can require signed kernel identity
-- stricter servers can require execution inside an official Arroba slice
+- stricter servers can require execution inside an official Chariox slice
 - official slices can produce a narrower attestation claim for slice policy
 
 This does not prove that every host operating system is uncompromised. It does
 give the protocol a credible trust boundary for official kernels and official
-slice environments, which is enough for the first ArrobaNet proof of concept.
+slice environments, which is enough for the first CharioxNet proof of concept.
 
 ## Relationship To Existing Runtime
 
-Arroba Server should extend existing runtime concepts rather than creating a
+Chariox Server should extend existing runtime concepts rather than creating a
 parallel runtime:
 
 - public admission generalizes collaboration from invite-only to public server
@@ -470,7 +470,7 @@ parallel runtime:
   routing
 - client kernels continue to own provider execution and terminal fanout
 - workflow schemas continue to validate structured outputs
-- runtime MCP remains the agent-facing way to request Arroba actions
+- runtime MCP remains the agent-facing way to request Chariox actions
 - hot reload should extend existing provider reload policy
 - slice constraints should extend existing slice and remote worker placement
 
@@ -482,7 +482,7 @@ shared where behavior is common.
 Potential long-term package split:
 
 ```text
-arroba-core
+chariox-core
   protocol
   identity
   address
@@ -493,20 +493,20 @@ arroba-core
   slice-policy
   app-bridge
 
-arroba
+chariox
   normal user kernel product
   CLI/TUI
   provider adapters
   collaboration UX
 
-arroba-server-os
+chariox-server-os
   providerless server kernel profile
   public admission
   app bridge
   observer projections
   server app host
 
-arroba-cloud
+chariox-cloud
   resolver
   registry
   official kernel identity
@@ -516,7 +516,7 @@ arroba-cloud
 
 ## Example: Poker Agents
 
-Poker is a strong first Arroba Server application because it separates
+Poker is a strong first Chariox Server application because it separates
 deterministic application authority from agent decision-making.
 
 Server-side authority:
@@ -556,7 +556,7 @@ Provider thread transfer into slices remains a high-risk implementation area,
 but it is no longer purely speculative for Codex, OpenCode, or Claude Code.
 Current drills show that all three can preserve the same provider-native thread
 through live migration from a running local, unsliced provider run into a slice
-while keeping the same Arroba agent record. Codex and OpenCode also have
+while keeping the same Chariox agent record. Codex and OpenCode also have
 home-managed slice save/restart coverage.
 
 Other important questions:

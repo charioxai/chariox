@@ -1,32 +1,32 @@
-name: arroba-event-publication
+name: chariox-event-publication
 
 services:
   aeds:
-    image: arroba-aeds:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aeds:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aeds
+      context: ../../../chariox-aeds
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEDS_KERNEL_ADDR: 0.0.0.0:43130
-      ARROBA_AEDS_PRODUCER_ADDR: 0.0.0.0:43131
-      ARROBA_AEDS_DATABASE_PATH: /var/lib/arroba/aeds/aeds.db
-      ARROBA_AEDS_KERNEL_TOKENS_FILE: /run/secrets/aeds_kernel_tokens
-      ARROBA_AEDS_PRODUCER_CAPABILITIES_FILE: /run/secrets/aeds_producer_capabilities
-      ARROBA_AEDS_RETRY_MS: "250"
-      ARROBA_AEDS_HEARTBEAT_MS: "1000"
+      CHARIOX_AEDS_KERNEL_ADDR: 0.0.0.0:43130
+      CHARIOX_AEDS_PRODUCER_ADDR: 0.0.0.0:43131
+      CHARIOX_AEDS_DATABASE_PATH: /var/lib/chariox/aeds/aeds.db
+      CHARIOX_AEDS_KERNEL_TOKENS_FILE: /run/secrets/aeds_kernel_tokens
+      CHARIOX_AEDS_PRODUCER_CAPABILITIES_FILE: /run/secrets/aeds_producer_capabilities
+      CHARIOX_AEDS_RETRY_MS: "250"
+      CHARIOX_AEDS_HEARTBEAT_MS: "1000"
     secrets:
       - aeds_kernel_tokens
       - aeds_producer_capabilities
     volumes:
-      - aeds-data:/var/lib/arroba/aeds
+      - aeds-data:/var/lib/chariox/aeds
     networks:
       - kernel-delivery
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_AEDS_KERNEL_PORT:-43130}:43130"
-      - "127.0.0.1:${ARROBA_AEDS_PRODUCER_PORT:-43131}:43131"
+      - "127.0.0.1:${CHARIOX_AEDS_KERNEL_PORT:-43130}:43130"
+      - "127.0.0.1:${CHARIOX_AEDS_PRODUCER_PORT:-43131}:43131"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -45,28 +45,28 @@ services:
 
   dummy-aegs:
     profiles: ["dummy"]
-    image: arroba-aegs-dummy:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-dummy:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
       context: ../..
       dockerfile: docker/aegs-dummy/Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.dummy
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/dummy_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/dummy_aegs_management_token
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.dummy
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/dummy_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/dummy_aegs_management_token
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - dummy_aegs_producer_token
       - dummy_aegs_management_token
     volumes:
-      - dummy-aegs-data:/var/lib/arroba/aegs
+      - dummy-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_DUMMY_AEGS_PORT:-43132}:43132"
+      - "127.0.0.1:${CHARIOX_DUMMY_AEGS_PORT:-43132}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -88,30 +88,30 @@ services:
 
   github-aegs:
     profiles: ["github"]
-    image: arroba-aegs-github:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-github:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-github
+      context: ../../../chariox-aegs-github
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.github
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/github_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/github_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/github_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.github
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/github_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/github_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/github_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - github_aegs_producer_token
       - github_aegs_management_token
       - github_aegs_webhook_secret
     volumes:
-      - github-aegs-data:/var/lib/arroba/aegs
+      - github-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_GITHUB_AEGS_PORT:-43133}:43132"
+      - "127.0.0.1:${CHARIOX_GITHUB_AEGS_PORT:-43133}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -133,30 +133,30 @@ services:
 
   jira-aegs:
     profiles: ["jira"]
-    image: arroba-aegs-jira:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-jira:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-jira
+      context: ../../../chariox-aegs-jira
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.jira-cloud
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/jira_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/jira_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/jira_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.jira-cloud
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/jira_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/jira_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/jira_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - jira_aegs_producer_token
       - jira_aegs_management_token
       - jira_aegs_webhook_secret
     volumes:
-      - jira-aegs-data:/var/lib/arroba/aegs
+      - jira-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_JIRA_AEGS_PORT:-43134}:43132"
+      - "127.0.0.1:${CHARIOX_JIRA_AEGS_PORT:-43134}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -178,30 +178,30 @@ services:
 
   linear-aegs:
     profiles: ["linear"]
-    image: arroba-aegs-linear:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-linear:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-linear
+      context: ../../../chariox-aegs-linear
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.linear
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/linear_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/linear_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/linear_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.linear
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/linear_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/linear_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/linear_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - linear_aegs_producer_token
       - linear_aegs_management_token
       - linear_aegs_webhook_secret
     volumes:
-      - linear-aegs-data:/var/lib/arroba/aegs
+      - linear-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_LINEAR_AEGS_PORT:-43135}:43132"
+      - "127.0.0.1:${CHARIOX_LINEAR_AEGS_PORT:-43135}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -223,30 +223,30 @@ services:
 
   gitlab-aegs:
     profiles: ["gitlab"]
-    image: arroba-aegs-gitlab:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-gitlab:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-gitlab
+      context: ../../../chariox-aegs-gitlab
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.gitlab
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/gitlab_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/gitlab_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/gitlab_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.gitlab
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/gitlab_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/gitlab_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/gitlab_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - gitlab_aegs_producer_token
       - gitlab_aegs_management_token
       - gitlab_aegs_webhook_secret
     volumes:
-      - gitlab-aegs-data:/var/lib/arroba/aegs
+      - gitlab-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_GITLAB_AEGS_PORT:-43136}:43132"
+      - "127.0.0.1:${CHARIOX_GITLAB_AEGS_PORT:-43136}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -268,30 +268,30 @@ services:
 
   sentry-aegs:
     profiles: ["sentry"]
-    image: arroba-aegs-sentry:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-sentry:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-sentry
+      context: ../../../chariox-aegs-sentry
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.sentry
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/sentry_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/sentry_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/sentry_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.sentry
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/sentry_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/sentry_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/sentry_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - sentry_aegs_producer_token
       - sentry_aegs_management_token
       - sentry_aegs_webhook_secret
     volumes:
-      - sentry-aegs-data:/var/lib/arroba/aegs
+      - sentry-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_SENTRY_AEGS_PORT:-43137}:43132"
+      - "127.0.0.1:${CHARIOX_SENTRY_AEGS_PORT:-43137}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -313,30 +313,30 @@ services:
 
   slack-aegs:
     profiles: ["slack"]
-    image: arroba-aegs-slack:${ARROBA_EVENT_IMAGE_TAG:-local}
+    image: chariox-aegs-slack:${CHARIOX_EVENT_IMAGE_TAG:-local}
     build:
-      context: ../../../arroba-aegs-slack
+      context: ../../../chariox-aegs-slack
       dockerfile: Dockerfile
       args:
-        ARROBA_BUILD_REVISION: ${ARROBA_BUILD_REVISION:-development}
+        CHARIOX_BUILD_REVISION: ${CHARIOX_BUILD_REVISION:-development}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.slack
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/slack_aegs_producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/slack_aegs_management_token
-      ARROBA_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/slack_aegs_webhook_secret
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: http://aeds:43131/v1/events
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.slack
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/slack_aegs_producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/slack_aegs_management_token
+      CHARIOX_AEGS_WEBHOOK_SECRET_FILE: /run/secrets/slack_aegs_webhook_secret
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: http://aeds:43131/v1/events
     secrets:
       - slack_aegs_producer_token
       - slack_aegs_management_token
       - slack_aegs_webhook_secret
     volumes:
-      - slack-aegs-data:/var/lib/arroba/aegs
+      - slack-aegs-data:/var/lib/chariox/aegs
     networks:
       - producer-delivery
     ports:
-      - "127.0.0.1:${ARROBA_SLACK_AEGS_PORT:-43138}:43132"
+      - "127.0.0.1:${CHARIOX_SLACK_AEGS_PORT:-43138}:43132"
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777

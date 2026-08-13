@@ -7,13 +7,13 @@ Credentials can use `basic` injection, where `username` is the database user and
 Run a local Postgres for this example:
 
 ```sh
-docker run --rm --name arroba-postgres-example -e POSTGRES_PASSWORD=arroba -p 5432:5432 postgres:16-alpine
+docker run --rm --name chariox-postgres-example -e POSTGRES_PASSWORD=chariox -p 5432:5432 postgres:16-alpine
 ```
 
 In another shell, create sample data:
 
 ```sh
-docker exec arroba-postgres-example psql -U postgres -d postgres -c "create table if not exists users (id int primary key, email text); insert into users values (1, 'user@example.com') on conflict (id) do update set email = excluded.email;"
+docker exec chariox-postgres-example psql -U postgres -d postgres -c "create table if not exists users (id int primary key, email text); insert into users values (1, 'user@example.com') on conflict (id) do update set email = excluded.email;"
 ```
 
 Store the password, register the credential, and register the connector:

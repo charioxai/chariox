@@ -10,10 +10,10 @@ transport/deployment permutation has been validated end to end.
 The current validation baseline proves:
 
 - portable publication packages are exported without relay token material
-- `arroba serve` materializes hidden publication runtime sessions
+- `chariox serve` materializes hidden publication runtime sessions
 - hidden publication runtime sessions are excluded from normal session lists
 - missing skills and credentials fail before the publication gateway listens
-- provider/model replacement prompts run through real `arroba serve` stdin and
+- provider/model replacement prompts run through real `chariox serve` stdin and
   persist replacements to `bindings.local.json`
 - `human_http` works locally from a browser URL
 - the `human_http` root page supports prompt plus artifact upload
@@ -248,7 +248,7 @@ The container build input should include:
 
 The image should contain:
 
-- Arroba kernel
+- Chariox kernel
 - publication gateway/server
 - required runtime assets
 - provider CLI dependencies where practical
@@ -268,9 +268,9 @@ the image.
 
 ### Hosted Deployment
 
-Arroba Cloud can later host the container as a generic web service. In that mode
+Chariox Cloud can later host the container as a generic web service. In that mode
 Cloud should expose URL/IP/logs and deployment lifecycle controls, while the
-published workflow remains independently reachable by non-Arroba users if the
+published workflow remains independently reachable by non-Chariox users if the
 owner configures it that way.
 
 ## 8. Execution Order

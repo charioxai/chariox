@@ -1,6 +1,6 @@
 kind: connector_adapter
 name: http
 version: 0.1.0
-adapter_protocol: arroba-connector-adapter-v2
-command: arroba-adapter-http
+adapter_protocol: chariox-connector-adapter-v2
+command: chariox-adapter-http
 description: Built-in HTTP connector adapter.

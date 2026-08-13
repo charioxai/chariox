@@ -1,21 +1,21 @@
 # CLI Themes
 
-Arroba loads built-in themes and custom JSON themes into the same registry. The waiting room `Theme` row cycles every loaded theme with the left and right arrow keys, then persists the selected theme in `ui.theme`.
+Chariox loads built-in themes and custom JSON themes into the same registry. The waiting room `Theme` row cycles every loaded theme with the left and right arrow keys, then persists the selected theme in `ui.theme`.
 
 ## Theme Locations
 
 Custom themes are loaded from these directories:
 
-- `~/.arroba/themes/*.json`
-- `<workspace>/.arroba/themes/*.json`
+- `~/.chariox/themes/*.json`
+- `<workspace>/.chariox/themes/*.json`
 
-If `XDG_CONFIG_HOME` is set, the global directory is `$XDG_CONFIG_HOME/arroba/themes/*.json`.
+If `XDG_CONFIG_HOME` is set, the global directory is `$XDG_CONFIG_HOME/chariox/themes/*.json`.
 
 Project themes are loaded after global themes. A custom theme cannot replace a built-in theme ID.
 
 ## Native Format
 
-Native themes use Arroba token names. Missing colors fall back to the OpenCode built-in theme.
+Native themes use Chariox token names. Missing colors fall back to the OpenCode built-in theme.
 
 ```json
 {
@@ -66,7 +66,7 @@ Native themes use Arroba token names. Missing colors fall back to the OpenCode b
 
 OpenCode TUI theme JSON files are supported directly. These are the files shaped like `opencode-dev/packages/opencode/src/cli/cmd/tui/context/theme/matrix.json`: colors live in `theme`, optional reusable colors live in `defs`, and `{ "dark": "...", "light": "..." }` variants are resolved using the dark value.
 
-OpenCode TUI files do not include an `id`; Arroba uses the JSON filename. For example, `~/.arroba/themes/neon-matrix.json` appears as `Neon Matrix` in the waiting room.
+OpenCode TUI files do not include an `id`; Chariox uses the JSON filename. For example, `~/.chariox/themes/neon-matrix.json` appears as `Neon Matrix` in the waiting room.
 
 ```json
 {
@@ -90,7 +90,7 @@ OpenCode TUI files do not include an `id`; Arroba uses the JSON filename. For ex
 
 ## OpenCode Desktop Format
 
-OpenCode desktop theme JSON files are also supported. Arroba reads the `dark.palette` and `dark.overrides` fields and adapts them to CLI tokens.
+OpenCode desktop theme JSON files are also supported. Chariox reads the `dark.palette` and `dark.overrides` fields and adapts them to CLI tokens.
 
 ```json
 {

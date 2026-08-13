@@ -12,49 +12,49 @@ const entrypoint = await readFile(join(repositoryRoot, "docker/publication/entry
 
 test("publication entrypoint keeps builder actions outside credential and transport environments", () => {
   assert.match(entrypoint, /^umask 077$/m)
-  assert.match(entrypoint, /runuser -u arroba-action -- env -i/)
-  assert.match(entrypoint, /runuser -u arroba-gateway --preserve-environment/)
-  assert.match(entrypoint, /launch_kernel_as_arroba "\$\{ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE:-\}"/)
-  assert.match(entrypoint, /require_private_capability_file "\$kernel_local_auth_file" arroba-gateway/)
-  assert.match(entrypoint, /ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE/)
-  assert.match(entrypoint, /ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE/)
+  assert.match(entrypoint, /runuser -u chariox-action -- env -i/)
+  assert.match(entrypoint, /runuser -u chariox-gateway --preserve-environment/)
+  assert.match(entrypoint, /launch_kernel_as_chariox "\$\{CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE:-\}"/)
+  assert.match(entrypoint, /require_private_capability_file "\$kernel_local_auth_file" chariox-gateway/)
+  assert.match(entrypoint, /CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE/)
+  assert.match(entrypoint, /CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE/)
   assert.match(entrypoint, /read_bootstrap_capability_file/)
   assert.match(entrypoint, /O_RDONLY \| fs\.constants\.O_NOFOLLOW/)
   assert.match(entrypoint, /publication audit URL and URL file cannot both be configured/)
   assert.match(entrypoint, /chmod 700 "\$HOME"/)
-  assert.match(entrypoint, /chmod 700 "\$ARROBA_WORKSPACE_DIR"/)
-  assert.match(entrypoint, /chmod -R go-rwx "\$ARROBA_WORKSPACE_DIR"/)
-  assert.match(entrypoint, /TMPDIR="\$ARROBA_KERNEL_TMPDIR"/)
-  assert.match(entrypoint, /TMPDIR="\$ARROBA_GATEWAY_TMPDIR"/)
-  assert.match(entrypoint, /TMPDIR="\$ARROBA_ACTION_TMPDIR"/)
+  assert.match(entrypoint, /chmod 700 "\$CHARIOX_WORKSPACE_DIR"/)
+  assert.match(entrypoint, /chmod -R go-rwx "\$CHARIOX_WORKSPACE_DIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_KERNEL_TMPDIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_GATEWAY_TMPDIR"/)
+  assert.match(entrypoint, /TMPDIR="\$CHARIOX_ACTION_TMPDIR"/)
   assert.match(entrypoint, /O_EXCL/)
   assert.match(entrypoint, /O_NOFOLLOW/)
   assert.match(entrypoint, /renameSync\(temporary, destination\)/)
-  assert.match(entrypoint, /ARROBA_CAPABILITY_STAGING_DIR="\$ARROBA_CAPABILITY_ROOT\/\.staging"/)
+  assert.match(entrypoint, /CHARIOX_CAPABILITY_STAGING_DIR="\$CHARIOX_CAPABILITY_ROOT\/\.staging"/)
   assert.match(entrypoint, /first_unsafe_tree_path/)
   assert.match(entrypoint, /publication credential destination contains an unsafe path/)
   assert.match(entrypoint, /GATEWAY_PID="\$!"/)
   assert.match(entrypoint, /trap 'exit 143' TERM/)
   for (const name of [
-    "ARROBA_RELAY_URL",
-    "ARROBA_RELAY_TOKEN",
-    "ARROBA_CLOUD_RELAY_CONFIG_JSON",
-    "ARROBA_RELAY_HEARTBEAT_MS",
-    "ARROBA_KERNEL_QUEUE_CAPACITY",
+    "CHARIOX_RELAY_URL",
+    "CHARIOX_RELAY_TOKEN",
+    "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+    "CHARIOX_RELAY_HEARTBEAT_MS",
+    "CHARIOX_KERNEL_QUEUE_CAPACITY",
     "NODE_EXTRA_CA_CERTS",
     "HTTPS_PROXY",
     "NO_PROXY",
-    "ARROBA_PUBLICATION_CLOUD_API_URL",
-    "ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID",
-    "ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN",
+    "CHARIOX_PUBLICATION_CLOUD_API_URL",
+    "CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID",
+    "CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN",
   ]) assert.match(entrypoint, new RegExp(`\\b${name} \\\\`))
   assert.doesNotMatch(entrypoint, /chmod 755 "\$HOME"/)
-  assert.doesNotMatch(entrypoint, /ARROBA_PUBLICATION_CLOUD_RUNNER_KEY/)
+  assert.doesNotMatch(entrypoint, /CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY/)
   assert.doesNotMatch(entrypoint, /printf '%s' "\$value" > "\$path"/)
 })
 
 test("publication entrypoint imports every typed credential binding into runtime home", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-credentials-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-credentials-"))
   const home = join(root, "home")
   const bindings = join(root, "bindings")
   const codex = join(bindings, "000", "home", ".codex")
@@ -68,13 +68,13 @@ test("publication entrypoint imports every typed credential binding into runtime
       env: {
         ...process.env,
         HOME: home,
-        ARROBA_CONFIG_DIR: join(home, ".config", "arroba"),
-        ARROBA_DATA_DIR: join(home, ".local", "share", "arroba"),
-        ARROBA_RUNTIME_DIR: join(home, ".cache", "arroba", "runtime"),
-        ARROBA_SESSION_HISTORY_DIR: join(home, ".local", "share", "arroba", "sessions"),
-        ARROBA_CREDENTIAL_BINDINGS_ROOT: bindings,
-        ARROBA_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
-        ARROBA_WORKSPACE_DIR: join(root, "workspace"),
+        CHARIOX_CONFIG_DIR: join(home, ".config", "chariox"),
+        CHARIOX_DATA_DIR: join(home, ".local", "share", "chariox"),
+        CHARIOX_RUNTIME_DIR: join(home, ".cache", "chariox", "runtime"),
+        CHARIOX_SESSION_HISTORY_DIR: join(home, ".local", "share", "chariox", "sessions"),
+        CHARIOX_CREDENTIAL_BINDINGS_ROOT: bindings,
+        CHARIOX_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
+        CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
       },
     })
     assert.equal(await readFile(join(home, ".codex", "auth.json"), "utf8"), "codex-fixture")
@@ -134,7 +134,7 @@ test("publication entrypoint rejects unsafe credential profile and destination p
   ]
 
   for (const fixture of cases) {
-    const root = await mkdtemp(join(tmpdir(), "arroba-publication-unsafe-credentials-"))
+    const root = await mkdtemp(join(tmpdir(), "chariox-publication-unsafe-credentials-"))
     const home = join(root, "home")
     const bindings = join(root, "bindings")
     await mkdir(home, { recursive: true })
@@ -160,12 +160,12 @@ function publicationEntrypointEnvironment({ root, home, bindings }) {
   return {
     ...process.env,
     HOME: home,
-    ARROBA_CONFIG_DIR: join(home, ".config", "arroba"),
-    ARROBA_DATA_DIR: join(home, ".local", "share", "arroba"),
-    ARROBA_RUNTIME_DIR: join(home, ".cache", "arroba", "runtime"),
-    ARROBA_SESSION_HISTORY_DIR: join(home, ".local", "share", "arroba", "sessions"),
-    ARROBA_CREDENTIAL_BINDINGS_ROOT: bindings,
-    ARROBA_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
-    ARROBA_WORKSPACE_DIR: join(root, "workspace"),
+    CHARIOX_CONFIG_DIR: join(home, ".config", "chariox"),
+    CHARIOX_DATA_DIR: join(home, ".local", "share", "chariox"),
+    CHARIOX_RUNTIME_DIR: join(home, ".cache", "chariox", "runtime"),
+    CHARIOX_SESSION_HISTORY_DIR: join(home, ".local", "share", "chariox", "sessions"),
+    CHARIOX_CREDENTIAL_BINDINGS_ROOT: bindings,
+    CHARIOX_PROVIDER_CREDENTIALS_DIR: join(root, "missing-legacy-profile"),
+    CHARIOX_WORKSPACE_DIR: join(root, "workspace"),
   }
 }

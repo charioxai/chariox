@@ -60,7 +60,7 @@ Make the Hetzner publication runner reconcile existing runtime state on startup.
 
 Required behavior:
 
-- discover existing `arroba-publication-*` containers
+- discover existing `chariox-publication-*` containers
 - read runner route files and per-deployment `runtime.json`
 - probe each backend `/health`
 - probe Agent App status when available
@@ -247,7 +247,7 @@ Web requirements:
 
 CLI requirements:
 
-- `arroba publication deployments list`
+- `chariox publication deployments list`
 - `show`
 - `logs`
 - `stop`
@@ -302,7 +302,7 @@ Finish the hosted container drill as a repeatable launch gate.
 Required behavior:
 
 - package contains workflow snapshot, requirements, scripts/assets, trace policy, Agent App config, and provider CLI requirements
-- package excludes provider credentials and Arroba Cloud credentials
+- package excludes provider credentials and Chariox Cloud credentials
 - runner mounts explicit staging credential profiles for validation
 - container starts kernel and gateway
 - package materializes before serving
@@ -324,7 +324,7 @@ Finish the local-runtime ingress drill as a repeatable launch gate.
 
 Required behavior:
 
-- local `arroba serve` equivalent starts publication gateway
+- local `chariox serve` equivalent starts publication gateway
 - gateway registers Cloud backend with relay/display tunnel URL
 - Cloud ingress reaches the local gateway through the kernel/relay path
 - Cloud UI shows local serve readiness or recovery instruction

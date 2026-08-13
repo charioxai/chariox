@@ -4,11 +4,11 @@ Validation date: 2026-07-11
 OSS branch: `codex/scale-efficiency-500` at `fd5f3f558`  
 Cloud branch: `codex/scale-efficiency-500` at `faf94560`
 
-This directory preserves the final release-mode evidence for `docs/SCALE_PERFORMANCE_PLAN.html`. All live drills used isolated worktrees, temporary state roots, and empty port bands. Provider child-process capacity is reported separately from Arroba orchestration, as required by the plan.
+This directory preserves the final release-mode evidence for `docs/SCALE_PERFORMANCE_PLAN.html`. All live drills used isolated worktrees, temporary state roots, and empty port bands. Provider child-process capacity is reported separately from Chariox orchestration, as required by the plan.
 
 ## Outcome
 
-The Arroba-owned scale gates pass for 500 concurrently active agents distributed across ten worker kernels and for a single kernel rendering 500 synthetic agents. Read paths use immutable projections; provider work is readiness-driven; history and durable state use bounded batched writers; terminal and relay state is sharded; browser hydration is visible-first; large trees are virtualized; and Cloud inventory writes are coalesced.
+The Chariox-owned scale gates pass for 500 concurrently active agents distributed across ten worker kernels and for a single kernel rendering 500 synthetic agents. Read paths use immutable projections; provider work is readiness-driven; history and durable state use bounded batched writers; terminal and relay state is sharded; browser hydration is visible-first; large trees are virtualized; and Cloud inventory writes are coalesced.
 
 The original repeated-session/history CPU problem is removed from the hot path. Session and waiting-room readers clone immutable projection handles instead of cloning full runtime graphs. Event persistence now applies bounded backpressure before serialization can accumulate, and command replay retention is bounded by estimated heap footprint as well as disk size.
 
@@ -28,7 +28,7 @@ The final visual artifact, `single-500-terminal.png`, shows 500 sidebar agents w
 
 ## Distributed 500-active gate
 
-Three consecutive release runs created ten worker kernels with 50 leased/running agents each. Every run maintained 500 remote leases and 500 running provider runs, sampled prompt/output/completion routing on every worker, and used ten shared synthetic provider processes so the measurement isolates Arroba orchestration.
+Three consecutive release runs created ten worker kernels with 50 leased/running agents each. Every run maintained 500 remote leases and 500 running provider runs, sampled prompt/output/completion routing on every worker, and used ten shared synthetic provider processes so the measurement isolates Chariox orchestration.
 
 | Pass | Spawn | Launch | Prompt accepted | Sample completion | Peak process RSS | Peak process CPU |
 |---|---:|---:|---:|---:|---:|---:|
@@ -64,9 +64,9 @@ The transcript-only live sample intentionally avoids a background observer that 
 
 - Codex: passed all 20 assistant markers, 20 tool markers, and the final marker; native transcript captured.
 - Claude: passed all 20 assistant markers, 20 tool markers, and the final marker; native transcript captured.
-- OpenCode: the client/runtime path was exercised, but the configured Zen account returned `Insufficient balance`, while the configured OpenAI OAuth account returned `Token refresh failed: 401`. These are external provider-account limitations, not Arroba orchestration failures. The drill now classifies balance, credits, billing, token-refresh, unauthorized, and 401 messages correctly even when OpenCode exits with status 0.
+- OpenCode: the client/runtime path was exercised, but the configured Zen account returned `Insufficient balance`, while the configured OpenAI OAuth account returned `Token refresh failed: 401`. These are external provider-account limitations, not Chariox orchestration failures. The drill now classifies balance, credits, billing, token-refresh, unauthorized, and 401 messages correctly even when OpenCode exits with status 0.
 
-Per the plan assumptions, provider quotas and credentials are outside the Arroba orchestration capacity guarantee and are reported separately rather than weakening the scale gate.
+Per the plan assumptions, provider quotas and credentials are outside the Chariox orchestration capacity guarantee and are reported separately rather than weakening the scale gate.
 
 ## Evidence index
 

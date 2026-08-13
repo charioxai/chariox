@@ -4,7 +4,7 @@
 
 Improve the TypeScript CLI transcript so code shown by providers is syntax highlighted in the terminal and markdown output is rendered more cleanly.
 
-This is not an LSP project. For transcript rendering, Arroba should follow the same broad approach as OpenCode:
+This is not an LSP project. For transcript rendering, Chariox should follow the same broad approach as OpenCode:
 
 - use terminal-native markdown and code renderers
 - use syntax-highlighting/parser infrastructure for fenced code blocks
@@ -14,7 +14,7 @@ This is not an LSP project. For transcript rendering, Arroba should follow the s
 
 ### Rendering strategy
 
-- Keep Arroba's current transcript layout, entry roles, and session chrome.
+- Keep Chariox's current transcript layout, entry roles, and session chrome.
 - Upgrade assistant and reasoning transcript entries from plain text rendering to markdown-aware rendering.
 - Highlight fenced code blocks through OpenTUI's markdown/code renderables and Tree-sitter parser pipeline.
 - Continue rendering user, status, and notice entries as simple text.
@@ -24,7 +24,7 @@ This is not an LSP project. For transcript rendering, Arroba should follow the s
 
 - Use OpenTUI parser registration in the TypeScript CLI.
 - Rely on built-in OpenTUI parsers for markdown, javascript, and typescript.
-- Register a trimmed Arroba parser set for common additional languages:
+- Register a trimmed Chariox parser set for common additional languages:
   - python
   - rust
   - go
@@ -46,7 +46,7 @@ This is not an LSP project. For transcript rendering, Arroba should follow the s
 ### Styling strategy
 
 - Add a transcript syntax theme in the TypeScript CLI theme layer.
-- Reuse Arroba colors instead of copying OpenCode's full theme system.
+- Reuse Chariox colors instead of copying OpenCode's full theme system.
 - Style syntax tokens plus key markdown affordances such as headings, links, code, quotes, and lists.
 
 ## Phases
@@ -69,7 +69,7 @@ Deliver:
 
 - markdown-aware rendering for assistant and reasoning transcript entries
 - better display of headings, block quotes, links, inline code, and lists
-- keep existing Arroba transcript layout while improving content rendering inside entries
+- keep existing Chariox transcript layout while improving content rendering inside entries
 
 Status:
 
@@ -89,5 +89,5 @@ Status:
 ## Verification
 
 ```bash
-pnpm --filter @arroba/cli run test
+pnpm --filter @chariox/cli run test
 ```

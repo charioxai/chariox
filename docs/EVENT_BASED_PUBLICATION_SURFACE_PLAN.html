@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Cross-repository implementation plan for Arroba event-based workflow publication, AEGS discovery, and AEDS delivery."
+      content="Cross-repository implementation plan for Chariox event-based workflow publication, AEGS discovery, and AEDS delivery."
     />
     <title>Event-based Workflow Publication — Implementation Plan</title>
     <style>
@@ -558,7 +558,7 @@
 
       <main>
         <header class="hero">
-          <p class="kicker">Arroba · Cross-repository implementation plan</p>
+          <p class="kicker">Chariox · Cross-repository implementation plan</p>
           <h1>Event-based workflow <span>publication</span></h1>
           <p class="lead">
             Make external events a first-class workflow publication surface, backed by scalable
@@ -566,8 +566,8 @@
             the web terminal and PTY-based TUI.
           </p>
           <div class="facts" aria-label="Plan facts">
-            <span class="fact">Runtime: arroba</span>
-            <span class="fact">Registry + web: arroba-cloud</span>
+            <span class="fact">Runtime: chariox</span>
+            <span class="fact">Registry + web: chariox-cloud</span>
             <span class="fact">Protocol bump required</span>
             <span class="fact">No agent-owned subscriptions</span>
             <span class="fact">AEDS / AEGS host separation</span>
@@ -589,7 +589,7 @@
           <div class="callout">
             <strong>AEDS is the canonical name.</strong>
             <p>
-              AEGS means Arroba Event Generation Server. AEDS means Arroba Event Delivery Server.
+              AEGS means Chariox Event Generation Server. AEDS means Chariox Event Delivery Server.
               Event publication is kernel core behavior, not a new agent extension type.
             </p>
           </div>
@@ -774,7 +774,7 @@
           <pre><code>GET /v1/event-generators
     ?query=pull+request
     &amp;category=developer-tools
-    &amp;publisher_trust=official,arroba
+    &amp;publisher_trust=official,chariox
     &amp;sort=recommended
     &amp;cursor=&lt;opaque&gt;
     &amp;limit=24
@@ -902,9 +902,9 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             <tbody>
               <tr>
                 <td>GitHub</td>
-                <td>Arroba</td>
-                <td>Arroba</td>
-                <td>GitHub by Arroba · Arroba-maintained</td>
+                <td>Chariox</td>
+                <td>Chariox</td>
+                <td>GitHub by Chariox · Chariox-maintained</td>
               </tr>
               <tr>
                 <td>GitHub</td>
@@ -922,15 +922,15 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
           </table>
           <ul>
             <li>
-              Implementation IDs are publisher-scoped. Arroba-owned integrations use names such as
-              <code>dev.arroba.github</code>; provider-owned namespaces remain reserved.
+              Implementation IDs are publisher-scoped. Chariox-owned integrations use names such as
+              <code>dev.chariox.github</code>; provider-owned namespaces remain reserved.
             </li>
             <li>
               “Official” requires explicit registry verification that the provider published or
               endorsed the implementation. Domain control alone is not sufficient.
             </li>
             <li>
-              An official implementation may coexist with an Arroba-maintained implementation. It
+              An official implementation may coexist with a Chariox-maintained implementation. It
               does not silently replace, migrate, or revoke existing publications.
             </li>
             <li>
@@ -1255,7 +1255,7 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             </thead>
             <tbody>
               <tr>
-                <td><code>arroba</code></td>
+                <td><code>chariox</code></td>
                 <td>
                   Shared contracts; kernel publication service; durable event binding and inbox
                   state; public AEDS client; local/remote TUI and slash commands; public AEGS SDK,
@@ -1264,7 +1264,7 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
                 </td>
               </tr>
               <tr>
-                <td><code>arroba-aeds</code> <span class="badge">private</span></td>
+                <td><code>chariox-aeds</code> <span class="badge">private</span></td>
                 <td>
                   The independently versioned and deployed AEDS product: subscription route
                   registry, authenticated producer ingress, durable delivery, kernel connections,
@@ -1275,19 +1275,19 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               </tr>
               <tr>
                 <td>
-                  <code>arroba-aegs-&lt;provider&gt;</code>
+                  <code>chariox-aegs-&lt;provider&gt;</code>
                   <span class="badge">private · one per integration</span>
                 </td>
                 <td>
                   One independently versioned, secured, and deployed repository for every
-                  Arroba-maintained production integration, beginning with
-                  <code>arroba-aegs-github</code> and then Jira, Linear, GitLab, Sentry, and Slack.
+                  Chariox-maintained production integration, beginning with
+                  <code>chariox-aegs-github</code> and then Jira, Linear, GitLab, Sentry, and Slack.
                   Each owns only its provider authorization, webhook/subscription lifecycle,
                   normalization, protected credentials, and catalog manifest.
                 </td>
               </tr>
               <tr>
-                <td><code>arroba-cloud</code></td>
+                <td><code>chariox-cloud</code></td>
                 <td>
                   Hosted registry API and search index; publisher verification and editorial
                   metadata; search, categories, recommendations, pagination, and installation
@@ -1308,10 +1308,10 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
             <strong>Repository extraction completed for the implementation branch.</strong>
             <p>
               The temporary <code>apps/aeds</code> and combined <code>apps/aegs</code> incubators
-              have been split. AEDS now lives in the private <code>arroba-aeds</code> repository;
+              have been split. AEDS now lives in the private <code>chariox-aeds</code> repository;
               GitHub, Jira, Linear, GitLab, Sentry, and Slack each live in a separate private
-              <code>arroba-aegs-&lt;provider&gt;</code> repository. OSS retains only
-              <code>arroba-aegs-dummy</code>, the public protocol and SDK, conformance contracts,
+              <code>chariox-aegs-&lt;provider&gt;</code> repository. OSS retains only
+              <code>chariox-aegs-dummy</code>, the public protocol and SDK, conformance contracts,
               kernel integration, and a cross-repository local drill. Service-specific containers,
               TLS, systemd, migrations, credentials, and operational tooling are owned by the
               corresponding private repository. Every first-wave AEGS repository also owns its
@@ -1319,25 +1319,25 @@ GET /v1/event-generators/{generator_id}/events/{event_type_id}</code></pre>
               event set with the public SDK. Operator, verification, availability, recommendation,
               and installation metadata remain independently authenticated registry fields rather
               than publisher-signed manifest content. The final cleanup gate requires searches
-              and build graphs in both <code>arroba</code> and <code>arroba-cloud</code> to show
+              and build graphs in both <code>chariox</code> and <code>chariox-cloud</code> to show
               no duplicate production runtime.
             </p>
           </div>
           <p>
             Catalog identity is publisher-scoped rather than reserved by service name. For
-            example, Arroba's GitHub implementation uses <code>dev.arroba.github</code>; a future
+            example, Chariox's GitHub implementation uses <code>dev.chariox.github</code>; a future
             verified implementation published by GitHub uses GitHub's own namespace and may
             coexist as the official implementation.
           </p>
 
           <h3>Implementation workspaces</h3>
-          <pre><code>arroba
+          <pre><code>chariox
   branch:   codex/event-based-publication
-  worktree: /Users/miguel/.codex/worktrees/event-based-publication/arroba
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/chariox
 
-arroba-cloud
+chariox-cloud
   branch:   codex/event-based-publication
-  worktree: /Users/miguel/.codex/worktrees/event-based-publication/arroba-cloud</code></pre>
+  worktree: /Users/miguel/.codex/worktrees/event-based-publication/chariox-cloud</code></pre>
         </section>
 
         <section id="deployment">
@@ -1379,7 +1379,7 @@ arroba-cloud
           <div class="callout good">
             <strong>Host-independent deployment packaging completed.</strong>
             <p>
-              The private <code>arroba-aeds</code> repository and every first-wave private AEGS
+              The private <code>chariox-aeds</code> repository and every first-wave private AEGS
               repository now own their immutable image workflow, bounded production Compose
               definition, systemd unit, configuration preflight, health check, backup/restore
               operations, and deployment runbook. Each package has passed local syntax,
@@ -1392,7 +1392,7 @@ arroba-cloud
               enforce the same gate. The ownership-scoped cleanup removed all event-service
               containers, images, build layers, scanner caches, and build-step containers without
               pruning unrelated Docker state. Hosted GitHub Actions verification subsequently ran
-              successfully for <code>arroba-aeds</code> and all six first-wave production AEGS
+              successfully for <code>chariox-aeds</code> and all six first-wave production AEGS
               repositories: formatting, Clippy, tests, ShellCheck, and OCI image builds are green.
               The current private-repository revisions also publish exact-commit GHCR images
               sequentially with BuildKit <code>mode=max</code> provenance and SPDX SBOM
@@ -1448,7 +1448,7 @@ arroba-cloud
               also passed an exact Linux/amd64 OCI title, source-revision, and protocol-label
               check; the temporary local image and registry login were removed afterward.
               A real unpublished public Sentry App named
-              <code>Arroba Event Notifications</code> now supplies the staging slug, client ID,
+              <code>Chariox Event Notifications</code> now supplies the staging slug, client ID,
               client secret, callback, webhook URL, organization scope, and the real
               <code>issue.created</code>/<code>issue.resolved</code> event interests. Live
               installation exposed two additional provider-contract defects that synthetic OAuth
@@ -1523,7 +1523,7 @@ arroba-cloud
               <code>vps-775dbb36.vps.ovh.net</code> (2 vCPU, 4 GiB RAM, 40 GiB disk)
               was fenced as the <code>aeds</code> role and is deployed from private revision
               <code>3ee73b1d1df0a0ac21d7ca6822d6c935e83bca15</code> and immutable image
-              <code>ghcr.io/mgutierrez09/arroba-aeds@sha256:a7194caf850567ad9ee2ce43e00e146abcea4d74e9320a3347f967a2eaa1c76d</code>.
+              <code>ghcr.io/mgutierrez09/chariox-aeds@sha256:a7194caf850567ad9ee2ce43e00e146abcea4d74e9320a3347f967a2eaa1c76d</code>.
               Its public WSS/HTTPS edge is
               <code>https://aeds.57.131.138.28.sslip.io</code>. A real local kernel connected to it,
               reconciled a workflow-owned dummy subscription on the separate AEGS host, and
@@ -1635,7 +1635,7 @@ arroba-cloud
               The service is capped at 0.5 CPU and 256 MiB; a final audit measured approximately
               1.24 MiB for GitHub and 14.05 MiB for the 128 MiB dummy while both remained healthy,
               leaving 3.3 GiB available memory, 34 GiB free disk, and unused swap. The GitHub App
-              <code>Arroba Event Staging Runtime</code> is installed only on the private
+              <code>Chariox Event Staging Runtime</code> is installed only on the private
               <code>charioxai/chariox-event-publication-drill</code> repository. A real
               <code>pull_request.opened</code> webhook for PR #1 reconciled one GitHub subscription,
               increased AEDS acknowledgements, injected the canonical prompt into the workflow
@@ -1678,7 +1678,7 @@ arroba-cloud
               validations recorded below now provide that acceptance evidence.
             </p>
             <p>
-              Real Jira Cloud acceptance then used the authorized Arroba development application
+              Real Jira Cloud acceptance then used the authorized Chariox development application
               and project <code>KAN</code>. Creating issue <code>KAN-1</code> emitted the genuine
               provider webhook, traversed Jira AEGS, AEDS, the durable kernel inbox, and the normal
               workflow endpoint queue, and completed the workflow run. Deleting the publication
@@ -1698,8 +1698,8 @@ arroba-cloud
               than only signed synthetic webhook handling.
             </p>
             <p>
-              Real Slack acceptance used the <code>Arroba Event Notifications</code> Slack app in
-              the <code>Arroba Event Validation</code> workspace, with independently authorized
+              Real Slack acceptance used the <code>Chariox Event Notifications</code> Slack app in
+              the <code>Chariox Event Validation</code> workspace, with independently authorized
               <code>app_mention</code>, <code>message.channels</code>, and
               <code>reaction_added</code> interests. Genuine channel messages first proved that
               notifications arriving while a workflow run is busy remain ordinary queued prompts.
@@ -1746,7 +1746,7 @@ arroba-cloud
             <p>
               Live GitLab-provider acceptance followed using a legitimate GitLab OAuth
               application, the real project
-              <code>arroba-event-publication-drill/gitlab-event-publication-drill</code>, and a
+              <code>chariox-event-publication-drill/gitlab-event-publication-drill</code>, and a
               dynamically reconciled project webhook. Transferring the same
               <code>merge_request.opened@1</code> interest between two published workflows in the
               same execution environment tombstoned the old binding, removed its provider hook,
@@ -1898,7 +1898,7 @@ arroba-cloud
           <h3>Deployment shape</h3>
           <ul>
             <li>
-              Produce immutable Linux OCI images for AEDS and every Arroba-maintained AEGS. Deploy
+              Produce immutable Linux OCI images for AEDS and every Chariox-maintained AEGS. Deploy
               pinned digests tied to the exact revision of each owning service repository plus
               compatible OSS and Cloud revisions; do not deploy by pulling a mutable branch on the
               host.
@@ -1973,7 +1973,7 @@ arroba-cloud
               workflow exactly once through both product surfaces.
             </li>
             <li>
-              <strong>Registry promotion:</strong> only then mark an Arroba-operated AEGS
+              <strong>Registry promotion:</strong> only then mark a Chariox-operated AEGS
               available or recommended. The dummy AEGS remains a development fixture.
             </li>
           </ol>
@@ -2009,7 +2009,7 @@ arroba-cloud
                   <li>
                     Establish the public/private repository boundary and extract production
                     service runtimes before deployment: one private AEDS repository and one
-                    private repository per Arroba-maintained AEGS.
+                    private repository per Chariox-maintained AEGS.
                   </li>
                   <li>
                     Specify registry summary/detail pages, cursors, manifests, AEGS management, and
@@ -2153,7 +2153,7 @@ arroba-cloud
                 <ul>
                   <li>
                     Extract the implementation into the private
-                    <code>arroba-aegs-github</code> repository with independent CI, image,
+                    <code>chariox-aegs-github</code> repository with independent CI, image,
                     versioning, security scanning, deployment configuration, and catalog manifest.
                   </li>
                   <li>
@@ -2205,7 +2205,7 @@ arroba-cloud
                 <h3>Complete the initial integration set</h3>
                 <ul>
                   <li>
-                    Give every Arroba-maintained integration its own private repository, CI,
+                    Give every Chariox-maintained integration its own private repository, CI,
                     immutable image, protected credential boundary, and publisher-scoped catalog
                     identity.
                   </li>
@@ -2318,10 +2318,10 @@ arroba-cloud
               <tr>
                 <td>Repository extraction and cleanup</td>
                 <td>
-                  AEDS and every Arroba-maintained production AEGS build, test, and deploy from
+                  AEDS and every Chariox-maintained production AEGS build, test, and deploy from
                   their owning private repositories. Production runtime, provider adapter,
                   container, migration, deployment, and operational files are removed from
-                  <code>arroba</code> and <code>arroba-cloud</code>; no duplicate implementation
+                  <code>chariox</code> and <code>chariox-cloud</code>; no duplicate implementation
                   remains. OSS retains only kernel/publication behavior, public schemas and SDK,
                   conformance tests, and the dummy/local-development AEGS.
                 </td>
@@ -2417,7 +2417,7 @@ arroba-cloud
               <ul>
                 <li>GitHub, Jira, Linear, GitLab, Sentry, and Slack pass conformance.</li>
                 <li>Each passes live delivery, reboot, retry, transfer, and deletion drills.</li>
-                <li>SDK and documentation are sufficient for a non-Arroba publisher.</li>
+                <li>SDK and documentation are sufficient for a non-Chariox publisher.</li>
                 <li>Second-phase integrations remain explicitly deferred.</li>
               </ul>
             </article>
@@ -2435,7 +2435,7 @@ arroba-cloud
         </section>
 
         <footer>
-          EVENT_BASED_PUBLICATION_SURFACE_PLAN.html · Arroba architecture · 2026-07-27
+          EVENT_BASED_PUBLICATION_SURFACE_PLAN.html · Chariox architecture · 2026-07-27
         </footer>
       </main>
     </div>

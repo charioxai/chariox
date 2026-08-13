@@ -170,11 +170,11 @@
   <body>
     <main>
       <section class="hero">
-        <p class="eyebrow">Arroba kernel design spec</p>
+        <p class="eyebrow">Chariox kernel design spec</p>
         <h1>Workflow Code</h1>
         <p class="summary">
           Workflow code is a saved, portable artifact that lets users and authorized metaagents define
-          complete Arroba workflows with code. The kernel compiles the artifact into the normal workflow
+          complete Chariox workflows with code. The kernel compiles the artifact into the normal workflow
           definition model, allocates fresh workflow graph identifiers, optionally spawns agents, validates
           every reference and limit, and can then run the resulting workflow through existing runtime paths.
         </p>
@@ -253,7 +253,7 @@
           <tr>
             <td>Queued prompt</td>
             <td><code>queue_id</code>, <code>workflow_id</code>, <code>endpoint_id</code>, <code>prompt</code>, <code>source</code>, <code>status</code></td>
-            <td>Not a static builder primitive. Use <code>arroba.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>. Endpoint and queue values may be script handles; the kernel maps them to generated runtime ids before starting a run or creating a queued prompt.</td>
+            <td>Not a static builder primitive. Use <code>chariox.meta.workflow_code.run</code> with <code>endpoint</code>, <code>queue</code>, and <code>prompt</code>, or <code>RunWorkflowCode*</code> with <code>endpoint</code>, <code>queue_ref</code>, and <code>prompt</code>. Endpoint and queue values may be script handles; the kernel maps them to generated runtime ids before starting a run or creating a queued prompt.</td>
           </tr>
           <tr>
             <td>Watchdog</td>
@@ -263,7 +263,7 @@
           <tr>
             <td>Run prompt</td>
             <td><code>WorkflowRun.invocation_prompt</code>, rendered as <code>Workflow-level prompt</code> in the turn prompt.</td>
-            <td><code>workflow.define({ prompt })</code> stores the workflow-code default invocation prompt. <code>arroba.meta.workflow_code.run</code> and <code>RunWorkflowCode*</code> use the explicit runtime prompt when present, otherwise this saved default. Endpoint invocation and <code>workflow.watchdog(... invocationPrompt)</code> provide their own runtime prompts.</td>
+            <td><code>workflow.define({ prompt })</code> stores the workflow-code default invocation prompt. <code>chariox.meta.workflow_code.run</code> and <code>RunWorkflowCode*</code> use the explicit runtime prompt when present, otherwise this saved default. Endpoint invocation and <code>workflow.watchdog(... invocationPrompt)</code> provide their own runtime prompts.</td>
           </tr>
         </tbody>
       </table>
@@ -429,7 +429,7 @@ script_memory_bytes = 268435456</code></pre>
         <li>Extension definitions are portability requirements, not hidden script execution privileges.</li>
         <li>Apply-time validation checks that declared extensions already exist in the target kernel registry and rejects the workflow before mutation when a requirement is unavailable.</li>
         <li>Credentialed connectors require target-kernel binding and must not be serialized with secrets.</li>
-        <li>Home-worker and slice-backed behavior must follow existing Arroba provider and skill/MCP transfer rules.</li>
+        <li>Home-worker and slice-backed behavior must follow existing Chariox provider and skill/MCP transfer rules.</li>
       </ul>
 
       <h2>Routing Model</h2>
@@ -464,7 +464,7 @@ script_memory_bytes = 268435456</code></pre>
       <h2>Workflow Code API Shape</h2>
       <p>
         The JavaScript API is small and builder-oriented. Handles are compile-time references only.
-        They are not durable Arroba ids.
+        They are not durable Chariox ids.
       </p>
       <pre><code>workflow.define({
   alias: "triage-review-loop",
@@ -701,7 +701,7 @@ workflow.watchdog(start, {
       <h2>Handle To Kernel Id Translation</h2>
       <p>
         Scripts do not assign workflow graph ids. Every builder call returns an opaque compile-time handle.
-        Handles let the script connect objects to each other, but they are not Arroba ids and are not persisted
+        Handles let the script connect objects to each other, but they are not Chariox ids and are not persisted
         as ids in the workflow definition.
       </p>
       <pre><code>const intake = workflow.node({ ... });
@@ -724,7 +724,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       </ol>
       <p>
         Workflow-code scripts do not execute runs while compiling. Run and queue side effects happen only after
-        validation through <code>arroba.meta.workflow_code.run</code>, <code>workflow_code.run</code>, or normal endpoint invocation APIs, which receive the
+        validation through <code>chariox.meta.workflow_code.run</code>, <code>workflow_code.run</code>, or normal endpoint invocation APIs, which receive the
         allocated endpoint and queue references from the apply report.
       </p>
       <p>
@@ -754,43 +754,43 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         </thead>
         <tbody>
           <tr>
-            <td><code>arroba.meta.workflow_code.create</code></td>
+            <td><code>chariox.meta.workflow_code.create</code></td>
             <td>Create a saved workflow-code artifact from name, source, optional language (<code>javascript</code> or <code>typescript</code>; legacy <code>java_script</code>/<code>type_script</code> are accepted), and optional Node.js path.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.update</code></td>
+            <td><code>chariox.meta.workflow_code.update</code></td>
             <td>Update a saved artifact revision from name, source, optional language (<code>javascript</code> or <code>typescript</code>), and optional Node.js path.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.list</code></td>
+            <td><code>chariox.meta.workflow_code.list</code></td>
             <td>List saved workflow-code artifact metadata.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.read</code></td>
+            <td><code>chariox.meta.workflow_code.read</code></td>
             <td>Read a saved artifact for review or iteration.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.delete</code></td>
+            <td><code>chariox.meta.workflow_code.delete</code></td>
             <td>Delete a saved artifact from the session/workspace registry.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.validate</code></td>
+            <td><code>chariox.meta.workflow_code.validate</code></td>
             <td>Compile inline source or validate a saved artifact by name without mutating workflow state. Accepts optional language, Node.js path for inline source, and provider/model rebindings.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.apply</code></td>
+            <td><code>chariox.meta.workflow_code.apply</code></td>
             <td>Compile and instantiate a workflow in the current session, using explicit provider/model rebinding for generated-agent nodes and strict validation for existing-agent and extension requirements.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.run</code></td>
+            <td><code>chariox.meta.workflow_code.run</code></td>
             <td>Apply saved or inline workflow-code as a fresh workflow, then invoke one endpoint with a prompt. <code>endpoint</code> and <code>queue</code> accept script handles from the generated workflow and are resolved through the apply report.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.export</code></td>
+            <td><code>chariox.meta.workflow_code.export</code></td>
             <td>Export artifact source, embedded schemas, manifest, extension requirements, compatibility metadata, and source/definition hashes.</td>
           </tr>
           <tr>
-            <td><code>arroba.meta.workflow_code.import</code></td>
+            <td><code>chariox.meta.workflow_code.import</code></td>
             <td>Import a portable artifact package from another user or kernel without trusting embedded credentials.</td>
           </tr>
         </tbody>
@@ -811,7 +811,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
 
       <h2>Dynamic Pattern Suite</h2>
       <p>
-        Arroba ships canonical workflow-code scripts for the workflow patterns that matter for
+        Chariox ships canonical workflow-code scripts for the workflow patterns that matter for
         metaagent-authored orchestration. The base vocabulary follows Anthropic's agent workflow
         taxonomy: prompt chaining, routing, parallelization, orchestrator-workers, and
         evaluator-optimizer. The suite also covers Claude Code dynamic-workflow shapes used for
@@ -823,7 +823,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
           <tr>
             <th>Pattern</th>
             <th>Canonical Script</th>
-            <th>Arroba Shape</th>
+            <th>Chariox Shape</th>
           </tr>
         </thead>
         <tbody>
@@ -882,7 +882,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
       <p>
         The built-in <code>workflows/workflow-code-patterns</code> meta guide embeds these scripts
         verbatim so a metaagent can read, adapt, validate, apply, run, export, and import them through
-        <code>arroba.meta.workflow_code.*</code>. Kernel tests compile every script, apply it with
+        <code>chariox.meta.workflow_code.*</code>. Kernel tests compile every script, apply it with
         provider/model rebindings to <code>dev-stub/default</code>, verify node/agent/edge/endpoint/schema
         id allocation, check canvas application, and assert final output schema materialization.
       </p>
@@ -904,7 +904,7 @@ const start = workflow.endpoint(intake, { alias: "start" });</code></pre>
         <li>TOML-backed defaults cover session max agents and workflow-code max concurrency.</li>
         <li>Workflow-code schemas are embedded in artifacts/packages and applied as kernel workflow schemas while existing <code>*_schema_ref</code> strings remain compatible.</li>
         <li>The kernel has a workflow-code artifact type, compiler IR, validation report, apply report, and run result.</li>
-        <li>Runtime MCP endpoints exist under the metaagent bundle: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.import</code>, and <code>arroba.meta.workflow_code.export</code>.</li>
+        <li>Runtime MCP endpoints exist under the metaagent bundle: <code>chariox.meta.workflow_code.create</code>, <code>chariox.meta.workflow_code.read</code>, <code>chariox.meta.workflow_code.list</code>, <code>chariox.meta.workflow_code.update</code>, <code>chariox.meta.workflow_code.delete</code>, <code>chariox.meta.workflow_code.validate</code>, <code>chariox.meta.workflow_code.apply</code>, <code>chariox.meta.workflow_code.run</code>, <code>chariox.meta.workflow_code.import</code>, and <code>chariox.meta.workflow_code.export</code>.</li>
         <li>Nodes-first workflow scripts compile into existing workflow services atomically.</li>
         <li>Metaagent workflow-code authoring and pattern guides are built into the meta guide surface and searchable by workflow-code tool and pattern names.</li>
         <li>Focused kernel/runtime tests cover Meta mode workflow-code authorization, validation, apply, and run policy; real-provider Meta mode drills provide behavior evidence.</li>

@@ -1,7 +1,7 @@
 # M9 Agent Apps Self-Deployment Plan
 
-This plan extends workflow publication so Arroba-deployed workflows can become
-Agent Apps. It covers only Arroba self-deployment through the existing
+This plan extends workflow publication so Chariox-deployed workflows can become
+Agent Apps. It covers only Chariox self-deployment through the existing
 `local_runtime` and `hosted_container` deployment modes. External web app
 middleware, Vercel integration, Git patching, and arbitrary third-party app
 hosting are out of scope for this phase.
@@ -77,7 +77,7 @@ deploy modal. Do not create a second runtime path.
 
 ## Gateway Runtime
 
-- Current `arroba-workflow-gateway` becomes the Agent App Gateway when
+- Current `chariox-workflow-gateway` becomes the Agent App Gateway when
   `agent_app.enabled`.
 - Serve normal app asset paths from `app/`.
 - Match wrapped routes before static asset fallback.
@@ -217,7 +217,7 @@ session or invocation overlay
 
 - Live validation drills:
   - hosted-container Agent App with real provider CLIs and development-mounted
-    provider/Arroba credentials for available providers. OpenCode is blocked
+    provider/Chariox credentials for available providers. OpenCode is blocked
     and explicitly excluded from this goal's validation criteria.
   - local-runtime ingress Agent App with the same package and available
     providers, excluding blocked OpenCode
@@ -276,7 +276,7 @@ Expected flow:
 
 Validation requirements:
 
-- Run locally through `arroba serve`.
+- Run locally through `chariox serve`.
 - Run through `local_runtime` Cloud ingress.
 - Run as `hosted_container`.
 - Validate URL-bar prompt invocation.
@@ -304,11 +304,11 @@ Validation requirements:
 - External web app middleware, Vercel integration, Git patching, and arbitrary
   external deployment environments are out of scope.
 - Endpoint roles are stored in package/deployment policy now, but v1 enforcement
-  is limited to Arroba-controlled deployment surfaces and route policy checks.
+  is limited to Chariox-controlled deployment surfaces and route policy checks.
 - Product packages must not permanently embed provider credentials, provider
-  CLI credential state, or Arroba Cloud account credentials. Development and
+  CLI credential state, or Chariox Cloud account credentials. Development and
   validation drills may use provider CLIs plus mounted or runner-provided
-  provider CLI credentials and Arroba credentials so the full hosted-container
+  provider CLI credentials and Chariox credentials so the full hosted-container
   and local-runtime pipelines can be tested with real providers.
 - OpenCode validation is currently blocked and is explicitly outside this goal
   and its completion criteria. Agent Apps validation should proceed with the

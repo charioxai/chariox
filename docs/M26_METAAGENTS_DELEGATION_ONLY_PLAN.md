@@ -38,8 +38,8 @@ The repo already has most primitives needed:
 - First-class provider execution mode through `AgentExecutionMode::Plan`.
 - Runtime MCP auth tokens tied to provider runs.
 - Runtime MCP tool spec generation and dispatch by auth token.
-- Meta-only runtime tools under `arroba.meta.*`.
-- `arroba.meta.run_command` and a meta command registry.
+- Meta-only runtime tools under `chariox.meta.*`.
+- `chariox.meta.run_command` and a meta command registry.
 - Existing workflow, prompt, event, turn inspection, and interaction surfaces.
 - Prompt assembly backed by Markdown template materialization.
 
@@ -76,7 +76,7 @@ For metaagents, the helper must:
 - Preserve normal permission-level selection from user/session/agent config.
 - Clear user-granted MCP servers from the metaagent provider run.
 - Clear worker/home remote extension manifests from the metaagent provider run.
-- Preserve only the Arroba runtime MCP binding needed for `arroba.meta.*`.
+- Preserve only the Chariox runtime MCP binding needed for `chariox.meta.*`.
 
 This override wins over session defaults, agent overrides, native TUI flags, and
 remote leased-agent inherited config.
@@ -107,7 +107,7 @@ The template must say, in concrete terms:
 - Do not edit workspace files directly.
 - Do not run shell commands, scripts, connectors, user MCPs, or external tools
   yourself.
-- Use `arroba.meta.*` to inspect the session, create workflows, spawn/prompt
+- Use `chariox.meta.*` to inspect the session, create workflows, spawn/prompt
   regular agents, inspect events/turns, provision capabilities/vault handles for
   workers, and resolve owned worker approvals.
 - Never grant capabilities to yourself.
@@ -123,23 +123,23 @@ metaagent supervision/provisioning tools plus read-only planning tools.
 
 Allowed:
 
-- `arroba.read_artifact`
-- `arroba.search_recall`
-- `arroba.query_recall`
-- `arroba.meta.session_overview`
-- `arroba.meta.search_commands`
-- `arroba.meta.list_commands`
-- `arroba.meta.command_docs`
-- `arroba.meta.run_command`
-- `arroba.meta.list_events`
-- `arroba.meta.read_event`
-- `arroba.meta.ack_event`
-- `arroba.meta.subscribe_events`
-- `arroba.meta.unsubscribe_events`
-- `arroba.meta.list_subscriptions`
-- `arroba.meta.turn_overview`
-- `arroba.meta.turn_blob`
-- `arroba.meta.resolve_runtime_interaction`
+- `chariox.read_artifact`
+- `chariox.search_recall`
+- `chariox.query_recall`
+- `chariox.meta.session_overview`
+- `chariox.meta.search_commands`
+- `chariox.meta.list_commands`
+- `chariox.meta.command_docs`
+- `chariox.meta.run_command`
+- `chariox.meta.list_events`
+- `chariox.meta.read_event`
+- `chariox.meta.ack_event`
+- `chariox.meta.subscribe_events`
+- `chariox.meta.unsubscribe_events`
+- `chariox.meta.list_subscriptions`
+- `chariox.meta.turn_overview`
+- `chariox.meta.turn_blob`
+- `chariox.meta.resolve_runtime_interaction`
 - slice/browser observation/control tools when the metaagent itself is deployed
   in a slice
 - new meta capability/vault provisioning wrappers, if direct command routing is
@@ -211,7 +211,7 @@ Allowed vault provisioning commands:
 
 Vault rules:
 
-- Secret values are not accepted through `arroba.meta.run_command`.
+- Secret values are not accepted through `chariox.meta.run_command`.
 - Secret values may be accepted as user/provider input only through a
   kernel-owned secure path, usually a worker credential interaction that the
   metaagent can approve without seeing the secret.
@@ -238,7 +238,7 @@ Metaagents may resolve runtime interactions when:
 
 - the target is an owned regular agent;
 - the interaction belongs to the same session;
-- the interaction kind is one Arroba already exposes for user approval;
+- the interaction kind is one Chariox already exposes for user approval;
 - the choice is one of the kernel-provided choices.
 
 Metaagents may not resolve:
@@ -258,11 +258,11 @@ directly:
    agent.
 2. Assert the same agent enters meta mode and its provider launch policy forces
    plan mode while preserving inherited permission semantics.
-3. Assert meta-mode `tools/list` contains the allowed `arroba.meta.*` tools plus
+3. Assert meta-mode `tools/list` contains the allowed `chariox.meta.*` tools plus
    read-only planning surfaces such as artifact and recall reads.
 4. Assert guessed denied calls for mutation/execution surfaces fail at dispatch,
    not just through hidden tool specs.
-5. Assert `arroba.meta.run_command` can spawn/prompt/focus/alias/delete owned
+5. Assert `chariox.meta.run_command` can spawn/prompt/focus/alias/delete owned
    regular agents and cannot control foreign agents or self-target as a worker.
 6. Assert workflows created by one Meta mode agent are scoped to its controlled
    agents and cannot include an agent currently in Meta mode as a node.

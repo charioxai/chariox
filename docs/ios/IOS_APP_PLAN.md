@@ -1,10 +1,10 @@
-# Arroba iOS App Plan
+# Chariox iOS App Plan
 
 Status: IOS-M0/M1 implementation started on 2026-04-25.
 
 ## Goal
 
-Build a native iOS client for Arroba inside the open-source `arroba` repository.
+Build a native iOS client for Chariox inside the open-source `chariox` repository.
 
 The iOS app is a client surface like the TypeScript terminal CLI and the Cloud
 WEB_CLI. It must not become a runtime authority. The kernel remains responsible
@@ -24,10 +24,10 @@ Read before implementing:
 - `docs/ROADMAP.md`
 - `apps/cli/src/`
 - `packages/kernel-client/src/`
-- sibling repo: `/Users/miguel/arroba-cloud/docs/WEB_SERVICE_ARCHITECTURE.md`
-- sibling repo: `/Users/miguel/arroba-cloud/docs/C2_REMOTE_WEB_CLI_WORKBENCH_MILESTONE.md`
-- sibling repo: `/Users/miguel/arroba-cloud/docs/C2_5_PERSISTENT_WEB_CLI_RUNTIME_MILESTONE.md`
-- sibling repo: `/Users/miguel/arroba-cloud/docs/CLI_KERNEL_INTEGRATION_CONTRACT.md`
+- sibling repo: `/Users/miguel/chariox-cloud/docs/WEB_SERVICE_ARCHITECTURE.md`
+- sibling repo: `/Users/miguel/chariox-cloud/docs/C2_REMOTE_WEB_CLI_WORKBENCH_MILESTONE.md`
+- sibling repo: `/Users/miguel/chariox-cloud/docs/C2_5_PERSISTENT_WEB_CLI_RUNTIME_MILESTONE.md`
+- sibling repo: `/Users/miguel/chariox-cloud/docs/CLI_KERNEL_INTEGRATION_CONTRACT.md`
 
 Cloud is a product and relay/onboarding reference, not the authority model for
 the iOS app. The OSS iOS app should support direct local-kernel attachment and
@@ -35,7 +35,7 @@ optional hosted relay/cloud login.
 
 ## Product Rules
 
-- iOS is part of the OSS `arroba` repo, not `arroba-cloud`.
+- iOS is part of the OSS `chariox` repo, not `chariox-cloud`.
 - iOS must share behavior with terminal CLI and WEB_CLI.
 - The kernel is the source of truth for runtime state.
 - Client-local state is limited to view state, drafts, local preferences,
@@ -71,7 +71,7 @@ Use `URLSessionWebSocketTask` for the direct kernel WebSocket transport.
 
 Required behavior:
 
-- connect to `ws://127.0.0.1:${ARROBA_KERNEL_PORT:-43118}/kernel` for local
+- connect to `ws://127.0.0.1:${CHARIOX_KERNEL_PORT:-43118}/kernel` for local
   development
 - support request/response frames
 - support subscribe/unsubscribe
@@ -159,7 +159,7 @@ Deliverables:
 
 Exit criteria:
 
-- iOS app connects to a local running `arroba-kernel`
+- iOS app connects to a local running `chariox-kernel`
 - app can list sessions and show connection state
 - transport unit tests cover reconnect and replay-gap behavior
 
@@ -364,7 +364,7 @@ confirmation.
 
 ### Appium Guidance
 
-Do not start with Appium. Consider it later only if Arroba needs WebDriver
+Do not start with Appium. Consider it later only if Chariox needs WebDriver
 compatibility, third-party QA infrastructure, or real-device automation beyond
 what XcodeBuildMCP/XCUITest/Maestro cover.
 
@@ -401,7 +401,7 @@ Useful references:
 
 ## Implementation Decisions
 
-- Project shape: Xcode workspace and app shell plus `ArrobaPackage` Swift
+- Project shape: Xcode workspace and app shell plus `CharioxPackage` Swift
   package, scaffolded under `apps/ios`.
 - Minimum iOS version: iOS 17 for the first slice.
 - State management: native SwiftUI `@Observable`; no TCA dependency yet.

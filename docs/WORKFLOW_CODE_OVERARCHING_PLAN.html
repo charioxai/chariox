@@ -146,16 +146,16 @@
   <body>
     <main>
       <section class="hero">
-        <p class="eyebrow">Arroba kernel plan</p>
+        <p class="eyebrow">Chariox kernel plan</p>
         <h1>Workflow Code Overarching Plan</h1>
         <p class="summary">
-          This plan refactors Arroba workflows into an A-plus scriptable surface, adds kernel-validated
+          This plan refactors Chariox workflows into an A-plus scriptable surface, adds kernel-validated
           workflow-code injection, and gives authorized metaagents the runtime tools and training context
           needed to create, validate, apply, and run portable workflow scripts.
         </p>
         <div class="callout">
           <strong>Target outcome:</strong> a user or authorized metaagent can write a self-contained JS/TS
-          workflow-code artifact, inject it into the kernel, have it validated against real Arroba workflow
+          workflow-code artifact, inject it into the kernel, have it validated against real Chariox workflow
           primitives, create or bind agents, see the workflow on the session canvas, run it, export it, and
           apply it in another kernel with explicit generated-agent provider/model rebinding and
           target-kernel validation of existing-agent and extension requirements.
@@ -228,7 +228,7 @@
       <ul>
         <li>Represent provider/model choices as preferences that can be rebound at apply time.</li>
         <li>Require explicit provider remapping when a target kernel lacks a requested provider or model.</li>
-        <li>Represent extension requirements in workflow-code so generated and authorized existing agents can receive the same Arroba extension grants used outside workflows.</li>
+        <li>Represent extension requirements in workflow-code so generated and authorized existing agents can receive the same Chariox extension grants used outside workflows.</li>
         <li>Reject apply when required providers, models, or extensions cannot be satisfied.</li>
       </ul>
 
@@ -263,7 +263,7 @@
         <thead>
           <tr>
             <th>Pattern</th>
-            <th>Minimum Arroba toy workflow</th>
+            <th>Minimum Chariox toy workflow</th>
             <th>Validation focus</th>
           </tr>
         </thead>
@@ -324,7 +324,7 @@
       <h2>Phase 3: Metaagent Infrastructure</h2>
       <h3>Runtime MCP tools</h3>
       <ul>
-        <li>Add workflow-code tools under the existing metaagent runtime MCP bundle, using the <code>arroba.meta.workflow_code.*</code> namespace: <code>arroba.meta.workflow_code.create</code>, <code>arroba.meta.workflow_code.read</code>, <code>arroba.meta.workflow_code.list</code>, <code>arroba.meta.workflow_code.update</code>, <code>arroba.meta.workflow_code.delete</code>, <code>arroba.meta.workflow_code.validate</code>, <code>arroba.meta.workflow_code.apply</code>, <code>arroba.meta.workflow_code.run</code>, <code>arroba.meta.workflow_code.export</code>, and <code>arroba.meta.workflow_code.import</code>.</li>
+        <li>Add workflow-code tools under the existing metaagent runtime MCP bundle, using the <code>chariox.meta.workflow_code.*</code> namespace: <code>chariox.meta.workflow_code.create</code>, <code>chariox.meta.workflow_code.read</code>, <code>chariox.meta.workflow_code.list</code>, <code>chariox.meta.workflow_code.update</code>, <code>chariox.meta.workflow_code.delete</code>, <code>chariox.meta.workflow_code.validate</code>, <code>chariox.meta.workflow_code.apply</code>, <code>chariox.meta.workflow_code.run</code>, <code>chariox.meta.workflow_code.export</code>, and <code>chariox.meta.workflow_code.import</code>.</li>
         <li>Expose these tools only to users and authorized metaagents.</li>
         <li>Keep existing manual workflow construction/editing commands available to metaagents.</li>
         <li>Record provenance for metaagent-created workflow-code artifacts and applied workflows.</li>
@@ -340,10 +340,10 @@
 
       <h3>Teaching metaagents</h3>
       <ul>
-        <li>Add an Arroba workflow-code skill/context pack automatically available to metaagents.</li>
+        <li>Add a Chariox workflow-code skill/context pack automatically available to metaagents.</li>
         <li>Include the exact builder API, primitive mapping, schema rules, provider remapping rules, extension requirements, limits, routing conventions, and validation examples.</li>
         <li>Include canonical scripts for every dynamic workflow pattern in this plan.</li>
-        <li>Teach the contract that metaagents must not invent fields outside the Arroba workflow primitive mapping.</li>
+        <li>Teach the contract that metaagents must not invent fields outside the Chariox workflow primitive mapping.</li>
       </ul>
 
       <h2>Metaagent Drills</h2>

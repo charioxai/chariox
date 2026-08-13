@@ -62,7 +62,7 @@ async function main() {
     url: "https://api.github.com/user",
     headers: {
       accept: "application/vnd.github+json",
-      "user-agent": "arroba-secret-handoff-spike",
+      "user-agent": "chariox-secret-handoff-spike",
       "x-github-api-version": "2022-11-28",
     },
   })

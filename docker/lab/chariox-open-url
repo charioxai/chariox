@@ -3,7 +3,7 @@ set -eu
 url="${1:-}"
 cat <<MSG
 
-A provider requested browser login from inside this Arroba container.
+A provider requested browser login from inside this Chariox container.
 Open this URL in your host browser:
 
   ${url:-<no-url-provided>}

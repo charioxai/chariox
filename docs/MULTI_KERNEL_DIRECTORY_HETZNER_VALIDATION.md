@@ -31,14 +31,14 @@ the exact reply from the kernel-owned durable history outline.
 
 | Machine | Kernel | Provider | Result |
 | --- | --- | --- | --- |
-| local macOS | local A | Codex | `ARROBA_MATRIX_LOCAL_A_CODEX_OK` |
-| local macOS | local B | OpenCode | `ARROBA_MATRIX_LOCAL_B_OPENCODE_OK` |
-| Hetzner Linux | Hetzner A | Claude `-p` | `ARROBA_MATRIX_HETZNER_A_CLAUDE_OK` |
-| Hetzner Linux | Hetzner B | Codex | `ARROBA_MATRIX_HETZNER_B_CODEX_OK` |
+| local macOS | local A | Codex | `CHARIOX_MATRIX_LOCAL_A_CODEX_OK` |
+| local macOS | local B | OpenCode | `CHARIOX_MATRIX_LOCAL_B_OPENCODE_OK` |
+| Hetzner Linux | Hetzner A | Claude `-p` | `CHARIOX_MATRIX_HETZNER_A_CLAUDE_OK` |
+| Hetzner Linux | Hetzner B | Codex | `CHARIOX_MATRIX_HETZNER_B_CODEX_OK` |
 
 Claude Code correctly refused its bypass-permissions mode when the first Linux
 kernel ran as root. The drill relaunched only that isolated kernel under the
-machine's existing unprivileged `arroba-worker` account and then passed without
+machine's existing unprivileged `chariox-worker` account and then passed without
 weakening the provider safety check. The kernel retained its state and history
 directories across that relaunch.
 
@@ -72,7 +72,7 @@ selected kernel catalog reconciled lazily.
 
 Opening `matrix-hetzner-a-claude-worker` from the waiting-room sidebar attached
 the web terminal to the existing remote session and rendered both the original
-prompt and exact `ARROBA_MATRIX_HETZNER_A_CLAUDE_OK` reply. This confirmed that
+prompt and exact `CHARIOX_MATRIX_HETZNER_A_CLAUDE_OK` reply. This confirmed that
 the optimistic inventory led to a real, attachable session rather than a stale
 display-only row.
 

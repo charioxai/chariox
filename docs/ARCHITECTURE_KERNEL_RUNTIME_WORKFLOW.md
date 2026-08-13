@@ -86,9 +86,9 @@ Current M4.5 implementation status:
 - Warmed session projections now serve agent and workflow inspection reads, including `ListAgents`, `ListWorkflows`, `ResolveWorkflow`, `ListWorkflowRuns`, `GetWorkflowRun`, `ListWorkflowWatchdogs`, and `ListQueuedWorkflowPrompts`, without taking the compatibility app lock.
 - Workflow runtime-tool calls now republish session and agent-runtime projections after recording tool-call state, so MCP/relay acknowledgements and output submissions keep warmed workflow inspection reads current even when they do not enter through the router workflow lane.
 - `DaemonHealthProjection` now exposes session command lanes, agent command lanes, provider runtime operation lanes, session projection counts, active/queued prompt counts, provider-catalog cache status, kernel websocket transport pressure, workspace worktree-collision state, active workspace operation claims, and projection-invariant drift between warmed session prompt state and the agent-runtime prompt read model without taking the compatibility app lock.
-- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts are not workspace-wide claims, so independent sessions can run prompts in the same worktree; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. Workspace Live Sync managed mode handles Arroba-managed provider-session file reads/writes through runtime/MCP tools, using fine-grained text coordination and opaque whole-file coordination for non-text artifacts.
+- `WorkspaceCoordinator` now enforces scoped worktree claims for explicit file-writing capabilities (`EditFile` and `StoreTransferredFile`) and workflow node dispatch. Claims carry `read`/`write` mode metadata and are keyed by normalized real worktree where possible. Provider prompts are not workspace-wide claims, so independent sessions can run prompts in the same worktree; workflow nodes are scheduled work, so claim conflicts move them to `BlockedOnWorkspaceClaim` and they retry after claim release. Workspace Live Sync managed mode handles Chariox-managed provider-session file reads/writes through runtime/MCP tools, using fine-grained text coordination and opaque whole-file coordination for non-text artifacts.
 - Relay-client daemon/workflow requests now normalize into `KernelCommandSource::RelayClient` commands and dispatch through `CommandRouter`, so proxied clients share actor admission, projection refresh, and overload behavior with local IPC/kernel transport instead of bypassing the runtime through `DaemonApp::handle_local_request`. Workflow validation and acknowledgement requests are no longer rejected by the relay transport before reaching the workflow lane.
-- Runtime migration slices are gated by [IMPLEMENTATION_INVARIANTS.md](/Users/miguel/arroba/docs/ops/IMPLEMENTATION_INVARIANTS.md): ownership, projection refresh, cleanup, overload, health, and tests must be explicit for runtime and coordination work.
+- Runtime migration slices are gated by [IMPLEMENTATION_INVARIANTS.md](/Users/miguel/chariox/docs/ops/IMPLEMENTATION_INVARIANTS.md): ownership, projection refresh, cleanup, overload, health, and tests must be explicit for runtime and coordination work.
 - `DaemonApp` now remains as bootstrap/composition scaffolding, not the command-state owner. Follow-up architecture work should keep removing stale compatibility wording and continue tightening projection correctness around provider output, workflow progression, and session lifecycle edges.
 
 ### 3.3.2 Workflow Model
@@ -154,7 +154,7 @@ Workflow entry should not be limited to a human prompt from a terminal, and a wo
 The kernel should support logical `workflow endpoints` that can be invoked by:
 
 - a terminal user in the workspace
-- another internal Arroba component
+- another internal Chariox component
 - an external system through a published API surface
 
 Rules:
@@ -226,7 +226,7 @@ Rules:
   secrets
 - serving or deploying a publication MUST verify required providers, models,
   extensions, and credentials before accepting traffic
-- if the captured provider/model is unavailable, `arroba serve` may prompt for
+- if the captured provider/model is unavailable, `chariox serve` may prompt for
   a replacement provider/model from the kernel's available catalog and persist
   the choice in local publication bindings
 
@@ -243,13 +243,13 @@ Deployment modes:
 - localhost: local publication server bound to `127.0.0.1` by default
 - Cloud ingress with local runtime: a public publication ingress forwards
   requests over an outbound publication connector to the user's local
-  `arroba serve` runtime. Workflow execution, provider credentials, provider
+  `chariox serve` runtime. Workflow execution, provider credentials, provider
   processes, artifacts, queues, traces, and outputs remain local.
 - hosted container: one Docker container per deployment runs the kernel,
   publication runtime, gateway, snapshot, requirements, scripts, and assets on a
   publication runner host.
 
-For v1 Cloud deployment, Scalingo-hosted Arroba Cloud remains the control plane
+For v1 Cloud deployment, Scalingo-hosted Chariox Cloud remains the control plane
 only. It owns account auth, deployment records, runner registration, deployment
 commands, status/log metadata, and the web UI. Runtime publication traffic MUST
 NOT be proxied through the Scalingo Cloud API/web process. A dedicated Hetzner
@@ -259,7 +259,7 @@ publication runner.
 
 The public URL is represented as `public_base_url`. In staging this may be a
 path under the Hetzner publication ingress host; later product DNS may map the
-same contract to `https://<slug>.arroba.run/`. Callers should not need to know
+same contract to `https://<slug>.chariox.run/`. Callers should not need to know
 whether the backend is local-runtime ingress or a hosted container.
 
 Agent Apps generalize workflow publication from "workflow returns HTML or data"
@@ -269,11 +269,11 @@ app actions, endpoint manipulation policy, replica pools, and external web/mobil
 integration. See `docs/AGENT_APPS_CONCEPT.md`.
 
 Cloud-hosted published workflows should behave as independent web apps. Callers
-do not need Arroba accounts unless the owner configures Arroba-managed access.
+do not need Chariox accounts unless the owner configures Chariox-managed access.
 Publication deployment records and runner/container tokens are scoped runtime
-identities and MUST NOT carry a general Arroba user account session.
+identities and MUST NOT carry a general Chariox user account session.
 
-Images and publication packages MUST NOT include provider credentials or Arroba
+Images and publication packages MUST NOT include provider credentials or Chariox
 Cloud account credentials. Hosted-container validation may use an explicit
 staging credential profile mounted by the runner, but product credential
 onboarding for arbitrary users is a later phase after the deployment pipeline is
@@ -306,12 +306,12 @@ Rules:
 
 ### 3.3.7 Observability and Debug Logging Baseline
 
-Arroba should treat debug logging as a shared local-runtime subsystem rather than as ad hoc per-process stderr output.
+Chariox should treat debug logging as a shared local-runtime subsystem rather than as ad hoc per-process stderr output.
 
 Required baseline rules:
 
-- There should be one machine-local Arroba log root per OS user account.
-- The daemon should own discovery of that root and expose or propagate it to local Arroba-managed processes.
+- There should be one machine-local Chariox log root per OS user account.
+- The daemon should own discovery of that root and expose or propagate it to local Chariox-managed processes.
 - Each process should write its own append-only structured log file under that shared root instead of multiple processes appending to one shared file directly.
 - Structured log records should include enough correlation metadata to reconstruct one session/provider-run/client flow across processes.
 
@@ -329,17 +329,17 @@ Minimum correlation fields:
 
 Recommended layout:
 
-- one root such as `XDG_STATE_HOME/arroba/logs` or a daemon-configured equivalent
+- one root such as `XDG_STATE_HOME/chariox/logs` or a daemon-configured equivalent
 - per-process files grouped by date and process role
 - session/provider-run correlation handled in record fields rather than by requiring one file per session
 
 Current local baseline:
 
-- `ARROBA_LOG_DIR` overrides the log root when set
-- otherwise Arroba resolves `XDG_STATE_HOME/arroba/logs`, then `~/.local/state/arroba/logs`, then a local `./.arroba/logs` fallback
-- the daemon, the Rust `arroba-cli` launcher, and the TypeScript CLI all write per-process NDJSON log files under that root
+- `CHARIOX_LOG_DIR` overrides the log root when set
+- otherwise Chariox resolves `XDG_STATE_HOME/chariox/logs`, then `~/.local/state/chariox/logs`, then a local `./.chariox/logs` fallback
+- the daemon, the Rust `chariox-cli` launcher, and the TypeScript CLI all write per-process NDJSON log files under that root
 - the local Fastify server now uses the same root and record shape
-- local inspection can happen either with standard tools (`tail`, `jq`) or through the built-in `arroba-cli logs` command
+- local inspection can happen either with standard tools (`tail`, `jq`) or through the built-in `chariox-cli logs` command
 
 Default privacy posture:
 

@@ -1,38 +1,38 @@
 # M4.6 Workspace Live Sync Plan
 
-M4.6 is the dedicated milestone for kernel-owned artifact I/O coordination. It is intentionally separate from M4.5: M4.5 retires runtime/facade compatibility paths, while M4.6 defines and enforces safe concurrent writes for Arroba-managed agents.
+M4.6 is the dedicated milestone for kernel-owned artifact I/O coordination. It is intentionally separate from M4.5: M4.5 retires runtime/facade compatibility paths, while M4.6 defines and enforces safe concurrent writes for Chariox-managed agents.
 
 ## Goal
 
-Arroba should be unopinionated about branches, worktrees, and whether multiple agents work in the same repo, branch, file, or artifact. The guarantee is narrower and stronger:
+Chariox should be unopinionated about branches, worktrees, and whether multiple agents work in the same repo, branch, file, or artifact. The guarantee is narrower and stronger:
 
-- Arroba-managed agents must never write overlapping regions of the same artifact at the same time.
+- Chariox-managed agents must never write overlapping regions of the same artifact at the same time.
 - Non-overlapping concurrent edits in the same artifact must be allowed.
 - Whole-file or whole-worktree blocking is not acceptable for artifact domains that support finer conflict regions.
-- External user/process changes are allowed, but Arroba-managed provider sessions must not be able to bypass the coordinated write path.
-- If a provider cannot be configured so coordinated workspace writes go through Arroba, that provider mode is unsupported for the coordinated-I/O guarantee.
+- External user/process changes are allowed, but Chariox-managed provider sessions must not be able to bypass the coordinated write path.
+- If a provider cannot be configured so coordinated workspace writes go through Chariox, that provider mode is unsupported for the coordinated-I/O guarantee.
 
 This is a synchronization problem, closer to operating-system concurrency control than to Git merge conflict cleanup. Git conflict detection is too late and too coarse to be the primary mechanism.
 
 ## Hard Guarantee Boundary
 
-The M4.6 guarantee applies only to writes performed by agents launched and managed by Arroba provider sessions.
+The M4.6 guarantee applies only to writes performed by agents launched and managed by Chariox provider sessions.
 
-For those sessions, Arroba must configure supported providers so they cannot mutate coordinated workspace artifacts except through Arroba's workspace live sync tools. Detection-only or best-effort warnings are insufficient for managed agents.
+For those sessions, Chariox must configure supported providers so they cannot mutate coordinated workspace artifacts except through Chariox's workspace live sync tools. Detection-only or best-effort warnings are insufficient for managed agents.
 
 Unsupported cases:
 
-- A provider session that can directly mutate the repo outside Arroba's edit API.
+- A provider session that can directly mutate the repo outside Chariox's edit API.
 - A shell/tool configuration that gives unrestricted write access to coordinated artifacts.
 - A remote worker that claims to be coordinated but cannot route writes through the home kernel.
 
 Allowed but outside the guarantee:
 
 - Human edits in the worktree.
-- Independent external processes not launched as Arroba-managed agents.
+- Independent external processes not launched as Chariox-managed agents.
 - Other kernels or agents not joined to the same coordinated workspace.
 
-External edits are still observed and reconciled before managed writes are applied, but they are not prevented by Arroba unless the process is an Arroba-managed provider session.
+External edits are still observed and reconciled before managed writes are applied, but they are not prevented by Chariox unless the process is a Chariox-managed provider session.
 
 ## Artifact Domains
 
@@ -193,33 +193,33 @@ M4.6 must include provider-specific investigation and implementation for Codex a
 
 Required outcomes for each supported provider:
 
-- Provider file writes are routed through Arroba managed MCP/runtime tools.
+- Provider file writes are routed through Chariox managed MCP/runtime tools.
 - Direct writes to coordinated workspace artifacts are blocked by provider configuration.
 - Shell/tool write access that can mutate coordinated workspace artifacts is disabled for managed provider sessions.
-- If the provider cannot be configured this way, Arroba must mark that provider/session mode unsupported for coordinated I/O.
+- If the provider cannot be configured this way, Chariox must mark that provider/session mode unsupported for coordinated I/O.
 
-Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough session configuration for Arroba-supported sessions.
+Provider enforcement for v1 is provider-level. Codex and OpenCode expose enough session configuration for Chariox-supported sessions.
 
 Current enforcement mechanisms:
 
-- Codex workspace live sync runs use the provider read-only sandbox for new threads and turns, launch with an Arroba model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
-- OpenCode managed workspace live sync runs rely on Arroba's process-level workspace write fence to deny native writes under protected synced roots. When that fence is active, native OpenCode tools may remain available for reads and for writes outside protected roots; coordinated file writes inside synced roots still go through Arroba workspace live sync tools. If the fence is unavailable, managed OpenCode runs fall back to denying native write/task paths rather than claiming partial enforcement.
+- Codex workspace live sync runs use the provider read-only sandbox for new threads and turns, launch with a Chariox model-metadata overlay that removes Codex's model-declared native `apply_patch` tool, auto-decline native command/file-change permission requests, and filter Codex permission-upgrade approvals so filesystem writes are never granted. Native shell can remain available for read/inspection work, but it cannot acquire workspace write permission.
+- OpenCode managed workspace live sync runs rely on Chariox's process-level workspace write fence to deny native writes under protected synced roots. When that fence is active, native OpenCode tools may remain available for reads and for writes outside protected roots; coordinated file writes inside synced roots still go through Chariox workspace live sync tools. If the fence is unavailable, managed OpenCode runs fall back to denying native write/task paths rather than claiming partial enforcement.
 - OpenCode tracked workspace live sync keeps native tools available and observes changed files at turn end; it does not block writes or perform collision checks before the provider writes.
-- OpenCode `external_directory` is not denied by Arroba because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Arroba collision-control scope.
+- OpenCode `external_directory` is not denied by Chariox because it governs access outside the project/worktree; paths inside the coordinated repo are covered by `edit`/`bash`, and paths outside the repo are outside Chariox collision-control scope.
 
-Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Arroba-managed agents.
+Detection is still useful for diagnostics, but it is not a substitute for blocking direct writes by Chariox-managed agents.
 
 ## M4.6.1 macOS Workspace Write Fence
 
-Status: implemented for Arroba-launched local provider runs on macOS. Linux and Windows are explicitly deferred to later versions.
+Status: implemented for Chariox-launched local provider runs on macOS. Linux and Windows are explicitly deferred to later versions.
 
-The workspace live sync hardening step moves the direct-write guarantee from provider-specific configuration to an Arroba-owned launch boundary on macOS. The product invariant remains provider-neutral:
+The workspace live sync hardening step moves the direct-write guarantee from provider-specific configuration to a Chariox-owned launch boundary on macOS. The product invariant remains provider-neutral:
 
-- Arroba-managed provider processes may read the real workspace and run native read/inspection tools.
-- Arroba-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under protected synced roots.
-- Arroba runtime MCP workspace live sync remains the only write path into the real workspace.
+- Chariox-managed provider processes may read the real workspace and run native read/inspection tools.
+- Chariox-managed provider processes must not write, delete, rename, chmod, chflags, symlink, or create files under protected synced roots.
+- Chariox runtime MCP workspace live sync remains the only write path into the real workspace.
 - Provider-native write/edit/patch tools remain disabled or hidden where the provider supports that, but those controls are defense in depth rather than the root guarantee.
-- Native shell can be allowed only when the Arroba workspace write fence is active for that provider process.
+- Native shell can be allowed only when the Chariox workspace write fence is active for that provider process.
 
 The macOS implementation uses a provider-neutral `WorkspaceWriteFence` launch layer. For v1 it uses the macOS sandbox facility available through `sandbox-exec`/Seatbelt profiles:
 
@@ -231,23 +231,23 @@ The macOS implementation uses a provider-neutral `WorkspaceWriteFence` launch la
 
 Each protected root path must be canonicalized before profile generation, because macOS commonly aliases `/tmp` to `/private/tmp`. The sandbox profile must deny writes to the canonical selected worktree Git root plus explicitly attached workspace-link roots, while allowing writes elsewhere so providers can continue using their own state, cache, logs, auth, temp directories, and unrelated repositories outside the coordinated workspace.
 
-Arroba-owned launch behavior:
+Chariox-owned launch behavior:
 
-- All workspace live sync provider runs that Arroba launches on macOS go through `WorkspaceWriteFence`.
+- All workspace live sync provider runs that Chariox launches on macOS go through `WorkspaceWriteFence`.
 - Codex still uses its provider-native read-only sandbox, disabled native apply-patch/file-change tools, native command/file-change approval denial, and filesystem-write permission-grant filtering as second layers. This is required because Codex app-server can request additional permissions for native shell work.
 - OpenCode managed runs may keep native tools available only when the process-level write fence is active; without the fence, native write/task paths are denied.
-- Provider runs without an active write fence cannot enable native shell/write paths for managed workspace live sync sessions unless the provider has an equivalent native sandbox that Arroba has explicitly accepted as a temporary compatibility path.
-- External provider endpoints are removed as a managed-runtime mode. Arroba can only guarantee workspace live sync for provider processes it launches and fences.
+- Provider runs without an active write fence cannot enable native shell/write paths for managed workspace live sync sessions unless the provider has an equivalent native sandbox that Chariox has explicitly accepted as a temporary compatibility path.
+- External provider endpoints are removed as a managed-runtime mode. Chariox can only guarantee workspace live sync for provider processes it launches and fences.
 
 Implemented slices:
 
 1. Added a provider-neutral launch wrapper that transforms a workspace live sync `ProviderLaunchResult` into a fenced launch on macOS.
 2. Added a macOS sandbox profile generator with canonical-path validation.
 3. Threaded the coordinated worktree root into provider launch planning so the fence denies the exact canonical path.
-4. Applied the fence to Arroba-launched Codex and OpenCode workspace live sync provider processes.
+4. Applied the fence to Chariox-launched Codex and OpenCode workspace live sync provider processes.
 5. Removed external Codex/OpenCode endpoint override/reuse from managed provider launch planning.
 6. Re-enabled OpenCode native tools when the fence is active so writes outside protected roots remain normal while synced roots stay protected.
-7. Kept Codex provider-native sandboxing enabled after the Arroba fence is active.
+7. Kept Codex provider-native sandboxing enabled after the Chariox fence is active.
 8. Hardened Codex app-server permission approvals so workspace live sync runs preserve network and direct-read permission requests but never grant filesystem write upgrades.
 
 Remaining follow-up slices:
@@ -261,13 +261,13 @@ Required macOS live drills:
 - Start a real OpenCode server under the fence, verify provider health, and verify the workspace is unchanged after boot.
 - Ask OpenCode to run read-only shell commands such as `git status`, `rg`, and test/build commands that do not write workspace files.
 - Ask OpenCode to attempt direct writes through shell redirection, `touch`, `mkdir`, `rm`, `chmod`, `chflags`, `ln -s`, Python/Node file writes, and `git checkout`; each must fail or leave the workspace unchanged.
-- Verify OpenCode can still write through Arroba `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`.
+- Verify OpenCode can still write through Chariox `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, and `delete_artifact`.
 - Repeat the direct-write and managed-write checks after leaving and rejoining a session.
 - Run the same direct-write smoke for Codex, confirming Codex still works with its native sandbox and that direct workspace mutation cannot be granted through Codex app-server permission upgrades.
 
 Acceptance criteria:
 
-- On macOS, Arroba-managed workspace live sync runs for Codex and OpenCode use the same Arroba-owned workspace write fence.
+- On macOS, Chariox-managed workspace live sync runs for Codex and OpenCode use the same Chariox-owned workspace write fence.
 - OpenCode native shell is available only behind that fence.
 - Direct workspace mutation attempts from provider-native shell do not change the real worktree.
 - Workspace live sync writes still apply to the real worktree through the kernel coordinator.
@@ -275,7 +275,7 @@ Acceptance criteria:
 
 ## External Changes
 
-External changes from humans or non-Arroba processes are not blocked. The coordinator observes them before managed writes:
+External changes from humans or non-Chariox processes are not blocked. The coordinator observes them before managed writes:
 
 - managed reads create active artifact snapshots
 - file watchers mark active artifacts dirty
@@ -316,7 +316,7 @@ Coordination requires:
 - same logical repository identity
 - same branch identity where branch semantics apply
 - compatible workspace root/worktree fingerprint
-- explicit membership in the same Arroba coordinated workspace group
+- explicit membership in the same Chariox coordinated workspace group
 - current identity check before coordinated read/write operations
 
 If identity changes and no longer matches, the kernel must stop routing that provider run through the shared coordinator and notify the agent. If identity changes into a matching coordinated workspace, the kernel may join it after validation and explicit association.
@@ -337,13 +337,13 @@ M4.6 should expose workspace live sync through the existing runtime tool/MCP pat
 
 Initial tools:
 
-- `arroba.read_artifact`
-- `arroba.edit_artifact`
-- `arroba.apply_patch`
-- `arroba.write_artifact` internally converted to a domain operation/diff
-- `arroba.inspect_artifact`
+- `chariox.read_artifact`
+- `chariox.edit_artifact`
+- `chariox.apply_patch`
+- `chariox.write_artifact` internally converted to a domain operation/diff
+- `chariox.inspect_artifact`
 
-Landed note: runtime MCP now also exposes provider-friendly aliases `read_artifact`, `edit_artifact`, `apply_patch`, `write_artifact`, `move_artifact`, and `delete_artifact`; Codex may surface them as `mcp__arroba__read_artifact`-style tool names.
+Landed note: runtime MCP now also exposes provider-friendly aliases `read_artifact`, `edit_artifact`, `apply_patch`, `write_artifact`, `move_artifact`, and `delete_artifact`; Codex may surface them as `mcp__chariox__read_artifact`-style tool names.
 
 Tool responses must include structured success, warning, and rejection payloads so agents can reread and retry deterministically.
 
@@ -359,14 +359,14 @@ Tool responses must include structured success, warning, and rejection payloads 
 8. Add structured conflict/warning responses and agent-facing retry instructions.
 9. Investigate and implement Codex provider write-permission enforcement.
 10. Investigate and implement OpenCode provider write-permission enforcement.
-11. Wire provider sessions so coordinated workspace writes can only use managed Arroba tools.
+11. Wire provider sessions so coordinated workspace writes can only use managed Chariox tools.
 12. Add workspace identity snapshots and identity-change detection for local provider runs.
 13. Add remote workspace identity handshake design and protocol docs.
 14. Add remote coordinated edit routing through the home kernel for matching workspaces.
 15. Add unsupported-provider/session-mode reporting when write enforcement cannot be guaranteed.
 16. Treat non-text artifacts as `OpaqueBlob` with whole-file locking for v1.
 17. Design later image/audio/video/PDF/vector/structured artifact domains beyond v1.
-18. M5.6/default policy follow-up: keep workspace live sync restricted mode as the default for user-launched Arroba agents, and add an explicit user command to relax/disable it when Arroba intentionally supports an unsafe/uncoordinated mode.
+18. M5.6/default policy follow-up: keep workspace live sync restricted mode as the default for user-launched Chariox agents, and add an explicit user command to relax/disable it when Chariox intentionally supports an unsafe/uncoordinated mode.
 
 ## Current Status
 
@@ -378,7 +378,7 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: opaque Workspace Live Sync reads/writes/deletes/moves use base64 payloads where content crosses process boundaries and whole-file conflict semantics; stale opaque writes are rejected as whole-artifact conflicts and successful opaque operations preserve exact bytes.
 - Landed: provider launch contract for managed workspace live sync writes.
 - Landed: Codex managed workspace live sync enforcement uses Codex read-only sandbox policy for new threads/turns and skips unsafe thread resume into coordinated mode.
-- Landed: OpenCode managed workspace live sync enforcement creates coordinated sessions behind the Arroba write fence when available, so native tools can still write outside protected roots while direct writes under synced roots are denied. If the fence is unavailable, OpenCode managed mode denies native write/task paths instead of exposing an unenforced coordinated run. It skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Arroba does not coordinate.
+- Landed: OpenCode managed workspace live sync enforcement creates coordinated sessions behind the Chariox write fence when available, so native tools can still write outside protected roots while direct writes under synced roots are denied. If the fence is unavailable, OpenCode managed mode denies native write/task paths instead of exposing an unenforced coordinated run. It skips unsafe session resume into coordinated mode. `external_directory` remains provider-default because it covers paths outside the project/worktree, which Chariox does not coordinate.
 - Landed: workspace identity monitor boundary with identity-generation tracking and workspace live sync rejection after workspace identity invalidation.
 - Landed: unsupported provider-mode rejection at launch when managed workspace live sync is requested but the adapter cannot enforce write blocking.
 - Landed: workspace live sync health/status surfacing for reservations, workspace identity invalidations, and external-change monitor counters.
@@ -389,8 +389,8 @@ Tool responses must include structured success, warning, and rejection payloads 
 - Landed: remote workspace live sync full pass with OpenCode and Codex, including direct-write blocking, same-area collision serialization, stale non-overlap external-change rebase, and stale overlap external-change rejection.
 - Landed: local and remote workspace live sync drill scripts now cover opaque write/read/move/delete alongside text operations.
 - Landed: local workspace live sync drill hardening now serializes provider positive phases into smaller prompts and covers Codex permission-upgrade denial. The current OpenCode validation path uses the Zen provider model `opencode/gpt-5.2`; both OpenCode and Codex complete managed text and opaque operations, direct/native write attempts leave no forbidden files, collision serialization holds, stale non-overlap external changes rebase, and stale overlap external changes are rejected.
-- Validation update 2026-06-11: tracked Workspace Live Sync passed the full remote drill locally and with the Hetzner Linux worker using Codex `gpt-5.5`. The covered matrix includes turn-end native write observation, target fanout, bidirectional sync, target-side rebase, overlap conflict reporting, resolver reconciliation, `.arrobaignore`/force-exclude behavior, ignored outside-turn origins, sibling-repo writes outside the synced root, and unchanged Git heads because Workspace Live Sync does not create commits.
-- Validation update 2026-06-11: local Workspace Live Sync permission parity passed for Codex `gpt-5.5` and OpenCode Zen `opencode/gpt-5.2`. The focused drill proves a selected synced repo still uses Arroba Workspace Live Sync permissions, while a separate Git repo outside the synced root remains writable through provider-native tools and is not blocked by live-sync fencing.
+- Validation update 2026-06-11: tracked Workspace Live Sync passed the full remote drill locally and with the Hetzner Linux worker using Codex `gpt-5.5`. The covered matrix includes turn-end native write observation, target fanout, bidirectional sync, target-side rebase, overlap conflict reporting, resolver reconciliation, `.charioxignore`/force-exclude behavior, ignored outside-turn origins, sibling-repo writes outside the synced root, and unchanged Git heads because Workspace Live Sync does not create commits.
+- Validation update 2026-06-11: local Workspace Live Sync permission parity passed for Codex `gpt-5.5` and OpenCode Zen `opencode/gpt-5.2`. The focused drill proves a selected synced repo still uses Chariox Workspace Live Sync permissions, while a separate Git repo outside the synced root remains writable through provider-native tools and is not blocked by live-sync fencing.
 - Post-v1: type-specific non-text artifact domains beyond v1 opaque whole-file locking.
 
 ## Non-Goals

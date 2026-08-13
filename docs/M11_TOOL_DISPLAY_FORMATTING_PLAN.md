@@ -4,7 +4,7 @@ Status: in progress. M11.1-M11.8 are implemented.
 
 ## Goal
 
-Make provider and runtime tool output readable across Arroba clients. Codex,
+Make provider and runtime tool output readable across Chariox clients. Codex,
 OpenCode, CLI, web, iOS, and Android should not each invent their own parser
 for provider-specific JSON blobs.
 
@@ -13,7 +13,7 @@ The client-facing rendering rules now live in
 
 ## Design
 
-Arroba normalizes raw provider tool updates into a shared `ToolDisplay` JSON
+Chariox normalizes raw provider tool updates into a shared `ToolDisplay` JSON
 model. Clients render the shared model instead of interpreting provider raw
 JSON directly.
 
@@ -27,7 +27,7 @@ packages/tool-display/
 ```
 
 The schema is language-neutral and can be consumed by terminal, web, and native
-clients. TypeScript clients use `@arroba/tool-display`; other clients can use
+clients. TypeScript clients use `@chariox/tool-display`; other clients can use
 the JSON schema and fixture corpus as their rendering contract.
 
 ## Display Model
@@ -48,7 +48,7 @@ view because split diffs become noisy when several agents are active.
 ## Milestone Tasks
 
 - M11.1 document shared tool display schema and client contract: complete.
-- M11.2 add `@arroba/tool-display` package with legacy formatter parity:
+- M11.2 add `@chariox/tool-display` package with legacy formatter parity:
   complete.
 - M11.3 move CLI transcript tool parsing/formatting to the shared package:
   complete.
@@ -76,20 +76,20 @@ Initial supported tool families:
 - grep/search
 - todo write
 - provider-native `apply_patch`
-- Arroba workspace live sync patch/edit/write/move/delete outputs
+- Chariox workspace live sync patch/edit/write/move/delete outputs
 
 ## Validation
 
 Validated commands:
 
 ```bash
-pnpm --filter @arroba/tool-display test
-pnpm --filter @arroba/cli test
+pnpm --filter @chariox/tool-display test
+pnpm --filter @chariox/cli test
 node --check apps/cli/scripts/live-tool-display-fixture-drill.mjs
 node apps/cli/scripts/live-tool-display-fixture-drill.mjs --providers codex,opencode --list-targets
 node apps/cli/scripts/live-tool-display-fixture-drill.mjs --providers codex,opencode --timeout-ms 300000 --keep-artifacts-on-failure
-pnpm --filter @arroba/tool-display test
-pnpm --filter @arroba/cli test
+pnpm --filter @chariox/tool-display test
+pnpm --filter @chariox/cli test
 node apps/cli/scripts/live-tool-display-fixture-drill.mjs --provider opencode --all-models --max-models-per-provider 80 --timeout-ms 180000 --poll-ms 1000 --continue-on-failure --keep-artifacts-on-failure
 ```
 
@@ -98,7 +98,7 @@ The fixture drill resolved the default local targets as:
 - `codex gpt-5.4`
 - `opencode opencode/gpt-5.4`
 
-Codex `gpt-5.4` produced raw provider tool events for Arroba runtime read and
+Codex `gpt-5.4` produced raw provider tool events for Chariox runtime read and
 patch tools and wrote them to `target/tool-display-fixtures/codex-gpt-5.4.jsonl`.
 
 OpenCode `opencode/gpt-5.4` initially narrated tool use without invoking tools.
@@ -107,9 +107,9 @@ events before passing. With that prompt shape, OpenCode produced runtime read,
 grep, bash, and runtime patch events and wrote them to
 `target/tool-display-fixtures/opencode-opencode_gpt-5.4.jsonl`.
 
-OpenCode also exposed an important raw-shape difference: Arroba runtime MCP
-tools can arrive as underscore names such as `arroba_read_artifact` and
-`arroba_apply_patch`, with snake_case inputs such as `patch_text`. The shared
+OpenCode also exposed an important raw-shape difference: Chariox runtime MCP
+tools can arrive as underscore names such as `chariox_read_artifact` and
+`chariox_apply_patch`, with snake_case inputs such as `patch_text`. The shared
 formatter now normalizes these aliases so CLI/web/native clients do not render
 those blobs as raw JSON.
 
@@ -123,13 +123,13 @@ OpenCode Zen model coverage on 2026-04-23:
 
 - 37 `opencode/*` model targets produced read plus patch tool fixtures.
 - `opencode/minimax-m2.5` originally emitted XML-like pseudo-tool text instead
-  of OpenCode tool events when prompted with dotted Arroba tool names. The drill
+  of OpenCode tool events when prompted with dotted Chariox tool names. The drill
   now prompts OpenCode targets with underscore runtime tool names such as
-  `arroba_read_artifact` and `arroba_apply_patch`; `opencode/minimax-m2.5`
+  `chariox_read_artifact` and `chariox_apply_patch`; `opencode/minimax-m2.5`
   passes with that prompt shape.
 - `opencode/claude-3-5-haiku` is skipped in expanded catalog drills. After
   `opencode models --refresh`, direct OpenCode invocation still fails with
-  `model: claude-3-5-haiku-20241022`, before Arroba or tool display handling is
+  `model: claude-3-5-haiku-20241022`, before Chariox or tool display handling is
   involved.
 - `opencode/gpt-5.4-pro` failed because the drill used low effort, while that
   model requires medium/high/xhigh. We are not expanding effort coverage in M11
@@ -157,7 +157,7 @@ needs an explicit before/after review view.
 Web and native clients that are not TypeScript consumers should validate
 against `packages/tool-display/schema/tool-display.schema.json` and use the
 fixture corpus as compatibility examples. TypeScript clients should depend on
-`@arroba/tool-display` directly.
+`@chariox/tool-display` directly.
 
 ## Drills
 
@@ -169,7 +169,7 @@ the normalized `ToolDisplay`.
 Live drill requirements:
 
 - include both Codex and OpenCode where authenticated
-- include provider-native tools and Arroba runtime MCP tools
+- include provider-native tools and Chariox runtime MCP tools
 - include `apply_patch` against disposable files only
 - verify collapsed blob title/summary
 - verify expanded block rendering does not expose raw JSON unless the tool is

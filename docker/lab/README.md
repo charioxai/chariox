@@ -1,6 +1,6 @@
-# Arroba Docker Remote-Machine Lab
+# Chariox Docker Remote-Machine Lab
 
-This lab image models Docker containers as ordinary Arroba machines. The image includes all Arroba apps: the CLI, daemon/kernel, and relay. It does not install provider CLIs or manage provider login for the user.
+This lab image models Docker containers as ordinary Chariox machines. The image includes all Chariox apps: the CLI, daemon/kernel, and relay. It does not install provider CLIs or manage provider login for the user.
 
 The main purpose is to test remote-machine behavior locally and to let users keep multiple provider accounts active at the same time by isolating each account in a persistent container home directory.
 
@@ -10,15 +10,15 @@ The main purpose is to test remote-machine behavior locally and to let users kee
 docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
 ```
 
-The compose file starts a local relay and two worker kernels. Each worker has a persistent `/home/arroba` volume, so Arroba machine identity, provider installs, and provider credentials survive container restarts.
+The compose file starts a local relay and two worker kernels. Each worker has a persistent `/home/chariox` volume, so Chariox machine identity, provider installs, and provider credentials survive container restarts.
 
-The relay listens on `ws://127.0.0.1:43150` with the default lab token `local-lab`. Override it with `ARROBA_RELAY_TOKEN` when starting compose:
+The relay listens on `ws://127.0.0.1:43150` with the default lab token `local-lab`. Override it with `CHARIOX_RELAY_TOKEN` when starting compose:
 
 ```sh
-ARROBA_RELAY_TOKEN=change-me docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
+CHARIOX_RELAY_TOKEN=change-me docker compose -f docker/lab/docker-compose.yml up -d relay worker-a worker-b
 ```
 
-From the host Arroba CLI, point the home kernel at the lab relay:
+From the host Chariox CLI, point the home kernel at the lab relay:
 
 ```text
 /relay use ws://127.0.0.1:43150 local-lab
@@ -30,32 +30,32 @@ From the host Arroba CLI, point the home kernel at the lab relay:
 Install the launch provider CLIs in a worker:
 
 ```sh
-docker/lab/install-providers.sh arroba-worker-a
-docker/lab/install-providers.sh arroba-worker-b
+docker/lab/install-providers.sh chariox-worker-a
+docker/lab/install-providers.sh chariox-worker-b
 ```
 
 Then enter each worker and complete provider-native login manually:
 
 ```sh
-docker exec -it arroba-worker-a zsh
+docker exec -it chariox-worker-a zsh
 codex login
 opencode auth login
 ```
 
 ```sh
-docker exec -it arroba-worker-b zsh
+docker exec -it chariox-worker-b zsh
 # log into a different account for the same provider if desired
 ```
 
-Once provider login works inside a worker, the home kernel can expose it as a machine-qualified provider such as `Codex (arroba-worker-a)` and `Codex (arroba-worker-b)`.
+Once provider login works inside a worker, the home kernel can expose it as a machine-qualified provider such as `Codex (chariox-worker-a)` and `Codex (chariox-worker-b)`.
 
 ## Included Apps
 
 The base image includes:
 
-- `arroba` / `arroba-cli` for the TypeScript CLI launcher
-- `arroba-kernel` for the kernel/daemon
-- `arroba-relay` for the self-hosted relay
+- `chariox` / `chariox-cli` for the TypeScript CLI launcher
+- `chariox-kernel` for the kernel/daemon
+- `chariox-relay` for the self-hosted relay
 - Node, pnpm, Bun, zsh, git, curl, ripgrep, jq, OpenSSH client, and basic process tools
 
 Provider CLIs are intentionally not included. Install them inside the worker container whose provider account they should use.
@@ -74,7 +74,7 @@ Login callback ports are provider-specific. The compose file publishes `39000-39
 
 ## Browser Login
 
-The base image sets `BROWSER=arroba-open-url` and places an `xdg-open` shim earlier in `PATH`. When a provider asks to open a browser through either path, the helper prints the URL so you can open it on the host.
+The base image sets `BROWSER=chariox-open-url` and places an `xdg-open` shim earlier in `PATH`. When a provider asks to open a browser through either path, the helper prints the URL so you can open it on the host.
 
 If a provider uses an unconfigurable random localhost callback port, test and document that provider separately. The launch-provider compatibility matrix should record the tested provider version, login method, callback behavior, and whether Docker login is supported.
 
@@ -90,26 +90,26 @@ Run the lab smoke test after installing Docker:
 docker/lab/smoke.sh
 ```
 
-The smoke test builds the image, starts the relay plus two worker kernels, verifies that the Arroba binaries and Bun are available inside each worker, and checks that the relay and daemons reached their startup banners. It does not install provider CLIs or touch provider credentials.
+The smoke test builds the image, starts the relay plus two worker kernels, verifies that the Chariox binaries and Bun are available inside each worker, and checks that the relay and daemons reached their startup banners. It does not install provider CLIs or touch provider credentials.
 
 ## Useful Commands
 
 Build only the image:
 
 ```sh
-docker build -f docker/lab/Dockerfile -t arroba-lab:latest .
+docker build -f docker/lab/Dockerfile -t chariox-lab:latest .
 ```
 
 Run a shell:
 
 ```sh
-docker exec -it arroba-worker-a zsh
+docker exec -it chariox-worker-a zsh
 ```
 
 Run the CLI inside a worker:
 
 ```sh
-docker exec -it arroba-worker-a arroba
+docker exec -it chariox-worker-a chariox
 ```
 
 Restart a worker:

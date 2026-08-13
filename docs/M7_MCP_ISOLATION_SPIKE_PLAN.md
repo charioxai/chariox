@@ -4,9 +4,9 @@ Updated: 2026-04-18
 
 ## Decision
 
-The repo-local disposable spike validated the provider/runtime architecture. Production implementation can proceed by integrating the validated isolation/proxy design into Arroba source code.
+The repo-local disposable spike validated the provider/runtime architecture. Production implementation can proceed by integrating the validated isolation/proxy design into Chariox source code.
 
-The spike lives inside the repo so it can reuse scripts, local provider binaries, and drill conventions, but it is not production Arroba code. The expected location is:
+The spike lives inside the repo so it can reuse scripts, local provider binaries, and drill conventions, but it is not production Chariox code. The expected location is:
 
 ```text
 experiments/mcp-isolation-spike/
@@ -24,27 +24,27 @@ Current implementation status:
 - Agent-triggered grant continuation is validated for Codex and OpenCode through provider relaunch plus synthetic continuation.
 - A small scale matrix is validated for Codex and OpenCode across 1-2 agents and 1-3 MCPs per agent.
 - Overlapping-but-not-identical grants are validated for Codex and OpenCode with `agent-a: fake-alpha,fake-beta` and `agent-b: fake-beta,fake-gamma`.
-- Production integration has started: Arroba now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and streamable HTTP/HTTPS MCP backing relay tests, including chunked responses.
+- Production integration has started: Chariox now has provider-facing proxy config generation, unique agent-scoped runtime MCP tokens, an authenticated `/mcp/proxy/<name>` route, stdio backing lifecycle supervision keyed by MCP definition hash, provider launch wiring to render proxy configs by default when the runtime MCP binding is available, and streamable HTTP/HTTPS MCP backing relay tests, including chunked responses.
 - Local production drills now pass for Codex and OpenCode using real Playwright MCP plus a deterministic local echo MCP. The drills cover pre-granted MCP activation, provider-native MCP tool calls, agent-triggered `request_extension`, provider conversation relaunch/resume, automatic continuation, and workspace live sync marker writes.
 - Remaining production work is remote/workflow MCP drills after production proxy integration.
 
 ## Why This Exists
 
-Per-agent MCP grants are a central Arroba product bet. They require stricter isolation than provider-global MCP installs:
+Per-agent MCP grants are a central Chariox product bet. They require stricter isolation than provider-global MCP installs:
 
 - Agent A granted Playwright must be able to use Playwright.
-- Agent B in the same Arroba session, without that grant, must not see or use Playwright.
+- Agent B in the same Chariox session, without that grant, must not see or use Playwright.
 - Adding an MCP to one agent must not expose it to other agents.
 - Adding one MCP to an agent must not cold-restart every existing MCP backing server for that agent.
 
-Provider-global MCP configuration is simple but does not provide this boundary. The spike validated one provider server/process per agent as the practical way to make provider-native MCP exposure match Arroba's grant boundary, especially for OpenCode. Production work should now preserve that invariant and add the Arroba supervisor/proxy layer for backing MCP lifecycle reuse.
+Provider-global MCP configuration is simple but does not provide this boundary. The spike validated one provider server/process per agent as the practical way to make provider-native MCP exposure match Chariox's grant boundary, especially for OpenCode. Production work should now preserve that invariant and add the Chariox supervisor/proxy layer for backing MCP lifecycle reuse.
 
 ## Architecture Hypothesis
 
 The architecture under test is:
 
 ```text
-Arroba home/kernel truth
+Chariox home/kernel truth
   owns MCP registry and per-agent grants
 
 Provider runtime per agent
@@ -66,7 +66,7 @@ A provider process may need to restart/resume when its visible MCP set changes. 
 
 ## Non-Goals
 
-The spike must not become a second Arroba implementation; it is now evidence for production integration.
+The spike must not become a second Chariox implementation; it is now evidence for production integration.
 
 Do not implement:
 
@@ -186,7 +186,7 @@ Simulate:
 
 ```text
 agent prompt: "If browser/playwright is needed, request it."
-agent calls Arroba-like request_extension(kind=mcp, name=fake-browser)
+agent calls Chariox-like request_extension(kind=mcp, name=fake-browser)
 harness grants MCP
 harness restarts/resumes provider runtime
 harness sends: "MCP is now loaded. Continue."
@@ -229,8 +229,8 @@ This does not need exhaustive benchmarking, but it must reveal whether the desig
 Use fake MCP counters to compare:
 
 - provider-owned raw stdio MCP process
-- Arroba-supervised shared backing process with per-agent proxy endpoint
-- Arroba-supervised per-agent backing process
+- Chariox-supervised shared backing process with per-agent proxy endpoint
+- Chariox-supervised per-agent backing process
 
 Expected output:
 
@@ -245,12 +245,12 @@ The production integration kept the spike's provider-process-per-agent boundary,
 
 Validated details:
 
-- Codex and OpenCode can use normal provider-native MCP tools through Arroba proxy endpoints.
+- Codex and OpenCode can use normal provider-native MCP tools through Chariox proxy endpoints.
 - Stdio MCP compatibility required newline-delimited JSON writes to the backing process; responses accept newline-delimited JSON or `Content-Length`.
 - The proxy must not wait for JSON-RPC notification responses. Notifications through `/mcp/proxy/<name>` return `202 Accepted`.
 - Codex launch and thread-start config both need the same proxy MCP config. Otherwise Codex can merge stale stdio definitions with proxy URL definitions and fail startup.
 - Codex should receive MCP bearer tokens through `bearer_token_env_var`, not inline HTTP headers in launch arguments.
-- Provider-native approval systems can reject newly exposed third-party MCP tools after Arroba has already granted them. V1 treats the Arroba grant as the approval boundary and marks granted proxy tools as non-destructive/non-open-world/read-only in `tools/list`.
+- Provider-native approval systems can reject newly exposed third-party MCP tools after Chariox has already granted them. V1 treats the Chariox grant as the approval boundary and marks granted proxy tools as non-destructive/non-open-world/read-only in `tools/list`.
 - Agent-triggered relaunch must preserve the previous run's workspace live sync mode. A combined drill caught an OpenCode replacement run launching unmanaged; this is now fixed.
 
 ## Measurements
@@ -308,9 +308,9 @@ If any of these happen, production M7 should simplify:
 If the spike fails, v1 should drop per-agent MCP grants and follow harness-style MCP exposure:
 
 - MCPs are provider-global, project-global, or remote-machine-global according to provider behavior.
-- Arroba still manages MCP install/import/list/sync UX.
-- Arroba remote support checks that worker machines have equivalent provider/global MCP setup.
-- Skills may remain Arroba-managed and per-agent if prompt injection/materialization remains reliable.
+- Chariox still manages MCP install/import/list/sync UX.
+- Chariox remote support checks that worker machines have equivalent provider/global MCP setup.
+- Skills may remain Chariox-managed and per-agent if prompt injection/materialization remains reliable.
 - Agent-triggered MCP request/reload is removed from v1.
 
 This fallback keeps useful MCP management while avoiding a brittle isolation system.

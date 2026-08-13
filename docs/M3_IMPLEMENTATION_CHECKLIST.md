@@ -24,7 +24,7 @@ From `docs/ROADMAP.md`, M3 outcomes are:
 - screenshot capture capability
 - git/worktree inspection capability
 - file transfer + attach-transferred workflow
-- daemon-owned slash-command dispatch for Arroba capabilities
+- daemon-owned slash-command dispatch for Chariox capabilities
 - Claude Code and Codex provider support after the OpenCode baseline is solid
 
 Exit criteria:
@@ -38,7 +38,7 @@ Exit criteria:
 ## 2. M3 implementation principles
 
 - Finish the OpenCode structured adapter before expanding to more providers.
-- Keep Arroba's local daemon API client-facing contract stable while changing provider internals.
+- Keep Chariox's local daemon API client-facing contract stable while changing provider internals.
 - Prefer provider-native machine-readable surfaces over PTY scraping when a provider supports them.
 - Preserve the M2 PTY baseline as a fallback path only where structured integration is unavailable.
 - Bring already-implemented capabilities onto the new command/runtime path instead of rebuilding them in parallel.
@@ -76,16 +76,16 @@ Current state: failed initialization, normal session teardown, and unexpected pr
 - [x] Start deriving OpenCode terminal output from structured provider-native APIs.
 - [x] Stop treating missing OpenCode session state as an implicit idle turn.
 - [x] Replace polling-based message snapshots with OpenCode SSE event ingestion.
-- [x] Map OpenCode `session.status` and assistant completion timestamps into the canonical Arroba prompt lifecycle.
+- [x] Map OpenCode `session.status` and assistant completion timestamps into the canonical Chariox prompt lifecycle.
 - [x] Remove OpenCode dependence on idle-timeout prompt completion heuristics.
 - [x] Surface OpenCode `session.error` and tool lifecycle events as richer client-facing output.
 Current state: OpenCode `session.error` now reaches the transcript as a distinct provider-error stream instead of only a notice, and tool/status updates are rendered as stable structured transcript blocks in the TypeScript CLI.
-- [x] Add explicit Arroba stop/cancel behavior mapped to OpenCode `session.abort`, with queue advancement deferred until provider confirmation.
+- [x] Add explicit Chariox stop/cancel behavior mapped to OpenCode `session.abort`, with queue advancement deferred until provider confirmation.
 
 ## 4.3 Project-Wide Logging and Debugging
 
-- [x] Define one daemon-owned machine-local log root for Arroba runtime processes.
-Current state: `ARROBA_LOG_DIR` overrides the default; otherwise Arroba uses `XDG_STATE_HOME/arroba/logs`, then `~/.local/state/arroba/logs`, then `./.arroba/logs`.
+- [x] Define one daemon-owned machine-local log root for Chariox runtime processes.
+Current state: `CHARIOX_LOG_DIR` overrides the default; otherwise Chariox uses `XDG_STATE_HOME/chariox/logs`, then `~/.local/state/chariox/logs`, then `./.chariox/logs`.
 - [x] Use structured log records with shared correlation fields:
   - timestamp
   - level
@@ -101,7 +101,7 @@ Current state: `ARROBA_LOG_DIR` overrides the default; otherwise Arroba uses `XD
   - daemon
   - TypeScript CLI
   - server process
-  - future provider-side helper processes when Arroba launches them directly
+  - future provider-side helper processes when Chariox launches them directly
 Current state: daemon, TypeScript CLI launcher, TypeScript CLI, and server are on the shared logger; provider-side helper processes remain pending.
 - [x] Add a debug-bundle or log-collection path for one session/provider run across multiple local processes.
 - [x] Define default privacy policy for logs:
@@ -109,7 +109,7 @@ Current state: daemon, TypeScript CLI launcher, TypeScript CLI, and server are o
   - prompt/output content capture only with explicit opt-in or debug mode
 - [x] Document log location, rotation/retention policy, and env vars for local debugging.
 - [x] Add an early built-in local log viewer command.
-Current state: `arroba-cli logs` can filter/follow the shared NDJSON logs by process kind, component, session, provider run, client, and level. `arroba-cli logs --bundle <dir>` exports the filtered raw NDJSON plus a manifest for local support/debug handoff.
+Current state: `chariox-cli logs` can filter/follow the shared NDJSON logs by process kind, component, session, provider run, client, and level. `chariox-cli logs --bundle <dir>` exports the filtered raw NDJSON plus a manifest for local support/debug handoff.
 
 ## 4.4 TypeScript CLI Hardening
 
@@ -128,7 +128,7 @@ Current state: startup session-selection/bootstrap coverage now exists in `apps/
 - [x] Make `session.delete` a true delete rather than a resumable `session.end` alias.
 - [x] Keep sessions resumable after the last client detaches until explicit deletion.
 - [x] Add a reusable no-session TypeScript CLI state instead of always exiting the process when session context disappears.
-- [x] When the current session is deleted, clear transcript/session chrome and render an Arroba ASCII-art unattached landing state.
+- [x] When the current session is deleted, clear transcript/session chrome and render a Chariox ASCII-art unattached landing state.
 - [x] Add session references based on commit-like ids plus optional aliases.
 - [x] Allow attach/delete commands to resolve full ids, unique id prefixes, aliases, and unique alias prefixes.
 - [x] Reject ambiguous session references with a structured error instead of guessing.
@@ -139,7 +139,7 @@ Current state: startup session-selection/bootstrap coverage now exists in `apps/
 - [ ] Add daemon-owned slash-command dispatch to the local CLI path.
 - [ ] Prefer OpenCode machine-readable command discovery over catalog-only fallback.
 - [ ] Integrate OpenCode agent and skill discovery into `/agent` completion state.
-- [ ] Keep shipped Arroba catalogs as compatibility fallback when provider APIs are unavailable or unsupported.
+- [ ] Keep shipped Chariox catalogs as compatibility fallback when provider APIs are unavailable or unsupported.
 
 ## 4.7 Capability Surface on the New Path
 

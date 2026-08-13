@@ -1,4 +1,4 @@
-# Running Arroba Locally
+# Running Chariox Locally
 
 ## Status
 
@@ -6,10 +6,10 @@ Current local runtime guide for the daemon and CLI baseline.
 
 ## 1. Purpose
 
-This document explains how to run the local Arroba processes that exist today:
+This document explains how to run the local Chariox processes that exist today:
 
-- `arroba-kernel`
-- `arroba-cli`
+- `chariox-kernel`
+- `chariox-cli`
 - the direct TypeScript CLI development path
 
 It also summarizes the current env vars and local configuration knobs that affect those processes.
@@ -18,10 +18,10 @@ It also summarizes the current env vars and local configuration knobs that affec
 
 Today the local baseline is two main processes:
 
-1. `arroba-kernel`
-2. `arroba-cli`
+1. `chariox-kernel`
+2. `chariox-cli`
 
-`arroba-cli` is currently a Rust launcher that builds and starts the primary TypeScript CLI from `apps/cli`.
+`chariox-cli` is currently a Rust launcher that builds and starts the primary TypeScript CLI from `apps/cli`.
 
 For normal local startup, use `pnpm run start:kernel` and `pnpm run start:cli`.
 Those wrappers launch the cached debug binaries directly and only rebuild when
@@ -36,8 +36,8 @@ Required for the current local path:
 - Node.js 22+
 - `pnpm`
 - Bun 1.2+ for the TypeScript CLI
-- `opencode` installed locally, or `ARROBA_OPENCODE_BIN` set
-- `codex` installed locally, or `ARROBA_CODEX_BIN` set, if you want to use the Codex backend
+- `opencode` installed locally, or `CHARIOX_OPENCODE_BIN` set
+- `codex` installed locally, or `CHARIOX_CODEX_BIN` set, if you want to use the Codex backend
 
 Install workspace dependencies first:
 
@@ -50,8 +50,8 @@ pnpm install
 The current structured provider paths require explicit local ports:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
-export ARROBA_CODEX_PORT=43112
+export CHARIOX_OPENCODE_PORT=43111
+export CHARIOX_CODEX_PORT=43112
 ```
 
 Without that, the daemon will reject the corresponding managed launch path.
@@ -106,7 +106,7 @@ Common direct CLI options:
   - delete a session by id or alias and exit without entering the TUI
 
 - `--client-id ID`
-  - override the attachment client id; default is `arroba-cli-<pid>`
+  - override the attachment client id; default is `chariox-cli-<pid>`
 
 - `--model MODEL`
   - select the provider model name used when the CLI launches a provider run; default is `default`
@@ -130,7 +130,7 @@ Interactive placement commands:
 
 - `/session new --worktree DIR --branch BRANCH [--from REF]`
   - create a local git worktree before creating the session, then launch the session in that worktree
-  - `DIR` is resolved relative to the current session/CLI worktree; if omitted, Arroba creates a sibling worktree path from the repo name and branch
+  - `DIR` is resolved relative to the current session/CLI worktree; if omitted, Chariox creates a sibling worktree path from the repo name and branch
 
 - `/agent spawn [ALIAS] [MODEL] --dir DIR`
   - spawn a local agent in an existing local directory
@@ -143,7 +143,7 @@ Interactive placement commands:
 
 - `/agent spawn [ALIAS] [MODEL] --machine MACHINE --worktree REMOTE_DIR --branch BRANCH [--from REF]`
   - ask the worker kernel to create the git worktree on the remote machine, then spawn the remote agent there
-  - the worker must already have `git` installed and configured, and the worker kernel must be running from the source repo; Arroba surfaces git/repo/configuration failures directly
+  - the worker must already have `git` installed and configured, and the worker kernel must be running from the source repo; Chariox surfaces git/repo/configuration failures directly
 
 Example:
 
@@ -160,7 +160,7 @@ pnpm run start:cli -- \
 For direct CLI development:
 
 ```bash
-pnpm --filter @arroba/cli run dev
+pnpm --filter @chariox/cli run dev
 ```
 
 That path still expects the daemon to already be running.
@@ -170,14 +170,14 @@ That path still expects the daemon to already be running.
 In terminal 1:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
+export CHARIOX_OPENCODE_PORT=43111
 pnpm run start:kernel
 ```
 
 In terminal 2:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
+export CHARIOX_OPENCODE_PORT=43111
 pnpm run start:cli
 ```
 
@@ -201,9 +201,9 @@ Inside the CLI:
   - `/agent list`
   - `/agent cycle`
   - `Tab` cycles focus to the next session agent
-- `/agent spawn --dir` sets the provider working directory at spawn time. Without `--machine`, the directory is resolved on the local/home machine. With `--machine`, the directory is interpreted on the worker machine and is required; Arroba does not currently change an existing agent's directory after spawn.
+- `/agent spawn --dir` sets the provider working directory at spawn time. Without `--machine`, the directory is resolved on the local/home machine. With `--machine`, the directory is interpreted on the worker machine and is required; Chariox does not currently change an existing agent's directory after spawn.
 - `/view <split|individual>` switches between the focused transcript view and the current split-pane response layout
-- deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders an Arroba ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
+- deleting the currently attached session keeps the CLI process alive, clears the transcript/session chrome, renders a Chariox ASCII-art no-session landing state, returns the user to an unattached shell, and removes that session from future attach/list resolution
 
 Current agent-command note:
 
@@ -312,36 +312,36 @@ Notes:
 
 ### 12.2 OpenCode
 
-- `ARROBA_OPENCODE_PORT`
+- `CHARIOX_OPENCODE_PORT`
   - required for the managed OpenCode launch path
   - local port used for `opencode serve`
 
-- `ARROBA_OPENCODE_BIN`
+- `CHARIOX_OPENCODE_BIN`
   - optional
   - overrides the `opencode` executable path
 
 Examples:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
-export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
+export CHARIOX_OPENCODE_PORT=43111
+export CHARIOX_OPENCODE_BIN=/absolute/path/to/opencode
 ```
 
 ### 12.3 Codex
 
-- `ARROBA_CODEX_PORT`
+- `CHARIOX_CODEX_PORT`
   - required for the managed Codex launch path
   - local port used for `codex app-server --listen ws://127.0.0.1:<port>`
 
-- `ARROBA_CODEX_BIN`
+- `CHARIOX_CODEX_BIN`
   - optional
   - overrides the `codex` executable path
 
 Examples:
 
 ```bash
-export ARROBA_CODEX_PORT=43112
-export ARROBA_CODEX_BIN=/absolute/path/to/codex
+export CHARIOX_CODEX_PORT=43112
+export CHARIOX_CODEX_BIN=/absolute/path/to/codex
 ```
 
 Codex login is available through the CLI:
@@ -362,7 +362,7 @@ Codex login is available through the CLI:
 
 - `BUN_BIN`
   - optional
-  - overrides the Bun executable used by the Rust `arroba-cli` launcher
+  - overrides the Bun executable used by the Rust `chariox-cli` launcher
 
 Example:
 
@@ -372,32 +372,32 @@ export BUN_BIN=/absolute/path/to/bun
 
 ### 12.5 Kernel Transport
 
-- `ARROBA_DAEMON_SOCKET`
+- `CHARIOX_DAEMON_SOCKET`
   - optional
   - legacy compatibility override for the older local IPC socket path
 
-- `ARROBA_DAEMON_ID`
+- `CHARIOX_DAEMON_ID`
   - optional
   - affects the default socket filename when no explicit socket path is set
 
-- `ARROBA_KERNEL_URL`
+- `CHARIOX_KERNEL_URL`
   - optional
   - explicit kernel WebSocket URL for the CLI, for example `ws://127.0.0.1:43118/kernel`
 
-- `ARROBA_KERNEL_HOST`
+- `CHARIOX_KERNEL_HOST`
   - optional
-  - host bound by the daemon kernel WebSocket listener when `ARROBA_KERNEL_URL` is not used on the CLI
+  - host bound by the daemon kernel WebSocket listener when `CHARIOX_KERNEL_URL` is not used on the CLI
 
-- `ARROBA_KERNEL_PORT`
+- `CHARIOX_KERNEL_PORT`
   - optional
   - port bound by the daemon kernel WebSocket listener and used by the CLI default URL derivation
 
-If you override the kernel host/port, both processes must use the same values or the CLI must be launched with a matching `ARROBA_KERNEL_URL`.
+If you override the kernel host/port, both processes must use the same values or the CLI must be launched with a matching `CHARIOX_KERNEL_URL`.
 
 Example:
 
 ```bash
-export ARROBA_DAEMON_SOCKET=/tmp/arroba-demo.sock
+export CHARIOX_DAEMON_SOCKET=/tmp/chariox-demo.sock
 ```
 
 Then run both the daemon and the CLI in shells that share that env var.
@@ -405,21 +405,21 @@ Then run both the daemon and the CLI in shells that share that env var.
 For the default kernel WebSocket path:
 
 ```bash
-export ARROBA_KERNEL_HOST=127.0.0.1
-export ARROBA_KERNEL_PORT=43118
+export CHARIOX_KERNEL_HOST=127.0.0.1
+export CHARIOX_KERNEL_PORT=43118
 ```
 
 ### 12.4 Logging
 
-- `ARROBA_LOG_DIR`
+- `CHARIOX_LOG_DIR`
   - optional
   - overrides the shared log root
 
-- `ARROBA_LOG_LEVEL`
+- `CHARIOX_LOG_LEVEL`
   - optional
   - one of `debug`, `info`, `warn`, `error`, `off`
 
-See [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md) for the full logging guide.
+See [LOGGING.md](/Users/miguel/chariox/docs/LOGGING.md) for the full logging guide.
 
 ## 12. Troubleshooting
 
@@ -428,15 +428,15 @@ See [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md) for the full logging guid
 Check:
 
 - the daemon is already running
-- both processes are using the same `ARROBA_DAEMON_SOCKET` if overridden
+- both processes are using the same `CHARIOX_DAEMON_SOCKET` if overridden
 - the socket path is reachable by the current OS user
 
 ### OpenCode launch fails immediately
 
 Check:
 
-- `ARROBA_OPENCODE_PORT` is set
-- `opencode` is on `PATH` or `ARROBA_OPENCODE_BIN` is set correctly
+- `CHARIOX_OPENCODE_PORT` is set
+- `opencode` is on `PATH` or `CHARIOX_OPENCODE_BIN` is set correctly
 - the configured port is free before launch
 
 ### The Rust launcher says Bun is missing
@@ -458,23 +458,23 @@ pnpm run start:cli -- logs --follow
 or inspect the shared NDJSON files directly:
 
 ```bash
-tail -f ~/.local/state/arroba/logs/*.ndjson
+tail -f ~/.local/state/chariox/logs/*.ndjson
 ```
 
 ## 13. Workspace live sync
 
-Workspace Live Sync keeps selected Arroba session worktrees aligned at provider turn boundaries. Managed mode enforces Arroba runtime/MCP write tools and performs collision checks before syncing writes. Tracked mode watches file changes made during Arroba-managed provider turns and syncs those changes without write enforcement. Changes made outside Arroba-managed turns are ignored.
+Workspace Live Sync keeps selected Chariox session worktrees aligned at provider turn boundaries. Managed mode enforces Chariox runtime/MCP write tools and performs collision checks before syncing writes. Tracked mode watches file changes made during Chariox-managed provider turns and syncs those changes without write enforcement. Changes made outside Chariox-managed turns are ignored.
 
-Workspace live sync defaults are read from the Arroba user config TOML:
+Workspace live sync defaults are read from the Chariox user config TOML:
 
 ```text
-$XDG_CONFIG_HOME/arroba/config.toml
+$XDG_CONFIG_HOME/chariox/config.toml
 ```
 
 If `XDG_CONFIG_HOME` is unset, the fallback path is:
 
 ```text
-~/.arroba/config.toml
+~/.chariox/config.toml
 ```
 
 The default policy is Off:
@@ -489,7 +489,7 @@ account_profile = "default"
 workspace_live_sync = "off"
 ```
 
-Use `managed` to enforce Arroba runtime/MCP writes for protected roots, or `tracked` to allow provider-native writes and sync them at turn end. Session commands switch the current attached session only:
+Use `managed` to enforce Chariox runtime/MCP writes for protected roots, or `tracked` to allow provider-native writes and sync them at turn end. Session commands switch the current attached session only:
 
 ```text
 /workspace sync off
@@ -506,7 +506,7 @@ Set the default for new sessions without changing the attached session:
 /workspace sync default tracked
 ```
 
-Workspace Live Sync protects and syncs only the selected worktree Git root plus explicitly attached workspace-link roots. Sibling and unrelated repositories outside those roots stay writable and unsynced. Workspace Live Sync uses `.arrobaignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Arroba state are always excluded.
+Workspace Live Sync protects and syncs only the selected worktree Git root plus explicitly attached workspace-link roots. Sibling and unrelated repositories outside those roots stay writable and unsynced. Workspace Live Sync uses `.charioxignore` for per-workspace exclusions. New ignore files are initialized from `.gitignore` when one exists, otherwise they start empty. Runtime/private paths such as `.git/` and Chariox state are always excluded.
 
 You can inspect or modify the same default policy through the lower-level config commands:
 
@@ -530,18 +530,18 @@ Remote leased agents use the same workspace live sync policy as local agents.
 
 Agent-facing tools:
 
-- `arroba.read_artifact`
-- `arroba.write_artifact`
-- `arroba.edit_artifact`
-- `arroba.apply_patch`
-- `arroba.move_artifact`
-- `arroba.delete_artifact`
-- `arroba.list_extensions`
-- `arroba.request_extension`
+- `chariox.read_artifact`
+- `chariox.write_artifact`
+- `chariox.edit_artifact`
+- `chariox.apply_patch`
+- `chariox.move_artifact`
+- `chariox.delete_artifact`
+- `chariox.list_extensions`
+- `chariox.request_extension`
 
-The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, `delete_artifact`, `list_extensions`, and `request_extension`. Codex may display these as provider-qualified tool names such as `mcp__arroba__read_artifact`.
+The same operations are also exposed as short aliases: `read_artifact`, `write_artifact`, `edit_artifact`, `apply_patch`, `move_artifact`, `delete_artifact`, `list_extensions`, and `request_extension`. Codex may display these as provider-qualified tool names such as `mcp__chariox__read_artifact`.
 
-`list_extensions` lets an agent discover Arroba-managed MCPs, skills, and scripts available in the current workspace. `request_extension` accepts `kind` (`mcp`, `skill`, or `script`) and `name`; script requests also require an `environment`. V1 grants valid requests automatically. A requested MCP is rendered into provider-native MCP config by Arroba-managed provider conversation activation; if the agent requested it mid-turn, Arroba reloads after that turn and sends an automatic continuation prompt. A requested skill returns the full `SKILL.md` body by default and is usable immediately in the current turn. A requested script becomes an agent-facing runtime MCP tool backed by the registered local script and external environment.
+`list_extensions` lets an agent discover Chariox-managed MCPs, skills, and scripts available in the current workspace. `request_extension` accepts `kind` (`mcp`, `skill`, or `script`) and `name`; script requests also require an `environment`. V1 grants valid requests automatically. A requested MCP is rendered into provider-native MCP config by Chariox-managed provider conversation activation; if the agent requested it mid-turn, Chariox reloads after that turn and sends an automatic continuation prompt. A requested skill returns the full `SKILL.md` body by default and is usable immediately in the current turn. A requested script becomes an agent-facing runtime MCP tool backed by the registered local script and external environment.
 
 Text artifacts use snapshot-aware fine-grained coordination. If a stale edit overlaps an external or concurrent managed change, the tool rejects it and the agent should reread the artifact before retrying. Non-text artifacts use `domain: "opaque"` with base64 payloads and whole-file coordination in v1.
 
@@ -549,7 +549,7 @@ Remote leased agents that are working in the same repo/branch as the home sessio
 
 ## 14. Workflow Queues
 
-Workflow prompt queue limits are owned by the kernel config and read from the Arroba user config TOML. If unset, the kernel defaults to `1024` queues per workflow.
+Workflow prompt queue limits are owned by the kernel config and read from the Chariox user config TOML. If unset, the kernel defaults to `1024` queues per workflow.
 
 ```toml
 [workflow]
@@ -561,8 +561,8 @@ The kernel rejects workflow queue creation if this setting is zero or if a workf
 ## 15. Current Limitations
 
 - There is no single combined launcher yet; daemon and CLI are still separate processes.
-- OpenCode currently requires explicit `ARROBA_OPENCODE_PORT`.
-- the previous Rust-only CLI has been removed; the supported local client paths are `arroba-cli` and direct `apps/cli` development
+- OpenCode currently requires explicit `CHARIOX_OPENCODE_PORT`.
+- the previous Rust-only CLI has been removed; the supported local client paths are `chariox-cli` and direct `apps/cli` development
 - The OpenCode-backed multi-agent runtime path still needs more stabilization work, but the current daemon integration suite is green again.
 - The current split-pane UI is still limited to the primary transcript plus up to two auxiliary panes even though the runtime model now tracks more session agents than that.
 - Slash-command capability work, broader provider support, and daemon-scheduled workflow execution remain open beyond the current manual multi-agent slice.

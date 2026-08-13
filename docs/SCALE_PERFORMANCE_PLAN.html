@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
-  <title>Arroba 500-Agent Efficiency Plan</title>
+  <title>Chariox 500-Agent Efficiency Plan</title>
   <style>
     :root {
       --paper: #f2efe5;
@@ -361,12 +361,12 @@
       <div>
         <p class="eyebrow">Runtime engineering / execution plan</p>
         <h1>500-Agent Efficiency</h1>
-        <p class="lede">A measured path from Arroba's current actor-and-projection foundation to hundreds of concurrently active agents, without trading away ordering, durability, reconnect behavior, or a responsive terminal.</p>
+        <p class="lede">A measured path from Chariox's current actor-and-projection foundation to hundreds of concurrently active agents, without trading away ordering, durability, reconnect behavior, or a responsive terminal.</p>
       </div>
       <aside class="document-meta" aria-label="Document metadata">
         <dl>
           <div><dt>Status</dt><dd>Approved implementation plan</dd></div>
-          <div><dt>Repositories</dt><dd>arroba + arroba-cloud</dd></div>
+          <div><dt>Repositories</dt><dd>chariox + chariox-cloud</dd></div>
           <div><dt>Reference target</dt><dd>500 active agents</dd></div>
           <div><dt>Updated</dt><dd>11 July 2026</dd></div>
         </dl>
@@ -404,21 +404,21 @@
             <span class="status">Mandatory first action</span>
             <h3>Create two isolated worktrees before changing code</h3>
             <p>Do not implement this plan in the user's active checkouts. Start both worktrees from fresh <code>origin/main</code> and perform all code changes, builds, drills, and commits inside them.</p>
-            <pre><code>git -C /Users/miguel/arroba fetch origin
-git -C /Users/miguel/arroba worktree add \
+            <pre><code>git -C /Users/miguel/chariox fetch origin
+git -C /Users/miguel/chariox worktree add \
   -b codex/scale-efficiency-500 \
-  /Users/miguel/arroba-scale-efficiency origin/main
+  /Users/miguel/chariox-scale-efficiency origin/main
 
-git -C /Users/miguel/arroba-cloud fetch origin
-git -C /Users/miguel/arroba-cloud worktree add \
+git -C /Users/miguel/chariox-cloud fetch origin
+git -C /Users/miguel/chariox-cloud worktree add \
   -b codex/scale-efficiency-500 \
-  /Users/miguel/arroba-cloud-scale-efficiency origin/main</code></pre>
+  /Users/miguel/chariox-cloud-scale-efficiency origin/main</code></pre>
 
             <h3>Own every process and every port used by the work</h3>
             <ul>
               <li>Launch a dedicated relay, home kernel, worker kernels, Cloud API, and web server for these drills. Never attach the scale work to the user's existing development or staging processes.</li>
               <li>Choose empty ports at runtime. Check every candidate with <code>lsof -nP -iTCP:&lt;port&gt;</code> before binding, reserve the complete port band for the run, and record the resolved ports in the run manifest.</li>
-              <li>Use a unique temporary <code>ARROBA_HOME</code>, kernel state directory, database, relay token, browser profile, artifact directory, and port offset for every run.</li>
+              <li>Use a unique temporary <code>CHARIOX_HOME</code>, kernel state directory, database, relay token, browser profile, artifact directory, and port offset for every run.</li>
               <li>Track the process group and every child PID. Install <code>EXIT</code>, <code>INT</code>, and <code>TERM</code> traps before launching the first service. Never use broad <code>pkill</code> patterns that could terminate user processes.</li>
             </ul>
 
@@ -585,9 +585,9 @@ git -C /Users/miguel/arroba-cloud worktree add \
           <div class="callout"><strong>Handoff requirement:</strong> report benchmark deltas, remaining risks, commit and branch references, preserved evidence paths, and a cleanup audit proving no owned listeners, processes, worktrees, or temporary runtime state were left behind.</div>
           <h3>Assumptions</h3>
           <ul>
-            <li>The guaranteed target is 500 concurrently active Arroba agents distributed across kernels, coordinated by one home kernel and browser.</li>
+            <li>The guaranteed target is 500 concurrently active Chariox agents distributed across kernels, coordinated by one home kernel and browser.</li>
             <li>A single kernel must also model and render 500 synthetic agents efficiently.</li>
-            <li>Provider quotas and provider child-process memory are reported separately from Arroba orchestration overhead.</li>
+            <li>Provider quotas and provider child-process memory are reported separately from Chariox orchestration overhead.</li>
             <li>The user's existing checkouts, relay, kernels, development server, staging services, and browser state are out of bounds.</li>
           </ul>
         </section>
@@ -595,7 +595,7 @@ git -C /Users/miguel/arroba-cloud worktree add \
     </div>
 
     <footer>
-      <span>Arroba runtime engineering</span>
+      <span>Chariox runtime engineering</span>
       <span>Measure → isolate → cut over → prove → clean up</span>
     </footer>
   </div>

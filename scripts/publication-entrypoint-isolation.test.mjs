@@ -18,7 +18,7 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-isolation-"))
   const publication = join(root, "publication")
   const profile = join(root, "profile")
-  const fakeKernel = join(root, "arroba-kernel")
+  const fakeKernel = join(root, "chariox-kernel")
   const fakeGateway = join(root, "gateway.js")
   const wrapper = join(root, "run.sh")
   const auditBootstrap = join(root, "audit-url")
@@ -44,33 +44,33 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   await chmod(callerClaimsBootstrap, 0o600)
   await writeFile(wrapper, `#!/usr/bin/env bash
 set -euo pipefail
-useradd --create-home --uid 1001 --shell /bin/bash arroba
-useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action
-useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
-mkdir -p /workspace/private /run/arroba-publication-capabilities/{.staging,kernel,gateway}
+useradd --create-home --uid 1001 --shell /bin/bash chariox
+useradd --create-home --uid 1002 --shell /usr/sbin/nologin chariox-action
+useradd --create-home --uid 1003 --shell /usr/sbin/nologin chariox-gateway
+mkdir -p /workspace/private /run/chariox-publication-capabilities/{.staging,kernel,gateway}
 printf 'workspace-sentinel' > /workspace/private/kernel-work
-chown -R arroba:arroba /workspace
+chown -R chariox:chariox /workspace
 chmod -R a+rwX /workspace
-chown root:root /run/arroba-publication-capabilities /run/arroba-publication-capabilities/.staging
-chown root:arroba /run/arroba-publication-capabilities/kernel
-chown root:arroba-gateway /run/arroba-publication-capabilities/gateway
-chmod 711 /run/arroba-publication-capabilities
-chmod 700 /run/arroba-publication-capabilities/.staging
-chmod 1730 /run/arroba-publication-capabilities/kernel /run/arroba-publication-capabilities/gateway
+chown root:root /run/chariox-publication-capabilities /run/chariox-publication-capabilities/.staging
+chown root:chariox /run/chariox-publication-capabilities/kernel
+chown root:chariox-gateway /run/chariox-publication-capabilities/gateway
+chmod 711 /run/chariox-publication-capabilities
+chmod 700 /run/chariox-publication-capabilities/.staging
+chmod 1730 /run/chariox-publication-capabilities/kernel /run/chariox-publication-capabilities/gateway
 printf 'capability-victim-preserved' > /tmp/capability-victim
-/usr/sbin/runuser -u arroba -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/kernel/kernel-local-auth
-/usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/kernel-local-auth
-/usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/publication-audit-url
-/usr/sbin/runuser -u arroba-gateway -- ln -s /tmp/capability-victim /run/arroba-publication-capabilities/gateway/publication-caller-claims.json
-cp /test/entrypoint.sh /usr/local/bin/arroba-publication-container
-cp /test/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
-cp /test/arroba-kernel /usr/local/bin/arroba-kernel
-mkdir -p /opt/arroba/apps/server/dist
-cp /test/gateway.js /opt/arroba/apps/server/dist/index.js
-chmod 755 /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-kernel
+/usr/sbin/runuser -u chariox -- ln -s /tmp/capability-victim /run/chariox-publication-capabilities/kernel/kernel-local-auth
+/usr/sbin/runuser -u chariox-gateway -- ln -s /tmp/capability-victim /run/chariox-publication-capabilities/gateway/kernel-local-auth
+/usr/sbin/runuser -u chariox-gateway -- ln -s /tmp/capability-victim /run/chariox-publication-capabilities/gateway/publication-audit-url
+/usr/sbin/runuser -u chariox-gateway -- ln -s /tmp/capability-victim /run/chariox-publication-capabilities/gateway/publication-caller-claims.json
+cp /test/entrypoint.sh /usr/local/bin/chariox-publication-container
+cp /test/wait-for-tcp.mjs /usr/local/bin/chariox-wait-for-tcp.mjs
+cp /test/chariox-kernel /usr/local/bin/chariox-kernel
+mkdir -p /opt/chariox/apps/server/dist
+cp /test/gateway.js /opt/chariox/apps/server/dist/index.js
+chmod 755 /usr/local/bin/chariox-publication-container /usr/local/bin/chariox-kernel
 cp -a /test/publication /publication
-cp -a /test/profile /home/arroba/.provider-credentials
-exec /usr/local/bin/arroba-publication-container standalone
+cp -a /test/profile /home/chariox/.provider-credentials
+exec /usr/local/bin/chariox-publication-container standalone
 `)
   await Promise.all([chmod(fakeKernel, 0o755), chmod(wrapper, 0o755)])
 
@@ -97,39 +97,39 @@ exec /usr/local/bin/arroba-publication-container standalone
       "--entrypoint",
       "/test/run.sh",
       "-e",
-      "HOME=/home/arroba",
+      "HOME=/home/chariox",
       "-e",
-      "ARROBA_CONFIG_DIR=/home/arroba/.config/arroba",
+      "CHARIOX_CONFIG_DIR=/home/chariox/.config/chariox",
       "-e",
-      "ARROBA_DATA_DIR=/home/arroba/.local/share/arroba",
+      "CHARIOX_DATA_DIR=/home/chariox/.local/share/chariox",
       "-e",
-      "ARROBA_RUNTIME_DIR=/home/arroba/.cache/arroba/runtime",
+      "CHARIOX_RUNTIME_DIR=/home/chariox/.cache/chariox/runtime",
       "-e",
-      "ARROBA_SESSION_HISTORY_DIR=/home/arroba/.local/share/arroba/sessions",
+      "CHARIOX_SESSION_HISTORY_DIR=/home/chariox/.local/share/chariox/sessions",
       "-e",
-      "ARROBA_PROVIDER_CREDENTIALS_DIR=/home/arroba/.provider-credentials",
+      "CHARIOX_PROVIDER_CREDENTIALS_DIR=/home/chariox/.provider-credentials",
       "-e",
-      "ARROBA_PUBLICATION_PACKAGE=/publication",
+      "CHARIOX_PUBLICATION_PACKAGE=/publication",
       "-e",
-      "ARROBA_PUBLICATION_RUNNER_KEY=runner-env-sentinel",
+      "CHARIOX_PUBLICATION_RUNNER_KEY=runner-env-sentinel",
       "-e",
-      "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY=cloud-runner-env-sentinel",
+      "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY=cloud-runner-env-sentinel",
       "-e",
-      "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE=/test/audit-url",
+      "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE=/test/audit-url",
       "-e",
-      "ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE=/test/caller-claims.json",
+      "CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE=/test/caller-claims.json",
       "-e",
       "OPENAI_API_KEY=provider-env-sentinel",
       "-e",
-      "ARROBA_RELAY_URL=wss://relay.example.test",
+      "CHARIOX_RELAY_URL=wss://relay.example.test",
       "-e",
-      "ARROBA_RELAY_TOKEN=relay-token-sentinel",
+      "CHARIOX_RELAY_TOKEN=relay-token-sentinel",
       "-e",
-      "ARROBA_CLOUD_RELAY_CONFIG_JSON={\"cloud_relay\":{\"relayUrl\":\"wss://cloud-relay.example.test\"}}",
+      "CHARIOX_CLOUD_RELAY_CONFIG_JSON={\"cloud_relay\":{\"relayUrl\":\"wss://cloud-relay.example.test\"}}",
       "-e",
-      "ARROBA_RELAY_HEARTBEAT_MS=12345",
+      "CHARIOX_RELAY_HEARTBEAT_MS=12345",
       "-e",
-      "ARROBA_KERNEL_QUEUE_CAPACITY=321",
+      "CHARIOX_KERNEL_QUEUE_CAPACITY=321",
       "-e",
       "NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt",
       "-e",
@@ -137,13 +137,13 @@ exec /usr/local/bin/arroba-publication-container standalone
       "-e",
       "NO_PROXY=127.0.0.1,localhost",
       "-e",
-      "ARROBA_PUBLICATION_CLOUD_API_URL=https://self-host.example.test",
+      "CHARIOX_PUBLICATION_CLOUD_API_URL=https://self-host.example.test",
       "-e",
-      "ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID=self-host-account",
+      "CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID=self-host-account",
       "-e",
-      "ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN=self-host-session-sentinel",
+      "CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN=self-host-session-sentinel",
       "-e",
-      "ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID=self-host-deployment",
+      "CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID=self-host-deployment",
       "-v",
       `${root}:/test:ro`,
       baseImage,
@@ -171,7 +171,7 @@ test("publication entrypoint exits and cleans up when the kernel or action serve
 }, async () => {
   const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-supervision-"))
   const publication = join(root, "publication")
-  const fakeKernel = join(root, "arroba-kernel")
+  const fakeKernel = join(root, "chariox-kernel")
   const fakeGateway = join(root, "gateway.js")
   const wrapper = join(root, "run.sh")
   await copyFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), join(root, "entrypoint.sh"))
@@ -183,18 +183,18 @@ test("publication entrypoint exits and cleans up when the kernel or action serve
   await writeFile(fakeGateway, supervisedGatewaySource())
   await writeFile(wrapper, `#!/usr/bin/env bash
 set -euo pipefail
-useradd --create-home --uid 1001 --shell /bin/bash arroba
-useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action
-useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
+useradd --create-home --uid 1001 --shell /bin/bash chariox
+useradd --create-home --uid 1002 --shell /usr/sbin/nologin chariox-action
+useradd --create-home --uid 1003 --shell /usr/sbin/nologin chariox-gateway
 touch "/tmp/fail-\${FAIL_CHILD:?}"
-cp /test/entrypoint.sh /usr/local/bin/arroba-publication-container
-cp /test/wait-for-tcp.mjs /usr/local/bin/arroba-wait-for-tcp.mjs
-cp /test/arroba-kernel /usr/local/bin/arroba-kernel
-mkdir -p /opt/arroba/apps/server/dist
-cp /test/gateway.js /opt/arroba/apps/server/dist/index.js
-chmod 755 /usr/local/bin/arroba-publication-container /usr/local/bin/arroba-kernel
+cp /test/entrypoint.sh /usr/local/bin/chariox-publication-container
+cp /test/wait-for-tcp.mjs /usr/local/bin/chariox-wait-for-tcp.mjs
+cp /test/chariox-kernel /usr/local/bin/chariox-kernel
+mkdir -p /opt/chariox/apps/server/dist
+cp /test/gateway.js /opt/chariox/apps/server/dist/index.js
+chmod 755 /usr/local/bin/chariox-publication-container /usr/local/bin/chariox-kernel
 cp -a /test/publication /publication
-exec /usr/local/bin/arroba-publication-container standalone
+exec /usr/local/bin/chariox-publication-container standalone
 `)
   await Promise.all([chmod(fakeKernel, 0o755), chmod(wrapper, 0o755)])
 
@@ -250,17 +250,17 @@ exec /usr/local/bin/arroba-publication-container standalone
         "-e",
         `FAIL_CHILD=${scenario.failure}`,
         "-e",
-        "HOME=/home/arroba",
+        "HOME=/home/chariox",
         "-e",
-        "ARROBA_CONFIG_DIR=/home/arroba/.config/arroba",
+        "CHARIOX_CONFIG_DIR=/home/chariox/.config/chariox",
         "-e",
-        "ARROBA_DATA_DIR=/home/arroba/.local/share/arroba",
+        "CHARIOX_DATA_DIR=/home/chariox/.local/share/chariox",
         "-e",
-        "ARROBA_RUNTIME_DIR=/home/arroba/.cache/arroba/runtime",
+        "CHARIOX_RUNTIME_DIR=/home/chariox/.cache/chariox/runtime",
         "-e",
-        "ARROBA_SESSION_HISTORY_DIR=/home/arroba/.local/share/arroba/sessions",
+        "CHARIOX_SESSION_HISTORY_DIR=/home/chariox/.local/share/chariox/sessions",
         "-e",
-        "ARROBA_PUBLICATION_PACKAGE=/publication",
+        "CHARIOX_PUBLICATION_PACKAGE=/publication",
         "-v",
         `${root}:/test:ro`,
         baseImage,
@@ -296,16 +296,16 @@ test("publication split kernel and gateway modes fail closed without local auth 
   await copyFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), join(root, "entrypoint.sh"))
   await writeFile(wrapper, `#!/usr/bin/env bash
 set -euo pipefail
-useradd --create-home --uid 1001 --shell /bin/bash arroba
-useradd --create-home --uid 1002 --shell /usr/sbin/nologin arroba-action
-useradd --create-home --uid 1003 --shell /usr/sbin/nologin arroba-gateway
+useradd --create-home --uid 1001 --shell /bin/bash chariox
+useradd --create-home --uid 1002 --shell /usr/sbin/nologin chariox-action
+useradd --create-home --uid 1003 --shell /usr/sbin/nologin chariox-gateway
 mkdir -p /publication
-cp /test/entrypoint.sh /usr/local/bin/arroba-publication-container
-chmod 755 /usr/local/bin/arroba-publication-container
+cp /test/entrypoint.sh /usr/local/bin/chariox-publication-container
+chmod 755 /usr/local/bin/chariox-publication-container
 set +e
-kernel_output="$(/usr/local/bin/arroba-publication-container kernel 2>&1)"
+kernel_output="$(/usr/local/bin/chariox-publication-container kernel 2>&1)"
 kernel_status=$?
-gateway_output="$(/usr/local/bin/arroba-publication-container gateway 2>&1)"
+gateway_output="$(/usr/local/bin/chariox-publication-container gateway 2>&1)"
 gateway_status=$?
 set -e
 test "$kernel_status" -eq 70
@@ -323,15 +323,15 @@ printf 'split kernel and gateway rejected missing local auth files\n'
       "--entrypoint",
       "/test/run.sh",
       "-e",
-      "HOME=/home/arroba",
+      "HOME=/home/chariox",
       "-e",
-      "ARROBA_CONFIG_DIR=/home/arroba/.config/arroba",
+      "CHARIOX_CONFIG_DIR=/home/chariox/.config/chariox",
       "-e",
-      "ARROBA_DATA_DIR=/home/arroba/.local/share/arroba",
+      "CHARIOX_DATA_DIR=/home/chariox/.local/share/chariox",
       "-e",
-      "ARROBA_RUNTIME_DIR=/home/arroba/.cache/arroba/runtime",
+      "CHARIOX_RUNTIME_DIR=/home/chariox/.cache/chariox/runtime",
       "-e",
-      "ARROBA_SESSION_HISTORY_DIR=/home/arroba/.local/share/arroba/sessions",
+      "CHARIOX_SESSION_HISTORY_DIR=/home/chariox/.local/share/chariox/sessions",
       "-v",
       `${root}:/test:ro`,
       baseImage,
@@ -360,9 +360,9 @@ const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1001)
 assertUnprivilegedCapabilities()
-assertPrivateTempDirectory("/home/arroba/.tmp", 1001)
-assert.equal(process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN, undefined)
-const tokenFile = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
+assertPrivateTempDirectory("/home/chariox/.tmp", 1001)
+assert.equal(process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, undefined)
+const tokenFile = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
 assert.ok(tokenFile)
 const tokenStat = fs.statSync(tokenFile)
 assert.equal(tokenStat.uid, 1001)
@@ -372,20 +372,20 @@ assert.ok(token && token.length >= 64)
 assert.equal(fs.lstatSync(tokenFile).isSymbolicLink(), false)
 assert.equal(fs.readFileSync("/tmp/capability-victim", "utf8"), "capability-victim-preserved")
 fs.unlinkSync(tokenFile)
-delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
-assert.equal(process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL, undefined)
-assert.equal(process.env.ARROBA_PUBLICATION_RUNNER_KEY, undefined)
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_RUNNER_KEY, undefined)
-assert.equal(process.env.ARROBA_RELAY_URL, "wss://relay.example.test")
-assert.equal(process.env.ARROBA_RELAY_TOKEN, "relay-token-sentinel")
-assert.match(process.env.ARROBA_CLOUD_RELAY_CONFIG_JSON, /cloud-relay\.example\.test/)
-assert.equal(process.env.ARROBA_RELAY_HEARTBEAT_MS, "12345")
-assert.equal(process.env.ARROBA_KERNEL_QUEUE_CAPACITY, "321")
+delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+assert.equal(process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL, undefined)
+assert.equal(process.env.CHARIOX_PUBLICATION_RUNNER_KEY, undefined)
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY, undefined)
+assert.equal(process.env.CHARIOX_RELAY_URL, "wss://relay.example.test")
+assert.equal(process.env.CHARIOX_RELAY_TOKEN, "relay-token-sentinel")
+assert.match(process.env.CHARIOX_CLOUD_RELAY_CONFIG_JSON, /cloud-relay\.example\.test/)
+assert.equal(process.env.CHARIOX_RELAY_HEARTBEAT_MS, "12345")
+assert.equal(process.env.CHARIOX_KERNEL_QUEUE_CAPACITY, "321")
 assert.equal(process.env.NODE_EXTRA_CA_CERTS, "/etc/ssl/certs/ca-certificates.crt")
 assert.equal(process.env.HTTPS_PROXY, "http://proxy.example.test:8080")
 assert.equal(process.env.NO_PROXY, "127.0.0.1,localhost")
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN, undefined)
-assert.equal(fs.readFileSync("/home/arroba/.codex/credential-sentinel", "utf8"), "credential-sentinel")
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN, undefined)
+assert.equal(fs.readFileSync("/home/chariox/.codex/credential-sentinel", "utf8"), "credential-sentinel")
 const workspaceStat = fs.statSync("/workspace")
 assert.equal(workspaceStat.uid, 1001)
 assert.equal(workspaceStat.mode & 0o777, 0o700)
@@ -394,7 +394,7 @@ assert.equal(workspaceFileStat.uid, 1001)
 assert.equal(workspaceFileStat.mode & 0o077, 0)
 assert.equal(fs.readFileSync("/workspace/private/kernel-work", "utf8"), "workspace-sentinel")
 assert.throws(
-  () => fs.writeFileSync("/opt/arroba/apps/server/dist/index.js", "kernel-overwrite"),
+  () => fs.writeFileSync("/opt/chariox/apps/server/dist/index.js", "kernel-overwrite"),
   /EACCES|EPERM/,
 )
 const child = spawnSync(process.execPath, ["-e", "const fs=require('node:fs'); const parent=fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8'); if (Object.keys(process.env).some((name) => name.includes('AUTH_TOKEN') || name.includes('AUDIT')) || parent.includes('" + token + "') || parent.includes('capability-sentinel')) process.exit(2)"], {
@@ -432,9 +432,9 @@ import { readFileSync } from "node:fs"
 import { readFile, readdir, stat, writeFile } from "node:fs/promises"
 import net from "node:net"
 assert.equal(process.getuid(), 1002)
-assert.equal(process.env.HOME, "/home/arroba-action")
+assert.equal(process.env.HOME, "/home/chariox-action")
 assert.equal(process.cwd(), "/publication/app")
-assert.equal(process.env.TMPDIR, "/home/arroba-action/.tmp")
+assert.equal(process.env.TMPDIR, "/home/chariox-action/.tmp")
 const tempStat = await stat(process.env.TMPDIR)
 assert.equal(tempStat.uid, 1002)
 assert.equal(tempStat.mode & 0o777, 0o700)
@@ -446,42 +446,42 @@ assert.ok(boundingMatch)
 const bounding = BigInt("0x" + boundingMatch[1])
 assert.equal((bounding & (1n << 13n)) === 0n, true)
 for (const name of [
-  "ARROBA_KERNEL_LOCAL_AUTH_TOKEN",
-  "ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE",
-  "ARROBA_PUBLICATION_RUNNER_KEY",
-  "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY",
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL",
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
-  "ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE",
+  "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
+  "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+  "CHARIOX_PUBLICATION_RUNNER_KEY",
+  "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
+  "CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE",
   "OPENAI_API_KEY",
-  "ARROBA_RELAY_URL",
-  "ARROBA_RELAY_TOKEN",
-  "ARROBA_CLOUD_RELAY_CONFIG_JSON",
+  "CHARIOX_RELAY_URL",
+  "CHARIOX_RELAY_TOKEN",
+  "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
   "NODE_EXTRA_CA_CERTS",
   "HTTPS_PROXY",
   "NO_PROXY",
-  "ARROBA_PUBLICATION_CLOUD_API_URL",
-  "ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID",
-  "ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN",
+  "CHARIOX_PUBLICATION_CLOUD_API_URL",
+  "CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID",
+  "CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN",
 ]) assert.equal(process.env[name], undefined)
 assert.equal(Object.values(process.env).some((value) => value.includes("capability-sentinel")), false)
 assert.equal(Object.values(process.env).some((value) => value.includes("${CALLER_CLAIMS_SECRET}")), false)
 for (const path of [
-  "/home/arroba/.codex/credential-sentinel",
-  "/home/arroba/.provider-credentials/home/.codex/credential-sentinel",
+  "/home/chariox/.codex/credential-sentinel",
+  "/home/chariox/.provider-credentials/home/.codex/credential-sentinel",
 ]) await assert.rejects(readFile(path, "utf8"), /EACCES|EPERM/)
 await assert.rejects(readFile("/workspace/private/kernel-work", "utf8"), /EACCES|EPERM/)
 await assert.rejects(writeFile("/workspace/private/kernel-work", "action-overwrite"), /EACCES|EPERM/)
 await assert.rejects(writeFile("/workspace/action-created", "action-create"), /EACCES|EPERM/)
 await assert.rejects(readdir("/workspace"), /EACCES|EPERM/)
-for (const path of ["/home/arroba/.tmp", "/home/arroba-gateway/.tmp"]) {
+for (const path of ["/home/chariox/.tmp", "/home/chariox-gateway/.tmp"]) {
   await assert.rejects(readdir(path), /EACCES|EPERM/)
 }
 await assert.rejects(readFile("/proc/1/environ"), /EACCES|EPERM/)
 await assertKernelDeniesUnauthenticated()
 await assertGatewayEnvironmentHidden()
 console.log("action uid 1002 denied credential, workspace, and unauthenticated kernel access")
-await writeFile("/tmp/arroba-action-isolation-complete", "complete")
+await writeFile("/tmp/chariox-action-isolation-complete", "complete")
 setInterval(() => {}, 1000)
 async function assertKernelDeniesUnauthenticated() {
   const deadline = Date.now() + 3000
@@ -586,34 +586,34 @@ const fs = require("node:fs")
 const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1003)
-assert.equal(process.env.HOME, "/home/arroba-gateway")
+assert.equal(process.env.HOME, "/home/chariox-gateway")
 assert.equal(process.cwd(), "/publication")
-assert.equal(process.env.TMPDIR, "/home/arroba-gateway/.tmp")
+assert.equal(process.env.TMPDIR, "/home/chariox-gateway/.tmp")
 const tempStat = fs.statSync(process.env.TMPDIR)
 assert.equal(tempStat.uid, 1003)
 assert.equal(tempStat.mode & 0o777, 0o700)
 const processStatus = fs.readFileSync("/proc/self/status", "utf8")
 assert.match(processStatus, /^CapPrm:\\s+0+$/m)
 assert.match(processStatus, /^CapEff:\\s+0+$/m)
-for (const name of ["ARROBA_PUBLICATION_RUNNER_KEY", "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY", "OPENAI_API_KEY"]) {
+for (const name of ["CHARIOX_PUBLICATION_RUNNER_KEY", "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY", "OPENAI_API_KEY"]) {
   assert.equal(process.env[name], undefined)
 }
-assert.equal(process.env.ARROBA_RELAY_URL, undefined)
-assert.equal(process.env.ARROBA_RELAY_TOKEN, undefined)
-assert.equal(process.env.ARROBA_CLOUD_RELAY_CONFIG_JSON, undefined)
+assert.equal(process.env.CHARIOX_RELAY_URL, undefined)
+assert.equal(process.env.CHARIOX_RELAY_TOKEN, undefined)
+assert.equal(process.env.CHARIOX_CLOUD_RELAY_CONFIG_JSON, undefined)
 assert.equal(process.env.NODE_EXTRA_CA_CERTS, "/etc/ssl/certs/ca-certificates.crt")
 assert.equal(process.env.HTTPS_PROXY, "http://proxy.example.test:8080")
 assert.equal(process.env.NO_PROXY, "127.0.0.1,localhost")
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_API_URL, "https://self-host.example.test")
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID, "self-host-account")
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN, "self-host-session-sentinel")
-assert.equal(process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID, "self-host-deployment")
-assert.throws(() => fs.readFileSync("/home/arroba/.codex/credential-sentinel"), /EACCES|EPERM/)
-assert.equal(process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN, undefined)
-assert.equal(process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL, undefined)
-const tokenFile = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
-const auditFile = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
-const callerClaimsFile = process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_API_URL, "https://self-host.example.test")
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID, "self-host-account")
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN, "self-host-session-sentinel")
+assert.equal(process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID, "self-host-deployment")
+assert.throws(() => fs.readFileSync("/home/chariox/.codex/credential-sentinel"), /EACCES|EPERM/)
+assert.equal(process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, undefined)
+assert.equal(process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL, undefined)
+const tokenFile = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+const auditFile = process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+const callerClaimsFile = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
 assert.ok(tokenFile && auditFile && callerClaimsFile)
 const token = fs.readFileSync(tokenFile, "utf8")
 const auditUrl = fs.readFileSync(auditFile, "utf8")
@@ -636,9 +636,9 @@ console.log("capability symlinks replaced without modifying their target")
 fs.unlinkSync(tokenFile)
 fs.unlinkSync(auditFile)
 fs.unlinkSync(callerClaimsFile)
-delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
-delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
-delete process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+delete process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
 const child = spawnSync(process.execPath, ["-e", "const fs=require('node:fs'); const parent=fs.readFileSync('/proc/' + process.ppid + '/environ', 'utf8'); if (Object.keys(process.env).some((name) => name.includes('AUTH_TOKEN') || name.includes('AUDIT') || name.includes('CALLER_CLAIMS')) || parent.includes('" + token + "') || parent.includes('capability-sentinel') || parent.includes('${CALLER_CLAIMS_SECRET}')) process.exit(2)"], {
   env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR },
 })
@@ -652,7 +652,7 @@ socket.once("data", (chunk) => {
   console.log("gateway uid 1003 authenticated with isolated audit and caller claims capabilities")
   socket.destroy()
   const completion = setInterval(() => {
-    if (fs.existsSync("/tmp/arroba-action-isolation-complete")) {
+    if (fs.existsSync("/tmp/chariox-action-isolation-complete")) {
       clearInterval(completion)
       process.exit(0)
     }

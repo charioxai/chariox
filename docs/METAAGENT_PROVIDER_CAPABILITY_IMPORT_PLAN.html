@@ -176,17 +176,17 @@
     <main>
       <section class="hero">
         <p class="eyebrow">Metaagent capability plan</p>
-        <h1>Provider MCP and Skill Import for Arroba Grants</h1>
+        <h1>Provider MCP and Skill Import for Chariox Grants</h1>
         <p class="summary">
-          Metaagents must grant only Arroba-registered MCPs and skills to regular
+          Metaagents must grant only Chariox-registered MCPs and skills to regular
           worker agents. Provider-native MCPs and skills visible to the metaagent
           are import sources, not the source of truth. This plan makes that rule
           explicit, adds Claude import parity, and introduces a shared import
           command for users and metaagents.
         </p>
         <div class="callout">
-          <strong>Core rule:</strong> Arroba registry state is authoritative for
-          grants. If a capability is not installed in Arroba, a metaagent may
+          <strong>Core rule:</strong> Chariox registry state is authoritative for
+          grants. If a capability is not installed in Chariox, a metaagent may
           import it from its provider, verify it with <code>mcp list</code> or
           <code>skill list</code>, and only then grant it to an owned regular
           worker.
@@ -231,15 +231,15 @@
           <tr>
             <td>Metaagent guidance</td>
             <td>Mentions provisioning MCPs, skills, and vault handles.</td>
-            <td>Does not clearly distinguish provider-visible tools from Arroba-grantable capabilities.</td>
+            <td>Does not clearly distinguish provider-visible tools from Chariox-grantable capabilities.</td>
           </tr>
         </tbody>
       </table>
 
       <h2>Design Principles</h2>
       <ul>
-        <li>Only Arroba-installed MCPs and skills can be granted to agents.</li>
-        <li>Provider configs are import sources. Arroba does not mutate provider-owned config during import.</li>
+        <li>Only Chariox-installed MCPs and skills can be granted to agents.</li>
+        <li>Provider configs are import sources. Chariox does not mutate provider-owned config during import.</li>
         <li>Import and grant are separate operations. Import makes a capability available; grant remains per agent.</li>
         <li>The kernel owns discovery, deduplication, import policy, and protocol results.</li>
         <li>UI clients render kernel state. Do not add stdin-only startup prompts as the product mechanism.</li>
@@ -253,7 +253,7 @@
           with concise rules:
         </p>
         <ul>
-          <li>Only Arroba-registered MCPs and skills can be granted.</li>
+          <li>Only Chariox-registered MCPs and skills can be granted.</li>
           <li>Provider-native tools visible to the metaagent are not automatically grantable.</li>
           <li>Before granting, run <code>mcp list</code> or <code>skill list</code>.</li>
           <li>If missing, import from the metaagent's provider, then list/show again.</li>
@@ -271,8 +271,8 @@
         <ul>
           <li>Read user MCPs from <code>~/.claude.json</code>.</li>
           <li>Read project MCPs from <code>.mcp.json</code>.</li>
-          <li>Respect configured Claude config overrides where Arroba already supports them.</li>
-          <li>Convert supported Claude MCP definitions into <code>ArrobaMcpServerConfig</code>.</li>
+          <li>Respect configured Claude config overrides where Chariox already supports them.</li>
+          <li>Convert supported Claude MCP definitions into <code>CharioxMcpServerConfig</code>.</li>
           <li>Skip unsupported auth/OAuth/unknown shapes with explicit reasons.</li>
         </ul>
       </div>
@@ -286,7 +286,7 @@
         <ul>
           <li>Scan personal skills under <code>~/.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
           <li>Scan project skills under <code>.claude/skills/&lt;name&gt;/SKILL.md</code>.</li>
-          <li>Copy full skill directories into Arroba-owned skill roots.</li>
+          <li>Copy full skill directories into Chariox-owned skill roots.</li>
           <li>Preserve <code>SKILL.md</code>, references, assets, scripts, and metadata.</li>
         </ul>
       </div>
@@ -311,7 +311,7 @@
           <li>Discover provider skill candidates.</li>
           <li>Normalize candidate names.</li>
           <li>Compute MCP definition hashes and skill package hashes.</li>
-          <li>Compare candidates with current Arroba registries.</li>
+          <li>Compare candidates with current Chariox registries.</li>
           <li>Apply deduplication before writing.</li>
           <li>Return a structured report for dry-run and import modes.</li>
         </ul>
@@ -339,8 +339,8 @@
             <td>Use deterministic provider/source ordering and report the tie.</td>
           </tr>
           <tr>
-            <td>Already installed in Arroba</td>
-            <td>Skip by default; do not overwrite existing Arroba entries.</td>
+            <td>Already installed in Chariox</td>
+            <td>Skip by default; do not overwrite existing Chariox entries.</td>
           </tr>
           <tr>
             <td>Unsupported provider shape</td>
@@ -399,21 +399,21 @@
       </div>
 
       <div class="phase">
-        <h3>Drill B: Arroba-only grant path</h3>
+        <h3>Drill B: Chariox-only grant path</h3>
         <ul>
-          <li>Install one MCP and one skill directly into Arroba that do not exist in provider configs.</li>
+          <li>Install one MCP and one skill directly into Chariox that do not exist in provider configs.</li>
           <li>Spawn a real metaagent and a regular worker.</li>
           <li>Ask the metaagent to give the worker the needed capability.</li>
-          <li>Pass only if it uses Arroba list/show/grant and does not rely on provider-native tools.</li>
+          <li>Pass only if it uses Chariox list/show/grant and does not rely on provider-native tools.</li>
         </ul>
       </div>
 
       <div class="phase">
         <h3>Drill C: Missing capability imported by metaagent</h3>
         <ul>
-          <li>Choose a real Codex capability present in Codex but absent from Arroba.</li>
+          <li>Choose a real Codex capability present in Codex but absent from Chariox.</li>
           <li>Prompt the metaagent at a high level.</li>
-          <li>Pass only if it lists Arroba capabilities, imports from its provider, verifies the result, grants to a regular worker, and supervises worker use.</li>
+          <li>Pass only if it lists Chariox capabilities, imports from its provider, verifies the result, grants to a regular worker, and supervises worker use.</li>
         </ul>
       </div>
 

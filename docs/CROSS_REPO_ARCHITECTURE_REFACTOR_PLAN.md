@@ -2,10 +2,10 @@
 
 ## Scope
 
-Refactor `arroba` and `arroba-cloud` together while preserving runtime compatibility.
+Refactor `chariox` and `chariox-cloud` together while preserving runtime compatibility.
 
-- `arroba`: kernel, relay, CLI/shell clients, provider adapters, shared protocol/client code.
-- `arroba-cloud`: hosted auth/control plane, relay token issuance, browser bootstrap, waiting room, browser terminal UI.
+- `chariox`: kernel, relay, CLI/shell clients, provider adapters, shared protocol/client code.
+- `chariox-cloud`: hosted auth/control plane, relay token issuance, browser bootstrap, waiting room, browser terminal UI.
 - Excluded: iOS. It should follow the stabilized protocol and boundaries after this refactor.
 
 Cloud is auth/control-plane/bootstrap only. The kernel owns runtime sessions, agents, provider runs, workspaces, history, workflows, terminal events, and state transitions. The relay remains opaque transport.
@@ -85,7 +85,7 @@ No protocol shape changes are intended. If `LocalDaemonRequest`, `LocalDaemonRes
 
 ### Naming, Docs, Cleanup
 
-- Active browser runtime storage keys use `arroba:terminal:*` with one-time legacy `arroba:web-cli:*` read fallback.
+- Active browser runtime storage keys use `chariox:terminal:*` with one-time legacy `chariox:web-cli:*` read fallback.
 - Active drills use `terminal-*` or `browser-relay-kernel-*` names.
 - Active docs/code/scripts should not reference live `/web-cli` routes except archived historical notes with explicit archive wording.
 - Keep this plan concise. Add one checkpoint line per coherent verified batch, not one entry per tiny helper.
@@ -106,13 +106,13 @@ Per OSS slice:
 
 - `cargo fmt --manifest-path apps/kernel/Cargo.toml`
 - `cargo test --manifest-path apps/kernel/Cargo.toml --lib -- --test-threads=1`
-- `pnpm --filter @arroba/kernel-client run test` when shared TypeScript client code changes
-- `pnpm --filter @arroba/cli run test` or shell tests when client code changes
+- `pnpm --filter @chariox/kernel-client run test` when shared TypeScript client code changes
+- `pnpm --filter @chariox/cli run test` or shell tests when client code changes
 
 Per Cloud slice:
 
-- `pnpm --filter @arroba-cloud/api test` when API changes
-- `pnpm --filter @arroba-cloud/web test` when web changes
+- `pnpm --filter @chariox-cloud/api test` when API changes
+- `pnpm --filter @chariox-cloud/web test` when web changes
 - `pnpm -r --if-present lint`
 - `git diff --check`
 

@@ -10,12 +10,12 @@ deployment modes:
 
 The current local publication runtime, exported package format, transports,
 trace fanout, human HTTP split viewer, and publication container image are the
-starting point. This plan does not replace `arroba serve`; it adds Cloud
+starting point. This plan does not replace `chariox serve`; it adds Cloud
 deployment control, Hetzner runtime ingress, and hosted container lifecycle.
 
 ## Product Boundary
 
-Arroba Cloud on Scalingo remains the control plane:
+Chariox Cloud on Scalingo remains the control plane:
 
 - account authentication
 - deployment records
@@ -48,7 +48,7 @@ Already implemented in OSS:
 
 - `workflow publication create|list|show|export|config|disable`
 - portable publication package export
-- `arroba serve <package> <port>` local gateway launcher
+- `chariox serve <package> <port>` local gateway launcher
 - package materialization into hidden, non-editable publication runtime sessions
 - provider/model binding validation and local replacement prompts
 - extension/credential requirements file validation
@@ -95,11 +95,11 @@ caller
 User flow:
 
 ```bash
-arroba publication deploy <package> --mode local-runtime
-arroba serve <package> <port> --cloud-deployment <deployment-id>
+chariox publication deploy <package> --mode local-runtime
+chariox serve <package> <port> --cloud-deployment <deployment-id>
 ```
 
-`arroba serve` still owns local gateway startup and local materialization. The
+`chariox serve` still owns local gateway startup and local materialization. The
 new flag only connects the served gateway to the Cloud deployment and registers
 the current backend target with the publication ingress.
 
@@ -118,7 +118,7 @@ caller
 User flow:
 
 ```bash
-arroba publication deploy <package> --mode hosted-container
+chariox publication deploy <package> --mode hosted-container
 ```
 
 The runner starts one container per deployment using the existing publication
@@ -138,8 +138,8 @@ https://<publication-ingress-host>/<slug>/<prompt>
 Later product DNS can map the same contract to:
 
 ```text
-https://<slug>.arroba.run/
-https://<slug>.arroba.run/<prompt>
+https://<slug>.chariox.run/
+https://<slug>.chariox.run/<prompt>
 ```
 
 Code and protocol fields should call this `public_base_url`, not encode a
@@ -150,9 +150,9 @@ Supported transport paths under `public_base_url`:
 - human HTTP root form: `GET /`
 - human HTTP prompt URL: `GET /<prompt>`
 - API SSE JSON: `POST /invoke`
-- WebSocket JSON: `/.well-known/arroba/publication/ws`
+- WebSocket JSON: `/.well-known/chariox/publication/ws`
 - MCP: `POST /mcp`
-- status: `GET /.well-known/arroba/publication/status`
+- status: `GET /.well-known/chariox/publication/status`
 
 Ingress must preserve streaming and must not buffer SSE/WebSocket output.
 
@@ -193,11 +193,11 @@ Required fields:
 - hosted container: container id and local runner port
 
 The record stores operational routing metadata only. It must not store provider
-auth material or Arroba user session tokens.
+auth material or Chariox user session tokens.
 
 ## Runner Service
 
-Add `arroba-publication-runner` for the existing Hetzner runtime machine.
+Add `chariox-publication-runner` for the existing Hetzner runtime machine.
 
 Responsibilities:
 
@@ -218,14 +218,14 @@ Hosted container command shape:
 
 ```bash
 docker run --rm \
-  --name arroba-publication-<deployment-id> \
+  --name chariox-publication-<deployment-id> \
   -v <package-dir>:/publication:ro \
   -v <workspace-dir>:/workspace \
-  -v <runtime-home-dir>:/home/arroba \
-  -e ARROBA_PUBLICATION_PACKAGE=/publication \
+  -v <runtime-home-dir>:/home/chariox \
+  -e CHARIOX_PUBLICATION_PACKAGE=/publication \
   -e HOST=0.0.0.0 \
   -e PORT=3000 \
-  arroba-publication:providers-all standalone
+  chariox-publication:providers-all standalone
 ```
 
 During the first validation phase, use a staging credential profile on the
@@ -234,7 +234,7 @@ credentials must remain outside images and publication packages.
 
 ## Publication Ingress
 
-Run the ingress on the Hetzner runtime host. It can be a small Arroba service or
+Run the ingress on the Hetzner runtime host. It can be a small Chariox service or
 Caddy/Traefik plus a dynamic routing adapter.
 
 Responsibilities:
@@ -256,10 +256,10 @@ The external caller should not need to know which backend is used.
 
 ## Local Runtime Connector
 
-Extend `arroba serve` with Cloud deployment registration:
+Extend `chariox serve` with Cloud deployment registration:
 
 ```bash
-arroba serve <package> <port> --cloud-deployment <deployment-id>
+chariox serve <package> <port> --cloud-deployment <deployment-id>
 ```
 
 The connector path should:
@@ -285,7 +285,7 @@ Rules:
 
 - provider credentials are never baked into images
 - provider credentials are never included in publication packages
-- Arroba Cloud user account/session credentials are never included in images or
+- Chariox Cloud user account/session credentials are never included in images or
   packages
 - hosted containers receive only scoped deployment/runtime identity plus
   staging provider credential mounts/env needed for validation
@@ -344,13 +344,13 @@ not grant general user account privileges.
 Add deployment commands without changing existing publication authoring commands:
 
 ```bash
-arroba publication deploy <package-dir|publication.json> --mode local-runtime
-arroba publication deploy <package-dir|publication.json> --mode hosted-container
-arroba publication deployments list
-arroba publication deployments show <deployment-ref>
-arroba publication deployments logs <deployment-ref>
-arroba publication deployments stop <deployment-ref>
-arroba publication deployments restart <deployment-ref>
+chariox publication deploy <package-dir|publication.json> --mode local-runtime
+chariox publication deploy <package-dir|publication.json> --mode hosted-container
+chariox publication deployments list
+chariox publication deployments show <deployment-ref>
+chariox publication deployments logs <deployment-ref>
+chariox publication deployments stop <deployment-ref>
+chariox publication deployments restart <deployment-ref>
 ```
 
 `workflow publication create|export|config` remains the authoring/package path.
@@ -399,7 +399,7 @@ publication viewer owns output and trace display.
 
 - Add runner token model.
 - Add runner job polling/status APIs.
-- Implement `arroba-publication-runner` heartbeat and job loop.
+- Implement `chariox-publication-runner` heartbeat and job loop.
 - Validate against the existing Hetzner machine without starting containers.
 
 ### Phase 3: Hosted Container No-Provider Pipeline
@@ -414,7 +414,7 @@ publication viewer owns output and trace display.
 ### Phase 4: Local Runtime Ingress Pipeline
 
 - Add deployment creation for `local_runtime`.
-- Extend `arroba serve` with `--cloud-deployment`.
+- Extend `chariox serve` with `--cloud-deployment`.
 - Register local backend with Hetzner ingress.
 - Validate public URL while execution remains local.
 - Validate disconnect/reconnect unavailable behavior.
@@ -453,7 +453,7 @@ Real-provider visual drill prompt:
 ```text
 Generate a vibrant dashboard as a compact self-contained HTML document.
 The dashboard must visibly include the title text `Real Provider Workflow Dashboard`.
-The main dashboard element must include `data-arroba-real-provider-dashboard="true"`.
+The main dashboard element must include `data-chariox-real-provider-dashboard="true"`.
 Submit final workflow output as {"kind":"html","html":"<full html document>"}.
 ```
 

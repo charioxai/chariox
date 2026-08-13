@@ -2,7 +2,7 @@
 
 Status: completed on 2026-04-23.
 
-This spike validates whether Arroba can let agents use secrets without placing
+This spike validates whether Chariox can let agents use secrets without placing
 the secret values in the model context window. It is intentionally outside
 production `apps/` and `packages/` code until the behavior is proven.
 
@@ -10,10 +10,10 @@ production `apps/` and `packages/` code until the behavior is proven.
 
 Prove these v1 claims:
 
-- Env-source credentials can be read by the Arroba-side runtime while being
+- Env-source credentials can be read by the Chariox-side runtime while being
   omitted from agent/provider process environments.
 - OS-keychain credentials can be stored through hidden local input and resolved
-  by the runtime without writing plaintext values into Arroba config.
+  by the runtime without writing plaintext values into Chariox config.
 - Agents can trigger controlled secret use through runtime tools without
   receiving the secret value.
 - Generic bearer/API-key request injection is enough for static-token APIs.
@@ -49,7 +49,7 @@ experiments/secret-handoff/
     secret-handoff.test.mjs
 ```
 
-The harness simulates the target Arroba boundary:
+The harness simulates the target Chariox boundary:
 
 ```text
 kernel/runtime process has secret sources
@@ -142,7 +142,7 @@ Success:
 - M10.3 live GitHub bearer-token drill: complete.
 - M10.4 credential config model: complete for `env`/`file` sources and
   `header`/`query`/`basic`/`hmac`/`pty` injection kinds.
-- M10.5 provider environment scrubber: complete for local Arroba-launched
+- M10.5 provider environment scrubber: complete for local Chariox-launched
   provider PTYs. Provider runs now carry explicit env-removal names from
   configured credential env sources, and the PTY manager also removes common
   secret-looking env names before applying provider-required env overrides.
@@ -155,7 +155,7 @@ Success:
   writes. Prompt-pattern scanning is intentionally not included in this slice
   because it can consume terminal output that the UI also needs to display.
 - M10.9 local vault source: complete for OS-keychain-backed `vault` credential
-  sources, local kernel set/delete APIs, and hidden `arroba-shell` input through
+  sources, local kernel set/delete APIs, and hidden `chariox-shell` input through
   `credential set <key>`. Inline values are rejected so secrets are not typed
   into the visible prompt area or shell command history. The keyring dependency
   is built with explicit native backends for macOS Keychain, Windows Credential
@@ -197,8 +197,8 @@ cargo test -q user_config_parses_vault_credential_source
 cargo test -q user_config_rejects_duplicate_credential_ids
 cargo test -q transport::mcp_server::tests::mcp_initialize_and_tools_list_return_runtime_tools
 cargo test -q provider_launch_scrubs_configured_credential_env_names
-pnpm --filter @arroba/kernel-client test
-pnpm --filter @arroba/shell lint
+pnpm --filter @chariox/kernel-client test
+pnpm --filter @chariox/shell lint
 node apps/cli/scripts/live-secret-handoff-drill.mjs
 ```
 
@@ -212,7 +212,7 @@ simulation; it intentionally does not copy secrets from home to worker.
 
 ### M10.4 Credential Config Model
 
-Add Arroba config support for credential handles in the TOML config. V1
+Add Chariox config support for credential handles in the TOML config. V1
 credential handles are runtime-owned references; agents see handle names and
 descriptions, never values.
 
@@ -234,7 +234,7 @@ value = "Bearer ${secret}"
 
 Supported v1 sources:
 
-- `env`: read from the Arroba kernel process environment.
+- `env`: read from the Chariox kernel process environment.
 - `file`: read from a local file path owned by the user.
 - `vault`: read from the platform OS keychain using a key stored in config and
   a secret value stored outside the config file.
@@ -253,7 +253,7 @@ Local vault config:
 ```toml
 [credential_vault]
 backend = "os_keychain"
-service = "arroba"
+service = "chariox"
 
 [[credentials]]
 id = "github"
@@ -282,7 +282,7 @@ Platform behavior:
 - Linux stores values through the keyring native persistent backend
   (`keyutils` cache plus Secret Service persistence). Linux machines need a
   working Secret Service implementation such as GNOME Keyring or KWallet, plus
-  the normal DBus/libdbus runtime pieces. If those are absent, Arroba fails the
+  the normal DBus/libdbus runtime pieces. If those are absent, Chariox fails the
   credential operation instead of falling back to plaintext or mock storage.
 
 Acceptance:
@@ -294,7 +294,7 @@ Acceptance:
 
 ### M10.5 Provider Environment Scrubber
 
-Scrub Arroba-launched provider processes so credential env values are available
+Scrub Chariox-launched provider processes so credential env values are available
 to the kernel/runtime but not to provider child processes.
 
 Rules:
@@ -335,7 +335,7 @@ Acceptance:
 
 ### M10.7 Runtime MCP Tools
 
-Expose the secret service through Arroba runtime MCP tools so agents can request
+Expose the secret service through Chariox runtime MCP tools so agents can request
 credential use without receiving values.
 
 V1 tools:
@@ -390,7 +390,7 @@ Scope:
 - compile the keyring dependency with native macOS, Windows, and Linux backend
   features enabled so production builds do not use the crate's mock fallback
 - read secret values through hidden interactive input in standalone
-  `arroba-shell`
+  `chariox-shell`
 - reject inline secret values and reject hidden-input commands when the shell
   surface cannot hide input
 
@@ -407,7 +407,7 @@ Acceptance:
 
 For v1, each kernel owns its own credential truth. Remote agents use the
 credential handles and vault sources available on the worker kernel where their
-provider process is running. Arroba does not copy, install, repair, or proxy
+provider process is running. Chariox does not copy, install, repair, or proxy
 credential values between machines.
 
 Rules:
@@ -491,7 +491,7 @@ Current dedicated drill:
 node apps/cli/scripts/live-secret-handoff-drill.mjs
 ```
 
-The drill starts isolated local and worker kernels with separate Arroba config
+The drill starts isolated local and worker kernels with separate Chariox config
 roots and separate credential env vars. It proves that each provider run
 receives scrub metadata for its own kernel, each runtime MCP sees only its own
 credential handles, HTTP requests can use credentials without returning secret
@@ -505,7 +505,7 @@ The spike transfer gate is passed:
 - env-source secrets are unavailable to fake agent processes
 - controlled HTTP/HMAC/terminal operations succeed
 - host/use policy blocks wrong-target use before secret injection
-- implementation stays small enough to map cleanly to Arroba runtime MCP and
+- implementation stays small enough to map cleanly to Chariox runtime MCP and
   provider launch boundaries
 
 Production integration is complete only when M10.4-M10.11 pass and docs/drills

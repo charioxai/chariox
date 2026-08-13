@@ -55,7 +55,7 @@ Exit criteria:
   - `pnpm lint`
   - `pnpm build`
   - `pnpm test`
-  - `cargo test -p arroba-kernel` (or equivalent in daemon crate)
+  - `cargo test -p chariox-kernel` (or equivalent in daemon crate)
 
 ## 3.2 Domain model + schema baseline
 

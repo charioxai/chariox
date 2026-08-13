@@ -56,14 +56,14 @@ Mandatory privacy rule:
 
 ### Components
 
-1. `arroba-kernel`
+1. `chariox-kernel`
 - runtime authority
 - owns sessions, provider runs, workflows, prompt queues, and routing
 
-2. `arroba-cli`
+2. `chariox-cli`
 - one client app for both local and relay-backed use
 
-3. `arroba-relay`
+3. `chariox-relay`
 - websocket transport broker
 - routes client traffic to connected daemons
 - keeps liveness and minimal routing metadata
@@ -131,7 +131,7 @@ The CLI must be configurable with:
 - relay credential/token
 - target daemon id or alias
 
-For CLI-side relay configuration, prefer `ARROBA_RELAY_TOKEN` plus `/relay use <ws-url>` so the token does not have to be typed into visible terminal scrollback. `/relay use <ws-url> <token>` remains available for self-hosted/manual testing.
+For CLI-side relay configuration, prefer `CHARIOX_RELAY_TOKEN` plus `/relay use <ws-url>` so the token does not have to be typed into visible terminal scrollback. `/relay use <ws-url> <token>` remains available for self-hosted/manual testing.
 
 ### v1 mode rule
 

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-worker="${1:-arroba-worker-a}"
+worker="${1:-chariox-worker-a}"
 
 if ! command -v docker >/dev/null 2>&1; then
   echo "docker is required to install providers in a lab worker" >&2

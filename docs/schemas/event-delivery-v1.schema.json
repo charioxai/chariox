@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/event-delivery-v1.schema.json",
-  "title": "Arroba Event Delivery Envelope",
+  "$id": "https://chariox.com/schemas/event-delivery-v1.schema.json",
+  "title": "Chariox Event Delivery Envelope",
   "type": "object",
   "additionalProperties": false,
   "required": ["delivery_id", "binding_id", "event_type", "event_type_version", "occurrence_id", "occurred_at", "prompt", "expires_at_ms"],

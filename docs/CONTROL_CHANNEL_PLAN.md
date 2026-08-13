@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document defines the target first-class control subsystem for Arroba and reconciles it with the current code state.
+This document defines the target first-class control subsystem for Chariox and reconciles it with the current code state.
 
 Today, control behavior exists, but it is split across prompt lifecycle, workflow runtime tools, provider adapters, and scheduler mailboxing. The goal of this plan is to converge those pieces into one explicit transport-owned control channel.
 
@@ -14,7 +14,7 @@ Terminology note:
 
 ## Target Model
 
-Arroba should have one structured control subsystem with these properties:
+Chariox should have one structured control subsystem with these properties:
 
 - owned by transport
 - separate from terminal byte traffic
@@ -84,13 +84,13 @@ These belong in the same subsystem even if some are not implemented yet.
 
 Different agents and providers will not support the same control operations.
 
-Arroba should handle that with:
+Chariox should handle that with:
 
 - one canonical set of control operations
 - one per-run control capability descriptor
 - preflight validation against required control operations
 
-The canonical operations stay stable at the Arroba layer.
+The canonical operations stay stable at the Chariox layer.
 What varies per agent is:
 
 - whether an operation is supported
@@ -357,4 +357,4 @@ Start with Phase C1 only:
 - define the control operation model
 - route existing runtime tools and cancel/interrupt through it without changing user-visible behavior
 
-That gives Arroba a real control-channel foundation before more control features are added.
+That gives Chariox a real control-channel foundation before more control features are added.

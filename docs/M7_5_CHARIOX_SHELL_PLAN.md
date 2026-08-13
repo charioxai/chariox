@@ -1,32 +1,32 @@
-# M7.5 Arroba Shell Plan
+# M7.5 Chariox Shell Plan
 
 Status: closed on 2026-04-20.
 
-M7.5 delivered `arroba-shell` as a sibling app to the TUI CLI, a shared shell executor in `packages/kernel-client`, line-oriented scriptability, embedded workflow-pane shell support, reliable CLI automation snapshots for drills, and freeform prompt submission from both standalone and embedded shells.
+M7.5 delivered `chariox-shell` as a sibling app to the TUI CLI, a shared shell executor in `packages/kernel-client`, line-oriented scriptability, embedded workflow-pane shell support, reliable CLI automation snapshots for drills, and freeform prompt submission from both standalone and embedded shells.
 
 ## Goal
 
-Add `arroba-shell` as a kernel-facing command shell independent from the TUI while reusing the same command executor as CLI slash commands. The shell provides a bash-like interaction model for Arroba domain commands: an `@` prompt for input, command output printed below without the prompt marker, stateful context, and a path to scriptable command files.
+Add `chariox-shell` as a kernel-facing command shell independent from the TUI while reusing the same command executor as CLI slash commands. The shell provides a bash-like interaction model for Chariox domain commands: an `@` prompt for input, command output printed below without the prompt marker, stateful context, and a path to scriptable command files.
 
-`arroba-shell` is not a POSIX shell. It does not execute arbitrary OS commands by default and does not aim to support pipes, redirects, shell expansion, or process control in v1. It is an Arroba command REPL backed by kernel IPC.
+`chariox-shell` is not a POSIX shell. It does not execute arbitrary OS commands by default and does not aim to support pipes, redirects, shell expansion, or process control in v1. It is a Chariox command REPL backed by kernel IPC.
 
 
 ## App And Package Boundaries
 
-`arroba-shell` is a sibling app to the TUI CLI, not a TUI subcommand:
+`chariox-shell` is a sibling app to the TUI CLI, not a TUI subcommand:
 
 - `apps/cli`: OpenTUI client, waiting room, panes, command center, and TUI-only commands.
-- `apps/shell`: standalone Arroba command REPL and script runner.
+- `apps/shell`: standalone Chariox command REPL and script runner.
 - `packages/kernel-client`: shared kernel IPC client, request builders, kernel-facing runtime types, shell parser, and shell executor.
 
 The shell may share kernel/domain code with the CLI, but it must not import TUI rendering or TUI state modules.
 
 ## Design Principles
 
-- One command executor: CLI slash commands and `arroba-shell` commands must normalize to the same command execution layer where possible.
-- Shell independence: `arroba-shell` must be conceptually and operationally independent from the TUI client.
+- One command executor: CLI slash commands and `chariox-shell` commands must normalize to the same command execution layer where possible.
+- Shell independence: `chariox-shell` must be conceptually and operationally independent from the TUI client.
 - Stateful by default, explicit when needed: commands use current shell context unless an explicit `--session`, `--agent`, `--workflow`, or related ref is provided.
-- Scriptability without a language: v1 scripts are line-oriented Arroba commands with simple variables and stop-on-error behavior.
+- Scriptability without a language: v1 scripts are line-oriented Chariox commands with simple variables and stop-on-error behavior.
 - Structured results first: commands should return structured command results that can be rendered as text, table, JSON, or errors.
 - TUI-only behavior stays TUI-only: layout, waiting room, command-center, and pane controls are not kernel/domain shell commands.
 
@@ -34,7 +34,7 @@ The shell may share kernel/domain code with the CLI, but it must not import TUI 
 
 ### Shared Kernel/Domain Commands
 
-These should be executable from both the TUI slash-command surface and `arroba-shell`:
+These should be executable from both the TUI slash-command surface and `chariox-shell`:
 
 - `session new|attach|list|delete|alias|use`
 - `agent spawn|list|focus|delete|cycle`
@@ -50,7 +50,7 @@ These should be executable from both the TUI slash-command surface and `arroba-s
 
 ### Shell-Local Commands
 
-These are not kernel mutations, but are valid in `arroba-shell`:
+These are not kernel mutations, but are valid in `chariox-shell`:
 
 - `exit` / `quit`
 - `help`
@@ -68,7 +68,7 @@ These are not kernel mutations, but are valid in `arroba-shell`:
 
 ### TUI-Only Commands
 
-These should remain outside `arroba-shell` because they only control the current TUI client:
+These should remain outside `chariox-shell` because they only control the current TUI client:
 
 - `/waiting`
 - `/view split|individual`
@@ -131,15 +131,15 @@ V1 variables are simple string bindings:
 Script execution:
 
 ```bash
-arroba-shell run setup.arroba
-arroba-shell run setup.arroba --var session=session-1 --continue-on-error
+chariox-shell run setup.chariox
+chariox-shell run setup.chariox --var session=session-1 --continue-on-error
 ```
 
-From an active `arroba-shell` REPL or another script:
+From an active `chariox-shell` REPL or another script:
 
 ```text
-source setup.arroba
-run setup.arroba
+source setup.chariox
+run setup.chariox
 ```
 
 Default script behavior:
@@ -230,10 +230,10 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 - Existing TUI slash commands keep using their current handlers; the shell executor is not yet wired into the TUI.
 - Provider-run launch after `agent spawn` is intentionally not part of this slice. The shell executor creates/manages kernel resources; provider process lifecycle integration is part of the standalone shell/runtime integration slice.
 
-### Slice 3: Standalone `arroba-shell`
+### Slice 3: Standalone `chariox-shell`
 
 - Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
-- Added an `arroba-shell` binary/script entrypoint via the `apps/shell` package `bin` field and `pnpm --filter @arroba/shell run start`.
+- Added an `chariox-shell` binary/script entrypoint via the `apps/shell` package `bin` field and `pnpm --filter @chariox/shell run start`.
 - Connects to the kernel through the existing local IPC client using `--kernel-url`, `--socket`, or the same environment/default endpoint rules.
 - Renders an `@` prompt and prints command outputs below submitted commands.
 - Supports `exit`, `quit`, `help`, `set`, `use`, `vars`, and `unset` through the shared shell executor.
@@ -242,8 +242,8 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 ### Slice 4: Script Runner
 
 - Status: implemented in `apps/shell/src/shell.ts` with focused coverage in `apps/shell/src/shell.test.ts`.
-- The reusable script runner now lives in `packages/kernel-client/src/shell-script.ts` so both `arroba-shell` and the embedded workflow-pane shell execute scripts through the same parser, executor, renderer, variable propagation, and nested `source`/`run` logic.
-- Added `arroba-shell run <file>`.
+- The reusable script runner now lives in `packages/kernel-client/src/shell-script.ts` so both `chariox-shell` and the embedded workflow-pane shell execute scripts through the same parser, executor, renderer, variable propagation, and nested `source`/`run` logic.
+- Added `chariox-shell run <file>`.
 - Supports comments, blank lines, variables, and stop-on-error execution.
 - Supports seeded variables through repeated `--var NAME=VALUE`.
 - Supports `--continue-on-error` for audit/drill scripts while still returning non-zero if any command failed.
@@ -256,11 +256,11 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 ### Slice 5: Workspace Pane Integration
 
 - Status: implemented for the workflow workspace screen.
-- Added a right-side `arroba-shell` pane to the workflow view while keeping the workflow outline/canvas on the left.
+- Added a right-side `chariox-shell` pane to the workflow view while keeping the workflow outline/canvas on the left.
 - Reuses the shared shell parser/executor and result renderer from `packages/kernel-client`.
 - Workflow-screen shell input is submitted through the main prompt with an `@ <command>` prefix so it does not collide with workflow endpoint prompts or slash commands.
 - The pane renders command lines with `@` and prints command output below each input.
-- The embedded shell supports `source <file>` and `run <file>` from the current worktree, using the same shared script runner as `arroba-shell`.
+- The embedded shell supports `source <file>` and `run <file>` from the current worktree, using the same shared script runner as `chariox-shell`.
 - Workflow-creating or workflow-selecting shell commands now update the selected workflow in the TUI when the command result context contains a valid workflow id. This keeps the visible workflow pane aligned with `workflow new`, `workflow show`, and loaded workflow scripts.
 - TUI-only commands remain rejected by the shared shell parser/executor.
 - Added a CLI automation socket (`--automation-socket <path>`) for reliable embedded-shell drills. The socket accepts JSONL actions (`ping`, `switch_screen`, `workspace_shell_exec`, `snapshot`, `wait_for`, `exit`) and returns structured UI/application snapshots instead of relying on raw PTY keystrokes.
@@ -314,23 +314,23 @@ Renderers convert the result for standalone shell, TUI pane, and scripts.
 
 Each slice included focused tests and docs updates before commit/push. M7.5 closeout validation:
 
-- `pnpm --filter @arroba/kernel-client test`
-- `pnpm --filter @arroba/shell test`
-- `pnpm --filter @arroba/cli test -- workspace-shell.test.ts command-actions.test.ts`
-- `pnpm --filter @arroba/cli run shell:drill`
-- `pnpm --filter @arroba/cli run embedded-shell:drill`
+- `pnpm --filter @chariox/kernel-client test`
+- `pnpm --filter @chariox/shell test`
+- `pnpm --filter @chariox/cli test -- workspace-shell.test.ts command-actions.test.ts`
+- `pnpm --filter @chariox/cli run shell:drill`
+- `pnpm --filter @chariox/cli run embedded-shell:drill`
 - `git diff --check`
 
 Validated behavior:
 
 - CLI slash commands still pass command-action coverage for the shared surfaces touched by the shell work.
-- `arroba-shell` can create a session, spawn an agent, list sessions/agents, and update context.
-- `arroba-shell run <file>` can set up a small workflow using variables.
-- `arroba-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
+- `chariox-shell` can create a session, spawn an agent, list sessions/agents, and update context.
+- `chariox-shell run <file>` can set up a small workflow using variables.
+- `chariox-shell run <file> --var NAME=VALUE --continue-on-error` can run a validation script, continue past failures, and still return non-zero if anything failed.
 - The embedded workflow shell launches inside the real CLI under a PTY, is driven through `--automation-socket`, and updates selected workflow graph/source state from structured snapshots.
 - Freeform `prompt` submission returns a prompt id immediately in no-wait mode, shows busy state through `context`, and can wait/render prompt-id-headed summary or reply blobs.
 - TUI workspace pane runs the same shell command executor without duplicating command logic.
-- TUI-only commands are rejected or redirected with clear messages in `arroba-shell`.
+- TUI-only commands are rejected or redirected with clear messages in `chariox-shell`.
 
 ## Deferred
 

@@ -310,7 +310,7 @@ Current closure status:
 
 - Closed: the seven ownership points are complete. Direct-cutover baseline, session ownership, prompt ownership, provider process/output ownership, workflow/runtime-tool ownership, transport/relay ownership, and runtime fallback deletion all route command/runtime behavior through owned runtime ports instead of the old app-backed fallback.
 - Closed: the M4.5 dead-code purge removed the now-unused app-backed helper surfaces, obsolete runtime-tool dispatcher, workflow console app wrappers, remote-lease helper, projection-removal helper, and stale test-only compatibility calls left behind by the direct cutover.
-- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Workspace Live Sync managed mode now owns artifact writes for Arroba-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
+- Keep current `WorkspaceCoordinator` enforcement at coarse worktree safety/scheduler scope. Workspace Live Sync managed mode now owns artifact writes for Chariox-managed provider sessions; port claims, unsafe-mode policy commands, and post-v1 artifact-specific region models remain future work.
 
 ## Cutover Completion Plan
 
@@ -343,7 +343,7 @@ Production command/runtime ownership no longer depends on `Arc<Mutex<DaemonApp>>
 | provider launch/output seams | provider launch/process/output side effects now enter named provider-launch/process/output runtimes instead of app fallback ports | closed |
 | `runtime_transport.rs` and `transport/relay_client.rs` | subscription snapshots, replay-gap snapshots, peer lease handling, relay registration/presence, encrypted peer prompt settlement, and relay runtime-tool dispatch are owned transport/relay paths | closed; remaining side-effect ports are explicit |
 | `scheduler/runtime.rs` and `transport/runtime_tools.rs` | workflow progression, queued prompt state, watchdog pumping, blocked-claim retry, and MCP runtime tools now enter workflow-owned/runtime-tool commands | closed; stale app workflow/runtime-tool helpers were purged |
-| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Arroba-managed provider-session writes are enforced by M4.6 workspace live sync | keep bounded/background behavior for M4.5 and route provider writes through workspace live sync |
+| `runtime/capability_executor.rs` | capability jobs use owned context snapshots and coarse workspace claims; Chariox-managed provider-session writes are enforced by M4.6 workspace live sync | keep bounded/background behavior for M4.5 and route provider writes through workspace live sync |
 
 New regression coverage locks in the current responsiveness contract while ownership continues moving:
 
@@ -570,9 +570,9 @@ Required policies:
 
 ## Worktree and Collision Coordination
 
-M4.5 introduces the runtime boundary for workspace coordination. Workspace Live Sync managed mode builds on it for Arroba-managed provider sessions.
+M4.5 introduces the runtime boundary for workspace coordination. Workspace Live Sync managed mode builds on it for Chariox-managed provider sessions.
 
-The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Arroba can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Workspace Live Sync managed mode is the conflict-control architecture for supported Arroba-launched provider sessions; independent external processes remain outside that guarantee.
+The current claim system is a bounded kernel safety layer and scheduler signal. It prevents obvious overlapping worktree mutations that Chariox can see today, exposes active claims in health, and lets workflow scheduling block/retry instead of failing temporary contention. Workspace Live Sync managed mode is the conflict-control architecture for supported Chariox-launched provider sessions; independent external processes remain outside that guarantee.
 
 Minimum `WorkspaceCoordinator` responsibilities:
 
@@ -594,8 +594,8 @@ Current implementation:
 
 Closed by M4.6:
 
-- final workspace live sync coordination model for Arroba-managed provider sessions
-- enforced mutation control for supported providers through provider permission gates and Arroba-owned MCP/runtime tools
+- final workspace live sync coordination model for Chariox-managed provider sessions
+- enforced mutation control for supported providers through provider permission gates and Chariox-owned MCP/runtime tools
 - fine-grained text conflict detection plus opaque whole-file locking for non-text artifacts
 - local and remote workspace live sync coordination for matching repo/branch workspaces
 
