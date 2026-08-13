@@ -373,6 +373,7 @@ pub enum LocalDaemonResponse {
         connection: Option<EventConnection>,
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
+    EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
     EventConnectionDependencies { connection_id: String, dependencies: Vec<WorkflowEventBindingDependency>, },
     EventConnectionRemoved { connection: EventConnection, deactivated_bindings: Vec<WorkflowEventBindingDependency>, },
     WorkflowEventBindingCreated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },

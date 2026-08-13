@@ -75,7 +75,7 @@ test("TUI event publication handler renders paged catalog results", async () => 
               schema_version: 1,
               generator_id: "dev.chariox.dummy",
               version: "1.0.0",
-              protocol_version: 2,
+              protocol_version: 3,
               name: "Dummy Events",
               summary: "Deterministic events.",
               provider: "Chariox test harness",

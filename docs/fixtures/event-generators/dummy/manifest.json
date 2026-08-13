@@ -9,7 +9,7 @@
     "id": "dev.chariox",
     "name": "Chariox"
   },
-  "protocol_version": 2,
+  "protocol_version": 3,
   "categories": ["Developer tools", "Testing"],
   "authorization": {
     "kind": "none",
@@ -32,9 +32,9 @@
     }
   ],
   "signature": {
-    "key_id": "dev.chariox.fixture.2026-07-v2",
+    "key_id": "dev.chariox.fixture.2026-08-v3",
     "algorithm": "ed25519",
-    "digest": "sha256:01b50f68fdc4cdcbb3c50efb906d743fb90e636cb8ae861f4fcf4823ebc97d6e",
-    "value": "3qQ1kctslV8otFbfOzoeqIqzh/erN+VrE+/suey+2tKKTo5nHfk0IHNZDhoKbXxNT15LetVdgs6f68Q/QTAtAg=="
+    "digest": "sha256:f40b9a94c3319565975f9d23c65a1796869b7083cdfa9f7d8d2d86ed590a15f5",
+    "value": "SO4kz3m5fiQcEYCIkaFoxnpeiiUuAgetPd9CpFBD2vUnQnYjAH/5orIH4HwayQ4oX4mdCW6b3a0spbgsh4l/Dw=="
   }
 }

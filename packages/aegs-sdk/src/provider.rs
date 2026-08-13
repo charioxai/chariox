@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use chariox_event_protocol::{
-    AegsAuthorizationFlow, AegsProviderResourcePage, AegsProviderResourceQuery,
+    AegsAuthorizationFlow, AegsConnectionInspection, AegsProviderResourcePage,
+    AegsProviderResourceQuery,
 };
 use serde_json::Value;
 
@@ -82,6 +83,33 @@ pub trait AegsProvider: Send + Sync {
 
     fn revoke_connection(&self, _connection_id: &str) -> Result<(), String> {
         Ok(())
+    }
+
+    /// Returns provider-specific scopes, resources, health, and recovery guidance. Returning
+    /// `None` asks the SDK server to project an honest baseline from its durable connection
+    /// record; production providers should return `Some` so restricted scopes and provider
+    /// failures remain distinguishable.
+    fn inspect_connection(
+        &self,
+        _connection_id: &str,
+    ) -> Result<Option<AegsConnectionInspection>, String> {
+        Ok(None)
+    }
+
+    /// Refreshes credentials/provider metadata before the server performs a new inspection.
+    fn refresh_connection(&self, connection_id: &str) -> Result<(), String> {
+        let _ = connection_id;
+        self.maintain_subscriptions()
+    }
+
+    /// Builds a provider-authentic test event. The SDK publishes it through the same AEDS path
+    /// as a real webhook. `None` means the integration does not yet support test events.
+    fn test_event(
+        &self,
+        _connection_id: &str,
+        _event_type: Option<&str>,
+    ) -> Result<Option<NormalizedEvent>, String> {
+        Ok(None)
     }
 
     fn maintain_subscriptions(&self) -> Result<(), String> {

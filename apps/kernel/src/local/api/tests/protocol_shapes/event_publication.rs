@@ -1,9 +1,43 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+fn sample_event_connection(
+    status: crate::local::EventConnectionStatus,
+) -> crate::local::EventConnection {
+    crate::local::EventConnection {
+        generator_id: "dev.chariox.github".to_string(),
+        connection_id: "connection-1".to_string(),
+        status,
+        lifecycle_state: crate::local::EventConnectionLifecycleState::ConnectedRestricted,
+        scopes: vec![crate::local::EventConnectionScope {
+            id: "pull_requests:read".to_string(),
+            label: "Read pull requests".to_string(),
+            granted: true,
+            required: true,
+        }],
+        resources: vec![crate::local::EventConnectedResource {
+            id: "repository-1".to_string(),
+            name: "charioxai/chariox".to_string(),
+            kind: "repository".to_string(),
+        }],
+        attached_trigger_count: 2,
+        metadata: serde_json::json!({"account": "chariox"}),
+        expires_at_ms: None,
+        created_at_ms: 1_700_000,
+        updated_at_ms: 1_800_000,
+        last_validated_at_ms: Some(1_800_000),
+        last_successful_health_check_at_ms: Some(1_800_000),
+        last_accepted_event_at_ms: Some(1_799_000),
+        problem_code: None,
+        problem_message: None,
+        recovery_action: None,
+        test_event_supported: true,
+    }
+}
+
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 256);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 257);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -116,6 +150,10 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         LocalDaemonRequest::RefreshEventConnection(crate::local::RefreshEventConnectionRequest {
             connection_id: "connection-1".to_string(),
         }),
+        LocalDaemonRequest::TestEventConnection(crate::local::TestEventConnectionRequest {
+            connection_id: "connection-1".to_string(),
+            event_type: Some("pull_request.opened".to_string()),
+        }),
         LocalDaemonRequest::ReconnectEventConnection(
             crate::local::ReconnectEventConnectionRequest {
                 connection_id: "connection-1".to_string(),
@@ -175,7 +213,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                     },
                     verification: "chariox".to_string(),
                     manifest_digest: format!("sha256:{}", "b".repeat(64)),
-                    protocol_version: 2,
+                    protocol_version: 3,
                     categories: vec!["developer-tools".to_string()],
                     installed_count: 0,
                     recommended: true,
@@ -212,16 +250,9 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
         },
         LocalDaemonResponse::EventConnectionsPage {
             page: crate::local::EventConnectionPage {
-                connections: vec![crate::local::EventConnection {
-                    generator_id: "dev.chariox.github".to_string(),
-                    connection_id: "connection-1".to_string(),
-                    status: crate::local::EventConnectionStatus::Ready,
-                    metadata: serde_json::json!({"account": "chariox"}),
-                    expires_at_ms: None,
-                    created_at_ms: 1_700_000,
-                    updated_at_ms: 1_800_000,
-                    last_validated_at_ms: Some(1_800_000),
-                }],
+                connections: vec![sample_event_connection(
+                    crate::local::EventConnectionStatus::Ready,
+                )],
                 next_cursor: None,
             },
         },
@@ -240,16 +271,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             },
         },
         LocalDaemonResponse::EventConnection {
-            connection: crate::local::EventConnection {
-                generator_id: "dev.chariox.github".to_string(),
-                connection_id: "connection-1".to_string(),
-                status: crate::local::EventConnectionStatus::Ready,
-                metadata: serde_json::json!({"account": "chariox"}),
-                expires_at_ms: None,
-                created_at_ms: 1_700_000,
-                updated_at_ms: 1_800_000,
-                last_validated_at_ms: Some(1_800_000),
-            },
+            connection: sample_event_connection(crate::local::EventConnectionStatus::Ready),
         },
         LocalDaemonResponse::EventConnectionAuthorizationObserved {
             authorization: crate::local::EventConnectionAuthorization {
@@ -275,6 +297,13 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 next_cursor: None,
             },
         },
+        LocalDaemonResponse::EventConnectionTested {
+            result: chariox_event_protocol::AegsConnectionTestEventResponse {
+                occurrence_id: "test-1".to_string(),
+                accepted: true,
+                message: None,
+            },
+        },
         LocalDaemonResponse::EventConnectionDependencies {
             connection_id: "connection-1".to_string(),
             dependencies: vec![crate::local::WorkflowEventBindingDependency {
@@ -285,16 +314,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
             }],
         },
         LocalDaemonResponse::EventConnectionRemoved {
-            connection: crate::local::EventConnection {
-                generator_id: "dev.chariox.github".to_string(),
-                connection_id: "connection-1".to_string(),
-                status: crate::local::EventConnectionStatus::Revoked,
-                metadata: serde_json::json!({"account": "chariox"}),
-                expires_at_ms: None,
-                created_at_ms: 1_700_000,
-                updated_at_ms: 1_800_000,
-                last_validated_at_ms: Some(1_800_000),
-            },
+            connection: sample_event_connection(crate::local::EventConnectionStatus::Revoked),
             deactivated_bindings: Vec::new(),
         },
     ];
@@ -345,6 +365,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "b78f2b53b0810def76157366385e29abe22539a272867494ab920f73f52687ad"
+        "e31537875badb14d4cc08b16b0b338c5f0f2d3bfc6870fb4912b6d171b7c1dc2"
     );
 }

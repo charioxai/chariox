@@ -23,6 +23,9 @@ test("notification center installs and reuses kernel-owned connections", async (
           generator_id: "dev.chariox.github",
           connection_id: "connection-1",
           status: "ready",
+          lifecycle_state: "connected",
+          attached_trigger_count: 1,
+          test_event_supported: true,
           created_at_ms: 1,
           updated_at_ms: 2,
           last_validated_at_ms: 2,
@@ -36,7 +39,7 @@ test("notification center installs and reuses kernel-owned connections", async (
   const listed = await executeNotificationCommand(["connections", "dev.chariox.github"], client)
 
   assert.match(installed.message ?? "", /ABCD-1234/)
-  assert.match(listed.message ?? "", /connection-1  ready/)
+  assert.match(listed.message ?? "", /connection-1  connected/)
   assert.deepEqual(requests, [
     { InstallEventConnection: { generator_id: "dev.chariox.github", return_url: null } },
     { ListEventConnections: { generator_id: "dev.chariox.github", cursor: null, limit: 20 } },
@@ -71,7 +74,7 @@ test("notification removal previews dependencies before confirmed removal", asyn
   }
 
   const preview = await executeNotificationCommand(["connection", "remove", "connection-1"], client)
-  assert.match(preview.message ?? "", /publication=publication-1/)
+  assert.match(preview.message ?? "", /trigger-owner=publication-1/)
   assert.match(preview.message ?? "", /--confirm/)
   assert.equal(requests.length, 1)
 
@@ -84,4 +87,26 @@ test("notification removal previews dependencies before confirmed removal", asyn
     { ListEventConnectionDependencies: { connection_id: "connection-1" } },
     { RemoveEventConnection: { connection_id: "connection-1", confirm: true } },
   ])
+})
+
+test("notification connection test uses the shared kernel lifecycle request", async () => {
+  const requests: Record<string, unknown>[] = []
+  const result = await executeNotificationCommand(
+    ["connection", "test", "connection-1", "pull_request.opened"],
+    {
+      send: async (request) => {
+        requests.push(request)
+        return { EventConnectionTested: { result: {
+          occurrence_id: "test-occurrence-1",
+          accepted: true,
+        } } }
+      },
+    },
+  )
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /test-occurrence-1/)
+  assert.deepEqual(requests, [{ TestEventConnection: {
+    connection_id: "connection-1",
+    event_type: "pull_request.opened",
+  } }])
 })

@@ -131,6 +131,19 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavaila
             }]
         })
         .to_string()
+    } else if request.starts_with("POST /v1/connections/inspect HTTP/1.1")
+        || request.starts_with("POST /v1/connections/refresh HTTP/1.1")
+    {
+        serde_json::json!({
+            "generator_id": "dev.chariox.dummy",
+            "connection_id": "connection-local",
+            "lifecycle_state": if revoked.load(Ordering::Relaxed) { "disconnected" } else { "connected" },
+            "scopes": [],
+            "resources": [],
+            "last_successful_health_check_at_ms": 1,
+            "test_event_supported": false
+        })
+        .to_string()
     } else if request.starts_with("POST /v1/connections/revoke HTTP/1.1") {
         revoked.store(true, Ordering::Relaxed);
         serde_json::json!({"revoked": true}).to_string()

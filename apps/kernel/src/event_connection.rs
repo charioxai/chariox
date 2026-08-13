@@ -121,17 +121,37 @@ impl EventConnectionRegistry {
             .get(&key)
             .map(|record| record.connection.created_at_ms)
             .unwrap_or(now_ms);
+        let previous = state.connections.get(&key).map(|record| &record.connection);
+        let lifecycle_state = lifecycle_state_for_status(summary.status);
         let record = StoredConnection {
             owner_user_id: owner_user_id.to_string(),
             connection: EventConnection {
                 generator_id: summary.generator_id,
                 connection_id: summary.connection_id,
                 status: summary.status,
+                lifecycle_state,
+                scopes: previous
+                    .map(|value| value.scopes.clone())
+                    .unwrap_or_default(),
+                resources: previous
+                    .map(|value| value.resources.clone())
+                    .unwrap_or_default(),
+                attached_trigger_count: previous
+                    .map(|value| value.attached_trigger_count)
+                    .unwrap_or_default(),
                 metadata: summary.metadata,
                 expires_at_ms: summary.expires_at_ms,
                 created_at_ms,
                 updated_at_ms: summary.updated_at_ms,
                 last_validated_at_ms: Some(now_ms),
+                last_successful_health_check_at_ms: previous
+                    .and_then(|value| value.last_successful_health_check_at_ms),
+                last_accepted_event_at_ms: previous
+                    .and_then(|value| value.last_accepted_event_at_ms),
+                problem_code: None,
+                problem_message: None,
+                recovery_action: None,
+                test_event_supported: previous.is_some_and(|value| value.test_event_supported),
             },
         };
         self.append(
@@ -139,6 +159,77 @@ impl EventConnectionRegistry {
             &record.connection.connection_id,
             &record,
         )?;
+        let connection = record.connection.clone();
+        state.connections.insert(key, record);
+        Ok(connection)
+    }
+
+    pub(crate) fn apply_inspection(
+        &self,
+        owner_user_id: &str,
+        inspection: chariox_event_protocol::AegsConnectionInspection,
+    ) -> Result<EventConnection, DaemonError> {
+        let mut state = self.lock_state()?;
+        let key = (owner_user_id.to_string(), inspection.connection_id.clone());
+        let mut record = state
+            .connections
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| registry_error("connection was not found".to_string()))?;
+        if record.connection.generator_id != inspection.generator_id {
+            return Err(registry_error(
+                "connection inspection generator does not match the installed connection"
+                    .to_string(),
+            ));
+        }
+        record.connection.lifecycle_state = inspection.lifecycle_state;
+        record.connection.status = status_for_lifecycle(inspection.lifecycle_state);
+        record.connection.scopes = inspection.scopes;
+        record.connection.resources = inspection.resources;
+        record.connection.last_validated_at_ms = Some(unix_epoch_ms());
+        record.connection.last_successful_health_check_at_ms =
+            inspection.last_successful_health_check_at_ms;
+        record.connection.last_accepted_event_at_ms = inspection.last_accepted_event_at_ms;
+        record.connection.problem_code = inspection.problem_code;
+        record.connection.problem_message = inspection.problem_message;
+        record.connection.recovery_action = inspection.recovery_action;
+        record.connection.test_event_supported = inspection.test_event_supported;
+        record.connection.updated_at_ms = unix_epoch_ms();
+        self.append(
+            CONNECTION_UPSERTED,
+            &record.connection.connection_id,
+            &record,
+        )?;
+        let connection = record.connection.clone();
+        state.connections.insert(key, record);
+        Ok(connection)
+    }
+
+    pub(crate) fn set_attached_trigger_count(
+        &self,
+        owner_user_id: &str,
+        connection_id: &str,
+        attached_trigger_count: u64,
+    ) -> Result<EventConnection, DaemonError> {
+        let mut state = self.lock_state()?;
+        let key = (owner_user_id.to_string(), connection_id.to_string());
+        let mut record = state
+            .connections
+            .get(&key)
+            .cloned()
+            .ok_or_else(|| registry_error("connection was not found".to_string()))?;
+        record.connection.attached_trigger_count = attached_trigger_count;
+        if record.connection.status == crate::local::EventConnectionStatus::Ready {
+            record.connection.lifecycle_state = if attached_trigger_count == 0 {
+                crate::local::EventConnectionLifecycleState::Unused
+            } else if record.connection.lifecycle_state
+                == crate::local::EventConnectionLifecycleState::Unused
+            {
+                crate::local::EventConnectionLifecycleState::Connected
+            } else {
+                record.connection.lifecycle_state
+            };
+        }
         let connection = record.connection.clone();
         state.connections.insert(key, record);
         Ok(connection)
@@ -464,7 +555,13 @@ impl EventConnectionRegistry {
         for event in events {
             match event.kind.as_str() {
                 CONNECTION_UPSERTED => {
-                    let record: StoredConnection = decode(event.payload)?;
+                    let mut record: StoredConnection = decode(event.payload)?;
+                    if record.connection.lifecycle_state
+                        == crate::local::EventConnectionLifecycleState::NotInstalled
+                    {
+                        record.connection.lifecycle_state =
+                            lifecycle_state_for_status(record.connection.status);
+                    }
                     state.connections.insert(
                         (
                             record.owner_user_id.clone(),
@@ -545,6 +642,62 @@ fn unix_epoch_ms() -> u64 {
         .as_millis()
         .try_into()
         .unwrap_or(u64::MAX)
+}
+
+fn lifecycle_state_for_status(
+    status: crate::local::EventConnectionStatus,
+) -> crate::local::EventConnectionLifecycleState {
+    match status {
+        crate::local::EventConnectionStatus::Pending => {
+            crate::local::EventConnectionLifecycleState::AuthorizationRequired
+        }
+        crate::local::EventConnectionStatus::Ready => {
+            crate::local::EventConnectionLifecycleState::Connected
+        }
+        crate::local::EventConnectionStatus::Expired => {
+            crate::local::EventConnectionLifecycleState::ReauthorizationRequired
+        }
+        crate::local::EventConnectionStatus::Revoked => {
+            crate::local::EventConnectionLifecycleState::Disconnected
+        }
+        crate::local::EventConnectionStatus::Unavailable => {
+            crate::local::EventConnectionLifecycleState::AegsUnavailable
+        }
+        crate::local::EventConnectionStatus::Error => {
+            crate::local::EventConnectionLifecycleState::Degraded
+        }
+    }
+}
+
+fn status_for_lifecycle(
+    state: crate::local::EventConnectionLifecycleState,
+) -> crate::local::EventConnectionStatus {
+    match state {
+        crate::local::EventConnectionLifecycleState::AuthorizationRequired
+        | crate::local::EventConnectionLifecycleState::Connecting => {
+            crate::local::EventConnectionStatus::Pending
+        }
+        crate::local::EventConnectionLifecycleState::Connected
+        | crate::local::EventConnectionLifecycleState::ConnectedRestricted
+        | crate::local::EventConnectionLifecycleState::Unused => {
+            crate::local::EventConnectionStatus::Ready
+        }
+        crate::local::EventConnectionLifecycleState::ReauthorizationRequired => {
+            crate::local::EventConnectionStatus::Expired
+        }
+        crate::local::EventConnectionLifecycleState::ProviderUnreachable
+        | crate::local::EventConnectionLifecycleState::AegsUnavailable => {
+            crate::local::EventConnectionStatus::Unavailable
+        }
+        crate::local::EventConnectionLifecycleState::Disconnecting
+        | crate::local::EventConnectionLifecycleState::Disconnected => {
+            crate::local::EventConnectionStatus::Revoked
+        }
+        crate::local::EventConnectionLifecycleState::NotInstalled
+        | crate::local::EventConnectionLifecycleState::Degraded => {
+            crate::local::EventConnectionStatus::Error
+        }
+    }
 }
 
 #[cfg(test)]

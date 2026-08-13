@@ -22,7 +22,7 @@ const CATALOG_CACHE_STALE_TTL: Duration = Duration::from_secs(5 * 60);
 const CATALOG_CACHE_MAX_ENTRIES: usize = 128;
 const CATALOG_RESPONSE_MAX_BYTES: u64 = 2 * 1024 * 1024;
 pub(crate) const BUILTIN_DUMMY_MANIFEST_DIGEST: &str =
-    "sha256:01b50f68fdc4cdcbb3c50efb906d743fb90e636cb8ae861f4fcf4823ebc97d6e";
+    "sha256:f40b9a94c3319565975f9d23c65a1796869b7083cdfa9f7d8d2d86ed590a15f5";
 
 #[derive(Clone)]
 struct CatalogCacheEntry {
@@ -54,6 +54,7 @@ pub(crate) async fn execute_event_catalog_request(
             | LocalDaemonRequest::InstallEventConnection(_)
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
+            | LocalDaemonRequest::TestEventConnection(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
@@ -270,7 +271,18 @@ async fn execute_event_connection_request(
     let owner_id = event_connection_owner_id(daemon_id, caller_user_id);
     match request {
         LocalDaemonRequest::ListEventConnections(request) => {
-            let connections = registry.list(caller_user_id, request.generator_id.as_deref())?;
+            let connections = registry
+                .list(caller_user_id, request.generator_id.as_deref())?
+                .into_iter()
+                .map(|connection| {
+                    project_event_connection_usage(
+                        runtime_state,
+                        registry,
+                        caller_user_id,
+                        connection,
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
             let offset = decode_offset(request.cursor.as_deref())?;
             let limit = bounded_limit(request.limit) as usize;
             let page = connections
@@ -289,6 +301,12 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::GetEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
+            let connection = project_event_connection_usage(
+                runtime_state,
+                registry,
+                caller_user_id,
+                connection,
+            )?;
             Ok(LocalDaemonResponse::EventConnection { connection })
         }
         LocalDaemonRequest::InstallEventConnection(request) => {
@@ -326,12 +344,12 @@ async fn execute_event_connection_request(
             let owner_id = owner_id.clone();
             let generator_id = current.generator_id.clone();
             let connection_id = current.connection_id.clone();
-            let page = match blocking_aegs(move || {
-                query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
+            let inspection = match blocking_aegs(move || {
+                refresh_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
             })
             .await
             {
-                Ok(page) => page,
+                Ok(inspection) => inspection,
                 Err(error) => {
                     registry.mark_status(
                         caller_user_id,
@@ -341,22 +359,32 @@ async fn execute_event_connection_request(
                     return Err(error);
                 }
             };
-            let summary = page
-                .connections
-                .into_iter()
-                .find(|connection| connection.connection_id == current.connection_id);
-            let Some(summary) = summary else {
-                registry.mark_status(
-                    caller_user_id,
-                    &current.connection_id,
-                    crate::local::EventConnectionStatus::Unavailable,
-                )?;
-                return Err(connection_error(
-                    "AEGS no longer recognizes this connection",
-                ));
-            };
-            let connection = registry.upsert(caller_user_id, summary)?;
+            let connection = registry.apply_inspection(caller_user_id, inspection)?;
+            let connection = project_event_connection_usage(
+                runtime_state,
+                registry,
+                caller_user_id,
+                connection,
+            )?;
             Ok(LocalDaemonResponse::EventConnection { connection })
+        }
+        LocalDaemonRequest::TestEventConnection(request) => {
+            let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
+            let targets = targets.clone();
+            let owner_id = owner_id.clone();
+            let generator_id = connection.generator_id;
+            let connection_id = connection.connection_id;
+            let result = blocking_aegs(move || {
+                test_aegs_connection(
+                    &targets,
+                    &owner_id,
+                    &generator_id,
+                    &connection_id,
+                    request.event_type,
+                )
+            })
+            .await?;
+            Ok(LocalDaemonResponse::EventConnectionTested { result })
         }
         LocalDaemonRequest::ReconnectEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
@@ -519,12 +547,19 @@ async fn observe_event_connection_authorization(
     let mut authorization = registry
         .authorization(caller_user_id, authorization_id)?
         .ok_or_else(|| connection_error("event connection authorization was not found"))?;
-    let targets = targets.clone();
+    let query_targets = targets.clone();
+    let inspection_targets = targets.clone();
     let owner_id = owner_id.to_string();
+    let inspection_owner_id = owner_id.clone();
     let generator_id = authorization.generator_id.clone();
     let connection_id = authorization.connection_id.clone();
     let page = blocking_aegs(move || {
-        query_aegs_connections(&targets, &owner_id, &generator_id, connection_id.as_deref())
+        query_aegs_connections(
+            &query_targets,
+            &owner_id,
+            &generator_id,
+            connection_id.as_deref(),
+        )
     })
     .await?;
     let mut observed = None;
@@ -532,7 +567,20 @@ async fn observe_event_connection_authorization(
         if authorization.connection_id.as_deref() != Some(summary.connection_id.as_str()) {
             continue;
         }
-        let connection = registry.upsert(caller_user_id, summary)?;
+        let generator_id = summary.generator_id.clone();
+        let connection_id = summary.connection_id.clone();
+        let mut connection = registry.upsert(caller_user_id, summary)?;
+        let targets = inspection_targets.clone();
+        let owner_id = inspection_owner_id.clone();
+        if let Ok(inspection) = blocking_aegs(move || {
+            inspect_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+        })
+        .await
+        {
+            connection = registry.apply_inspection(caller_user_id, inspection)?;
+        }
+        connection =
+            project_event_connection_usage(runtime_state, registry, caller_user_id, connection)?;
         observed = Some(connection);
     }
     if let Some(connection) = &observed {
@@ -610,6 +658,26 @@ fn event_connection_dependencies(
                 .collect::<Vec<_>>()
         })
         .collect()
+}
+
+fn project_event_connection_usage(
+    runtime_state: &KernelRuntimeState,
+    registry: &crate::event_connection::EventConnectionRegistry,
+    caller_user_id: &str,
+    connection: crate::local::EventConnection,
+) -> Result<crate::local::EventConnection, DaemonError> {
+    let attached_trigger_count =
+        event_connection_dependencies(runtime_state, caller_user_id, &connection.connection_id)
+            .into_iter()
+            .filter(|dependency| {
+                dependency.status != crate::session::WorkflowEventBindingStatus::Tombstoned
+            })
+            .count() as u64;
+    registry.set_attached_trigger_count(
+        caller_user_id,
+        &connection.connection_id,
+        attached_trigger_count,
+    )
 }
 
 pub(crate) fn workflow_event_binding_connection(
@@ -760,6 +828,62 @@ fn query_aegs_resources(
         limit,
     };
     post_aegs_json(targets, generator_id, "/v1/resources/query", &request)
+}
+
+fn refresh_aegs_connection(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    owner_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
+    post_aegs_json(
+        targets,
+        generator_id,
+        "/v1/connections/refresh",
+        &chariox_event_protocol::AegsConnectionRefreshRequest {
+            generator_id: generator_id.to_string(),
+            owner_id: owner_id.to_string(),
+            connection_id: connection_id.to_string(),
+        },
+    )
+}
+
+fn inspect_aegs_connection(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    owner_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
+    post_aegs_json(
+        targets,
+        generator_id,
+        "/v1/connections/inspect",
+        &chariox_event_protocol::AegsConnectionInspectionRequest {
+            generator_id: generator_id.to_string(),
+            owner_id: owner_id.to_string(),
+            connection_id: connection_id.to_string(),
+        },
+    )
+}
+
+fn test_aegs_connection(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    owner_id: &str,
+    generator_id: &str,
+    connection_id: &str,
+    event_type: Option<String>,
+) -> Result<chariox_event_protocol::AegsConnectionTestEventResponse, DaemonError> {
+    post_aegs_json(
+        targets,
+        generator_id,
+        "/v1/connections/test-event",
+        &chariox_event_protocol::AegsConnectionTestEventRequest {
+            generator_id: generator_id.to_string(),
+            owner_id: owner_id.to_string(),
+            connection_id: connection_id.to_string(),
+            event_type,
+        },
+    )
 }
 
 fn revoke_aegs_connection(
@@ -1127,7 +1251,7 @@ fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
         },
         verification: "chariox".to_string(),
         manifest_digest: BUILTIN_DUMMY_MANIFEST_DIGEST.to_string(),
-        protocol_version: chariox_event_protocol::EVENT_DELIVERY_PROTOCOL_VERSION,
+        protocol_version: chariox_event_protocol::AEGS_MANAGEMENT_PROTOCOL_VERSION,
         categories: vec!["Developer tools".to_string(), "Testing".to_string()],
         installed_count: 0,
         recommended: true,
@@ -1161,10 +1285,10 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             required_scopes: Vec::new(),
         }],
         signature: serde_json::json!({
-            "key_id": "dev.chariox.fixture.2026-07-v2",
+            "key_id": "dev.chariox.fixture.2026-08-v3",
             "algorithm": "ed25519",
             "digest": BUILTIN_DUMMY_MANIFEST_DIGEST,
-            "value": "3qQ1kctslV8otFbfOzoeqIqzh/erN+VrE+/suey+2tKKTo5nHfk0IHNZDhoKbXxNT15LetVdgs6f68Q/QTAtAg=="
+            "value": "SO4kz3m5fiQcEYCIkaFoxnpeiiUuAgetPd9CpFBD2vUnQnYjAH/5orIH4HwayQ4oX4mdCW6b3a0spbgsh4l/Dw=="
         }),
         deprecation: None,
     })

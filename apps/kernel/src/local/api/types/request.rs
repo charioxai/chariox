@@ -266,6 +266,7 @@ pub enum LocalDaemonRequest {
     InstallEventConnection(InstallEventConnectionRequest),
     ObserveEventConnectionAuthorization(ObserveEventConnectionAuthorizationRequest),
     RefreshEventConnection(RefreshEventConnectionRequest),
+    TestEventConnection(TestEventConnectionRequest),
     ReconnectEventConnection(ReconnectEventConnectionRequest),
     ListEventConnectionResources(ListEventConnectionResourcesRequest),
     ListEventConnectionDependencies(ListEventConnectionDependenciesRequest),

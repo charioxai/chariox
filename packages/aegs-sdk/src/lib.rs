@@ -26,7 +26,7 @@ pub use store::{
     ProviderHookRecord, SubscriptionClaim,
 };
 
-pub const AEGS_PROTOCOL_VERSION: u32 = 2;
+pub const AEGS_PROTOCOL_VERSION: u32 = chariox_event_protocol::AEGS_MANAGEMENT_PROTOCOL_VERSION;
 pub const MAX_WEBHOOK_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn now_ms() -> u64 {

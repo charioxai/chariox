@@ -45,7 +45,7 @@ test("workflow event publication command browses a bounded catalog and binds an 
               operator: { id: "chariox", name: "Chariox" },
               verification: "chariox",
               manifest_digest: "sha256:abc",
-              protocol_version: 2,
+              protocol_version: 3,
               categories: ["developer-tools"],
               installed_count: 10,
               recommended: true,

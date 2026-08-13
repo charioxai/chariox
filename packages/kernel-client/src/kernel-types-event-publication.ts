@@ -96,15 +96,58 @@ export type EventConnectionStatus =
   | "unavailable"
   | "error"
 
+export type EventConnectionLifecycleState =
+  | "not_installed"
+  | "authorization_required"
+  | "connecting"
+  | "connected"
+  | "connected_restricted"
+  | "degraded"
+  | "reauthorization_required"
+  | "provider_unreachable"
+  | "aegs_unavailable"
+  | "unused"
+  | "disconnecting"
+  | "disconnected"
+
+export type EventConnectionScope = {
+  id: string
+  label: string
+  granted: boolean
+  required: boolean
+}
+
+export type EventConnectedResource = {
+  id: string
+  name: string
+  kind: string
+}
+
 export type EventConnection = {
   generator_id: string
   connection_id: string
   status: EventConnectionStatus
+  lifecycle_state: EventConnectionLifecycleState
+  scopes?: EventConnectionScope[]
+  resources?: EventConnectedResource[]
+  attached_trigger_count: number
   metadata?: unknown
   expires_at_ms?: number | null
   created_at_ms: number
   updated_at_ms: number
   last_validated_at_ms?: number | null
+  last_successful_health_check_at_ms?: number | null
+  last_accepted_event_at_ms?: number | null
+  problem_code?: string | null
+  problem_message?: string | null
+  recovery_action?: string | null
+  test_event_supported: boolean
+}
+
+export type EventConnectionTestResult = {
+  occurrence_id: string
+  accepted: boolean
+  message?: string | null
 }
 
 export type EventConnectionAuthorization = {

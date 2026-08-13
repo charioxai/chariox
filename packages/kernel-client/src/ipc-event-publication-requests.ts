@@ -125,6 +125,15 @@ export function refreshEventConnectionRequest(connectionId: string) {
   return { RefreshEventConnection: { connection_id: connectionId } }
 }
 
+export function testEventConnectionRequest(connectionId: string, eventType?: string | null) {
+  return {
+    TestEventConnection: {
+      connection_id: connectionId,
+      event_type: eventType ?? null,
+    },
+  }
+}
+
 export function reconnectEventConnectionRequest(connectionId: string, returnUrl?: string | null) {
   return {
     ReconnectEventConnection: {
