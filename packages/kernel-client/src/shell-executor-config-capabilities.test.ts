@@ -6,8 +6,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -76,7 +76,7 @@ test("executeShellCommand lists MCP servers and skills in the workspace", async 
 test("executeShellCommand shows config and provider auth status", async () => {
   const fake = fakeClient((request) => {
     if ("GetUserConfig" in request) {
-      return { UserConfig: { path: "/home/.arroba/config.json", config: { version: 1, providers: { default: "codex" } } } }
+      return { UserConfig: { path: "/home/.chariox/config.json", config: { version: 1, providers: { default: "codex" } } } }
     }
     assert.deepEqual(request, { GetProviderAuthStatus: { provider: "codex" } })
     return {
@@ -108,7 +108,7 @@ test("executeShellCommand mutates user config", async () => {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         if ("GetUserConfig" in request) {
-          return { UserConfig: { path: "/home/.arroba/config.json", config: { version: 1, providers: { default: "codex" } } } }
+          return { UserConfig: { path: "/home/.chariox/config.json", config: { version: 1, providers: { default: "codex" } } } }
         }
         if ("GetUserConfigSchema" in request) {
           return {
@@ -133,7 +133,7 @@ test("executeShellCommand mutates user config", async () => {
           : null
         return {
           UserConfigUpdated: {
-            path: "/home/.arroba/config.json",
+            path: "/home/.chariox/config.json",
             config: { version: 1, providers: { workspace_live_sync: "off" } },
             effects: setConfig?.path === "providers.workspace_live_sync"
               ? [
@@ -160,7 +160,7 @@ test("executeShellCommand mutates user config", async () => {
   const managedWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync managed"), context, { client: fake.client })
   const defaultWorkspaceLiveSyncResult = await executeShellCommand(parseShellCommand("config workspace-live-sync"), context, { client: fake.client })
   assert.equal(pathResult.ok, true)
-  assert.equal(pathResult.message, "/home/.arroba/config.json")
+  assert.equal(pathResult.message, "/home/.chariox/config.json")
   assert.equal(keysResult.ok, true)
   assert.match(keysResult.message ?? "", /providers\.workspace_live_sync/)
   assert.equal(schemaResult.ok, true)
@@ -276,13 +276,13 @@ test("executeShellCommand manages encrypted credential vault state", async () =>
 })
 
 test("executeShellCommand installs and updates MCP servers", async () => {
-  const installed: ArrobaMcpServerConfig = {
+  const installed: CharioxMcpServerConfig = {
     name: "playwright",
     transport: { type: "stdio", command: "npx", args: ["@playwright/mcp"], env: {}, env_vars: ["GITHUB_TOKEN"] },
     enabled: true,
     required: false,
   }
-  const updated: ArrobaMcpServerConfig = {
+  const updated: CharioxMcpServerConfig = {
     name: "browser",
     transport: {
       type: "streamable_http",
@@ -338,13 +338,13 @@ test("executeShellCommand installs and updates MCP servers", async () => {
 })
 
 test("executeShellCommand imports MCP servers and skills", async () => {
-  const mcp: ArrobaMcpServerConfig = {
+  const mcp: CharioxMcpServerConfig = {
     name: "github",
     transport: { type: "stdio", command: "github-mcp-server", args: [], env: {}, env_vars: [] },
     enabled: true,
     required: false,
   }
-  const skill: ArrobaSkillMetadata = {
+  const skill: CharioxSkillMetadata = {
     name: "qa",
     description: "QA checks",
     short_description: "QA",
@@ -428,7 +428,7 @@ test("executeShellCommand imports provider capabilities through extension comman
                 source: "/repo/.codex/skills/qa",
                 hash: "hash-2",
                 action: "already_installed",
-                reason: "matching skill package already installed in Arroba",
+                reason: "matching skill package already installed in Chariox",
                 duplicates: [{
                   provider: "claude",
                   source: "/repo/.claude/skills/qa",
@@ -790,7 +790,7 @@ test("executeShellCommand manages script environments and script extensions", as
 })
 
 test("executeShellCommand installs and uninstalls skills", async () => {
-  const skill: ArrobaSkillMetadata = {
+  const skill: CharioxSkillMetadata = {
     name: "qa",
     description: "QA checks",
     short_description: "QA",

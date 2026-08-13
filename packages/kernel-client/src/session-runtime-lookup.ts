@@ -95,8 +95,8 @@ function sameProviderRunExternalImport(
     && left.observed_cursor.last_observed_at_ms === right.observed_cursor.last_observed_at_ms
     && left.observed_cursor.last_observed_merge_key === right.observed_cursor.last_observed_merge_key
     && sameStringArray(
-      left.observed_cursor.arroba_owned_observed_prompt_turn_ids,
-      right.observed_cursor.arroba_owned_observed_prompt_turn_ids,
+      left.observed_cursor.chariox_owned_observed_prompt_turn_ids,
+      right.observed_cursor.chariox_owned_observed_prompt_turn_ids,
     )
 }
 

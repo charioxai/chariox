@@ -26,7 +26,7 @@ pub use store::{
     SubscriptionClaim,
 };
 
-pub const AEGS_PROTOCOL_VERSION: u32 = 1;
+pub const AEGS_PROTOCOL_VERSION: u32 = 2;
 pub const MAX_WEBHOOK_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn now_ms() -> u64 {

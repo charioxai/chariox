@@ -299,7 +299,7 @@ test("session history transcript hydration keeps multiple external provider stat
 
 test("session history transcript hydration preserves prompt attachment and prompt identity", () => {
   const attachments = [{
-    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
     mime: "image/png",
     filename: "Screenshot.png",
     preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -339,10 +339,10 @@ test("session history transcript hydration preserves explicit prompt ownership",
     pageEntry(1, "provider_output", "external reply\n", {
       prompt_origin: "external",
     }),
-    pageEntry(2, "user_prompt", "arroba prompt", {
-      prompt_origin: "arroba",
+    pageEntry(2, "user_prompt", "chariox prompt", {
+      prompt_origin: "chariox",
     }),
-    pageEntry(3, "provider_output", "arroba reply\n", {
+    pageEntry(3, "provider_output", "chariox reply\n", {
       prompt_origin: null,
     }),
   ])
@@ -350,7 +350,7 @@ test("session history transcript hydration preserves explicit prompt ownership",
   assert.deepEqual(entries.map((entry) => entry.promptOrigin), [
     "external",
     "external",
-    "arroba",
+    "chariox",
     null,
   ])
 })
@@ -453,7 +453,7 @@ test("session history outline hydration carries prompt identity into entries and
       user_prompt: pageEntry(0, "user_prompt", "build\n", {
         source_attachment_id: "attachment-1",
         attachments: [{
-          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
           mime: "image/png",
           filename: "Screenshot.png",
           preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -828,21 +828,21 @@ test("session history outline hydration preserves provider identity without infe
   assert.equal(placeholder?.externalProviderTurnId, "user-1")
 })
 
-test("session history outline hydration does not infer external ownership for arroba-origin turns", () => {
+test("session history outline hydration does not infer external ownership for chariox-origin turns", () => {
   const entries = hydrateSessionHistoryOutlineAgentEntries({
     agent_id: "agent-1",
     turns: [{
       turn_id: "turn-1",
       prompt_id: "prompt-1",
-      prompt_origin: "arroba",
+      prompt_origin: "chariox",
       external_provider: "codex",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "user-1",
       started_at_ms: 1,
       lifecycle: "completed",
       completed_at_ms: 2,
-      user_prompt: pageEntry(0, "user_prompt", "arroba prompt\n"),
-      entries: [pageEntry(1, "provider_output", "arroba reply\n")],
+      user_prompt: pageEntry(0, "user_prompt", "chariox prompt\n"),
+      entries: [pageEntry(1, "provider_output", "chariox reply\n")],
       summary: null,
       blobs: [blob("blob-1", "provider_tool", 2, "tool", "1 tool called")],
     }],
@@ -853,11 +853,11 @@ test("session history outline hydration does not infer external ownership for ar
   const assistant = entries.find((entry) => entry.role === "assistant")
   const placeholder = entries.find((entry) => entry.historyBlobId === "blob-1")
   assert.equal(prompt?.source, undefined)
-  assert.equal(prompt?.promptOrigin, "arroba")
+  assert.equal(prompt?.promptOrigin, "chariox")
   assert.equal(assistant?.source, undefined)
-  assert.equal(assistant?.promptOrigin, "arroba")
+  assert.equal(assistant?.promptOrigin, "chariox")
   assert.equal(placeholder?.source, undefined)
-  assert.equal(placeholder?.promptOrigin, "arroba")
+  assert.equal(placeholder?.promptOrigin, "chariox")
   assert.equal(prompt?.externalProvider, "codex")
   assert.equal(prompt?.externalProviderSessionId, "thread-1")
   assert.equal(prompt?.externalProviderTurnId, "user-1")
@@ -931,7 +931,7 @@ test("session history blob replacement preserves prompt and external turn metada
       user_prompt: pageEntry(0, "user_prompt", "build\n", {
         source_attachment_id: "attachment-1",
         attachments: [{
-          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
           mime: "image/png",
           filename: "Screenshot.png",
           preview_url: "data:image/png;base64,aW1hZ2U=",

@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 
-use arroba_aegs_sdk::{
+use chariox_aegs_sdk::{
     AegsProvider, AuthorizationCallback, NormalizedEvent, WebhookInput, WebhookRoute,
 };
-use arroba_event_protocol::{
+use chariox_event_protocol::{
     AegsAuthorizationFlow, AegsProviderResource, AegsProviderResourcePage,
     AegsProviderResourceQuery,
 };
 
-pub const GENERATOR_ID: &str = "dev.arroba.dummy";
+pub const GENERATOR_ID: &str = "dev.chariox.dummy";
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DummyProvider;

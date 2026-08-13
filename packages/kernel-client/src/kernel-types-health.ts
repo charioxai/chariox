@@ -77,10 +77,10 @@ export type ProviderRunTerminalDiagnosticIssue = {
 export type ProviderRunHealthSnapshot = {
   projected_runs: number
   active_runs: number
-  arroba_active_runs: number
+  chariox_active_runs: number
   native_tui_active_runs: number
   terminal_diagnostics: ProviderRunTerminalDiagnosticIssue[]
-  duplicate_arroba_agent_bindings: ProviderRunAgentBindingConflict[]
+  duplicate_chariox_agent_bindings: ProviderRunAgentBindingConflict[]
   duplicate_native_tui_agent_bindings: ProviderRunAgentBindingConflict[]
   multi_interface_agent_bindings: ProviderRunAgentBindingConflict[]
   orphaned_active_runs: ProviderRunIdentityIssue[]

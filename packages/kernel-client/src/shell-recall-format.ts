@@ -3,7 +3,7 @@ import {
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
   type ToolTranscriptUpdate,
-} from "@arroba/tool-display"
+} from "@chariox/tool-display"
 
 import type {
   RecallEvent,

@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
 
-use arroba_adapters::protocol::{ConnectorAdapterPrepareResult, ConnectorAdapterRequest};
+use chariox_adapters::protocol::{ConnectorAdapterPrepareResult, ConnectorAdapterRequest};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use arroba_adapters::connector_adapter_util::{
+use chariox_adapters::connector_adapter_util::{
     credential_host_target, inject_http_credential, render_json_template, render_template_string,
     response_body_limited, run_adapter,
 };

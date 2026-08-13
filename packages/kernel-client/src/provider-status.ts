@@ -5,7 +5,7 @@ import {
   normalizeProviderActivityLabel,
   shouldRenderProviderStatus,
   toProviderPresentParticiplePhrase,
-} from "@arroba/tool-display"
+} from "@chariox/tool-display"
 
 export {
   ACTIVE_STATUS_FALLBACK,

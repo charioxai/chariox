@@ -1,5 +1,5 @@
 import type {
-  ArrobaUserConfigPayload,
+  CharioxUserConfigPayload,
   UserConfigSchemaEntry,
 } from "./kernel-types.js"
 
@@ -19,7 +19,7 @@ export function formatConfigSchemaKeys(entries: UserConfigSchemaEntry[]): string
     .join("\n")
 }
 
-export function configMutationMessage(prefix: string, payload: ArrobaUserConfigPayload): string {
+export function configMutationMessage(prefix: string, payload: CharioxUserConfigPayload): string {
   const effects = payload.effects ?? []
   if (effects.length === 0) {
     return prefix

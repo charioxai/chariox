@@ -7,7 +7,7 @@ import test from "node:test"
 import { writeWorkflowPublicationExportPackage } from "./shell-workflow-publication-export.js"
 
 test("workflow publication export materializes nested files and executable modes", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-materialize-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-materialize-"))
   try {
     const paths = await writeWorkflowPublicationExportPackage(root, [
       {
@@ -30,7 +30,7 @@ test("workflow publication export materializes nested files and executable modes
 })
 
 test("workflow publication export rejects unsafe, duplicate, and malformed entries", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-materialize-invalid-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-materialize-invalid-"))
   try {
     await assert.rejects(
       writeWorkflowPublicationExportPackage(root, [{ path: "../escape", content_base64: "YQ==" }]),

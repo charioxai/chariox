@@ -1,11 +1,11 @@
 [package]
-name = "arroba-aegs-sdk"
+name = "chariox-aegs-sdk"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
 aes-gcm = "0.10.3"
-arroba-event-protocol = { path = "../event-protocol" }
+chariox-event-protocol = { path = "../event-protocol" }
 base64 = "0.22.1"
 bytes = "1.10.1"
 http-body-util = "0.1.3"

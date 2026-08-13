@@ -11,7 +11,7 @@ test("notification center installs and reuses kernel-owned connections", async (
       if ("InstallEventConnection" in request) {
         return { EventConnectionAuthorizationStarted: { authorization: {
           authorization_id: "authorization-1",
-          generator_id: "dev.arroba.github",
+          generator_id: "dev.chariox.github",
           status: "user_action_required",
           authorization_url: "https://example.test/authorize",
           user_code: "ABCD-1234",
@@ -20,7 +20,7 @@ test("notification center installs and reuses kernel-owned connections", async (
       }
       return { EventConnectionsPage: { page: {
         connections: [{
-          generator_id: "dev.arroba.github",
+          generator_id: "dev.chariox.github",
           connection_id: "connection-1",
           status: "ready",
           created_at_ms: 1,
@@ -32,14 +32,14 @@ test("notification center installs and reuses kernel-owned connections", async (
     },
   }
 
-  const installed = await executeNotificationCommand(["connect", "dev.arroba.github"], client)
-  const listed = await executeNotificationCommand(["connections", "dev.arroba.github"], client)
+  const installed = await executeNotificationCommand(["connect", "dev.chariox.github"], client)
+  const listed = await executeNotificationCommand(["connections", "dev.chariox.github"], client)
 
   assert.match(installed.message ?? "", /ABCD-1234/)
   assert.match(listed.message ?? "", /connection-1  ready/)
   assert.deepEqual(requests, [
-    { InstallEventConnection: { generator_id: "dev.arroba.github", return_url: null } },
-    { ListEventConnections: { generator_id: "dev.arroba.github", cursor: null, limit: 20 } },
+    { InstallEventConnection: { generator_id: "dev.chariox.github", return_url: null } },
+    { ListEventConnections: { generator_id: "dev.chariox.github", cursor: null, limit: 20 } },
   ])
 })
 
@@ -59,7 +59,7 @@ test("notification removal previews dependencies before confirmed removal", asyn
       }
       return { EventConnectionRemoved: {
         connection: {
-          generator_id: "dev.arroba.github",
+          generator_id: "dev.chariox.github",
           connection_id: "connection-1",
           status: "revoked",
           created_at_ms: 1,

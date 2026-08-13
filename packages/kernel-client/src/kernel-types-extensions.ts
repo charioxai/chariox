@@ -1,4 +1,4 @@
-export type ArrobaMcpServerConfig = {
+export type CharioxMcpServerConfig = {
   name: string
   transport: Record<string, unknown>
   enabled?: boolean
@@ -16,23 +16,23 @@ export type McpImportSkip = {
 }
 
 export type McpImportOutcome = {
-  imported: ArrobaMcpServerConfig[]
+  imported: CharioxMcpServerConfig[]
   skipped: McpImportSkip[]
 }
 
-export type ArrobaSkillMetadata = {
+export type CharioxSkillMetadata = {
   name: string
   description: string
   short_description?: string | null
   path: string
 }
 
-export type ArrobaEnvironmentConfig = {
+export type CharioxEnvironmentConfig = {
   name: string
   runtime: Record<string, unknown>
 }
 
-export type ArrobaScriptMetadata = {
+export type CharioxScriptMetadata = {
   name: string
   runtime: "python" | "typescript" | string
   path: string
@@ -42,7 +42,7 @@ export type ArrobaScriptMetadata = {
   timeout_sec?: number | null
 }
 
-export type ArrobaConnectorDefinition = {
+export type CharioxConnectorDefinition = {
   kind: "connector" | string
   name: string
   description: string
@@ -53,7 +53,7 @@ export type ArrobaConnectorDefinition = {
   operations: Array<Record<string, unknown>>
 }
 
-export type ArrobaConnectorAdapterDefinition = {
+export type CharioxConnectorAdapterDefinition = {
   kind: "connector_adapter" | string
   name: string
   version?: string | null
@@ -65,7 +65,7 @@ export type ArrobaConnectorAdapterDefinition = {
   manifest_path?: string | null
 }
 
-export type ArrobaCredentialConfig = {
+export type CharioxCredentialConfig = {
   id: string
   description?: string | null
   source: Record<string, unknown>
@@ -91,7 +91,7 @@ export type SkillImportSkip = {
 }
 
 export type SkillImportOutcome = {
-  imported: ArrobaSkillMetadata[]
+  imported: CharioxSkillMetadata[]
   skipped: SkillImportSkip[]
 }
 

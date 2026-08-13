@@ -76,7 +76,7 @@ function attachment(
   }> = {},
 ) {
   return {
-    url: `arroba-terminal://prompt-attachment/attachment-1/${id}`,
+    url: `chariox-terminal://prompt-attachment/attachment-1/${id}`,
     mime: "image/png",
     filename: `${id}.png`,
     preview_url: null,

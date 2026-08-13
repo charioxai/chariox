@@ -2,8 +2,8 @@
 node_modules/
 .pnpm-store/
 
-# arroba
-.arroba/
+# chariox
+.chariox/
 
 # Build artifacts
 dist/

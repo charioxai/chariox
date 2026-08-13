@@ -17,10 +17,10 @@ importers:
 
   apps/cli:
     dependencies:
-      '@arroba/kernel-client':
+      '@chariox/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
-      '@arroba/tool-display':
+      '@chariox/tool-display':
         specifier: workspace:*
         version: link:../../packages/tool-display
       '@opentui/core':
@@ -60,7 +60,7 @@ importers:
 
   apps/server:
     dependencies:
-      '@arroba/kernel-client':
+      '@chariox/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
       fastify:
@@ -76,7 +76,7 @@ importers:
 
   apps/shell:
     dependencies:
-      '@arroba/kernel-client':
+      '@chariox/kernel-client':
         specifier: workspace:*
         version: link:../../packages/kernel-client
 
@@ -84,7 +84,7 @@ importers:
 
   packages/kernel-client:
     dependencies:
-      '@arroba/tool-display':
+      '@chariox/tool-display':
         specifier: workspace:*
         version: link:../tool-display
       ws:

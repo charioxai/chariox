@@ -1,10 +1,10 @@
 import type {
   AgentInstance,
   RemoteExtensionManifestSyncStatus,
-  ArrobaEnvironmentConfig,
-  ArrobaMcpServerConfig,
-  ArrobaScriptMetadata,
-  ArrobaSkillMetadata,
+  CharioxEnvironmentConfig,
+  CharioxMcpServerConfig,
+  CharioxScriptMetadata,
+  CharioxSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
   ProviderCapabilityImportReport,
@@ -41,7 +41,7 @@ export type RemoteExtensionSyncStatusLineOptions = {
   readonly workerMachineId?: string | null
 }
 
-export function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
+export function formatMcpList(mcps: CharioxMcpServerConfig[]): string {
   if (mcps.length === 0) {
     return "no MCP servers installed"
   }
@@ -52,7 +52,7 @@ export function formatMcpList(mcps: ArrobaMcpServerConfig[]): string {
   }).join("\n")
 }
 
-export function formatSkillList(skills: ArrobaSkillMetadata[]): string {
+export function formatSkillList(skills: CharioxSkillMetadata[]): string {
   if (skills.length === 0) {
     return "no skills installed"
   }
@@ -104,7 +104,7 @@ export function formatProviderCapabilityImportReport(report: ProviderCapabilityI
   return lines.join("\n")
 }
 
-export function formatEnvironmentList(environments: ArrobaEnvironmentConfig[]): string {
+export function formatEnvironmentList(environments: CharioxEnvironmentConfig[]): string {
   if (environments.length === 0) {
     return "no environments registered"
   }
@@ -116,7 +116,7 @@ export function formatEnvironmentList(environments: ArrobaEnvironmentConfig[]): 
   }).join("\n")
 }
 
-export function formatScriptList(scripts: ArrobaScriptMetadata[]): string {
+export function formatScriptList(scripts: CharioxScriptMetadata[]): string {
   if (scripts.length === 0) {
     return "no scripts registered"
   }

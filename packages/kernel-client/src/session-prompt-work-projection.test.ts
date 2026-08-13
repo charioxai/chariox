@@ -108,7 +108,7 @@ test("sessionPromptWorkSummary counts projected active turns and prompt state qu
         active_turn: {
           prompt_id: "prompt-2",
           provider_run_id: "run-2",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
           status: "running",
           phase: "streaming",
         },
@@ -184,7 +184,7 @@ test("sessionPromptWorkSummary ignores settled active turn statuses", () => {
         active_turn: {
           prompt_id: "prompt-1",
           provider_run_id: "run-1",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
           status: malformedRuntimeValue(" Completed "),
           phase: malformedRuntimeValue("settled"),
         },

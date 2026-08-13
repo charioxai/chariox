@@ -12,10 +12,10 @@ const binding: WorkflowEventBinding = {
   generator_version: "1.0.0",
   manifest_digest: "sha256:abc",
   connection_id: "connection-1",
-  connection_scope: "repo:arroba/arroba",
+  connection_scope: "repo:charioxai/chariox",
   event_type: "pull_request.opened",
   event_type_version: 1,
-  filter: { repository: "arroba/arroba" },
+  filter: { repository: "charioxai/chariox" },
   event_interest_key: "sha256:interest",
   environment_id: "kernel-1",
   endpoint_id: "endpoint-1",
@@ -41,11 +41,11 @@ test("workflow event publication command browses a bounded catalog and binds an 
               name: "GitHub",
               summary: "Repository events",
               provider: "GitHub",
-              publisher: { id: "arroba", name: "Arroba" },
-              operator: { id: "arroba", name: "Arroba" },
-              verification: "arroba",
+              publisher: { id: "chariox", name: "Chariox" },
+              operator: { id: "chariox", name: "Chariox" },
+              verification: "chariox",
               manifest_digest: "sha256:abc",
-              protocol_version: 1,
+              protocol_version: 2,
               categories: ["developer-tools"],
               installed_count: 10,
               recommended: true,
@@ -86,9 +86,9 @@ test("workflow event publication command browses a bounded catalog and binds an 
       "--connection",
       "connection-1",
       "--scope",
-      "repo:arroba/arroba",
+      "repo:charioxai/chariox",
       "--filter-json",
-      "{\"repository\":\"arroba/arroba\"}",
+      "{\"repository\":\"charioxai/chariox\"}",
     ],
     context,
     client,
@@ -116,10 +116,10 @@ test("workflow event publication command browses a bounded catalog and binds an 
       generator_version: "1.0.0",
       manifest_digest: "sha256:abc",
       connection_id: "connection-1",
-      connection_scope: "repo:arroba/arroba",
+      connection_scope: "repo:charioxai/chariox",
       event_type: "pull_request.opened",
       event_type_version: 1,
-      filter: { repository: "arroba/arroba" },
+      filter: { repository: "charioxai/chariox" },
       environment_id: null,
       queue_ref: null,
     },
@@ -136,7 +136,7 @@ test("workflow event publication command authorizes and enumerates provider reso
           EventConnectionAuthorizationStarted: {
             authorization: {
               authorization_id: "authorization-1",
-              generator_id: "dev.arroba.dummy",
+              generator_id: "dev.chariox.dummy",
               status: "ready",
               connection_id: "local-dummy",
               created_at_ms: 1,
@@ -162,7 +162,7 @@ test("workflow event publication command authorizes and enumerates provider reso
   const context = createDefaultShellContext({ sessionId: "session-1" })
 
   const authorization = await executeWorkflowEventPublicationCommand(
-    ["install", "dev.arroba.dummy"],
+    ["install", "dev.chariox.dummy"],
     context,
     client,
   )
@@ -177,7 +177,7 @@ test("workflow event publication command authorizes and enumerates provider reso
   assert.deepEqual(requests, [
     {
       InstallEventConnection: {
-        generator_id: "dev.arroba.dummy",
+        generator_id: "dev.chariox.dummy",
         return_url: null,
       },
     },

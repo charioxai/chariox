@@ -13,7 +13,7 @@ import {
 } from "./shell-executor.test-support.js"
 
 test("executeShellCommand exports and imports workflow-code packages and source", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-code-shell-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-workflow-code-shell-"))
   try {
     const workflowCodePackage = {
       package_version: 2,
@@ -34,7 +34,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
       metadata: {
         name: "imported-toy",
         language: "JavaScript",
-        path: "/repo/.arroba/workflow-code/imported-toy.json",
+        path: "/repo/.chariox/workflow-code/imported-toy.json",
         source_sha256: "source-sha256",
         source_bytes: 34,
         validation: { ok: true },
@@ -176,7 +176,7 @@ test("executeShellCommand exports and imports workflow-code packages and source"
 })
 
 test("executeShellCommand validates, saves, applies, and runs workflow-code artifacts", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-code-shell-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-workflow-code-shell-"))
   try {
     const source = "workflow.define({ alias: \"toy\" })\n"
     await writeFile(join(root, "toy.workflow.js"), source, "utf8")
@@ -193,7 +193,7 @@ test("executeShellCommand validates, saves, applies, and runs workflow-code arti
       metadata: {
         name: "toy-flow",
         language: "java_script",
-        path: "/repo/.arroba/workflow-code/toy-flow.json",
+        path: "/repo/.chariox/workflow-code/toy-flow.json",
         source_sha256: "source-sha256",
         source_bytes: source.length,
         validation: { ok: true, diagnostics: [] },
@@ -236,7 +236,7 @@ test("executeShellCommand validates, saves, applies, and runs workflow-code arti
               },
             }
           }
-          return { WorkflowCodeArtifactDeleted: { name: "toy-flow", path: "/repo/.arroba/workflow-code/toy-flow.json" } }
+          return { WorkflowCodeArtifactDeleted: { name: "toy-flow", path: "/repo/.chariox/workflow-code/toy-flow.json" } }
         },
       },
     }

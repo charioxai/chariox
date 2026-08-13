@@ -7,8 +7,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -110,7 +110,7 @@ test("executeShellCommand deletes workflows through the shared design-op path", 
 })
 
 test("executeShellCommand manages workflow registry entries", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-registry-shell-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-workflow-registry-shell-"))
   try {
     const source = "workflow.define({ alias: \"registered\" })\n"
     await writeFile(join(root, "registered.workflow.js"), source, "utf8")
@@ -167,7 +167,7 @@ test("executeShellCommand manages workflow registry entries", async () => {
             }
           }
           if ("DeleteWorkflowRegistryEntry" in request) {
-            return { WorkflowRegistryEntryDeleted: { name: "dev-team-small", path: "/repo/.arroba/workflows/dev-team-small" } }
+            return { WorkflowRegistryEntryDeleted: { name: "dev-team-small", path: "/repo/.chariox/workflows/dev-team-small" } }
           }
           return { WorkflowRegistryEntryAdded: { entry } }
         },
@@ -482,7 +482,7 @@ test("executeShellCommand forwards workflow node additions as design ops for TUI
 })
 
 test("executeShellCommand manages workflow node instructions from shell", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-instructions-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-workflow-instructions-"))
   try {
     await writeFile(join(root, "instructions.md"), "Review the handoff and return JSON.", "utf8")
     const workflow = makeWorkflow({
@@ -534,7 +534,7 @@ test("executeShellCommand manages workflow node instructions from shell", async 
 })
 
 test("executeShellCommand forwards workflow node instruction edits as design ops for TUI clients", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-workflow-design-instructions-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-workflow-design-instructions-"))
   try {
     await writeFile(join(root, "instructions.md"), "Collaborative node prompt.", "utf8")
     const workflow = makeWorkflow({
@@ -671,7 +671,7 @@ test("executeShellCommand manages workflow publications", async () => {
 })
 
 test("executeShellCommand exports a workflow publication package", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-export-test-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-export-test-"))
   try {
     const publication = makeWorkflowPublication({
       mode: "async",
@@ -761,7 +761,7 @@ test("executeShellCommand exports a workflow publication package", async () => {
 })
 
 test("executeShellCommand configures workflow publication package bindings", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-publication-bindings-test-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-bindings-test-"))
   try {
     const workflow = makeWorkflow({
       nodes: [

@@ -35,7 +35,7 @@ test("stitchPrependedTranscriptHistory merges adjacent assistant fragments", () 
 
 test("stitchPrependedTranscriptHistory preserves prompt attachment metadata", () => {
   const attachments = [{
-    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
     mime: "image/png",
     filename: "Screenshot.png",
     preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -101,7 +101,7 @@ test("stitchPrependedTranscriptHistory preserves prompt ownership metadata", () 
 
 test("stitchPrependedTranscriptHistory does not merge conflicting prompt ownership metadata", () => {
   const stitched = stitchPrependedTranscriptHistory(
-    [entry(1, "user", "arroba ", {
+    [entry(1, "user", "chariox ", {
       historyEntryIndex: 8,
       historyFragmentStart: 0,
       historyFragmentEnd: 7,
@@ -115,17 +115,17 @@ test("stitchPrependedTranscriptHistory does not merge conflicting prompt ownersh
       historyFragmentStart: 7,
       historyFragmentEnd: 13,
       historyTotalChars: 13,
-      promptOrigin: "arroba",
+      promptOrigin: "chariox",
       historyTurnCompletedAtMs: 1_000,
       historyTurnLifecycle: "completed",
     })],
   )
 
   assert.equal(stitched.length, 2)
-  assert.equal(stitched[0]?.text, "arroba ")
+  assert.equal(stitched[0]?.text, "chariox ")
   assert.equal(stitched[0]?.promptOrigin, "external")
   assert.equal(stitched[1]?.text, "prompt")
-  assert.equal(stitched[1]?.promptOrigin, "arroba")
+  assert.equal(stitched[1]?.promptOrigin, "chariox")
 })
 
 test("stitchPrependedTranscriptHistory merges external observed metadata", () => {

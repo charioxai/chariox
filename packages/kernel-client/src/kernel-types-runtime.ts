@@ -53,7 +53,7 @@ export type AgentActiveTurn = {
   prompt_id: string
   provider_run_id?: string | null
   source_attachment_id?: string | null
-  prompt_origin?: "arroba" | "external" | string | null
+  prompt_origin?: "chariox" | "external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
@@ -68,7 +68,7 @@ export type CompletedGitTurnActionProjection = {
   provider_run_id: string
   agent_id: string
   source_attachment_id?: string | null
-  prompt_origin?: "arroba" | "external" | string | null
+  prompt_origin?: "chariox" | "external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
@@ -199,7 +199,7 @@ export type SessionConfigState = {
   updated_by_attachment_id?: string | null
 }
 
-export type ArrobaUserConfig = {
+export type CharioxUserConfig = {
   version: number
   providers?: {
     default?: string
@@ -253,7 +253,7 @@ export type ArrobaUserConfig = {
     }
   }
   credential_vault?: {
-    backend?: "arroba_encrypted" | "process_memory"
+    backend?: "chariox_encrypted" | "process_memory"
     service?: string
     path?: string
     unlock_policy?: "kernel_init" | "ttl" | "always"
@@ -262,13 +262,13 @@ export type ArrobaUserConfig = {
   }
 }
 
-export type ArrobaUserConfigPayload = {
+export type CharioxUserConfigPayload = {
   path: string
-  config: ArrobaUserConfig
+  config: CharioxUserConfig
   effects?: UserConfigMutationEffect[]
 }
 
-export type ArrobaUserConfigSchemaPayload = {
+export type CharioxUserConfigSchemaPayload = {
   entries: UserConfigSchemaEntry[]
 }
 
@@ -375,7 +375,7 @@ export type PromptQueueItem = {
   created_at_ms?: number
   updated_at_ms?: number
   status: string
-  prompt_origin?: "arroba" | "external" | string
+  prompt_origin?: "chariox" | "external" | string
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null

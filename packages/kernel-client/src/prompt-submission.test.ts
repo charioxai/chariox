@@ -358,7 +358,7 @@ test("prompt submission transcript metadata prefers outcome prompt identity", ()
         target_agent_id: "agent-1",
         prompt: "hello",
         status: "running",
-        prompt_origin: "arroba",
+        prompt_origin: "chariox",
       },
     }),
     agent_activity: {},

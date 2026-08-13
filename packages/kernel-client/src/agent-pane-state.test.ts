@@ -219,7 +219,7 @@ test("preserveLoadedHistoryBlobs keeps expanded loaded blob content after refres
         promptOrigin: "external",
         sourceAttachmentId: "attachment-1",
         attachments: [{
-          url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+          url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
           mime: "image/png",
           filename: "Screenshot.png",
           preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -272,7 +272,7 @@ test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritati
       role: "tool",
       turnId: 1,
       text: "loaded tool output",
-      promptOrigin: "arroba",
+      promptOrigin: "chariox",
       historyBlobSourceId: "blob-1",
       historyBlobSourceAgentId: "agent-a",
       historyBlobLoaded: true,
@@ -290,7 +290,7 @@ test("preserveLoadedHistoryBlobs keeps explicit loaded blob metadata authoritati
     reindexEntries: (entries) => entries.map((entry, index) => ({ ...entry, id: index + 1 })),
   })
 
-  assert.equal(result[0]?.promptOrigin, "arroba")
+  assert.equal(result[0]?.promptOrigin, "chariox")
 })
 
 test("preserveLoadedHistoryBlobs does not repair sparse loaded external metadata from refreshed placeholder", () => {
@@ -659,7 +659,7 @@ test("refreshAgentPaneState prefers refreshed external history over queued promp
           externalProviderSessionId: "thread-a",
           externalProviderTurnId: "external-user-1",
         },
-        { role: "user", text: "queued arroba prompt" },
+        { role: "user", text: "queued chariox prompt" },
       ],
     },
     resolveVisibleAgentId: (_agents, focusedAgentId) => focusedAgentId,

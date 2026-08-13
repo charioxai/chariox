@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use arroba_event_protocol::{
+use chariox_event_protocol::{
     AegsAuthorizationFlow, AegsProviderResourcePage, AegsProviderResourceQuery,
 };
 use serde_json::Value;
@@ -156,13 +156,13 @@ mod tests {
     #[test]
     fn generic_filters_support_dotted_metadata_and_arrays() {
         let metadata = serde_json::json!({
-            "repository": {"owner": "arroba"},
+            "repository": {"owner": "chariox"},
             "labels": ["runtime", "event"]
         });
         assert!(metadata_matches_filter(
             &metadata,
             &serde_json::json!({
-                "repository.owner": "arroba",
+                "repository.owner": "chariox",
                 "labels": "event"
             })
         ));

@@ -6,8 +6,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"

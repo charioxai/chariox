@@ -20,7 +20,7 @@ export type RuntimeProviderRun = {
   }
   state: string
   endpoint_mode?: string
-  client_interface?: "arroba" | "native_tui" | string
+  client_interface?: "chariox" | "native_tui" | string
   process_label?: string
   structured_endpoint?: string | null
   provider_session_id?: string | null
@@ -194,7 +194,7 @@ export type TerminalOutputRecord = {
   timestamp_ms: number
   agent_id?: string | null
   prompt_id?: string | null
-  prompt_origin?: "arroba" | "external" | string | null
+  prompt_origin?: "chariox" | "external" | string | null
   source_attachment_id?: string | null
   kind: "provider_output" | "provider_terminal" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string

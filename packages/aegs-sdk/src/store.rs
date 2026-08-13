@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-pub use arroba_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
+pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
@@ -916,9 +916,9 @@ mod tests {
     fn claim(binding_id: &str, revision: u64, active: bool) -> SubscriptionClaim {
         SubscriptionClaim {
             binding_id: binding_id.to_string(),
-            generator_id: "dev.arroba.github".to_string(),
+            generator_id: "dev.chariox.github".to_string(),
             connection_id: "installation-1".to_string(),
-            connection_scope: "arroba/arroba".to_string(),
+            connection_scope: "charioxai/chariox".to_string(),
             event_interest_key: format!("sha256:{binding_id}"),
             event_type: "pull_request.opened".to_string(),
             event_type_version: 1,
@@ -935,14 +935,18 @@ mod tests {
             store
                 .reconcile(
                     "kernel-a",
-                    "dev.arroba.github",
+                    "dev.chariox.github",
                     &[claim("binding-a", 2, true)],
                 )
                 .unwrap(),
             vec!["binding-a"]
         );
         assert!(store
-            .matching("dev.arroba.github", "pull_request.opened", "arroba/arroba")
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
             .unwrap()
             .iter()
             .any(|value| value.binding_id == "binding-a"));
@@ -959,18 +963,22 @@ mod tests {
         assert!(store
             .reconcile(
                 "kernel-a",
-                "dev.arroba.github",
+                "dev.chariox.github",
                 &[claim("binding-a", 1, true)],
             )
             .unwrap()
             .is_empty());
-        assert_eq!(store.all("dev.arroba.github").unwrap()[0].revision, 2);
+        assert_eq!(store.all("dev.chariox.github").unwrap()[0].revision, 2);
 
         store
-            .reconcile("kernel-a", "dev.arroba.github", &[])
+            .reconcile("kernel-a", "dev.chariox.github", &[])
             .unwrap();
         assert!(store
-            .matching("dev.arroba.github", "pull_request.opened", "arroba/arroba")
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
             .unwrap()
             .is_empty());
         assert_eq!(store.metrics().unwrap().active_subscriptions, 0);
@@ -982,23 +990,23 @@ mod tests {
         store
             .reconcile(
                 "kernel-a",
-                "dev.arroba.github",
+                "dev.chariox.github",
                 &[claim("binding-a", 2, true)],
             )
             .unwrap();
         store
             .reconcile(
                 "kernel-b",
-                "dev.arroba.github",
+                "dev.chariox.github",
                 &[claim("binding-b", 1, true)],
             )
             .unwrap();
         assert_eq!(store.metrics().unwrap().active_subscriptions, 2);
 
         store
-            .reconcile("kernel-b", "dev.arroba.github", &[])
+            .reconcile("kernel-b", "dev.chariox.github", &[])
             .unwrap();
-        let subscriptions = store.all("dev.arroba.github").unwrap();
+        let subscriptions = store.all("dev.chariox.github").unwrap();
         assert!(subscriptions
             .iter()
             .any(|subscription| subscription.binding_id == "binding-a" && subscription.active));
@@ -1009,7 +1017,7 @@ mod tests {
         assert!(store
             .reconcile(
                 "kernel-b",
-                "dev.arroba.github",
+                "dev.chariox.github",
                 &[claim("binding-a", 2, true)],
             )
             .unwrap()
@@ -1020,17 +1028,21 @@ mod tests {
             store
                 .reconcile(
                     "kernel-b",
-                    "dev.arroba.github",
+                    "dev.chariox.github",
                     &[claim("binding-a", 3, true)],
                 )
                 .unwrap(),
             vec!["binding-a"]
         );
         store
-            .reconcile("kernel-a", "dev.arroba.github", &[])
+            .reconcile("kernel-a", "dev.chariox.github", &[])
             .unwrap();
         assert!(store
-            .matching("dev.arroba.github", "pull_request.opened", "arroba/arroba")
+            .matching(
+                "dev.chariox.github",
+                "pull_request.opened",
+                "charioxai/chariox"
+            )
             .unwrap()
             .iter()
             .any(|subscription| {
@@ -1139,7 +1151,7 @@ mod tests {
             .complete_authorization(
                 "initial-state",
                 b"old-encrypted-credential",
-                &serde_json::json!({"account": "arroba"}),
+                &serde_json::json!({"account": "chariox"}),
                 None,
                 1_100,
             )
@@ -1150,7 +1162,7 @@ mod tests {
                 connection_id: "connection-owner-a",
                 owner_id: "owner-a",
                 provider: "github",
-                return_url: Some("https://terminal.arroba.dev/notifications/callback"),
+                return_url: Some("https://terminal.chariox.com/notifications/callback"),
                 expires_at_ms: 3_000,
                 now_ms: 2_000,
             })
@@ -1174,7 +1186,7 @@ mod tests {
             .complete_authorization(
                 "replacement-state",
                 b"new-encrypted-credential",
-                &serde_json::json!({"account": "arroba"}),
+                &serde_json::json!({"account": "chariox"}),
                 None,
                 2_200,
             )

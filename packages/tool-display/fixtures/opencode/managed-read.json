@@ -1,7 +1,7 @@
 {
   "input": {
     "id": "prt_read",
-    "tool": "arroba_read_artifact",
+    "tool": "chariox_read_artifact",
     "status": "completed",
     "input": {
       "domain": "text",

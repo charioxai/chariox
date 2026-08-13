@@ -11,7 +11,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use url::Url;
 
-use arroba_event_protocol::{
+use chariox_event_protocol::{
     AegsProviderResource, AegsProviderResourcePage, AegsProviderResourceQuery,
 };
 
@@ -85,7 +85,7 @@ pub fn parse_public_base_url(value: &str) -> Result<Url, String> {
         || (url.scheme() == "http"
             && matches!(url.host_str(), Some("127.0.0.1" | "localhost" | "::1")));
     if !safe {
-        return Err("ARROBA_AEGS_PUBLIC_BASE_URL must use HTTPS or loopback HTTP".to_string());
+        return Err("CHARIOX_AEGS_PUBLIC_BASE_URL must use HTTPS or loopback HTTP".to_string());
     }
     Ok(url)
 }

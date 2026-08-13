@@ -6,8 +6,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -41,13 +41,13 @@ test("executeShellCommand attaches standalone shell clients when switching sessi
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
   const result = await executeShellCommand(parseShellCommand("session new --dir qa as s"), context, {
     client: fake.client,
-    clientId: "arroba-shell-test",
+    clientId: "chariox-shell-test",
   })
   assert.equal(result.ok, true)
   assert.equal(result.contextUpdates?.attachmentId, "attachment-shell")
   assert.deepEqual(requests, [
     { CreateSession: { workspace_id: "/repo", worktree_id: "/repo/qa", alias: null, slice_ref: null } },
-    { AttachToSession: { session_id: "session-2", client_id: "arroba-shell-test", capability_level: "FullTerminal" } },
+    { AttachToSession: { session_id: "session-2", client_id: "chariox-shell-test", capability_level: "FullTerminal" } },
   ])
 })
 
@@ -74,7 +74,7 @@ test("executeShellCommand manages session invites and members", async () => {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         if ("CreateSessionInvite" in request) {
-          return { SessionInviteCreated: { invite: { invite, invite_token: "arroba-session-invite-v1.token" }, session } }
+          return { SessionInviteCreated: { invite: { invite, invite_token: "chariox-session-invite-v1.token" }, session } }
         }
         if ("JoinSessionInvite" in request) {
           return {
@@ -106,7 +106,7 @@ test("executeShellCommand manages session invites and members", async () => {
   }
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo", sessionId: "session-1" })
   const inviteResult = await executeShellCommand(parseShellCommand("session invite create"), context, { client: fake.client })
-  const joinResult = await executeShellCommand(parseShellCommand("session join arroba-session-invite-v1.token ana"), context, { client: fake.client, clientId: "shell-ana" })
+  const joinResult = await executeShellCommand(parseShellCommand("session join chariox-session-invite-v1.token ana"), context, { client: fake.client, clientId: "shell-ana" })
   const membersResult = await executeShellCommand(parseShellCommand("session members"), context, { client: fake.client })
   const invitesResult = await executeShellCommand(parseShellCommand("session invites"), context, { client: fake.client })
   const revokeResult = await executeShellCommand(parseShellCommand("session revoke-invite invite-1"), context, { client: fake.client })
@@ -119,7 +119,7 @@ test("executeShellCommand manages session invites and members", async () => {
   assert.match(revokeResult.message ?? "", /revoked session invite invite-1/)
   assert.deepEqual(requests, [
     { CreateSessionInvite: { session_id: "session-1", expires_in_ms: null, max_uses: 1, collaboration_level: "private" } },
-    { JoinSessionInvite: { invite_token: "arroba-session-invite-v1.token", user_id: "ana" } },
+    { JoinSessionInvite: { invite_token: "chariox-session-invite-v1.token", user_id: "ana" } },
     { AttachToSession: { session_id: "session-1", client_id: "shell-ana", capability_level: "FullTerminal" } },
     { ListSessionMembers: { session_id: "session-1" } },
     { ListSessionMembers: { session_id: "session-1" } },
@@ -183,7 +183,7 @@ test("executeShellCommand manages workspace links", async () => {
       path: "src/app.ts",
       next_action: "reconcile target",
     }],
-    ignore: { ignore_file: ".arrobaignore", rules: ["ignored/**"], force_excludes: [".git/**"] },
+    ignore: { ignore_file: ".charioxignore", rules: ["ignored/**"], force_excludes: [".git/**"] },
   }
   const auditEvents = [{
     event_id: "event-1",
@@ -302,7 +302,7 @@ test("executeShellCommand manages workspace links", async () => {
   assert.match(syncTargetsResult.message ?? "", /ready shared-repo: local \/repo machine=machine-1 kernel=kernel-1/)
   assert.match(syncTargetsResult.message ?? "", /next=inspect workspace sync conflicts/)
   assert.match(syncConflictsResult.message ?? "", /src\/app\.ts source=agent-1 target=local:\/repo: reconcile target/)
-  assert.match(syncIgnoreResult.message ?? "", /ignore=\.arrobaignore/)
+  assert.match(syncIgnoreResult.message ?? "", /ignore=\.charioxignore/)
   assert.match(syncIgnoreResult.message ?? "", /rule ignored\/\*\*/)
   assert.match(syncIgnoreResult.message ?? "", /force-exclude \.git\/\*\*/)
   assert.match(syncAuditResult.message ?? "", /workspace live sync audit: 1/)

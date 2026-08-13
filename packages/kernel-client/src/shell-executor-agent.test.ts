@@ -6,8 +6,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -918,7 +918,7 @@ test("executeShellCommand renders provider tools through shared tool display for
                 kind: "provider_tool",
                 text: JSON.stringify({
                   id: "tool-read",
-                  tool: "arroba_read_artifact",
+                  tool: "chariox_read_artifact",
                   status: "completed",
                   input: { path: "seed.txt", domain: "text" },
                   output: JSON.stringify({ content_text: "TOOL_DISPLAY_FIXTURE_SEED\n", path: "seed.txt", domain: "text" }),

@@ -46,7 +46,7 @@ test("formatToolDisplay summarizes shell commands without requiring client JSON 
   assert.deepEqual(display.blocks.map((block) => block.kind), expect.blocks)
 })
 
-test("formatToolDisplay normalizes OpenCode Arroba read tool aliases", async () => {
+test("formatToolDisplay normalizes OpenCode Chariox read tool aliases", async () => {
   const { input, expect } = await fixture("opencode/managed-read.json")
   const display = formatToolDisplay(input)
 
@@ -56,7 +56,7 @@ test("formatToolDisplay normalizes OpenCode Arroba read tool aliases", async () 
   assert.match(JSON.stringify(display.blocks), /TOOL_DISPLAY_FIXTURE_SEED/)
 })
 
-test("formatToolDisplay normalizes OpenCode Arroba patch aliases", async () => {
+test("formatToolDisplay normalizes OpenCode Chariox patch aliases", async () => {
   const { input, expect } = await fixture("opencode/managed-apply-patch.json")
   const display = formatToolDisplay(input)
   const patch = display.blocks.find((block) => block.kind === "patch")
@@ -76,10 +76,10 @@ test("formatToolDisplay accepts Codex runtime patch_text input", async () => {
   assert.deepEqual(patch?.files[0]?.previewLines, expect.previewLines)
 })
 
-test("formatToolDisplay unwraps live MCP envelopes for Arroba read output", () => {
+test("formatToolDisplay unwraps live MCP envelopes for Chariox read output", () => {
   const display = formatToolDisplay({
     id: "call_read",
-    tool: "arroba.read_artifact",
+    tool: "chariox.read_artifact",
     status: "completed",
     input: { path: "src/app.ts", domain: "text" },
     output: JSON.stringify({
@@ -104,10 +104,10 @@ test("formatToolDisplay unwraps live MCP envelopes for Arroba read output", () =
   ])
 })
 
-test("formatToolDisplay unwraps live MCP envelopes for Arroba mutation output", () => {
+test("formatToolDisplay unwraps live MCP envelopes for Chariox mutation output", () => {
   const display = formatToolDisplay({
     id: "call_write",
-    tool: "arroba.write_artifact",
+    tool: "chariox.write_artifact",
     status: "completed",
     input: { path: "src/app.ts", content_text: "next()\n", domain: "text" },
     output: JSON.stringify({

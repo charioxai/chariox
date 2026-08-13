@@ -122,7 +122,7 @@ test("queued prompt actionability comparison includes status and controls", () =
 
 test("queued prompt action state follows projected prompt ownership controls", () => {
   const kernelProjectedExternalReason =
-    "Steering is unavailable while the active provider turn was started outside Arroba."
+    "Steering is unavailable while the active provider turn was started outside Chariox."
   const externalBlocked = queuedPromptActionability("queued", {
     can_steer: false,
     can_cancel: true,
@@ -744,10 +744,10 @@ test("project queued prompt normalizes prompt ownership", () => {
     id: "external:codex:thread-1:turn-1",
     source_attachment_id: "attachment-1",
     target_agent_id: "agent-1",
-    prompt: "arroba-owned queued",
+    prompt: "chariox-owned queued",
     status: "queued",
-    prompt_origin: "arroba",
-  })?.promptOrigin, "arroba")
+    prompt_origin: "chariox",
+  })?.promptOrigin, "chariox")
 })
 
 test("queued prompts for agent clear stale queues when projected activity is idle", () => {

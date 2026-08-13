@@ -2,7 +2,7 @@ import {
   formatToolTranscriptUpdate,
   mergeToolTranscriptUpdate,
   parseToolTranscriptUpdate,
-} from "@arroba/tool-display"
+} from "@chariox/tool-display"
 import {
   type ExternalProviderObservedMutableTranscriptMetadataFields,
 } from "./external-provider-observation.js"

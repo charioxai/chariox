@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://arroba.dev/schemas/tool-display.v1.json",
-  "title": "Arroba Tool Display",
+  "$id": "https://chariox.com/schemas/tool-display.v1.json",
+  "title": "Chariox Tool Display",
   "type": "object",
   "required": ["version", "tool", "title", "summary", "collapsed", "blocks"],
   "additionalProperties": false,

@@ -67,14 +67,14 @@ test('workflow-aware entity shapes serialize with queue and config state', () =>
   const workspace: Workspace = {
     id: 'workspace_1',
     userId: user.id,
-    name: 'arroba',
-    rootPath: '/workspace/arroba',
+    name: 'chariox',
+    rootPath: '/workspace/chariox',
   }
   const worktree: Worktree = {
     id: 'worktree_1',
     workspaceId: workspace.id,
     gitBranch: 'feature/workflow',
-    absolutePath: '/workspace/arroba-worktree',
+    absolutePath: '/workspace/chariox-worktree',
   }
   const daemon: DaemonInstance = {
     id: 'daemon_1',

@@ -132,7 +132,7 @@ export type ExternalProviderObservedCursor = {
   last_observed_turn_id?: string | null
   last_observed_at_ms?: number | null
   last_observed_merge_key?: string | null
-  arroba_owned_observed_prompt_turn_ids?: string[]
+  chariox_owned_observed_prompt_turn_ids?: string[]
 }
 
 export type ExternalProviderImportMetadata = {

@@ -1,9 +1,9 @@
 import path from "node:path"
 
 const manifestByBinary = Object.freeze({
-  "arroba-cli": "apps/kernel/Cargo.toml",
-  "arroba-kernel": "apps/kernel/Cargo.toml",
-  "arroba-relay": "apps/relay/Cargo.toml",
+  "chariox-cli": "apps/kernel/Cargo.toml",
+  "chariox-kernel": "apps/kernel/Cargo.toml",
+  "chariox-relay": "apps/relay/Cargo.toml",
 })
 
 export function rustManifestPath(repoRoot, binaryName) {

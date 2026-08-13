@@ -1,5 +1,5 @@
 {
-  "name": "@arroba/kernel-client",
+  "name": "@chariox/kernel-client",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -84,7 +84,7 @@
     "test": "pnpm run build && node --test dist/*.test.js"
   },
   "dependencies": {
-    "@arroba/tool-display": "workspace:*",
+    "@chariox/tool-display": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

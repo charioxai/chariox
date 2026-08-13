@@ -33,14 +33,14 @@ jobs:
         with:
           context: .
           file: docker/aegs-dummy/Dockerfile
-          build-args: ARROBA_BUILD_REVISION=${{ github.sha }}
+          build-args: CHARIOX_BUILD_REVISION=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           provenance: mode=max
           sbom: true
           push: true
-          tags: ghcr.io/${{ github.repository_owner }}/arroba-aegs-dummy:${{ github.sha }}
+          tags: ghcr.io/${{ github.repository_owner }}/chariox-aegs-dummy:${{ github.sha }}
       - uses: actions/attest@v4
         with:
-          subject-name: ghcr.io/${{ github.repository_owner }}/arroba-aegs-dummy
+          subject-name: ghcr.io/${{ github.repository_owner }}/chariox-aegs-dummy
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: true

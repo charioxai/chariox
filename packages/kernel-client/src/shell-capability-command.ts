@@ -1,12 +1,12 @@
 import type {
   AgentInstance,
-  ArrobaConnectorAdapterDefinition,
-  ArrobaEnvironmentConfig,
-  ArrobaConnectorDefinition,
-  ArrobaCredentialConfig,
-  ArrobaMcpServerConfig,
-  ArrobaScriptMetadata,
-  ArrobaSkillMetadata,
+  CharioxConnectorAdapterDefinition,
+  CharioxEnvironmentConfig,
+  CharioxConnectorDefinition,
+  CharioxCredentialConfig,
+  CharioxMcpServerConfig,
+  CharioxScriptMetadata,
+  CharioxSkillMetadata,
   ExtensionKind,
   McpImportOutcome,
   ProviderCapabilityImportReport,
@@ -87,26 +87,26 @@ export async function executeMcpCommand(
       case "list":
       case "ls": {
         const response = await deps.client.send(listConnectorAdaptersRequest())
-        const adapters = expectVariant<{ adapters: ArrobaConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
+        const adapters = expectVariant<{ adapters: CharioxConnectorAdapterDefinition[] }>(response, "ConnectorAdaptersListed").adapters
         return { ok: true, message: adapters.length === 0 ? "no connector adapters registered" : adapters.map(formatConnectorAdapterSummary).join("\n"), data: { adapters } }
       }
       case "show": {
         if (!adapterName) return { ok: false, message: "usage: connector adapter show <name>" }
         const response = await deps.client.send(getConnectorAdapterRequest(adapterName))
-        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
+        const adapter = expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapter").adapter
         return { ok: true, message: JSON.stringify(adapter, null, 2), data: { adapter }, format: "json" }
       }
       case "register": {
         if (!adapterName) return { ok: false, message: "usage: connector adapter register <adapter.yaml>" }
         const response = await deps.client.send(registerConnectorAdapterRequest(adapterName))
-        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
+        const adapter = expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapterRegistered").adapter
         return { ok: true, message: `registered connector adapter ${adapter.name}`, data: { adapter } }
       }
       case "remove":
       case "unregister": {
         if (!adapterName) return { ok: false, message: `usage: connector adapter ${subaction} <name>` }
         const response = await deps.client.send(removeConnectorAdapterRequest(adapterName))
-        const adapter = expectVariant<{ adapter: ArrobaConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
+        const adapter = expectVariant<{ adapter: CharioxConnectorAdapterDefinition }>(response, "ConnectorAdapterRemoved").adapter
         return { ok: true, message: `removed connector adapter ${adapter.name}`, data: { adapter } }
       }
       default:
@@ -117,7 +117,7 @@ export async function executeMcpCommand(
     case "list":
     case "ls": {
       const response = await deps.client.send(listMcpServersRequest(context.workspace))
-      const mcps = expectVariant<{ mcps: ArrobaMcpServerConfig[] }>(response, "McpServersListed").mcps
+      const mcps = expectVariant<{ mcps: CharioxMcpServerConfig[] }>(response, "McpServersListed").mcps
       return { ok: true, message: formatMcpList(mcps), data: { mcps } }
     }
     case "show": {
@@ -125,7 +125,7 @@ export async function executeMcpCommand(
         return { ok: false, message: "usage: mcp show <name>" }
       }
       const response = await deps.client.send(getMcpServerRequest(context.workspace, name))
-      const mcp = expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, "McpServer").mcp
+      const mcp = expectVariant<{ mcp: CharioxMcpServerConfig }>(response, "McpServer").mcp
       return { ok: true, message: JSON.stringify(mcp, null, 2), data: { mcp }, format: "json" }
     }
     case "install":
@@ -139,7 +139,7 @@ export async function executeMcpCommand(
         : updateMcpServerRequest(context.workspace, config as unknown as Record<string, unknown>)
       const response = await deps.client.send(request)
       const variant = action === "install" ? "McpServerInstalled" : "McpServerUpdated"
-      const mcp = expectVariant<{ mcp: ArrobaMcpServerConfig }>(response, variant).mcp
+      const mcp = expectVariant<{ mcp: CharioxMcpServerConfig }>(response, variant).mcp
       return { ok: true, message: `${action === "install" ? "installed" : "updated"} MCP ${mcp.name}`, data: { mcp } }
     }
     case "uninstall":
@@ -201,7 +201,7 @@ export async function executeSkillCommand(
     case "list":
     case "ls": {
       const response = await deps.client.send(listSkillsRequest(context.workspace))
-      const skills = expectVariant<{ skills: ArrobaSkillMetadata[] }>(response, "SkillsListed").skills
+      const skills = expectVariant<{ skills: CharioxSkillMetadata[] }>(response, "SkillsListed").skills
       return { ok: true, message: formatSkillList(skills), data: { skills } }
     }
     case "show": {
@@ -209,7 +209,7 @@ export async function executeSkillCommand(
         return { ok: false, message: "usage: skill show <name>" }
       }
       const response = await deps.client.send(getSkillRequest(context.workspace, name))
-      const skill = expectVariant<{ skill: ArrobaSkillMetadata }>(response, "Skill").skill
+      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, "Skill").skill
       return { ok: true, message: JSON.stringify(skill, null, 2), data: { skill }, format: "json" }
     }
     case "install":
@@ -221,7 +221,7 @@ export async function executeSkillCommand(
         ? installSkillRequest(context.workspace, name)
         : updateSkillRequest(context.workspace, name))
       const variant = action === "install" ? "SkillInstalled" : "SkillUpdated"
-      const skill = expectVariant<{ skill: ArrobaSkillMetadata }>(response, variant).skill
+      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, variant).skill
       return { ok: true, message: `${action === "install" ? "installed" : "updated"} skill ${skill.name}`, data: { skill } }
     }
     case "uninstall":
@@ -230,7 +230,7 @@ export async function executeSkillCommand(
         return { ok: false, message: `usage: skill ${action} <name>` }
       }
       const response = await deps.client.send(uninstallSkillRequest(context.workspace, name))
-      const skill = expectVariant<{ skill: ArrobaSkillMetadata }>(response, "SkillUninstalled").skill
+      const skill = expectVariant<{ skill: CharioxSkillMetadata }>(response, "SkillUninstalled").skill
       return { ok: true, message: `uninstalled skill ${skill.name}`, data: { skill } }
     }
     case "import": {
@@ -281,13 +281,13 @@ export async function executeEnvironmentCommand(
     case "list":
     case "ls": {
       const response = await deps.client.send(listEnvironmentsRequest(context.workspace))
-      const environments = expectVariant<{ environments: ArrobaEnvironmentConfig[] }>(response, "EnvironmentsListed").environments
+      const environments = expectVariant<{ environments: CharioxEnvironmentConfig[] }>(response, "EnvironmentsListed").environments
       return { ok: true, message: formatEnvironmentList(environments), data: { environments } }
     }
     case "show": {
       if (!name) return { ok: false, message: "usage: env show <name>" }
       const response = await deps.client.send(getEnvironmentRequest(context.workspace, name))
-      const environment = expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "Environment").environment
+      const environment = expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "Environment").environment
       return { ok: true, message: JSON.stringify(environment, null, 2), data: { environment }, format: "json" }
     }
     case "register": {
@@ -296,14 +296,14 @@ export async function executeEnvironmentCommand(
         return { ok: false, message: "usage: env register <name> --python <python-path> | env register <name> --node <node-path> [--package-root <dir>]" }
       }
       const response = await deps.client.send(registerEnvironmentRequest(context.workspace, config as unknown as Record<string, unknown>))
-      const environment = expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRegistered").environment
+      const environment = expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRegistered").environment
       return { ok: true, message: `registered environment ${environment.name}`, data: { environment } }
     }
     case "remove":
     case "unregister": {
       if (!name) return { ok: false, message: `usage: env ${action} <name>` }
       const response = await deps.client.send(removeEnvironmentRequest(context.workspace, name))
-      const environment = expectVariant<{ environment: ArrobaEnvironmentConfig }>(response, "EnvironmentRemoved").environment
+      const environment = expectVariant<{ environment: CharioxEnvironmentConfig }>(response, "EnvironmentRemoved").environment
       return { ok: true, message: `removed environment ${environment.name}`, data: { environment } }
     }
     default:
@@ -321,13 +321,13 @@ export async function executeScriptCommand(
     case "list":
     case "ls": {
       const response = await deps.client.send(listScriptsRequest(context.workspace))
-      const scripts = expectVariant<{ scripts: ArrobaScriptMetadata[] }>(response, "ScriptsListed").scripts
+      const scripts = expectVariant<{ scripts: CharioxScriptMetadata[] }>(response, "ScriptsListed").scripts
       return { ok: true, message: formatScriptList(scripts), data: { scripts } }
     }
     case "show": {
       if (!name) return { ok: false, message: "usage: script show <name>" }
       const response = await deps.client.send(getScriptRequest(context.workspace, name))
-      const script = expectVariant<{ script: ArrobaScriptMetadata }>(response, "Script").script
+      const script = expectVariant<{ script: CharioxScriptMetadata }>(response, "Script").script
       return { ok: true, message: JSON.stringify(script, null, 2), data: { script }, format: "json" }
     }
     case "validate":
@@ -341,14 +341,14 @@ export async function executeScriptCommand(
         : registerScriptRequest(context.workspace, scriptArgs.sourcePath, scriptArgs.environment, scriptArgs.name)
       const response = await deps.client.send(request)
       const variant = action === "validate" ? "ScriptValidated" : "ScriptRegistered"
-      const script = expectVariant<{ script: ArrobaScriptMetadata }>(response, variant).script
+      const script = expectVariant<{ script: CharioxScriptMetadata }>(response, variant).script
       return { ok: true, message: `${action === "validate" ? "validated" : "registered"} script ${script.name}`, data: { script } }
     }
     case "remove":
     case "unregister": {
       if (!name) return { ok: false, message: `usage: script ${action} <name>` }
       const response = await deps.client.send(removeScriptRequest(context.workspace, name))
-      const script = expectVariant<{ script: ArrobaScriptMetadata }>(response, "ScriptRemoved").script
+      const script = expectVariant<{ script: CharioxScriptMetadata }>(response, "ScriptRemoved").script
       return { ok: true, message: `removed script ${script.name}`, data: { script } }
     }
     case "grant":
@@ -390,26 +390,26 @@ export async function executeConnectorCommand(
     case "list":
     case "ls": {
       const response = await deps.client.send(listConnectorsRequest())
-      const connectors = expectVariant<{ connectors: ArrobaConnectorDefinition[] }>(response, "ConnectorsListed").connectors
+      const connectors = expectVariant<{ connectors: CharioxConnectorDefinition[] }>(response, "ConnectorsListed").connectors
       return { ok: true, message: connectors.length === 0 ? "no connectors registered" : connectors.map(formatConnectorSummary).join("\n"), data: { connectors } }
     }
     case "show": {
       if (!name) return { ok: false, message: "usage: connector show <name>" }
       const response = await deps.client.send(getConnectorRequest(name))
-      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "Connector").connector
+      const connector = expectVariant<{ connector: CharioxConnectorDefinition }>(response, "Connector").connector
       return { ok: true, message: JSON.stringify(connector, null, 2), data: { connector }, format: "json" }
     }
     case "register": {
       if (!name) return { ok: false, message: "usage: connector register <file.yaml>" }
       const response = await deps.client.send(registerConnectorRequest(name))
-      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRegistered").connector
+      const connector = expectVariant<{ connector: CharioxConnectorDefinition }>(response, "ConnectorRegistered").connector
       return { ok: true, message: `registered connector ${connector.name}`, data: { connector } }
     }
     case "remove":
     case "unregister": {
       if (!name) return { ok: false, message: `usage: connector ${action} <name>` }
       const response = await deps.client.send(removeConnectorRequest(name))
-      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(response, "ConnectorRemoved").connector
+      const connector = expectVariant<{ connector: CharioxConnectorDefinition }>(response, "ConnectorRemoved").connector
       return { ok: true, message: `removed connector ${connector.name}`, data: { connector } }
     }
     case "test": {
@@ -423,12 +423,12 @@ export async function executeConnectorCommand(
     case "doctor": {
       if (!name) return { ok: false, message: "usage: connector doctor <name> [--credential <id>]" }
       const connectorResponse = await deps.client.send(getConnectorRequest(name))
-      const connector = expectVariant<{ connector: ArrobaConnectorDefinition }>(connectorResponse, "Connector").connector
+      const connector = expectVariant<{ connector: CharioxConnectorDefinition }>(connectorResponse, "Connector").connector
       const credentialId = readOption(parsed.args, "--credential")
-      let credential: ArrobaCredentialConfig | null = null
+      let credential: CharioxCredentialConfig | null = null
       if (credentialId) {
         const credentialResponse = await deps.client.send(getCredentialRequest(credentialId))
-        credential = expectVariant<{ credential: ArrobaCredentialConfig }>(credentialResponse, "Credential").credential
+        credential = expectVariant<{ credential: CharioxCredentialConfig }>(credentialResponse, "Credential").credential
       }
       return { ok: true, message: formatConnectorDoctor(connector, credentialId, credential), data: { connector, credential } }
     }
@@ -529,7 +529,7 @@ export async function executeExtensionCommand(
   return { ok: true, message: `${action === "grant" ? "granted" : "revoked"} ${kind} ${name} ${action === "grant" ? "to" : "from"} ${agent.agent_ref}`, data: { agent }, contextUpdates: { agentId: agent.id } }
 }
 
-function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
+function parseMcpInstallConfig(args: string[]): CharioxMcpServerConfig | null {
   const name = args[1]
   if (!name) return null
   let command: string | null = null
@@ -584,7 +584,7 @@ function parseMcpInstallConfig(args: string[]): ArrobaMcpServerConfig | null {
   return null
 }
 
-function parseEnvironmentConfig(args: string[]): ArrobaEnvironmentConfig | null {
+function parseEnvironmentConfig(args: string[]): CharioxEnvironmentConfig | null {
   const name = args[1]
   if (!name) return null
   const python = readOption(args, "--python")
@@ -677,19 +677,19 @@ function isExtensionKind(value: string | undefined): value is ExtensionKind {
   return value === "mcp" || value === "skill" || value === "script" || value === "connector"
 }
 
-function formatConnectorSummary(connector: ArrobaConnectorDefinition): string {
+function formatConnectorSummary(connector: CharioxConnectorDefinition): string {
   const operations = Array.isArray(connector.operations) ? connector.operations.length : 0
   return `${connector.name} [${connector.adapter}, ${operations} op${operations === 1 ? "" : "s"}] - ${connector.description}`
 }
 
-function formatConnectorAdapterSummary(adapter: ArrobaConnectorAdapterDefinition): string {
+function formatConnectorAdapterSummary(adapter: CharioxConnectorAdapterDefinition): string {
   return `${adapter.name} - ${adapter.description ?? adapter.adapter_protocol}`
 }
 
 function formatConnectorDoctor(
-  connector: ArrobaConnectorDefinition,
+  connector: CharioxConnectorDefinition,
   credentialId: string | null,
-  credential: ArrobaCredentialConfig | null,
+  credential: CharioxCredentialConfig | null,
 ): string {
   const findings: string[] = []
   const ok = (message: string) => findings.push(`ok: ${message}`)

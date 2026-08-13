@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use arroba_event_protocol::{canonical_utc_timestamp, EventArtifact, PublishEventRequest};
+use chariox_event_protocol::{canonical_utc_timestamp, EventArtifact, PublishEventRequest};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -29,7 +29,7 @@ impl PublishEventBuilder {
                 prompt: prompt.into(),
                 artifacts: Vec::new(),
                 metadata: Value::Null,
-                ttl_seconds: arroba_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
             },
         }
     }
@@ -202,14 +202,14 @@ mod tests {
     #[test]
     fn event_builder_enforces_protocol_limits() {
         let request = PublishEventBuilder::new(
-            "dev.arroba.github",
+            "dev.chariox.github",
             format!("sha256:{}", "a".repeat(64)),
             "delivery-1",
             "pull_request.opened",
             "2026-07-27T00:00:00Z",
             "Review the pull request.",
         )
-        .metadata(serde_json::json!({"repository": "arroba/arroba"}))
+        .metadata(serde_json::json!({"repository": "charioxai/chariox"}))
         .artifact(EventArtifact {
             name: "pull-request.json".to_string(),
             media_type: "application/json".to_string(),
@@ -247,7 +247,7 @@ mod tests {
         .unwrap();
         manifest.as_object_mut().unwrap().insert(
             "operator".to_string(),
-            serde_json::json!({"id": "hosted.arroba", "name": "Arroba hosted service"}),
+            serde_json::json!({"id": "hosted.chariox", "name": "Chariox hosted service"}),
         );
         assert!(validate_manifest_envelope(&manifest)
             .unwrap_err()

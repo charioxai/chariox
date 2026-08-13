@@ -51,7 +51,7 @@ test("sendLocalSocketRequest converts error envelopes to LocalIpcError", async (
 async function startLocalSocketServer(
   respond: (request: unknown) => { response: unknown; error: string | null },
 ) {
-  const dir = await mkdtemp(path.join(os.tmpdir(), "arroba-kernel-client-"))
+  const dir = await mkdtemp(path.join(os.tmpdir(), "chariox-kernel-client-"))
   const socketPath = path.join(dir, "kernel.sock")
   const received: unknown[] = []
   const server = net.createServer((socket) => {

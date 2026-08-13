@@ -1,14 +1,14 @@
 use std::collections::BTreeMap;
 use std::process::Command;
 
-use arroba_adapters::protocol::{
+use chariox_adapters::protocol::{
     ConnectorAdapterCredentialTarget, ConnectorAdapterPrepareResult, ConnectorAdapterRequest,
     UserCredentialInjectionConfig,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use arroba_adapters::connector_adapter_util::{
+use chariox_adapters::connector_adapter_util::{
     enforce_allowed_host, render_json_template, render_template_string, run_adapter,
 };
 

@@ -10,7 +10,7 @@ import type { EncryptedRelayPayload } from "./kernel-transport-frames.js"
 
 const RELAY_NONCE_LEN = 12
 const RELAY_TAG_LEN = 16
-const RELAY_INFO = Buffer.from("arroba-relay-v1", "utf8")
+const RELAY_INFO = Buffer.from("chariox-relay-v1", "utf8")
 
 export function encryptRelayPayload(
   peerPublicKeyBase64: string,

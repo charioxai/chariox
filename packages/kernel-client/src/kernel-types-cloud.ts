@@ -223,7 +223,7 @@ export type SliceRelayEndpoint = {
 
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: "novnc" | "arroba_viewer" | "external"
+  kind: "novnc" | "chariox_viewer" | "external"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null

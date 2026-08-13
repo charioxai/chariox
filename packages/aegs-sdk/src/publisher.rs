@@ -1,4 +1,4 @@
-use arroba_event_protocol::{PublishEventRequest, PublishEventResponse};
+use chariox_event_protocol::{PublishEventRequest, PublishEventResponse};
 
 #[derive(Clone)]
 pub struct AedsPublisher {

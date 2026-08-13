@@ -68,20 +68,20 @@ type BoundKernelLocalAuthCredential = {
 }
 
 const hostedPublicationEnvironmentNames = [
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL",
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
-  "ARROBA_PUBLICATION_CLOUD_API_URL",
-  "ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID",
-  "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
+  "CHARIOX_PUBLICATION_CLOUD_API_URL",
+  "CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID",
+  "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
 ] as const
 
 let kernelLocalAuthCredentialFromEnvironment: BoundKernelLocalAuthCredential | undefined
 
 export function consumeKernelLocalAuthTokenFromEnv(endpoint = configuredLocalKernelEndpoint()): string | undefined {
-  const rawEnvironmentToken = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN
-  const rawTokenFile = process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
-  delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN
-  delete process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE
+  const rawEnvironmentToken = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
+  const rawTokenFile = process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
+  delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN
+  delete process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE
   if (rawEnvironmentToken !== undefined && rawTokenFile !== undefined) {
     throw new Error("kernel local auth token and token file cannot both be configured")
   }
@@ -188,8 +188,8 @@ function canonicalLoopbackKernelEndpoint(endpoint: string): string | null {
 }
 
 function configuredLocalKernelEndpoint() {
-  return process.env.ARROBA_KERNEL_URL?.trim()
-    || `ws://${process.env.ARROBA_KERNEL_HOST?.trim() || "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT?.trim() || "43118"}`
+  return process.env.CHARIOX_KERNEL_URL?.trim()
+    || `ws://${process.env.CHARIOX_KERNEL_HOST?.trim() || "127.0.0.1"}:${process.env.CHARIOX_KERNEL_PORT?.trim() || "43118"}`
 }
 
 function isHostedPublicationGateway() {
@@ -268,15 +268,15 @@ export class LocalIpcClient {
       throw new Error("kernel local auth token must not be empty")
     }
     if (explicitLocalAuthToken && (
-      process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN !== undefined
-      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
+      process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
+      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
     )) {
       throw new Error("explicit and environment kernel local auth credentials cannot both be configured")
     }
     if (this.relayAuthToken && (
       explicitLocalAuthToken
-      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN !== undefined
-      || process.env.ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
+      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
+      || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
     )) {
       throw new Error("kernel local auth credentials cannot be used with relay transport")
     }

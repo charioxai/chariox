@@ -115,7 +115,7 @@ export async function executeShellCommand(
     default:
       return {
         ok: false,
-        message: `${parsed.command ?? "command"} is not implemented in arroba-shell yet`,
+        message: `${parsed.command ?? "command"} is not implemented in chariox-shell yet`,
       }
   }
 }

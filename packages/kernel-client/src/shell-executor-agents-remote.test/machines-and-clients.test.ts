@@ -172,7 +172,7 @@ test("executeShellCommand creates and joins machine invites", async () => {
               invite: {
                 intent: "machine",
                 invite_id: "invite-1",
-                invite_token: "arroba-invite-v1.machine",
+                invite_token: "chariox-invite-v1.machine",
                 relay_url: "ws://relay",
                 target_daemon_id: "daemon-1",
                 target_daemon_alias: null,
@@ -204,18 +204,18 @@ test("executeShellCommand creates and joins machine invites", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
 
   const inviteResult = await executeShellCommand(parseShellCommand("machine invite create worker"), context, { client: fake.client })
-  const joinResult = await executeShellCommand(parseShellCommand("machine join arroba-invite-v1.machine machine-2 worker"), context, { client: fake.client })
+  const joinResult = await executeShellCommand(parseShellCommand("machine join chariox-invite-v1.machine machine-2 worker"), context, { client: fake.client })
 
   assert.equal(inviteResult.ok, true)
   assert.match(inviteResult.message ?? "", /machine invite invite-1/)
-  assert.match(inviteResult.message ?? "", /token=arroba-invite-v1\.machine/)
+  assert.match(inviteResult.message ?? "", /token=chariox-invite-v1\.machine/)
   assert.equal(joinResult.ok, true)
   assert.match(joinResult.message ?? "", /joined machine machine-2 alias=worker/)
   assert.deepEqual(requests, [
     { CreatePairingInvite: { intent: "machine", alias: "worker", expires_in_ms: null } },
     {
       JoinPairingInvite: {
-        invite_token: "arroba-invite-v1.machine",
+        invite_token: "chariox-invite-v1.machine",
         subject_id: "machine-2",
         public_key_thumbprint: null,
         alias: "worker",
@@ -311,7 +311,7 @@ test("executeShellCommand creates and joins client invites", async () => {
               invite: {
                 intent: "client",
                 invite_id: "invite-client",
-                invite_token: "arroba-invite-v1.client",
+                invite_token: "chariox-invite-v1.client",
                 relay_url: "ws://relay",
                 target_daemon_id: "daemon-1",
                 target_daemon_alias: "home",
@@ -343,7 +343,7 @@ test("executeShellCommand creates and joins client invites", async () => {
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo" })
 
   const inviteResult = await executeShellCommand(parseShellCommand("client invite create desk"), context, { client: fake.client })
-  const joinResult = await executeShellCommand(parseShellCommand("client join arroba-invite-v1.client client-2 desk"), context, { client: fake.client })
+  const joinResult = await executeShellCommand(parseShellCommand("client join chariox-invite-v1.client client-2 desk"), context, { client: fake.client })
 
   assert.equal(inviteResult.ok, true)
   assert.match(inviteResult.message ?? "", /client invite invite-client/)
@@ -353,7 +353,7 @@ test("executeShellCommand creates and joins client invites", async () => {
     { CreatePairingInvite: { intent: "client", alias: "desk", expires_in_ms: null } },
     {
       JoinPairingInvite: {
-        invite_token: "arroba-invite-v1.client",
+        invite_token: "chariox-invite-v1.client",
         subject_id: "client-2",
         public_key_thumbprint: null,
         alias: "desk",

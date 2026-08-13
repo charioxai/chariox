@@ -36,10 +36,10 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
     provider_runs: {
       projected_runs: 1,
       active_runs: 1,
-      arroba_active_runs: 1,
+      chariox_active_runs: 1,
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],
@@ -154,7 +154,7 @@ test("getDaemonHealthRequest has typed workspace live sync health projection", (
   const response = { DaemonHealth: { projection } } satisfies DaemonHealthResponse
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.active_reservations, 2)
   assert.equal(response.DaemonHealth.projection.workspace_live_sync.managed_mode.write_fence_supported, true)
-  assert.equal(response.DaemonHealth.projection.provider_runs.arroba_active_runs, 1)
+  assert.equal(response.DaemonHealth.projection.provider_runs.chariox_active_runs, 1)
   assert.equal(response.DaemonHealth.projection.process.current_resident_set_bytes, 134217728)
   assert.equal(response.DaemonHealth.projection.process.peak_resident_set_bytes, 268435456)
   assert.equal(response.DaemonHealth.projection.slice_lifecycle.running_slices, 1)

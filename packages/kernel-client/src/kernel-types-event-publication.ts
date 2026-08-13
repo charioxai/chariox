@@ -13,7 +13,7 @@ export type EventGeneratorCatalogSummary = {
   provider: string
   publisher: EventGeneratorParty
   operator: EventGeneratorParty
-  verification: "arroba" | "official_provider" | "verified_community" | "community" | "self_hosted" | string
+  verification: "chariox" | "official_provider" | "verified_community" | "community" | "self_hosted" | string
   manifest_digest: string
   protocol_version: number
   categories: string[]

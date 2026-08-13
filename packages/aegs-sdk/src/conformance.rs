@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use crate::{AegsProvider, NormalizedEvent, WebhookInput};
-use arroba_event_protocol::validate_utc_timestamp;
+use chariox_event_protocol::validate_utc_timestamp;
 
 #[derive(Debug, Clone)]
 pub struct WebhookConformanceCase {

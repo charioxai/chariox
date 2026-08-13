@@ -9,20 +9,20 @@ import { WebSocketServer } from "ws"
 
 const ipcModuleUrl = new URL("./ipc.js", import.meta.url).href
 const localAuthEnvironmentNames = [
-  "ARROBA_KERNEL_HOST",
-  "ARROBA_KERNEL_LOCAL_AUTH_TOKEN",
-  "ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE",
-  "ARROBA_KERNEL_PORT",
-  "ARROBA_KERNEL_URL",
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL",
-  "ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
-  "ARROBA_PUBLICATION_CLOUD_API_URL",
-  "ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID",
-  "ARROBA_PUBLICATION_CLOUD_RUNNER_KEY",
+  "CHARIOX_KERNEL_HOST",
+  "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN",
+  "CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE",
+  "CHARIOX_KERNEL_PORT",
+  "CHARIOX_KERNEL_URL",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL",
+  "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
+  "CHARIOX_PUBLICATION_CLOUD_API_URL",
+  "CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID",
+  "CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY",
 ] as const
 
 test("LocalIpcClient consumes a private auth file before authenticating local upgrades", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-kernel-local-auth-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-"))
   const tokenFile = join(root, "token")
   await writeFile(tokenFile, "kernel-local-auth-sentinel", { mode: 0o600 })
   const { server, endpoint, authorizations } = await startKernelServer()
@@ -41,8 +41,8 @@ test("LocalIpcClient consumes a private auth file before authenticating local up
       client.destroy()
     }
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
-    ARROBA_KERNEL_URL: endpoint,
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
+    CHARIOX_KERNEL_URL: endpoint,
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -52,7 +52,7 @@ test("LocalIpcClient consumes a private auth file before authenticating local up
 })
 
 test("LocalIpcClient binds a consumed auth file to one exact kernel endpoint", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-kernel-local-auth-bound-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-bound-"))
   const tokenFile = join(root, "token")
   await writeFile(tokenFile, "bound-kernel-token", { mode: 0o600 })
   const first = await startKernelServer()
@@ -82,7 +82,7 @@ test("LocalIpcClient binds a consumed auth file to one exact kernel endpoint", a
     }
     if (!rejected) throw new Error("consumed credential was not bound to its first endpoint")
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -91,7 +91,7 @@ test("LocalIpcClient binds a consumed auth file to one exact kernel endpoint", a
 })
 
 test("LocalIpcClient rejects credential use on a non-canonical loopback endpoint", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-kernel-local-auth-endpoint-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-endpoint-"))
   const tokenFile = join(root, "token")
   await writeFile(tokenFile, "endpoint-kernel-token", { mode: 0o600 })
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -105,7 +105,7 @@ test("LocalIpcClient rejects credential use on a non-canonical loopback endpoint
     }
     if (!rejected) throw new Error("non-canonical endpoint accepted a local credential")
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -122,8 +122,8 @@ test("LocalIpcClient rejects process-environment tokens in hosted publication ga
     }
     if (!rejected) throw new Error("hosted gateway accepted a process-environment token")
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN: "unsafe-process-token",
-    ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID: "deployment-hosted",
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "unsafe-process-token",
+    CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID: "deployment-hosted",
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -141,7 +141,7 @@ test("LocalIpcClient retains direct-token compatibility outside hosted publicati
       client.destroy()
     }
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN: "self-host-development-token",
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN: "self-host-development-token",
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -149,7 +149,7 @@ test("LocalIpcClient retains direct-token compatibility outside hosted publicati
 })
 
 test("LocalIpcClient refuses a symlinked one-shot credential without consuming its target", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-kernel-local-auth-symlink-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-symlink-"))
   const target = join(root, "target")
   const tokenFile = join(root, "token")
   await writeFile(target, "symlink-target-token", { mode: 0o600 })
@@ -165,7 +165,7 @@ test("LocalIpcClient refuses a symlinked one-shot credential without consuming i
     }
     if (!rejected) throw new Error("symlinked credential was accepted")
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
   })
 
   assert.equal(result.code, 0, result.stderr)
@@ -173,7 +173,7 @@ test("LocalIpcClient refuses a symlinked one-shot credential without consuming i
 })
 
 test("LocalIpcClient rejects oversized one-shot credentials without consuming them", async (t) => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-kernel-local-auth-oversized-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-kernel-local-auth-oversized-"))
   const tokenFile = join(root, "token")
   await writeFile(tokenFile, "x".repeat(8 * 1024 + 1), { mode: 0o600 })
   t.after(() => rm(root, { recursive: true, force: true }))
@@ -187,7 +187,7 @@ test("LocalIpcClient rejects oversized one-shot credentials without consuming th
     }
     if (!rejected) throw new Error("oversized credential was accepted")
   `, {
-    ARROBA_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
+    CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE: tokenFile,
   })
 
   assert.equal(result.code, 0, result.stderr)

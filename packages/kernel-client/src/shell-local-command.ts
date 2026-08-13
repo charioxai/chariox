@@ -7,14 +7,14 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
       return {
         ok: true,
         message: [
-          "arroba-shell commands:",
+          "chariox-shell commands:",
           "session list|status|new|attach|use|members|invites|invite|join|revoke-invite|mode|permissions",
           "kernel health|status|remote-runtime|runtime|debug-bundle [label]|delete",
           "agent list|spawn [--count <n>]|focus|inspect|cycle|mode|permissions|substitute",
           "client invite create|join|list|record|revoke",
           "machine invite create|join|list|kernels|approve|rename|revoke",
           "slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|auth alias|screen",
-          "  slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label",
+          "  slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets a Chariox display label",
           "relay status",
           "config show|path|keys|schema|set|unset|workspace-live-sync off|managed|tracked",
           "credential list|show|register|upsert-json|set|delete",
@@ -95,6 +95,6 @@ export function executeShellLocalCommand(parsed: ParsedShellCommand, context: Sh
     case "run":
       return { ok: false, message: "script execution is not implemented yet" }
     default:
-      return { ok: false, message: `${parsed.command ?? "command"} is not implemented in arroba-shell yet` }
+      return { ok: false, message: `${parsed.command ?? "command"} is not implemented in chariox-shell yet` }
   }
 }

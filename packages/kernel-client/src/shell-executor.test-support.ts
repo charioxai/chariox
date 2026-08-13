@@ -172,10 +172,10 @@ export function daemonHealth(overrides: Partial<DaemonHealthProjection> = {}): D
     provider_runs: {
       projected_runs: 0,
       active_runs: 0,
-      arroba_active_runs: 0,
+      chariox_active_runs: 0,
       native_tui_active_runs: 0,
       terminal_diagnostics: [],
-      duplicate_arroba_agent_bindings: [],
+      duplicate_chariox_agent_bindings: [],
       duplicate_native_tui_agent_bindings: [],
       multi_interface_agent_bindings: [],
       orphaned_active_runs: [],

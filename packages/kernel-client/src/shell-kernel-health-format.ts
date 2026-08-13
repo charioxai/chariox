@@ -103,7 +103,7 @@ function appendRemoteRuntimeReadiness(
   appendRemoteRuntimeAffectedTargets(lines, health)
   lines.push(`remote runtime readiness next: ${remoteRuntimeBlockedNextAction(health)}`)
   if (includeSupportBundle) {
-    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from chariox-shell")
   }
 }
 
@@ -192,7 +192,7 @@ export function formatKernelRemoteRuntimeHealth(health: DaemonHealthProjection):
   const lines = [
     "remote runtime",
     formatRemoteRuntimeAuthorityBoundary(),
-    `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} chariox=${providerRuns.chariox_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
     `provider run invariants: duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${health.provider_run_actor.enqueue_rejections}`,
     `remote execution: remote_agents=${remoteExecution.remote_agents} active=${remoteExecution.active_remote_agents} missing_worker_runs=${remoteExecution.missing_active_worker_runs} malformed=${remoteExecution.malformed_bindings}`,
     `slices: total=${sliceLifecycle.total_slices} running=${sliceLifecycle.running_slices} starting=${sliceLifecycle.starting_slices} stopping=${sliceLifecycle.stopping_slices} stopped=${sliceLifecycle.stopped_slices} unhealthy=${sliceLifecycle.unhealthy_slices} agents=${sliceLifecycle.attached_agents} failed_ops=${sliceLifecycle.failed_operations} in_progress_ops=${sliceLifecycle.in_progress_operations} auth_missing=${sliceLifecycle.provider_auth_missing_slices} auth_unconfigured=${sliceLifecycle.provider_auth_unconfigured_slices}`,
@@ -243,7 +243,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     `command lanes: session=${commandLanes.session.lanes}/${commandLanes.session.queued} agent=${commandLanes.agent.lanes}/${commandLanes.agent.queued} workflow=${commandLanes.workflow.lanes}/${commandLanes.workflow.queued} provider=${commandLanes.provider.lanes}/${commandLanes.provider.queued} saturated=${commandLanes.saturated}`,
     `process: pid=${process.process_id} rss=${formatBytes(process.current_resident_set_bytes ?? null)} peak_rss=${formatBytes(process.peak_resident_set_bytes ?? null)}`,
     `provider catalog: cached=${providerCatalog.cached ? "yes" : "no"} expired=${providerCatalog.expired ? "yes" : "no"} age=${formatDuration(providerCatalog.age_ms ?? null)} ttl=${formatDuration(providerCatalog.ttl_ms)}`,
-    `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} arroba=${providerRuns.arroba_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
+    `provider runs: projected=${providerRuns.projected_runs} active=${providerRuns.active_runs} chariox=${providerRuns.chariox_active_runs} native_tui=${providerRuns.native_tui_active_runs}`,
     `provider run actor: enqueued=${providerRunActor.enqueued_commands} rejected=${providerRunActor.enqueue_rejections}`,
     `capabilities: running=${capability.running_jobs}/${capability.max_concurrent_jobs} submitted=${capability.submitted_jobs} failed=${capability.failed_jobs} rejected=${capability.rejected_jobs} join_errors=${capability.join_errors}`,
     `transport: connections=${transport.active_connections} subscriptions=${transport.active_subscriptions} incoming=${transport.incoming_requests} emitted=${transport.emitted_events} replay_gaps=${transport.replay_gaps} overloads=${transport.inbound_overload_rejections} duplicate_commands=${transport.duplicate_command_conflicts} outgoing_overflows=${transport.outgoing_queue_overflows} slow_consumers=${transport.slow_consumer_closes} relay_reconnects=${transport.relay_reconnect_attempts}`,
@@ -267,14 +267,14 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
     lines.push("provider run invariants: ok")
   }
 
-  if (providerRuns.duplicate_arroba_agent_bindings.length > 0) {
-    lines.push("duplicate Arroba provider run bindings:")
+  if (providerRuns.duplicate_chariox_agent_bindings.length > 0) {
+    lines.push("duplicate Chariox provider run bindings:")
     let firstAgent: string | null = null
-    for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
+    for (const conflict of providerRuns.duplicate_chariox_agent_bindings) {
       firstAgent ??= conflict.agent_id
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
-    lines.push("  invariant: normal Arroba launches should replace idle same-agent runs instead of creating duplicates")
+    lines.push("  invariant: normal Chariox launches should replace idle same-agent runs instead of creating duplicates")
     lines.push(firstAgent
       ? `  next: run /agent inspect ${firstAgent}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
       : "  next: run /provider processes; capture a debug bundle, then identify and stop duplicate provider runs before sending more prompts")
@@ -301,8 +301,8 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
       lines.push(`  session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
     }
     lines.push(firstAgent
-      ? `  next: run /agent inspect ${firstAgent}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
-      : "  next: run /provider processes; close the extra native TUI or Arroba provider run after identifying the affected agent")
+      ? `  next: run /agent inspect ${firstAgent}; run /provider processes; close the extra native TUI or Chariox provider run before sending prompts to that agent`
+      : "  next: run /provider processes; close the extra native TUI or Chariox provider run after identifying the affected agent")
   }
 
   if (providerCatalog.expired) {
@@ -400,7 +400,7 @@ export function formatKernelHealth(health: DaemonHealthProjection): string {
   }
 
   if (kernelHealthIssueCount(health) > 0) {
-    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from arroba-shell")
+    lines.push("support bundle: after reproducing, run /kernel debug-bundle <label> from TUI or kernel debug-bundle <label> from chariox-shell")
   }
 
   return lines.join("\n")
@@ -586,7 +586,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
 
   if (externalChanges.live_watcher_scan_errors > 0) {
     lines.push(`workspace watcher scan errors: ${externalChanges.live_watcher_scan_errors}`)
-    lines.push("  next: run /workspace sync status, then /workspace sync ignore; check .arrobaignore, selected workspace paths, and permissions before refreshing")
+    lines.push("  next: run /workspace sync status, then /workspace sync ignore; check .charioxignore, selected workspace paths, and permissions before refreshing")
   }
 }
 
@@ -712,8 +712,8 @@ function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHea
   const providerRuns = health.provider_runs
   const actorRejects = health.provider_run_actor.enqueue_rejections
   lines.push(`provider run issues: duplicate=${duplicateProviderRunBindingCount(health)} mixed=${providerRuns.multi_interface_agent_bindings.length} orphaned=${providerRuns.orphaned_active_runs.length} pointer=${providerRuns.session_active_run_mismatches.length} terminal=${providerRuns.terminal_diagnostics.length} actor_rejects=${actorRejects}`)
-  for (const conflict of providerRuns.duplicate_arroba_agent_bindings) {
-    lines.push(`  duplicate_arroba session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
+  for (const conflict of providerRuns.duplicate_chariox_agent_bindings) {
+    lines.push(`  duplicate_chariox session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
   }
   for (const conflict of providerRuns.duplicate_native_tui_agent_bindings) {
     lines.push(`  duplicate_native_tui session=${conflict.session_id} agent=${conflict.agent_id} runs=${conflict.provider_run_ids.join(",")}`)
@@ -738,7 +738,7 @@ function appendRemoteRuntimeProviderRunIssues(lines: string[], health: DaemonHea
 
 function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): string {
   const providerRuns = health.provider_runs
-  const duplicate = providerRuns.duplicate_arroba_agent_bindings[0]
+  const duplicate = providerRuns.duplicate_chariox_agent_bindings[0]
   if (duplicate) {
     return duplicate.agent_id
       ? `run /agent inspect ${duplicate.agent_id}; run /provider processes; capture a debug bundle, then stop duplicate provider runs before sending prompts to that agent`
@@ -753,8 +753,8 @@ function remoteRuntimeProviderRunNextAction(health: DaemonHealthProjection): str
   const mixed = providerRuns.multi_interface_agent_bindings[0]
   if (mixed) {
     return mixed.agent_id
-      ? `run /agent inspect ${mixed.agent_id}; run /provider processes; close the extra native TUI or Arroba provider run before sending prompts to that agent`
-      : "run /provider processes; close the extra native TUI or Arroba provider run after identifying the affected agent"
+      ? `run /agent inspect ${mixed.agent_id}; run /provider processes; close the extra native TUI or Chariox provider run before sending prompts to that agent`
+      : "run /provider processes; close the extra native TUI or Chariox provider run after identifying the affected agent"
   }
   const orphaned = providerRuns.orphaned_active_runs[0]
   if (orphaned) {
@@ -789,7 +789,7 @@ function providerRunInvariantIssueCount(health: DaemonHealthProjection): number 
 }
 
 function duplicateProviderRunBindingCount(health: DaemonHealthProjection): number {
-  return health.provider_runs.duplicate_arroba_agent_bindings.length
+  return health.provider_runs.duplicate_chariox_agent_bindings.length
     + health.provider_runs.duplicate_native_tui_agent_bindings.length
 }
 

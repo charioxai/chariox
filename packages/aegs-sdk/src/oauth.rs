@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use arroba_event_protocol::AegsAuthorizationFlow;
+use chariox_event_protocol::AegsAuthorizationFlow;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use url::Url;
@@ -68,15 +68,15 @@ impl OAuthAuthorization {
         store: AegsStore,
         defaults: OAuthDefaults,
     ) -> Result<Option<Self>, String> {
-        let public_base_url = environment("ARROBA_AEGS_PUBLIC_BASE_URL");
+        let public_base_url = environment("CHARIOX_AEGS_PUBLIC_BASE_URL");
         let credential_key = read_secret(
-            "ARROBA_AEGS_CREDENTIAL_KEY",
-            "ARROBA_AEGS_CREDENTIAL_KEY_FILE",
+            "CHARIOX_AEGS_CREDENTIAL_KEY",
+            "CHARIOX_AEGS_CREDENTIAL_KEY_FILE",
         )?;
-        let client_id = environment("ARROBA_AEGS_OAUTH_CLIENT_ID");
+        let client_id = environment("CHARIOX_AEGS_OAUTH_CLIENT_ID");
         let client_secret = read_secret(
-            "ARROBA_AEGS_OAUTH_CLIENT_SECRET",
-            "ARROBA_AEGS_OAUTH_CLIENT_SECRET_FILE",
+            "CHARIOX_AEGS_OAUTH_CLIENT_SECRET",
+            "CHARIOX_AEGS_OAUTH_CLIENT_SECRET_FILE",
         )?;
         match (public_base_url, credential_key, client_id, client_secret) {
             (None, None, None, None) => Ok(None),
@@ -95,21 +95,21 @@ impl OAuthAuthorization {
                     client_id,
                     client_secret,
                     authorization_url: parse_url(
-                        environment("ARROBA_AEGS_OAUTH_AUTHORIZATION_URL")
+                        environment("CHARIOX_AEGS_OAUTH_AUTHORIZATION_URL")
                             .as_deref()
                             .unwrap_or(&defaults.authorization_url),
                     )?,
                     token_url: parse_url(
-                        environment("ARROBA_AEGS_OAUTH_TOKEN_URL")
+                        environment("CHARIOX_AEGS_OAUTH_TOKEN_URL")
                             .as_deref()
                             .unwrap_or(&defaults.token_url),
                     )?,
                     api_base_url: parse_base_url(
-                        environment("ARROBA_AEGS_API_URL")
+                        environment("CHARIOX_AEGS_API_URL")
                             .as_deref()
                             .unwrap_or(&defaults.api_base_url),
                     )?,
-                    scopes: environment("ARROBA_AEGS_OAUTH_SCOPES")
+                    scopes: environment("CHARIOX_AEGS_OAUTH_SCOPES")
                         .unwrap_or(defaults.scopes),
                     token_protocol: defaults.token_protocol,
                     authorization_parameters: defaults.authorization_parameters,

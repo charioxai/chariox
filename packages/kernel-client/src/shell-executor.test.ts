@@ -6,8 +6,8 @@ import test from "node:test"
 
 import type {
   AgentInstance,
-  ArrobaMcpServerConfig,
-  ArrobaSkillMetadata,
+  CharioxMcpServerConfig,
+  CharioxSkillMetadata,
   ProviderProcessInfo,
   WorkspaceLinkDefinition,
 } from "./kernel-types.js"
@@ -45,7 +45,7 @@ test("executeShellCommand help advertises workspace live sync config values", as
   assert.match(result.message ?? "", /extension import providers\|grant\|revoke\|grants\|sync-status\|sync-retry\|audit/)
   assert.match(result.message ?? "", /workspace sync status\|doctor\|targets\|conflicts\|ignore\|audit\|off\|managed\|tracked\|default\|link/)
   assert.match(result.message ?? "", /slice list\|create\|status\|doctor\|logs\|audit\|state\|save-state\|backup\|reset-state\|start\|stop\|delete\|auth import\|auth remove\|auth login\|auth alias\|screen/)
-  assert.match(result.message ?? "", /slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets an Arroba display label/)
+  assert.match(result.message ?? "", /slice auth import copies this machine's provider credentials into the slice; auth login starts provider login inside the slice; auth remove purges slice-local credentials; auth alias sets a Chariox display label/)
   assert.match(result.message ?? "", /provider status\|login\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
 })
 
@@ -106,8 +106,8 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
             ...baseHealth.provider_runs,
             projected_runs: 2,
             active_runs: 2,
-            arroba_active_runs: 2,
-            duplicate_arroba_agent_bindings: [{
+            chariox_active_runs: 2,
+            duplicate_chariox_agent_bindings: [{
               session_id: "session-1",
               agent_id: "agent-1",
               provider_run_ids: ["run-1", "run-2"],
@@ -151,9 +151,9 @@ test("executeShellCommand renders kernel health diagnostics", async () => {
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /^kernel health/)
   assert.match(result.message ?? "", /command lanes: session=0\/0 agent=0\/0 workflow=0\/0 provider=0\/0 saturated=0/)
-  assert.match(result.message ?? "", /provider runs: projected=2 active=2 arroba=2 native_tui=0/)
+  assert.match(result.message ?? "", /provider runs: projected=2 active=2 chariox=2 native_tui=0/)
   assert.match(result.message ?? "", /remote execution: remote_agents=1 active=1 missing_worker_runs=1 malformed=0/)
-  assert.match(result.message ?? "", /duplicate Arroba provider run bindings:/)
+  assert.match(result.message ?? "", /duplicate Chariox provider run bindings:/)
   assert.match(result.message ?? "", /session=session-1 agent=agent-1 runs=run-1,run-2/)
   assert.match(result.message ?? "", /remote execution issues: missing_worker_runs=1 malformed=0/)
   assert.match(result.message ?? "", /agent=agent-remote \(agent-remote\) session=session-1 worker=worker-kernel\/worker-machine lease=lease-1 leased_agent=leased-agent-1 state=working processing=yes kind=missing_active_worker_provider_run: active remote agent has no worker run/)
@@ -245,7 +245,7 @@ test("executeShellCommand accepts kernel remote runtime aliases", async () => {
   assert.equal(remoteRuntime.ok, true)
   assert.match(remoteRuntime.message ?? "", /^remote runtime/)
   assert.match(remoteRuntime.message ?? "", /remote runtime authority: home kernel owns sessions, prompts, grants, and live sync; workers execute leased provider runs and projected tools/)
-  assert.match(remoteRuntime.message ?? "", /provider runs: projected=0 active=0 arroba=0 native_tui=0/)
+  assert.match(remoteRuntime.message ?? "", /provider runs: projected=0 active=0 chariox=0 native_tui=0/)
   assert.match(remoteRuntime.message ?? "", /remote execution: remote_agents=0 active=0 missing_worker_runs=0 malformed=0/)
   assert.match(remoteRuntime.message ?? "", /remote extensions: remote_agents=0 home_proxy_agents=0 grants=0 synced=0 syncing=0 pending=0 failed=0 stale=0 missing=0 pending_revoke=0/)
   assert.equal(runtime.ok, true)

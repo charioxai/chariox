@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use arroba_adapters::connector_adapter_util::run_adapter;
-use arroba_adapters::protocol::{
+use chariox_adapters::connector_adapter_util::run_adapter;
+use chariox_adapters::protocol::{
     ConnectorAdapterCredentialTarget, ConnectorAdapterPrepareResult, ConnectorAdapterRequest,
     UserCredentialInjectionConfig,
 };

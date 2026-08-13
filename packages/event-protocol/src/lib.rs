@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 1;
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 2;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -575,7 +575,7 @@ mod tests {
             "pull_request.opened",
             1,
             "installation:1",
-            &serde_json::json!({"repository": "arroba", "owner": "example"}),
+            &serde_json::json!({"repository": "chariox", "owner": "example"}),
         )
         .unwrap();
         let right = event_interest_key(
@@ -583,7 +583,7 @@ mod tests {
             "pull_request.opened",
             1,
             "installation:1",
-            &serde_json::json!({"owner": "example", "repository": "arroba"}),
+            &serde_json::json!({"owner": "example", "repository": "chariox"}),
         )
         .unwrap();
         assert_eq!(left, right);
@@ -635,14 +635,14 @@ mod tests {
     #[test]
     fn aegs_management_requests_are_bounded_and_require_safe_return_urls() {
         let authorization = AegsAuthorizationStartRequest {
-            generator_id: "dev.arroba.github".to_string(),
+            generator_id: "dev.chariox.github".to_string(),
             owner_id: "owner-kernel-user".to_string(),
             return_url: Some("http://provider.example/callback".to_string()),
         };
         assert!(authorization.validate().unwrap_err().contains("HTTPS"));
 
         let resources = AegsProviderResourceQuery {
-            generator_id: "dev.arroba.github".to_string(),
+            generator_id: "dev.chariox.github".to_string(),
             owner_id: "owner-kernel-user".to_string(),
             connection_id: "connection-1".to_string(),
             query: None,
@@ -655,7 +655,7 @@ mod tests {
             .contains("between 1 and 100"));
 
         let connections = AegsConnectionQuery {
-            generator_id: "dev.arroba.github".to_string(),
+            generator_id: "dev.chariox.github".to_string(),
             owner_id: "owner-kernel-user".to_string(),
             connection_id: None,
             cursor: None,

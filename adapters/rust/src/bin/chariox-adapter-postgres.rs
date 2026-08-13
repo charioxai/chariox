@@ -1,4 +1,4 @@
-use arroba_adapters::protocol::{
+use chariox_adapters::protocol::{
     ConnectorAdapterPrepareResult, ConnectorAdapterRequest, UserCredentialInjectionConfig,
 };
 use postgres::types::{ToSql, Type};
@@ -6,7 +6,7 @@ use postgres::{Client, NoTls, Row};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use arroba_adapters::connector_adapter_util::{
+use chariox_adapters::connector_adapter_util::{
     credential_host_target, enforce_allowed_host, render_json_template, render_template_string,
     run_adapter,
 };
@@ -121,7 +121,7 @@ fn validate_config(config: &PostgresConfig) -> Result<(), String> {
 
 fn inject_connection_credential(
     connection_url: &str,
-    credential: arroba_adapters::protocol::ConnectorAdapterCredential,
+    credential: chariox_adapters::protocol::ConnectorAdapterCredential,
 ) -> Result<String, String> {
     let mut url = url::Url::parse(connection_url)
         .map_err(|error| format!("invalid connection_url: {error}"))?;

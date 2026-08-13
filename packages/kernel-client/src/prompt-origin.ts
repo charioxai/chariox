@@ -1,4 +1,4 @@
-export const ARROBA_PROMPT_ORIGIN = "arroba"
+export const CHARIOX_PROMPT_ORIGIN = "chariox"
 export const EXTERNAL_PROMPT_ORIGIN = "external"
 
 export function normalizePromptOrigin(origin: string | null | undefined): string | null {

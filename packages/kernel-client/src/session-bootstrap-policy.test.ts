@@ -28,8 +28,8 @@ test("selectAttachableSession ignores ended sessions and prefers the newest work
         created_at_ms: 20,
       }),
     ],
-    "/Users/miguel/arroba",
-    "/Users/miguel/arroba",
+    "/Users/miguel/chariox",
+    "/Users/miguel/chariox",
   )
 
   assert.equal(selected?.id, "deadbeef00000003")
@@ -39,7 +39,7 @@ test("selectAttachableSession requires matching workspace and worktree", () => {
   assert.equal(selectAttachableSession([
     session({ id: "workspace-mismatch", workspace_id: "/tmp/other" }),
     session({ id: "worktree-mismatch", worktree_id: "/tmp/other" }),
-  ], "/Users/miguel/arroba", "/Users/miguel/arroba"), null)
+  ], "/Users/miguel/chariox", "/Users/miguel/chariox"), null)
 })
 
 test("decideBootstrapAction respects explicit create and session refs", () => {
@@ -47,8 +47,8 @@ test("decideBootstrapAction respects explicit create and session refs", () => {
     decideBootstrapAction(
       { createSession: true, sessionId: "ignored" },
       [],
-      "/Users/miguel/arroba",
-      "/Users/miguel/arroba",
+      "/Users/miguel/chariox",
+      "/Users/miguel/chariox",
     ),
     { action: "create" },
   )
@@ -56,8 +56,8 @@ test("decideBootstrapAction respects explicit create and session refs", () => {
     decideBootstrapAction(
       { sessionId: "mai" },
       [session({ id: "deadbeef00000003" })],
-      "/Users/miguel/arroba",
-      "/Users/miguel/arroba",
+      "/Users/miguel/chariox",
+      "/Users/miguel/chariox",
     ),
     { action: "resolve", sessionRef: "mai" },
   )
@@ -68,8 +68,8 @@ test("decideBootstrapAction lands in the waiting room by default", () => {
     decideBootstrapAction(
       {},
       [session({ id: "deadbeef00000001", status: "Ended", created_at_ms: 20 })],
-      "/Users/miguel/arroba",
-      "/Users/miguel/arroba",
+      "/Users/miguel/chariox",
+      "/Users/miguel/chariox",
     ),
     { action: "none" },
   )
@@ -80,8 +80,8 @@ test("decideBootstrapAction does not auto-attach existing matching sessions", ()
     decideBootstrapAction(
       {},
       [session({ id: "deadbeef00000003", status: "Active", created_at_ms: 20 })],
-      "/Users/miguel/arroba",
-      "/Users/miguel/arroba",
+      "/Users/miguel/chariox",
+      "/Users/miguel/chariox",
     ),
     { action: "none" },
   )
@@ -98,8 +98,8 @@ function session(overrides: Partial<{
   return {
     id: "deadbeef00000000",
     alias: null,
-    workspace_id: "/Users/miguel/arroba",
-    worktree_id: "/Users/miguel/arroba",
+    workspace_id: "/Users/miguel/chariox",
+    worktree_id: "/Users/miguel/chariox",
     status: "Active",
     created_at_ms: 1,
     ...overrides,

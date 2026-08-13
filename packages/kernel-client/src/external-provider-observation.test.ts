@@ -329,7 +329,7 @@ test("external provider observed metadata projects prompt-origin turn fields", (
     external_provider_session_id: "thread-1",
   }), null)
   assert.equal(promptOriginExternalProviderObservedMetadata({
-    prompt_origin: "arroba",
+    prompt_origin: "chariox",
     external_provider: "codex",
     external_provider_session_id: "thread-1",
   }), null)

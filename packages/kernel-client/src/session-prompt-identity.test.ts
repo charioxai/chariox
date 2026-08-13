@@ -118,7 +118,7 @@ test("sessionHasActivePrompt follows projected active turn identity", () => {
         active_turn: {
           prompt_id: "prompt-2",
           provider_run_id: "run-1",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
           status: "running",
           phase: "streaming",
         },
@@ -197,7 +197,7 @@ test("sessionPromptForAgent rejects legacy prompts that do not match projected a
         active_turn: {
           prompt_id: "prompt-2",
           provider_run_id: "run-1",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
           status: "running",
           phase: "streaming",
         },
@@ -269,7 +269,7 @@ test("sessionHasActivePrompt follows projected active turn even when prompt stat
         active_turn: {
           prompt_id: "prompt-1",
           provider_run_id: "run-1",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
           status: "running",
           phase: "streaming",
         },
@@ -524,7 +524,7 @@ test("sessionActivePromptLifecycleRecords uses projected active turns and determ
           target_agent_id: "agent-a",
           prompt: "stale",
           status: "Running",
-          prompt_origin: "arroba",
+          prompt_origin: "chariox",
         },
         queued_prompts: [],
       },

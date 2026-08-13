@@ -70,8 +70,8 @@ test("terminalRecordTranscriptMetadata projects prompt and source attachment ide
   assert.equal(terminalRecordTranscriptMetadata({
     kind: "prompt_echo",
     prompt_id: "external:codex:thread-1:turn-1",
-    prompt_origin: "arroba",
-  }).promptOrigin, "arroba")
+    prompt_origin: "chariox",
+  }).promptOrigin, "chariox")
 })
 
 test("terminalRecordTranscriptMetadata preserves explicit null prompt identity", () => {
@@ -131,7 +131,7 @@ test("transcriptEntryWithTerminalMetadata applies only present metadata", () => 
   const entry = transcriptEntryWithTerminalMetadata({
     role: "assistant",
     text: "reply",
-    promptOrigin: "arroba",
+    promptOrigin: "chariox",
     sourceAttachmentId: "existing",
   }, {
     promptId: "prompt-1",

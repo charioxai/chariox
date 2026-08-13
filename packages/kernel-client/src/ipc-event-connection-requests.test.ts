@@ -14,11 +14,11 @@ import {
 } from "./ipc-event-publication-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("event connection lifecycle requests match protocol 252", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 252)
-  assert.deepEqual(listEventConnectionsRequest({ generatorId: "dev.arroba.github" }), {
+test("event connection lifecycle requests match protocol 253", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 253)
+  assert.deepEqual(listEventConnectionsRequest({ generatorId: "dev.chariox.github" }), {
     ListEventConnections: {
-      generator_id: "dev.arroba.github",
+      generator_id: "dev.chariox.github",
       cursor: null,
       limit: 20,
     },
@@ -26,9 +26,9 @@ test("event connection lifecycle requests match protocol 252", () => {
   assert.deepEqual(getEventConnectionRequest("connection-1"), {
     GetEventConnection: { connection_id: "connection-1" },
   })
-  assert.deepEqual(installEventConnectionRequest("dev.arroba.github", "https://example.test"), {
+  assert.deepEqual(installEventConnectionRequest("dev.chariox.github", "https://example.test"), {
     InstallEventConnection: {
-      generator_id: "dev.arroba.github",
+      generator_id: "dev.chariox.github",
       return_url: "https://example.test",
     },
   })
@@ -44,10 +44,10 @@ test("event connection lifecycle requests match protocol 252", () => {
       return_url: "https://example.test",
     },
   })
-  assert.deepEqual(listEventConnectionResourcesRequest("connection-1", { query: "arroba" }), {
+  assert.deepEqual(listEventConnectionResourcesRequest("connection-1", { query: "chariox" }), {
     ListEventConnectionResources: {
       connection_id: "connection-1",
-      query: "arroba",
+      query: "chariox",
       cursor: null,
       limit: 20,
     },

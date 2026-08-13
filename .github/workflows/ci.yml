@@ -82,7 +82,7 @@ jobs:
         run: node scripts/performance-drills.mjs
 
       - name: Client protocol conformance gate
-        run: cargo test -p arroba-kernel client_protocol_conformance -- --nocapture
+        run: cargo test -p chariox-kernel client_protocol_conformance -- --nocapture
 
       - name: Clippy
         run: |

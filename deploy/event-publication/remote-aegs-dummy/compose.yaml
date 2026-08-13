@@ -1,18 +1,18 @@
-name: arroba-aegs-dummy-staging
+name: chariox-aegs-dummy-staging
 
 services:
   dummy-aegs:
-    image: ${ARROBA_AEGS_DUMMY_IMAGE:?pin the exact local image ID}
+    image: ${CHARIOX_AEGS_DUMMY_IMAGE:?pin the exact local image ID}
     environment:
-      ARROBA_AEGS_ADDR: 0.0.0.0:43132
-      ARROBA_AEGS_PRODUCER_ID: dev.arroba.dummy
-      ARROBA_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/producer_token
-      ARROBA_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/management_token
-      ARROBA_AEGS_DATABASE_PATH: /var/lib/arroba/aegs/aegs.db
-      ARROBA_AEDS_EVENTS_URL: ${ARROBA_AEDS_EVENTS_URL:?set the HTTPS AEDS events URL}
+      CHARIOX_AEGS_ADDR: 0.0.0.0:43132
+      CHARIOX_AEGS_PRODUCER_ID: dev.chariox.dummy
+      CHARIOX_AEGS_PRODUCER_TOKEN_FILE: /run/secrets/producer_token
+      CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE: /run/secrets/management_token
+      CHARIOX_AEGS_DATABASE_PATH: /var/lib/chariox/aegs/aegs.db
+      CHARIOX_AEDS_EVENTS_URL: ${CHARIOX_AEDS_EVENTS_URL:?set the HTTPS AEDS events URL}
     secrets: [producer_token, management_token]
-    volumes: [aegs-data:/var/lib/arroba/aegs]
-    ports: ["127.0.0.1:${ARROBA_AEGS_LOOPBACK_PORT:-43132}:43132"]
+    volumes: [aegs-data:/var/lib/chariox/aegs]
+    ports: ["127.0.0.1:${CHARIOX_AEGS_LOOPBACK_PORT:-43132}:43132"]
     read_only: true
     tmpfs:
       - /tmp:size=16m,mode=1777
@@ -26,14 +26,14 @@ services:
     deploy:
       resources:
         limits:
-          cpus: ${ARROBA_AEGS_CPU_LIMIT:-0.50}
-          memory: ${ARROBA_AEGS_MEMORY_LIMIT:-128M}
+          cpus: ${CHARIOX_AEGS_CPU_LIMIT:-0.50}
+          memory: ${CHARIOX_AEGS_MEMORY_LIMIT:-128M}
 
 secrets:
   producer_token:
-    file: ${ARROBA_AEGS_PRODUCER_TOKEN_FILE:?set the producer token file}
+    file: ${CHARIOX_AEGS_PRODUCER_TOKEN_FILE:?set the producer token file}
   management_token:
-    file: ${ARROBA_AEGS_MANAGEMENT_TOKEN_FILE:?set the management token file}
+    file: ${CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE:?set the management token file}
 
 volumes:
   aegs-data:

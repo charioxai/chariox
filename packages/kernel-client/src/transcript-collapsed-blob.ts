@@ -2,7 +2,7 @@ import {
   parseToolTranscriptUpdate,
   readApplyPatchFiles,
   type ToolTranscriptUpdate,
-} from "@arroba/tool-display"
+} from "@chariox/tool-display"
 
 export type CollapsedTranscriptBlobEntry = {
   readonly role: string

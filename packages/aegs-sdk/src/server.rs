@@ -4,12 +4,12 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
-use arroba_event_protocol::{
+use bytes::Bytes;
+use chariox_event_protocol::{
     AegsAuthorizationStartRequest, AegsConnectionPage, AegsConnectionQuery,
     AegsConnectionReconnectRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
     AegsConnectionStatus, AegsConnectionSummary, AegsProviderResourceQuery, PublishEventRequest,
 };
-use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
@@ -36,14 +36,14 @@ pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn 
 where
     F: FnOnce(AegsStore) -> Result<Arc<dyn AegsProvider>, String>,
 {
-    let address: SocketAddr = std::env::var("ARROBA_AEGS_ADDR")
+    let address: SocketAddr = std::env::var("CHARIOX_AEGS_ADDR")
         .unwrap_or_else(|_| "127.0.0.1:43132".to_string())
         .parse()?;
     let store = AegsStore::open(
-        std::env::var("ARROBA_AEGS_DATABASE_PATH").unwrap_or_else(|_| "aegs.db".to_string()),
+        std::env::var("CHARIOX_AEGS_DATABASE_PATH").unwrap_or_else(|_| "aegs.db".to_string()),
     )?;
     let provider = provider_factory(store.clone())?;
-    let producer_id = std::env::var("ARROBA_AEGS_PRODUCER_ID")
+    let producer_id = std::env::var("CHARIOX_AEGS_PRODUCER_ID")
         .unwrap_or_else(|_| provider.generator_id().to_string());
     if producer_id != provider.generator_id() {
         return Err(format!(
@@ -55,16 +55,16 @@ where
     let server = AegsServer {
         producer_id: producer_id.clone(),
         management_token: read_secret(
-            "ARROBA_AEGS_MANAGEMENT_TOKEN",
-            "ARROBA_AEGS_MANAGEMENT_TOKEN_FILE",
+            "CHARIOX_AEGS_MANAGEMENT_TOKEN",
+            "CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE",
         )?,
         publisher: AedsPublisher::new(
             producer_id.clone(),
             read_secret(
-                "ARROBA_AEGS_PRODUCER_TOKEN",
-                "ARROBA_AEGS_PRODUCER_TOKEN_FILE",
+                "CHARIOX_AEGS_PRODUCER_TOKEN",
+                "CHARIOX_AEGS_PRODUCER_TOKEN_FILE",
             )?,
-            std::env::var("ARROBA_AEDS_EVENTS_URL")
+            std::env::var("CHARIOX_AEDS_EVENTS_URL")
                 .unwrap_or_else(|_| "http://127.0.0.1:43131/v1/events".to_string()),
         ),
         store,
@@ -77,7 +77,7 @@ where
     eprintln!(
         "{}",
         serde_json::json!({
-            "component": "arroba-aegs",
+            "component": "chariox-aegs",
             "event": "starting",
             "address": address,
             "producer_id": server.producer_id,
@@ -101,7 +101,7 @@ where
 }
 
 fn spawn_subscription_maintenance(provider: Arc<dyn AegsProvider>) {
-    let maintenance_interval = std::env::var("ARROBA_AEGS_MAINTENANCE_INTERVAL_SECS")
+    let maintenance_interval = std::env::var("CHARIOX_AEGS_MAINTENANCE_INTERVAL_SECS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|seconds| *seconds > 0)
@@ -116,7 +116,7 @@ fn spawn_subscription_maintenance(provider: Arc<dyn AegsProvider>) {
                 Ok(Err(message)) => eprintln!(
                     "{}",
                     serde_json::json!({
-                        "component": "arroba-aegs",
+                        "component": "chariox-aegs",
                         "event": "subscription_maintenance_failed",
                         "error": message,
                     })
@@ -124,7 +124,7 @@ fn spawn_subscription_maintenance(provider: Arc<dyn AegsProvider>) {
                 Err(error) => eprintln!(
                     "{}",
                     serde_json::json!({
-                        "component": "arroba-aegs",
+                        "component": "chariox-aegs",
                         "event": "subscription_maintenance_task_failed",
                         "error": error.to_string(),
                     })
@@ -151,10 +151,10 @@ impl AegsServer {
             (Method::GET, "/version") => json(
                 StatusCode::OK,
                 serde_json::json!({
-                    "component": "arroba-aegs",
+                    "component": "chariox-aegs",
                     "provider": self.producer_id,
                     "protocol_version": AEGS_PROTOCOL_VERSION,
-                    "build_revision": option_env!("ARROBA_BUILD_REVISION").unwrap_or("development"),
+                    "build_revision": option_env!("CHARIOX_BUILD_REVISION").unwrap_or("development"),
                     "authorization_configured": self.provider.authorization_configured(),
                 }),
             ),
@@ -162,10 +162,10 @@ impl AegsServer {
                 Ok(metrics) => text(
                     StatusCode::OK,
                     format!(
-                        "arroba_aegs_active_subscriptions {}\n\
-                         arroba_aegs_subscriptions {}\n\
-                         arroba_aegs_connections {}\n\
-                         arroba_aegs_provider_hooks {}\n",
+                        "chariox_aegs_active_subscriptions {}\n\
+                         chariox_aegs_subscriptions {}\n\
+                         chariox_aegs_connections {}\n\
+                         chariox_aegs_provider_hooks {}\n",
                         metrics.active_subscriptions,
                         metrics.subscriptions,
                         metrics.connections,
@@ -197,7 +197,7 @@ impl AegsServer {
                     Ok(body) => body,
                     Err(response) => return response,
                 };
-                let reconcile: arroba_event_protocol::AegsSubscriptionReconcileRequest =
+                let reconcile: chariox_event_protocol::AegsSubscriptionReconcileRequest =
                     match serde_json::from_slice(&body) {
                         Ok(value) => value,
                         Err(error_value) => {
@@ -778,7 +778,7 @@ impl AegsServer {
                         prompt: normalized.prompt.clone(),
                         artifacts: Vec::new(),
                         metadata: normalized.metadata.clone(),
-                        ttl_seconds: arroba_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                        ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                     };
                     match self.publisher.publish(event).await {
                         Ok(response) => responses.push(response),
@@ -919,14 +919,14 @@ fn authorization_complete_page(
             let origin = url.origin().ascii_serialization();
             Some((
                 serde_json::to_string(&origin).ok()?,
-                format!("<a href=\"{}\">Return to Arroba</a>", html_escape(value)),
+                format!("<a href=\"{}\">Return to Chariox</a>", html_escape(value)),
             ))
         })
         .unwrap_or_else(|| ("\"*\"".to_string(), String::new()));
     let html = format!(
         "<!doctype html><html><head><meta charset=\"utf-8\"><title>Connection authorized</title></head>\
          <body><main><h1>Connection authorized</h1><p>You can close this window.</p>{return_link}</main>\
-         <script>window.opener?.postMessage({{type:'arroba-event-authorization',generatorId:{generator_json},connectionId:{connection_json}}},{origin_json});window.close();</script>\
+         <script>window.opener?.postMessage({{type:'chariox-event-authorization',generatorId:{generator_json},connectionId:{connection_json}}},{origin_json});window.close();</script>\
          </body></html>"
     );
     Response::builder()
@@ -989,7 +989,7 @@ mod tests {
     #[test]
     fn authorization_page_escapes_return_link() {
         let response = authorization_complete_page(
-            "dev.arroba.test",
+            "dev.chariox.test",
             "connection-1",
             Some("https://example.test/return?value=%22"),
         );

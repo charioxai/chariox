@@ -144,121 +144,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arroba-adapters"
-version = "0.1.0"
-dependencies = [
- "base64",
- "mysql",
- "postgres",
- "serde",
- "serde_json",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "arroba-aegs-dummy"
-version = "0.1.0"
-dependencies = [
- "arroba-aegs-sdk",
- "arroba-event-protocol",
- "serde_json",
- "tokio",
-]
-
-[[package]]
-name = "arroba-aegs-sdk"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "arroba-event-protocol",
- "base64",
- "bytes",
- "hmac 0.12.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "rand 0.8.6",
- "rusqlite",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "tokio",
- "ureq",
- "url",
-]
-
-[[package]]
-name = "arroba-event-protocol"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "serde",
- "serde_json",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "arroba-kernel"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "argon2",
- "arroba-event-protocol",
- "arroba-relay",
- "base64",
- "bytes",
- "chrono",
- "chrono-tz",
- "croner",
- "flate2",
- "futures-util",
- "hkdf",
- "hmac 0.12.1",
- "http-body-util",
- "hyper",
- "hyper-util",
- "jsonschema",
- "libc",
- "p256",
- "portable-pty",
- "rand 0.8.6",
- "rusqlite",
- "serde",
- "serde_json",
- "serde_yaml",
- "sha2 0.10.9",
- "tar",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "toml",
- "tracing",
- "ureq",
- "url",
- "wait-timeout",
- "zeroize",
-]
-
-[[package]]
-name = "arroba-relay"
-version = "0.1.0"
-dependencies = [
- "base64",
- "futures-util",
- "hmac 0.12.1",
- "serde",
- "serde_json",
- "sha1",
- "sha2 0.10.9",
- "subtle",
- "thiserror 2.0.18",
- "tokio",
- "tokio-tungstenite",
- "ureq",
-]
-
-[[package]]
 name = "async-trait"
 version = "0.1.89"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -417,6 +302,121 @@ dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "chariox-adapters"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "mysql",
+ "postgres",
+ "serde",
+ "serde_json",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "chariox-aegs-dummy"
+version = "0.1.0"
+dependencies = [
+ "chariox-aegs-sdk",
+ "chariox-event-protocol",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
+name = "chariox-aegs-sdk"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "base64",
+ "bytes",
+ "chariox-event-protocol",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.8.6",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "ureq",
+ "url",
+]
+
+[[package]]
+name = "chariox-event-protocol"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
+name = "chariox-kernel"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "argon2",
+ "base64",
+ "bytes",
+ "chariox-event-protocol",
+ "chariox-relay",
+ "chrono",
+ "chrono-tz",
+ "croner",
+ "flate2",
+ "futures-util",
+ "hkdf",
+ "hmac 0.12.1",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jsonschema",
+ "libc",
+ "p256",
+ "portable-pty",
+ "rand 0.8.6",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "serde_yaml",
+ "sha2 0.10.9",
+ "tar",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "toml",
+ "tracing",
+ "ureq",
+ "url",
+ "wait-timeout",
+ "zeroize",
+]
+
+[[package]]
+name = "chariox-relay"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "futures-util",
+ "hmac 0.12.1",
+ "serde",
+ "serde_json",
+ "sha1",
+ "sha2 0.10.9",
+ "subtle",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-tungstenite",
+ "ureq",
 ]
 
 [[package]]

@@ -3,7 +3,7 @@
     "id": "call_patch",
     "tool": "apply_patch",
     "status": "completed",
-    "title": "arroba",
+    "title": "chariox",
     "input": {
       "domain": "text",
       "patch_text": "*** Begin Patch\n*** Update File: patch-target.txt\n@@\n-before\n+after\n*** End Patch"

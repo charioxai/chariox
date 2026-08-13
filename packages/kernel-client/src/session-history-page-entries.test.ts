@@ -109,12 +109,12 @@ test("adjacent session history page entries upgrade matching attachments without
       kind: "user_prompt",
       text: "hel",
       attachments: [{
-        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+        url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
         mime: "image/png",
         filename: "Screenshot.png",
         preview_url: null,
       }, {
-        url: "arroba-terminal://prompt-attachment/attachment-2/notes.txt",
+        url: "chariox-terminal://prompt-attachment/attachment-2/notes.txt",
         mime: "text/plain",
         filename: "notes.txt",
         preview_url: null,
@@ -124,7 +124,7 @@ test("adjacent session history page entries upgrade matching attachments without
       kind: "user_prompt",
       text: "lo\n",
       attachments: [{
-        url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+        url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
         mime: "image/png",
         filename: "Screenshot.png",
         preview_url: "data:image/png;base64,aW1hZ2U=",
@@ -133,12 +133,12 @@ test("adjacent session history page entries upgrade matching attachments without
   ])
 
   assert.deepEqual(merged[0]?.entry.attachments, [{
-    url: "arroba-terminal://prompt-attachment/attachment-1/Screenshot.png",
+    url: "chariox-terminal://prompt-attachment/attachment-1/Screenshot.png",
     mime: "image/png",
     filename: "Screenshot.png",
     preview_url: "data:image/png;base64,aW1hZ2U=",
   }, {
-    url: "arroba-terminal://prompt-attachment/attachment-2/notes.txt",
+    url: "chariox-terminal://prompt-attachment/attachment-2/notes.txt",
     mime: "text/plain",
     filename: "notes.txt",
     preview_url: null,
@@ -252,7 +252,7 @@ test("session history entry clone does not reuse attachment objects", () => {
   const cloned = cloneSessionHistoryEntry({
     kind: "user_prompt",
     text: "open",
-    prompt_origin: "arroba",
+    prompt_origin: "chariox",
     attachments: [attachment],
     timestamp_ms: 10,
   })
@@ -260,7 +260,7 @@ test("session history entry clone does not reuse attachment objects", () => {
   assert.deepEqual(cloned, {
     kind: "user_prompt",
     text: "open",
-    prompt_origin: "arroba",
+    prompt_origin: "chariox",
     attachments: [attachment],
     timestamp_ms: 10,
   })

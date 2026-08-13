@@ -11,7 +11,7 @@ import {
   transcriptStreamRuntimeTransition,
   type TranscriptStreamEntry,
 } from "./transcript-stream-state.js"
-import type { ToolTranscriptUpdate } from "@arroba/tool-display"
+import type { ToolTranscriptUpdate } from "@chariox/tool-display"
 import {
   EXTERNAL_PROVIDER_OBSERVED_SOURCE,
 } from "./external-provider-observation.js"

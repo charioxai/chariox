@@ -1,6 +1,6 @@
 import type {
-  ArrobaUserConfigPayload,
-  ArrobaUserConfigSchemaPayload,
+  CharioxUserConfigPayload,
+  CharioxUserConfigSchemaPayload,
 } from "./kernel-types.js"
 import {
   deleteCredentialSecretRequest,
@@ -42,22 +42,22 @@ export async function executeConfigCommand(
   const [action, keyPath, ...rest] = parsed.args
   if (!action || action === "show") {
     const response = await deps.client.send(getUserConfigRequest())
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
     return { ok: true, message: JSON.stringify(payload.config, null, 2), data: payload, format: "json" }
   }
   if (action === "path") {
     const response = await deps.client.send(getUserConfigRequest())
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfig")
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfig")
     return { ok: true, message: payload.path, data: payload }
   }
   if (action === "keys" || action === "list") {
     const response = await deps.client.send(getUserConfigSchemaRequest())
-    const payload = expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+    const payload = expectVariant<CharioxUserConfigSchemaPayload>(response, "UserConfigSchema")
     return { ok: true, message: formatConfigSchemaKeys(payload.entries), data: payload }
   }
   if (action === "schema") {
     const response = await deps.client.send(getUserConfigSchemaRequest())
-    const payload = expectVariant<ArrobaUserConfigSchemaPayload>(response, "UserConfigSchema")
+    const payload = expectVariant<CharioxUserConfigSchemaPayload>(response, "UserConfigSchema")
     return { ok: true, message: JSON.stringify(payload.entries, null, 2), data: payload, format: "json" }
   }
   if (action === "set") {
@@ -66,7 +66,7 @@ export async function executeConfigCommand(
       return { ok: false, message: "usage: config set <path> <value>" }
     }
     const response = await deps.client.send(setUserConfigValueRequest(keyPath, value))
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
       message: configMutationMessage(`config ${keyPath} set to ${value}`, payload),
@@ -78,7 +78,7 @@ export async function executeConfigCommand(
       return { ok: false, message: "usage: config unset <path>" }
     }
     const response = await deps.client.send(unsetUserConfigValueRequest(keyPath))
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
       message: configMutationMessage(`config ${keyPath} unset`, payload),
@@ -91,7 +91,7 @@ export async function executeConfigCommand(
       return { ok: false, message: "usage: config workspace-live-sync off|managed|tracked" }
     }
     const response = await deps.client.send(setUserConfigValueRequest("providers.workspace_live_sync", mode))
-    const payload = expectVariant<ArrobaUserConfigPayload>(response, "UserConfigUpdated")
+    const payload = expectVariant<CharioxUserConfigPayload>(response, "UserConfigUpdated")
     return {
       ok: true,
       message: configMutationMessage(formatWorkspaceLiveSyncDefaultModeChangeMessage(mode), payload),
@@ -205,7 +205,7 @@ export async function executeCredentialCommand(
     if (!deps.readSecret) {
       return {
         ok: false,
-        message: "credential set requires hidden input support; run it from interactive arroba-shell",
+        message: "credential set requires hidden input support; run it from interactive chariox-shell",
       }
     }
     const value = await deps.readSecret(`credential ${key}: `)
@@ -213,7 +213,7 @@ export async function executeCredentialCommand(
       return { ok: false, message: "credential value must not be empty" }
     }
     await deps.client.send(setCredentialSecretRequest(key, value, credentialVaultContext(context)))
-    return { ok: true, message: `credential ${key} stored in Arroba Vault` }
+    return { ok: true, message: `credential ${key} stored in Chariox Vault` }
   }
   if (action === "delete" || action === "remove" || action === "rm") {
     if (!key || rest.length > 0) {
@@ -225,7 +225,7 @@ export async function executeCredentialCommand(
       return { ok: true, message: `removed credential ${credential.id}`, data: { credential } }
     }
     await deps.client.send(deleteCredentialSecretRequest(key, credentialVaultContext(context)))
-    return { ok: true, message: `credential ${key} deleted from Arroba Vault` }
+    return { ok: true, message: `credential ${key} deleted from Chariox Vault` }
   }
   return { ok: false, message: "usage: credential list|show|register|upsert-json|remove|set|delete|vault" }
 }
