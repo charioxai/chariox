@@ -2,6 +2,46 @@ use super::*;
 use crate::session::{WorkflowCanvasLayoutPatch, WorkflowHandoffValidationPolicy};
 
 #[test]
+fn binds_workflow_code_source_with_revision_conflict_protection() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let revision = workflow.revision();
+
+    let bound = service
+        .bind_workflow_code_source(
+            session.id(),
+            workflow.id(),
+            Some(revision),
+            "workflow-source-session-1-workflow-1".to_string(),
+            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+            "sha256".to_string(),
+            crate::session::WorkflowCodeSourceOrigin::Generated,
+        )
+        .expect("source should bind");
+    let binding = bound.code_source().expect("binding should be projected");
+    assert_eq!(binding.workflow_revision(), revision + 1);
+    assert_eq!(binding.source_sha256(), "sha256");
+
+    let error = service
+        .bind_workflow_code_source(
+            session.id(),
+            workflow.id(),
+            Some(revision),
+            "stale-source".to_string(),
+            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+            "stale".to_string(),
+            crate::session::WorkflowCodeSourceOrigin::Generated,
+        )
+        .expect_err("stale revision should conflict");
+    assert!(error.to_string().contains("revision conflict"));
+}
+
+#[test]
 fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
     let mut service = SessionService::new(&test_config());
     let session = service

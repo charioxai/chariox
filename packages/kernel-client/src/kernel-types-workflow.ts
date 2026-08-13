@@ -9,6 +9,7 @@ export type WorkflowDefinition = {
   controlled_by_metaagent_id?: string | null
   created_at_ms?: number
   revision?: number
+  code_source?: WorkflowCodeSourceBinding | null
   flush_agent_context_before_run?: boolean
   max_concurrent?: number
   run_output_schema_ref?: string | null
@@ -17,6 +18,18 @@ export type WorkflowDefinition = {
   nodes?: WorkflowNodeDefinition[]
   edges?: WorkflowEdgeDefinition[]
   endpoints?: WorkflowEndpointDefinition[]
+}
+
+export type WorkflowCodeSourceOrigin = "authored" | "generated"
+
+export type WorkflowCodeSourceBinding = {
+  artifact_name: string
+  language: WorkflowCodeLanguage
+  source_sha256: string
+  origin: WorkflowCodeSourceOrigin
+  workflow_revision: number
+  created_at_ms: number
+  updated_at_ms: number
 }
 
 export type WorkflowSchemaDefinition = {
@@ -366,6 +379,13 @@ export type WorkflowCodeValidatedResponse = {
 export type WorkflowCodeAppliedResponse = {
   WorkflowCodeApplied: {
     result: WorkflowCodeCompileAndApplyResult
+    session: RuntimeSession
+  }
+}
+
+export type WorkflowCodeSourceBoundResponse = {
+  WorkflowCodeSourceBound: {
+    workflow: WorkflowDefinition
     session: RuntimeSession
   }
 }

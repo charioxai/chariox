@@ -7,6 +7,7 @@ import type {
   WorkflowCodeSourceExportAgentMode,
   WorkflowCodeSourceExportFormat,
   WorkflowCodeSourceExportTarget,
+  WorkflowCodeSourceOrigin,
   WorkflowDesignOp,
   WorkflowRegistrySourceInput,
   WorkflowRegistrySourceScope,
@@ -429,6 +430,34 @@ export function updateWorkflowCodeArtifactRequest(
       language,
       node_path: nodePath,
       source,
+    },
+  }
+}
+
+export type BindWorkflowCodeSourceRequest = {
+  BindWorkflowCodeSource: {
+    session_id: string
+    workflow_ref: string
+    artifact_name: string
+    origin: WorkflowCodeSourceOrigin
+    expected_workflow_revision?: number | null
+  }
+}
+
+export function bindWorkflowCodeSourceRequest(
+  sessionId: string,
+  workflowRef: string,
+  artifactName: string,
+  origin: WorkflowCodeSourceOrigin,
+  expectedWorkflowRevision?: number | null,
+): BindWorkflowCodeSourceRequest {
+  return {
+    BindWorkflowCodeSource: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      artifact_name: artifactName,
+      origin,
+      ...(expectedWorkflowRevision == null ? {} : { expected_workflow_revision: expectedWorkflowRevision }),
     },
   }
 }

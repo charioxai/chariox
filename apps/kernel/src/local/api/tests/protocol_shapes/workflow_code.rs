@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 254);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 255);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -607,6 +607,34 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         ),
     };
 
+    let bind_source_request =
+        LocalDaemonRequest::BindWorkflowCodeSource(crate::local::BindWorkflowCodeSourceRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            artifact_name: "workflow-source-session-1-workflow-1".to_string(),
+            origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            expected_workflow_revision: Some(7),
+        });
+    let mut bound_workflow =
+        crate::session::WorkflowDefinition::new("workflow-1", Some("toy".to_string()));
+    bound_workflow.bind_code_source(
+        "workflow-source-session-1-workflow-1".to_string(),
+        crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+        "sha256".to_string(),
+        crate::session::WorkflowCodeSourceOrigin::Generated,
+    );
+    let bind_source_response = LocalDaemonResponse::WorkflowCodeSourceBound {
+        workflow: bound_workflow,
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+
     let snapshot = serde_json::json!([
         validate_request,
         apply_request,
@@ -649,7 +677,9 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         registry_entry_added_response,
         registry_entry_deleted_response,
         registry_entry_loaded_response,
-        registry_entry_run_response
+        registry_entry_run_response,
+        bind_source_request,
+        bind_source_response
     ]);
     assert_eq!(
         snapshot.pointer("/0/ValidateWorkflowCode/session_id"),
@@ -940,5 +970,21 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/41/WorkflowRegistryEntryRun/result/invocation/kind"),
         Some(&serde_json::json!("enqueued"))
+    );
+    assert_eq!(
+        snapshot.pointer("/42/BindWorkflowCodeSource/origin"),
+        Some(&serde_json::json!("generated"))
+    );
+    assert_eq!(
+        snapshot.pointer("/42/BindWorkflowCodeSource/expected_workflow_revision"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        snapshot.pointer("/43/WorkflowCodeSourceBound/workflow/code_source/artifact_name"),
+        Some(&serde_json::json!("workflow-source-session-1-workflow-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/43/WorkflowCodeSourceBound/workflow/code_source/workflow_revision"),
+        Some(&serde_json::json!(1))
     );
 }

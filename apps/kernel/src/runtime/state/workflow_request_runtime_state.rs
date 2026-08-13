@@ -122,6 +122,13 @@ impl KernelRuntimeState {
                 .await,
                 None,
             ),
+            LocalDaemonRequest::BindWorkflowCodeSource(request) => {
+                let result = self
+                    .execute_workflow_code_source_bind_request(request)
+                    .await;
+                let session = result.as_ref().ok().and_then(workflow_response_session);
+                (result, session)
+            }
             LocalDaemonRequest::GetWorkflowCodeArtifact(request) => (
                 self.execute_workflow_code_artifact_get_request(request)
                     .await,
@@ -478,6 +485,7 @@ pub(super) fn workflow_response_session(
 ) -> Option<crate::session::RuntimeSession> {
     match response {
         LocalDaemonResponse::WorkflowCreated { session, .. }
+        | LocalDaemonResponse::WorkflowCodeSourceBound { session, .. }
         | LocalDaemonResponse::WorkflowCodeApplied { session, .. }
         | LocalDaemonResponse::WorkflowCodeRun { session, .. }
         | LocalDaemonResponse::WorkflowRegistryEntryLoaded { session, .. }

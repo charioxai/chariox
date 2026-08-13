@@ -326,6 +326,10 @@ pub enum LocalDaemonResponse {
     },
     WorkflowCodeArtifactCreated { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeArtifactUpdated { artifact: crate::workflow_code::WorkflowCodeArtifact, },
+    WorkflowCodeSourceBound {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
     WorkflowCodeArtifact { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeArtifactsListed { artifacts: Vec<crate::workflow_code::WorkflowCodeArtifactMetadata>, },
     WorkflowCodeArtifactDeleted { name: String, path: PathBuf, },

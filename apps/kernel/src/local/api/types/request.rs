@@ -234,6 +234,7 @@ pub enum LocalDaemonRequest {
     RunWorkflowRegistryEntry(RunWorkflowRegistryEntryRequest),
     CreateWorkflowCodeArtifact(CreateWorkflowCodeArtifactRequest),
     UpdateWorkflowCodeArtifact(UpdateWorkflowCodeArtifactRequest),
+    BindWorkflowCodeSource(BindWorkflowCodeSourceRequest),
     GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
     ListWorkflowCodeArtifacts(ListWorkflowCodeArtifactsRequest),
     DeleteWorkflowCodeArtifact(DeleteWorkflowCodeArtifactRequest),

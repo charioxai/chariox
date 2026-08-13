@@ -92,6 +92,42 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(super) async fn execute_workflow_code_source_bind_request(
+        &self,
+        request: crate::local::BindWorkflowCodeSourceRequest,
+    ) -> Result<LocalDaemonResponse, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            let registry = workflow_code_registry_for_session(app, &request.session_id)?;
+            let artifact = registry.get(&request.artifact_name)?.ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "workflow_code.bind",
+                    message: format!(
+                        "workflow-code artifact `{}` is not saved",
+                        request.artifact_name
+                    ),
+                }
+            })?;
+            let workflow = app.sessions_mut().bind_workflow_code_source(
+                &request.session_id,
+                &request.workflow_ref,
+                request.expected_workflow_revision,
+                artifact.metadata.name,
+                artifact.metadata.language,
+                artifact.metadata.source_sha256,
+                request.origin,
+            )?;
+            let session = crate::app::KernelSessionReadService::new(app)
+                .session_snapshot(&request.session_id)?;
+            app.durable_state_store().append_event(
+                "workflow_code_source.bound",
+                Some(request.session_id),
+                serde_json::json!({ "workflow": &workflow }),
+            )?;
+            Ok(LocalDaemonResponse::WorkflowCodeSourceBound { workflow, session })
+        })
+        .await
+    }
+
     pub(super) async fn execute_workflow_code_artifact_get_request(
         &self,
         request: crate::local::GetWorkflowCodeArtifactRequest,
