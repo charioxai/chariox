@@ -1,17 +1,28 @@
 use std::collections::HashMap;
 
 use chariox_aegs_sdk::{
-    AegsProvider, AuthorizationCallback, NormalizedEvent, WebhookInput, WebhookRoute,
+    apply_test_filter_constraints, baseline_provider_connection_inspection, now_ms,
+    select_test_subscription, sha256_occurrence_id, AegsProvider, AegsStore, AuthorizationCallback,
+    NormalizedEvent, WebhookInput, WebhookRoute,
 };
 use chariox_event_protocol::{
-    AegsAuthorizationFlow, AegsProviderResource, AegsProviderResourcePage,
-    AegsProviderResourceQuery,
+    AegsAuthorizationFlow, AegsConnectedResource, AegsConnectionInspection, AegsConnectionScope,
+    AegsProviderResource, AegsProviderResourcePage, AegsProviderResourceQuery,
 };
+use chrono::{SecondsFormat, Utc};
 
 pub const GENERATOR_ID: &str = "dev.chariox.dummy";
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DummyProvider;
+#[derive(Clone)]
+pub struct DummyProvider {
+    store: AegsStore,
+}
+
+impl DummyProvider {
+    pub fn new(store: AegsStore) -> Self {
+        Self { store }
+    }
+}
 
 impl AegsProvider for DummyProvider {
     fn generator_id(&self) -> &'static str {
@@ -94,6 +105,68 @@ impl AegsProvider for DummyProvider {
         })
     }
 
+    fn inspect_connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<Option<AegsConnectionInspection>, String> {
+        let connection = self
+            .store
+            .connection(connection_id)?
+            .ok_or_else(|| "the dummy connection was not found".to_string())?;
+        let mut inspection =
+            baseline_provider_connection_inspection(GENERATOR_ID, &connection, true);
+        inspection.scopes = vec![AegsConnectionScope {
+            id: "local:test".to_string(),
+            label: "Local test events".to_string(),
+            granted: connection.status == "ready",
+            required: true,
+        }];
+        inspection.resources = vec![AegsConnectedResource {
+            id: "default".to_string(),
+            name: "Default test environment".to_string(),
+            kind: "test_scope".to_string(),
+        }];
+        if connection.status == "ready" {
+            let checked_at_ms = now_ms();
+            self.store
+                .mark_connection_health(connection_id, checked_at_ms)?;
+            inspection.last_successful_health_check_at_ms = Some(checked_at_ms);
+        }
+        Ok(Some(inspection))
+    }
+
+    fn test_event(
+        &self,
+        connection_id: &str,
+        event_type: Option<&str>,
+    ) -> Result<Option<NormalizedEvent>, String> {
+        const SUPPORTED: &[&str] = &["dummy.triggered"];
+        let subscription =
+            select_test_subscription(&self.store, connection_id, event_type, SUPPORTED)?;
+        let connection_scope = subscription
+            .as_ref()
+            .map(|value| value.connection_scope.clone())
+            .unwrap_or_else(|| "default".to_string());
+        let mut metadata = serde_json::json!({
+            "source": "dummy",
+            "scope": connection_scope,
+            "chariox": {"test_event": true}
+        });
+        if let Some(subscription) = &subscription {
+            apply_test_filter_constraints(&mut metadata, &subscription.filter);
+        }
+        Ok(Some(NormalizedEvent {
+            occurrence_id: sha256_occurrence_id(
+                format!("{connection_id}:dummy.triggered:{}", now_ms()).as_bytes(),
+            ),
+            event_type: "dummy.triggered".to_string(),
+            occurred_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
+            connection_scope,
+            prompt: "Handle a Chariox dummy test notification.".to_string(),
+            metadata,
+        }))
+    }
+
     fn normalize_webhook(
         &self,
         _input: WebhookInput<'_>,
@@ -113,7 +186,7 @@ mod tests {
 
     #[test]
     fn dummy_provider_exposes_only_the_local_test_scope() {
-        let page = DummyProvider
+        let page = DummyProvider::new(AegsStore::open(":memory:").unwrap())
             .query_resources(&AegsProviderResourceQuery {
                 generator_id: GENERATOR_ID.to_string(),
                 owner_id: "owner-local-user".to_string(),
@@ -125,5 +198,47 @@ mod tests {
             .unwrap();
         assert_eq!(page.resources.len(), 1);
         assert_eq!(page.resources[0].connection_scope, "default");
+    }
+
+    #[test]
+    fn dummy_test_event_uses_active_trigger_filter() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection(
+                "local-dummy-owner-local-user",
+                "owner-local-user",
+                "dummy",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        store
+            .reconcile(
+                "owner-local-user",
+                GENERATOR_ID,
+                &[chariox_aegs_sdk::SubscriptionClaim {
+                    binding_id: "binding-1".to_string(),
+                    generator_id: GENERATOR_ID.to_string(),
+                    connection_id: "local-dummy-owner-local-user".to_string(),
+                    connection_scope: "default".to_string(),
+                    event_interest_key: "sha256:test".to_string(),
+                    event_type: "dummy.triggered".to_string(),
+                    event_type_version: 1,
+                    filter: serde_json::json!({"scenario.name": "smoke"}),
+                    revision: 1,
+                    active: true,
+                }],
+            )
+            .unwrap();
+        let provider = DummyProvider::new(store);
+        let event = provider
+            .test_event("local-dummy-owner-local-user", None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(event.connection_scope, "default");
+        assert!(chariox_aegs_sdk::metadata_matches_filter(
+            &event.metadata,
+            &serde_json::json!({"scenario.name": "smoke"})
+        ));
     }
 }
