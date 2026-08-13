@@ -367,15 +367,9 @@ mod tests {
                 "/workflow code source export-directory ",
             ),
             ("workflow-trigger-list", "/workflow trigger list"),
-            (
-                "workflow-trigger-create",
-                "/workflow trigger create ",
-            ),
+            ("workflow-trigger-create", "/workflow trigger create "),
             ("workflow-trigger-show", "/workflow trigger show "),
-            (
-                "workflow-trigger-export",
-                "/workflow trigger export ",
-            ),
+            ("workflow-trigger-export", "/workflow trigger export "),
             (
                 "workflow-trigger-config-show",
                 "/workflow trigger config show ",
@@ -388,10 +382,7 @@ mod tests {
                 "workflow-trigger-config-clear",
                 "/workflow trigger config clear ",
             ),
-            (
-                "workflow-trigger-disable",
-                "/workflow trigger disable ",
-            ),
+            ("workflow-trigger-disable", "/workflow trigger disable "),
             ("workflow-registry-list", "/workflow registry list"),
             ("workflow-registry-get", "/workflow registry get "),
             ("workflow-registry-add", "/workflow registry add "),

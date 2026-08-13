@@ -226,7 +226,14 @@ function deploymentContractFixture(minimumLocalDaemonProtocolVersion = 240): Rec
     provider_requirements: [],
     credential_slots: [],
     configuration: [],
-    capabilities: {},
+    capabilities: {
+      network: {
+        policy_version: 1,
+        default_action: "deny",
+        destinations: [],
+        provider_access: [],
+      },
+    },
     resources: {},
     presentation: {},
     signatures: [],
