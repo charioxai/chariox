@@ -26,6 +26,40 @@ impl SessionService {
         prompt: Option<String>,
         publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     ) -> Result<WorkflowRun, DaemonError> {
+        self.invoke_workflow_endpoint_with_context(
+            session_id,
+            workflow_ref,
+            endpoint_ref,
+            prompt,
+            publication_invocation,
+            None,
+        )
+    }
+
+    pub fn invoke_queued_workflow_endpoint(
+        &mut self,
+        session_id: &str,
+        queued_prompt: &WorkflowQueuedPrompt,
+    ) -> Result<WorkflowRun, DaemonError> {
+        self.invoke_workflow_endpoint_with_context(
+            session_id,
+            queued_prompt.workflow_id(),
+            queued_prompt.endpoint_id(),
+            queued_prompt.prompt().map(str::to_string),
+            queued_prompt.publication_invocation().cloned(),
+            Some(queued_prompt),
+        )
+    }
+
+    fn invoke_workflow_endpoint_with_context(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        endpoint_ref: &str,
+        prompt: Option<String>,
+        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+        queued_prompt: Option<&WorkflowQueuedPrompt>,
+    ) -> Result<WorkflowRun, DaemonError> {
         let workflow = self.resolve_workflow_ref(session_id, workflow_ref)?;
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow_ref, endpoint_ref)?;
@@ -61,7 +95,7 @@ impl SessionService {
                 vec![message]
             })
             .unwrap_or_default();
-        let workflow_run = WorkflowRun::new(
+        let mut workflow_run = WorkflowRun::new(
             self.next_workflow_run_id(),
             workflow.id().to_string(),
             endpoint.id().to_string(),
@@ -70,6 +104,20 @@ impl SessionService {
             publication_invocation,
             vec![node_run],
             messages,
+        );
+        workflow_run.set_invocation_context(
+            workflow.revision(),
+            queued_prompt
+                .map(|prompt| prompt.queue_id().to_string())
+                .or_else(|| {
+                    workflow_run
+                        .publication_invocation()
+                        .and_then(|invocation| invocation.queue_ref.clone())
+                }),
+            queued_prompt
+                .map(WorkflowQueuedPrompt::created_at_ms)
+                .unwrap_or_else(|| workflow_run.created_at_ms()),
+            queued_prompt.map(WorkflowQueuedPrompt::created_at_ms),
         );
         let session =
             self.store
@@ -528,13 +576,7 @@ impl SessionService {
                 queued_prompt.workflow_id(),
                 queued_prompt.endpoint_id(),
             )?;
-            let workflow_run = self.invoke_workflow_endpoint_with_publication_invocation(
-                session_id,
-                workflow.id(),
-                endpoint.id(),
-                queued_prompt.prompt().map(str::to_string),
-                queued_prompt.publication_invocation().cloned(),
-            )?;
+            let workflow_run = self.invoke_queued_workflow_endpoint(session_id, &queued_prompt)?;
             return Ok(Some((queued_prompt, workflow_run, workflow, endpoint)));
         }
     }

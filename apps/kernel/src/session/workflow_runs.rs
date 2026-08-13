@@ -13,12 +13,20 @@ use super::workflow_turns::WorkflowRunStatus;
 pub struct WorkflowRun {
     id: String,
     workflow_id: String,
+    #[serde(default)]
+    workflow_revision: u64,
     endpoint_id: String,
     entry_node_id: String,
     status: WorkflowRunStatus,
     invocation_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue_ref: Option<String>,
+    #[serde(default)]
+    received_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queued_at_ms: Option<u64>,
     active_node_run_id: Option<String>,
     node_runs: Vec<WorkflowNodeRun>,
     messages: Vec<WorkflowMessage>,
@@ -51,14 +59,22 @@ impl WorkflowRun {
         messages: Vec<WorkflowMessage>,
     ) -> Self {
         let active_node_run_id = node_runs.first().map(|run| run.id().to_string());
+        let created_at_ms = unix_epoch_ms();
+        let queue_ref = publication_invocation
+            .as_ref()
+            .and_then(|invocation| invocation.queue_ref.clone());
         Self {
             id: id.into(),
             workflow_id: workflow_id.into(),
+            workflow_revision: 0,
             endpoint_id: endpoint_id.into(),
             entry_node_id: entry_node_id.into(),
             status: WorkflowRunStatus::Created,
             invocation_prompt,
             publication_invocation,
+            queue_ref,
+            received_at_ms: created_at_ms,
+            queued_at_ms: None,
             active_node_run_id,
             node_runs,
             messages,
@@ -68,7 +84,7 @@ impl WorkflowRun {
             final_output_valid: None,
             final_output_warning: None,
             completed_by_node_run_id: None,
-            created_at_ms: unix_epoch_ms(),
+            created_at_ms,
             started_at_ms: None,
             completed_at_ms: None,
         }
@@ -80,6 +96,10 @@ impl WorkflowRun {
 
     pub fn workflow_id(&self) -> &str {
         &self.workflow_id
+    }
+
+    pub fn workflow_revision(&self) -> u64 {
+        self.workflow_revision
     }
 
     pub fn endpoint_id(&self) -> &str {
@@ -100,6 +120,35 @@ impl WorkflowRun {
 
     pub fn publication_invocation(&self) -> Option<&WorkflowPublicationInvocationEnvelope> {
         self.publication_invocation.as_ref()
+    }
+
+    pub fn queue_ref(&self) -> Option<&str> {
+        self.queue_ref.as_deref()
+    }
+
+    pub fn received_at_ms(&self) -> u64 {
+        self.received_at_ms
+    }
+
+    pub fn queued_at_ms(&self) -> Option<u64> {
+        self.queued_at_ms
+    }
+
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+
+    pub(crate) fn set_invocation_context(
+        &mut self,
+        workflow_revision: u64,
+        queue_ref: Option<String>,
+        received_at_ms: u64,
+        queued_at_ms: Option<u64>,
+    ) {
+        self.workflow_revision = workflow_revision;
+        self.queue_ref = queue_ref;
+        self.received_at_ms = received_at_ms;
+        self.queued_at_ms = queued_at_ms;
     }
 
     pub fn active_node_run_id(&self) -> Option<&str> {

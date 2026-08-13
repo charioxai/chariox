@@ -256,13 +256,7 @@ impl DaemonApp {
         WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)?;
         let workflow_run = self
             .sessions_mut()
-            .invoke_workflow_endpoint_with_publication_invocation(
-                session_id,
-                workflow.id(),
-                endpoint.id(),
-                queued_prompt.prompt().map(str::to_string),
-                queued_prompt.publication_invocation().cloned(),
-            )?;
+            .invoke_queued_workflow_endpoint(session_id, &queued_prompt)?;
         if let Err(error) =
             WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
         {
