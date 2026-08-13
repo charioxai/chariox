@@ -38,6 +38,8 @@ pub struct ConnectionRecord {
     pub metadata: Value,
     pub expires_at_ms: Option<u64>,
     pub updated_at_ms: u64,
+    pub last_successful_health_check_at_ms: Option<u64>,
+    pub last_accepted_event_at_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +94,9 @@ impl AegsStore {
                 encrypted_credential BLOB,
                 metadata_json TEXT NOT NULL,
                 expires_at_ms INTEGER,
-                updated_at_ms INTEGER NOT NULL
+                updated_at_ms INTEGER NOT NULL,
+                last_successful_health_check_at_ms INTEGER,
+                last_accepted_event_at_ms INTEGER
             );
             CREATE TABLE IF NOT EXISTS authorizations (
                 state_digest TEXT PRIMARY KEY NOT NULL,
@@ -119,6 +123,7 @@ impl AegsStore {
         )?;
         migrate_subscription_owner(&connection)?;
         migrate_connection_owner(&connection)?;
+        migrate_connection_lifecycle_timestamps(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -693,7 +698,8 @@ impl AegsStore {
             .query_row(
                 "
                 SELECT connection_id, owner_id, provider, status, encrypted_credential,
-                       metadata_json, expires_at_ms, updated_at_ms
+                       metadata_json, expires_at_ms, updated_at_ms,
+                       last_successful_health_check_at_ms, last_accepted_event_at_ms
                 FROM connections WHERE connection_id = ?1
                 ",
                 params![connection_id],
@@ -708,6 +714,12 @@ impl AegsStore {
                         metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
                         expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
                         updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                        last_successful_health_check_at_ms: row
+                            .get::<_, Option<i64>>(8)?
+                            .map(|value| value.max(0) as u64),
+                        last_accepted_event_at_ms: row
+                            .get::<_, Option<i64>>(9)?
+                            .map(|value| value.max(0) as u64),
                     })
                 },
             )
@@ -755,7 +767,8 @@ impl AegsStore {
         let mut statement = connection
             .prepare(
                 "SELECT connection_id, owner_id, provider, status, encrypted_credential,
-                        metadata_json, expires_at_ms, updated_at_ms
+                        metadata_json, expires_at_ms, updated_at_ms,
+                        last_successful_health_check_at_ms, last_accepted_event_at_ms
                  FROM connections WHERE owner_id = ?1 ORDER BY updated_at_ms DESC, connection_id",
             )
             .map_err(|error| error.to_string())?;
@@ -771,6 +784,12 @@ impl AegsStore {
                     metadata: serde_json::from_str(&metadata_json).unwrap_or(Value::Null),
                     expires_at_ms: row.get::<_, Option<i64>>(6)?.map(|value| value as u64),
                     updated_at_ms: row.get::<_, i64>(7)?.max(0) as u64,
+                    last_successful_health_check_at_ms: row
+                        .get::<_, Option<i64>>(8)?
+                        .map(|value| value.max(0) as u64),
+                    last_accepted_event_at_ms: row
+                        .get::<_, Option<i64>>(9)?
+                        .map(|value| value.max(0) as u64),
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -797,6 +816,50 @@ impl AegsStore {
             )
             .map(|changed| changed > 0)
             .map_err(|error| error.to_string())
+    }
+
+    pub fn mark_connection_health(
+        &self,
+        connection_id: &str,
+        checked_at_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = connection
+            .execute(
+                "UPDATE connections SET last_successful_health_check_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, checked_at_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("the provider connection was not found".to_string());
+        }
+        Ok(())
+    }
+
+    pub fn mark_connection_event_accepted(
+        &self,
+        connection_id: &str,
+        accepted_at_ms: u64,
+    ) -> Result<(), String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS store lock was poisoned".to_string())?;
+        let changed = connection
+            .execute(
+                "UPDATE connections SET last_accepted_event_at_ms = ?2
+                 WHERE connection_id = ?1",
+                params![connection_id, accepted_at_ms as i64],
+            )
+            .map_err(|error| error.to_string())?;
+        if changed == 0 {
+            return Err("the provider connection was not found".to_string());
+        }
+        Ok(())
     }
 
     pub fn update_connection_credential(
@@ -953,6 +1016,32 @@ fn migrate_connection_owner(connection: &Connection) -> Result<(), rusqlite::Err
     Ok(())
 }
 
+fn migrate_connection_lifecycle_timestamps(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(connections)")?;
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns
+        .iter()
+        .any(|column| column == "last_successful_health_check_at_ms")
+    {
+        connection.execute(
+            "ALTER TABLE connections ADD COLUMN last_successful_health_check_at_ms INTEGER",
+            [],
+        )?;
+    }
+    if !columns
+        .iter()
+        .any(|column| column == "last_accepted_event_at_ms")
+    {
+        connection.execute(
+            "ALTER TABLE connections ADD COLUMN last_accepted_event_at_ms INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1052,6 +1141,28 @@ mod tests {
             .unwrap();
         assert_eq!(subscriptions.len(), 1);
         assert_eq!(subscriptions[0].binding_id, "binding-active");
+    }
+
+    #[test]
+    fn connection_lifecycle_timestamps_are_durable() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection(
+                "installation-1",
+                "kernel-a",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        store.mark_connection_health("installation-1", 20).unwrap();
+        store
+            .mark_connection_event_accepted("installation-1", 30)
+            .unwrap();
+
+        let connection = store.connection("installation-1").unwrap().unwrap();
+        assert_eq!(connection.last_successful_health_check_at_ms, Some(20));
+        assert_eq!(connection.last_accepted_event_at_ms, Some(30));
     }
 
     #[test]

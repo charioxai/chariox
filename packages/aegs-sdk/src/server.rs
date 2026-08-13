@@ -963,6 +963,7 @@ impl AegsServer {
                     if !interest_keys.insert(subscription.event_interest_key.clone()) {
                         continue;
                     }
+                    let connection_id = subscription.connection_id.clone();
                     let event = PublishEventRequest {
                         producer_id: self.producer_id.clone(),
                         event_interest_key: subscription.event_interest_key,
@@ -976,7 +977,19 @@ impl AegsServer {
                         ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                     };
                     match self.publisher.publish(event).await {
-                        Ok(response) => responses.push(response),
+                        Ok(response) => {
+                            if let Err(message) = self
+                                .store
+                                .mark_connection_event_accepted(&connection_id, now_ms())
+                            {
+                                return error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "store_failed",
+                                    message,
+                                );
+                            }
+                            responses.push(response)
+                        }
                         Err(message) => {
                             return error(StatusCode::BAD_GATEWAY, "aeds_rejected", message)
                         }
@@ -1073,6 +1086,7 @@ impl AegsServer {
             if !interest_keys.insert(subscription.event_interest_key.clone()) {
                 continue;
             }
+            let accepted_connection_id = subscription.connection_id.clone();
             self.publisher
                 .publish(PublishEventRequest {
                     producer_id: self.producer_id.clone(),
@@ -1087,6 +1101,8 @@ impl AegsServer {
                     ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                 })
                 .await?;
+            self.store
+                .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
         }
         let accepted = !interest_keys.is_empty();
         Ok(AegsConnectionTestEventResponse {
@@ -1142,8 +1158,8 @@ fn baseline_connection_inspection(
         lifecycle_state,
         scopes: Vec::new(),
         resources: Vec::new(),
-        last_successful_health_check_at_ms: None,
-        last_accepted_event_at_ms: None,
+        last_successful_health_check_at_ms: connection.last_successful_health_check_at_ms,
+        last_accepted_event_at_ms: connection.last_accepted_event_at_ms,
         problem_code: None,
         problem_message: None,
         recovery_action: None,
@@ -1340,6 +1356,8 @@ mod tests {
                 metadata: serde_json::Value::Null,
                 expires_at_ms: None,
                 updated_at_ms: 1,
+                last_successful_health_check_at_ms: None,
+                last_accepted_event_at_ms: None,
             },
         );
         assert_eq!(
