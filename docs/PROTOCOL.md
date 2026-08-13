@@ -649,22 +649,35 @@ Workflow endpoint direction:
 - once accepted by the kernel, the workflow should treat the resulting input message the same way regardless of source
 - disconnected subgraphs are allowed; a subgraph is reachable only if some endpoint points into it
 
-Published workflow direction:
+Workflow trigger and deployment direction:
 
-- a published workflow is a durable package plus a materialized publication
-  runtime session, not a live pointer to an editable workspace session
-- a publication package contains `publication.json`, `workflow.snapshot.json`,
-  `requirements.json`, optional generated app assets, and packaged scripts
-- a publication runtime session is kernel-owned, hidden from ordinary session
-  lists, and non-editable through normal workspace commands
-- a hook binds one transport to one workflow endpoint and one workflow queue
-  inside a published workflow runtime
-- multiple hooks MAY feed one published workflow runtime and therefore share
-  the same queue namespace and agents
-- serving a publication MUST validate provider/model bindings, extension
-  requirements, and credential requirements before it accepts traffic
-- if the captured provider/model is unavailable, a local binding may substitute
-  another available provider/model without mutating the exported package
+- HTTP, schedule, and event-notification triggers created on the current kernel
+  remain attached to the editable source workflow and its source session
+- accepting a trigger invocation MUST enqueue it through the workflow endpoint's
+  normal queue path; it MUST NOT create a hidden session, cloned agents, or a
+  separate queue namespace
+- all workflows in one session continue to share the session-level serial
+  execution arbiter, so prompts from different endpoints and triggers cannot run
+  concurrently against shared agents
+- a local HTTP gateway is an ingress process for a source workflow trigger. It
+  resolves the current publication definition from the kernel for each request
+  and invokes the existing source session; starting the gateway does not export
+  or materialize a workflow package
+- multiple triggers MAY feed one workflow and therefore share its agents and
+  configured queue namespace
+- exporting or deploying a workflow is the boundary that captures an immutable
+  package. A publication package contains `publication.json`,
+  `workflow.snapshot.json`, `requirements.json`, optional generated app assets,
+  and packaged scripts
+- a packaged/self-hosted or Chariox-hosted deployment materializes its own
+  kernel-owned session in the destination kernel. That deployed session is
+  independent from the source session because it is a separate execution
+  environment, not because a trigger was created
+- serving either a live source trigger or a deployed package MUST validate
+  provider/model bindings, extension requirements, and credential requirements
+  before it accepts traffic
+- if a packaged provider/model is unavailable, a deployment binding may
+  substitute another available provider/model without mutating the package
 - Cloud publication deployment is a control-plane record plus a runtime backend.
   It is not a new workflow authority and does not replace the kernel-owned
   publication runtime session.
