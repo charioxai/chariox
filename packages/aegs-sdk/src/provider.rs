@@ -1,10 +1,12 @@
 use std::collections::HashMap;
 
 use chariox_event_protocol::{
-    AegsAuthorizationFlow, AegsConnectionInspection, AegsProviderResourcePage,
-    AegsProviderResourceQuery,
+    AegsAuthorizationFlow, AegsConnectionInspection, AegsConnectionLifecycleState,
+    AegsProviderResourcePage, AegsProviderResourceQuery,
 };
 use serde_json::Value;
+
+use crate::{AegsStore, ConnectionRecord, SubscriptionClaim};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthorizationCallback {
@@ -154,6 +156,57 @@ pub trait AegsProvider: Send + Sync {
     fn allows_direct_emit(&self) -> bool {
         false
     }
+}
+
+/// Projects durable connection state without claiming provider health that was not observed.
+/// Production providers can enrich this baseline with scopes, resources, recovery guidance,
+/// and a fresh health timestamp.
+pub fn baseline_provider_connection_inspection(
+    generator_id: &str,
+    connection: &ConnectionRecord,
+    test_event_supported: bool,
+) -> AegsConnectionInspection {
+    let lifecycle_state = match connection.status.as_str() {
+        "pending" => AegsConnectionLifecycleState::AuthorizationRequired,
+        "ready" => AegsConnectionLifecycleState::Connected,
+        "expired" => AegsConnectionLifecycleState::ReauthorizationRequired,
+        "revoked" => AegsConnectionLifecycleState::Disconnected,
+        "unavailable" => AegsConnectionLifecycleState::ProviderUnreachable,
+        _ => AegsConnectionLifecycleState::Degraded,
+    };
+    AegsConnectionInspection {
+        generator_id: generator_id.to_string(),
+        connection_id: connection.connection_id.clone(),
+        lifecycle_state,
+        scopes: Vec::new(),
+        resources: Vec::new(),
+        last_successful_health_check_at_ms: connection.last_successful_health_check_at_ms,
+        last_accepted_event_at_ms: connection.last_accepted_event_at_ms,
+        problem_code: None,
+        problem_message: None,
+        recovery_action: None,
+        test_event_supported: test_event_supported && connection.status == "ready",
+    }
+}
+
+/// Chooses the active workflow trigger context for a provider-authentic test event.
+pub fn select_test_subscription(
+    store: &AegsStore,
+    connection_id: &str,
+    requested_event_type: Option<&str>,
+    supported_event_types: &[&str],
+) -> Result<Option<SubscriptionClaim>, String> {
+    if requested_event_type.is_some_and(|value| !supported_event_types.contains(&value)) {
+        return Err("the requested event type is not supported".to_string());
+    }
+    Ok(store
+        .active_subscriptions_for_connection(connection_id)?
+        .into_iter()
+        .find(|subscription| {
+            requested_event_type
+                .map(|requested| subscription.event_type == requested)
+                .unwrap_or(true)
+        }))
 }
 
 pub fn metadata_matches_filter(metadata: &Value, filter: &Value) -> bool {

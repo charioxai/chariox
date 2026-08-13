@@ -7,11 +7,10 @@ use std::time::Duration;
 use bytes::Bytes;
 use chariox_event_protocol::{
     AegsAuthorizationStartRequest, AegsConnectionInspection, AegsConnectionInspectionRequest,
-    AegsConnectionLifecycleState, AegsConnectionPage, AegsConnectionQuery,
-    AegsConnectionReconnectRequest, AegsConnectionRefreshRequest, AegsConnectionRevokeRequest,
-    AegsConnectionRevokeResponse, AegsConnectionStatus, AegsConnectionSummary,
-    AegsConnectionTestEventRequest, AegsConnectionTestEventResponse, AegsProviderResourceQuery,
-    PublishEventRequest,
+    AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
+    AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
+    AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
+    AegsConnectionTestEventResponse, AegsProviderResourceQuery, PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -22,8 +21,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 use crate::{
-    metadata_matches_filter, now_ms, AedsPublisher, AegsProvider, AegsStore,
-    ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION, MAX_WEBHOOK_BYTES,
+    baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
+    AegsProvider, AegsStore, ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION,
+    MAX_WEBHOOK_BYTES,
 };
 
 #[derive(Clone)]
@@ -1051,8 +1051,9 @@ impl AegsServer {
                 message,
             )
         })?;
-        let inspection = provider_inspection
-            .unwrap_or_else(|| baseline_connection_inspection(&self.producer_id, &connection));
+        let inspection = provider_inspection.unwrap_or_else(|| {
+            baseline_provider_connection_inspection(&self.producer_id, &connection, false)
+        });
         if inspection.generator_id != self.producer_id
             || inspection.connection_id != connection.connection_id
         {
@@ -1137,33 +1138,6 @@ impl AegsServer {
             )));
         }
         Ok(())
-    }
-}
-
-fn baseline_connection_inspection(
-    generator_id: &str,
-    connection: &crate::ConnectionRecord,
-) -> AegsConnectionInspection {
-    let lifecycle_state = match connection_status(&connection.status, connection.expires_at_ms) {
-        AegsConnectionStatus::Pending => AegsConnectionLifecycleState::AuthorizationRequired,
-        AegsConnectionStatus::Ready => AegsConnectionLifecycleState::Connected,
-        AegsConnectionStatus::Expired => AegsConnectionLifecycleState::ReauthorizationRequired,
-        AegsConnectionStatus::Revoked => AegsConnectionLifecycleState::Disconnected,
-        AegsConnectionStatus::Unavailable => AegsConnectionLifecycleState::ProviderUnreachable,
-        AegsConnectionStatus::Error => AegsConnectionLifecycleState::Degraded,
-    };
-    AegsConnectionInspection {
-        generator_id: generator_id.to_string(),
-        connection_id: connection.connection_id.clone(),
-        lifecycle_state,
-        scopes: Vec::new(),
-        resources: Vec::new(),
-        last_successful_health_check_at_ms: connection.last_successful_health_check_at_ms,
-        last_accepted_event_at_ms: connection.last_accepted_event_at_ms,
-        problem_code: None,
-        problem_message: None,
-        recovery_action: None,
-        test_event_supported: false,
     }
 }
 
@@ -1320,6 +1294,7 @@ fn error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chariox_event_protocol::AegsConnectionLifecycleState;
 
     #[test]
     fn query_parser_rejects_duplicate_callback_parameters() {
@@ -1345,7 +1320,7 @@ mod tests {
 
     #[test]
     fn baseline_inspection_never_claims_provider_health_or_test_support() {
-        let inspection = baseline_connection_inspection(
+        let inspection = baseline_provider_connection_inspection(
             "dev.chariox.github",
             &crate::ConnectionRecord {
                 connection_id: "connection-1".to_string(),
@@ -1359,6 +1334,7 @@ mod tests {
                 last_successful_health_check_at_ms: None,
                 last_accepted_event_at_ms: None,
             },
+            false,
         );
         assert_eq!(
             inspection.lifecycle_state,

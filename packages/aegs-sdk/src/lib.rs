@@ -16,8 +16,9 @@ pub use oauth::{
     OAuthAuthorization, OAuthConfig, OAuthCredential, OAuthDefaults, OAuthTokenProtocol,
 };
 pub use provider::{
-    metadata_matches_filter, AegsProvider, AuthorizationCallback, ControlWebhookResponse,
-    NormalizedEvent, WebhookInput, WebhookRoute,
+    baseline_provider_connection_inspection, metadata_matches_filter, select_test_subscription,
+    AegsProvider, AuthorizationCallback, ControlWebhookResponse, NormalizedEvent, WebhookInput,
+    WebhookRoute,
 };
 pub use publisher::AedsPublisher;
 pub use server::{read_secret, run_from_environment};

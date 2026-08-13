@@ -280,9 +280,10 @@ pub enum AegsConnectionStatus {
 /// User-facing lifecycle state for an installed provider connection. This is deliberately
 /// separate from `AegsConnectionStatus`: the latter is the provider record's wire status,
 /// while this state describes the recovery or use action the kernel can present to a user.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AegsConnectionLifecycleState {
+    #[default]
     NotInstalled,
     AuthorizationRequired,
     Connecting,
@@ -295,12 +296,6 @@ pub enum AegsConnectionLifecycleState {
     Unused,
     Disconnecting,
     Disconnected,
-}
-
-impl Default for AegsConnectionLifecycleState {
-    fn default() -> Self {
-        Self::NotInstalled
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
