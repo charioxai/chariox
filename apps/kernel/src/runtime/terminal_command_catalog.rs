@@ -366,31 +366,31 @@ mod tests {
                 "workflow-code-source-export-directory",
                 "/workflow code source export-directory ",
             ),
-            ("workflow-publication-list", "/workflow publication list"),
+            ("workflow-trigger-list", "/workflow trigger list"),
             (
-                "workflow-publication-create",
-                "/workflow publication create ",
+                "workflow-trigger-create",
+                "/workflow trigger create ",
             ),
-            ("workflow-publication-show", "/workflow publication show "),
+            ("workflow-trigger-show", "/workflow trigger show "),
             (
-                "workflow-publication-export",
-                "/workflow publication export ",
-            ),
-            (
-                "workflow-publication-config-show",
-                "/workflow publication config show ",
+                "workflow-trigger-export",
+                "/workflow trigger export ",
             ),
             (
-                "workflow-publication-config-set",
-                "/workflow publication config set ",
+                "workflow-trigger-config-show",
+                "/workflow trigger config show ",
             ),
             (
-                "workflow-publication-config-clear",
-                "/workflow publication config clear ",
+                "workflow-trigger-config-set",
+                "/workflow trigger config set ",
             ),
             (
-                "workflow-publication-disable",
-                "/workflow publication disable ",
+                "workflow-trigger-config-clear",
+                "/workflow trigger config clear ",
+            ),
+            (
+                "workflow-trigger-disable",
+                "/workflow trigger disable ",
             ),
             ("workflow-registry-list", "/workflow registry list"),
             ("workflow-registry-get", "/workflow registry get "),
@@ -631,34 +631,34 @@ mod tests {
     }
 
     #[test]
-    fn terminal_command_catalog_registers_workflow_publication_lifecycle() {
+    fn terminal_command_catalog_registers_workflow_trigger_lifecycle() {
         let catalog = terminal_command_catalog().expect("catalog should load");
         let workflow = catalog
             .nodes
             .iter()
             .find(|node| node.id == "workflow")
             .expect("workflow command should be present");
-        let publication = workflow
+        let trigger = workflow
             .children
             .iter()
-            .find(|node| node.id == "workflow-publication")
-            .expect("workflow publication commands should be present");
+            .find(|node| node.id == "workflow-trigger")
+            .expect("workflow trigger commands should be present");
 
-        assert_eq!(publication.value, "/workflow publication ");
+        assert_eq!(trigger.value, "/workflow trigger ");
         assert_eq!(
-            publication
+            trigger
                 .children
                 .iter()
                 .map(|node| node.value.as_str())
                 .collect::<Vec<_>>(),
             vec![
-                "/workflow publication list",
-                "/workflow publication create ",
-                "/workflow publication show ",
-                "/workflow publication export ",
-                "/workflow publication config ",
-                "/workflow publication event ",
-                "/workflow publication disable ",
+                "/workflow trigger list",
+                "/workflow trigger create ",
+                "/workflow trigger show ",
+                "/workflow trigger export ",
+                "/workflow trigger config ",
+                "/workflow trigger event ",
+                "/workflow trigger disable ",
             ]
         );
     }
@@ -673,23 +673,23 @@ mod tests {
             .and_then(|node| {
                 node.children
                     .iter()
-                    .find(|child| child.id == "workflow-publication")
+                    .find(|child| child.id == "workflow-trigger")
             })
             .and_then(|node| {
                 node.children
                     .iter()
-                    .find(|child| child.id == "workflow-publication-event")
+                    .find(|child| child.id == "workflow-trigger-event")
             })
             .expect("workflow event publication commands should be present");
 
         assert!(event
             .children
             .iter()
-            .any(|node| node.value == "/workflow publication event install "));
+            .any(|node| node.value == "/workflow trigger event install "));
         assert!(event
             .children
             .iter()
-            .any(|node| node.value == "/workflow publication event resources "));
+            .any(|node| node.value == "/workflow trigger event resources "));
 
         let notifications = catalog
             .nodes
