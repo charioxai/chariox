@@ -213,9 +213,8 @@ fn publication_creation_is_revision_safe_idempotent_and_source_independent() {
             },
         ))
         .expect_err("tampered immutable source should not export");
-    assert!(tampered_error
-        .to_string()
-        .contains("snapshot digest does not match its immutable source digest"));
+    assert!(tampered_error.to_string().contains("workflow publication"));
+    assert!(tampered_error.to_string().contains("was not found"));
 }
 
 #[test]

@@ -278,6 +278,28 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
     assert!(binding_template.contains("\"connection_id\": null"));
     assert!(!binding_template.contains("connection-local"));
+    let publication_json = package_json_file(&package_files, "publication.json");
+    assert_eq!(
+        publication_json["hooks"][0]["transport"],
+        serde_json::json!("event_based")
+    );
+    assert!(publication_json["hooks"][0].get("route").is_none());
+    assert!(publication_json["hooks"][0].get("methods").is_none());
+    assert!(publication_json["hooks"][0].get("parser").is_none());
+    assert!(publication_json["hooks"][0].get("mode").is_none());
+    assert!(!package_files
+        .iter()
+        .any(|file| file.path.starts_with("public/")));
+    let deployment_contract = package_json_file(&package_files, "deployment-contract.json");
+    assert_eq!(
+        deployment_contract["routes"][0]["transport"],
+        serde_json::json!("event_based")
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["methods"],
+        serde_json::json!([])
+    );
+    assert!(deployment_contract["routes"][0].get("path").is_none());
 
     let tested = match harness
         .dispatch(LocalDaemonRequest::TestWorkflowEventBinding(
