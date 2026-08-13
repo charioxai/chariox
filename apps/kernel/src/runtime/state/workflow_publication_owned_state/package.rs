@@ -749,29 +749,20 @@ fn default_publication_route(_publication_value: &serde_json::Value) -> &'static
 }
 
 fn default_publication_methods(publication_value: &serde_json::Value) -> serde_json::Value {
-    match hook_transport(publication_value).as_str() {
-        Some("api_sse_json" | "mcp") => serde_json::json!(["POST"]),
-        Some("websocket_json") => serde_json::json!([]),
-        _ => serde_json::json!(["GET", "POST"]),
-    }
+    let _ = publication_value;
+    serde_json::json!(["GET", "POST"])
 }
 
 fn default_publication_parser(publication_value: &serde_json::Value) -> Option<serde_json::Value> {
-    match hook_transport(publication_value).as_str() {
-        Some("websocket_json" | "mcp") => None,
-        Some("api_sse_json") => Some(serde_json::json!({"kind": "json"})),
-        _ => {
-            let route = string_field(publication_value, "route")
-                .unwrap_or_else(|| default_publication_route(publication_value));
-            if route == "/" {
-                return Some(serde_json::json!({"kind": "query_params"}));
-            }
-            Some(serde_json::json!({
-                "kind": "path_template",
-                "template": route_prompt_template(route),
-            }))
-        }
+    let route = string_field(publication_value, "route")
+        .unwrap_or_else(|| default_publication_route(publication_value));
+    if route == "/" {
+        return Some(serde_json::json!({"kind": "query_params"}));
     }
+    Some(serde_json::json!({
+        "kind": "path_template",
+        "template": route_prompt_template(route),
+    }))
 }
 
 fn route_prompt_template(route: &str) -> String {
@@ -790,11 +781,8 @@ fn route_prompt_template(route: &str) -> String {
 }
 
 fn default_publication_mode(publication_value: &serde_json::Value) -> &'static str {
-    match hook_transport(publication_value).as_str() {
-        Some("api_sse_json" | "websocket_json") => "async",
-        Some("mcp") => "sync",
-        _ => "async",
-    }
+    let _ = publication_value;
+    "async"
 }
 
 fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
@@ -846,11 +834,9 @@ mod digest_tests {
     }
 
     #[test]
-    fn publication_package_defaults_every_ingress_transport_to_root() {
-        for transport in ["human_http", "api_sse_json", "websocket_json", "mcp"] {
-            let publication = serde_json::json!({ "transport": { "kind": transport } });
-            assert_eq!(default_publication_route(&publication), "/", "{transport}");
-        }
+    fn publication_package_defaults_http_ingress_to_root() {
+        let publication = serde_json::json!({ "transport": { "kind": "human_http" } });
+        assert_eq!(default_publication_route(&publication), "/");
     }
 
     fn package_file(

@@ -224,6 +224,7 @@ export function publicationConfigFromPackage(
   if (!endpointId) throw new Error("publication hook is missing endpoint_id")
   const traceExposure = validatePublicationTraceExposure(hook.trace_exposure ?? undefined, snapshot)
   const transport = publicationTransportKind(hook.transport)
+  assertWorkflowPublicationTransport(transport)
   const parser = hook.parser ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
     publication_id: hook.publication_id ?? publicationPackage.publication_id,
@@ -299,6 +300,7 @@ export function publicationConfigFromKernelRecord(
 ): WorkflowPublicationConfig {
   const traceExposure = asTraceExposure(publication.trace_exposure)
   const transport = publicationTransportKind(publication.transport)
+  assertWorkflowPublicationTransport(transport)
   const parser = asParserConfig(publication.parser) ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
     publication_id: publication.id,
@@ -415,25 +417,33 @@ function publicationTransportKind(value: unknown): string | undefined {
   return undefined
 }
 
+export function assertWorkflowPublicationTransport(transport: unknown): void {
+  const kind = publicationTransportKind(transport)
+  if (!kind || kind === "human_http" || kind === "schedule_only") return
+  if (kind === "api_sse_json" || kind === "websocket_json" || kind === "mcp") {
+    throw new Error(
+      `workflow publication transport \`${kind}\` was removed; use \`human_http\` with GET/POST`,
+    )
+  }
+  throw new Error(`unsupported workflow publication transport \`${kind}\``)
+}
+
 function defaultRouteForTransport(transport: string | undefined): string {
   return "/"
 }
 
 function defaultMethodsForTransport(transport: string | undefined): Array<"GET" | "POST"> | undefined {
-  if (transport === "api_sse_json" || transport === "mcp") return ["POST"]
-  if (transport === "websocket_json") return undefined
-  return ["GET"]
+  if (transport === "schedule_only") return undefined
+  return ["GET", "POST"]
 }
 
 function defaultParserForTransport(transport: string | undefined): ParserConfig | undefined {
-  if (transport === "websocket_json" || transport === "mcp") return undefined
-  if (!transport || transport === "human_http") return { kind: "query_params" }
-  return { kind: "json" }
+  if (transport === "schedule_only") return undefined
+  return { kind: "query_params" }
 }
 
 function defaultModeForTransport(transport: string | undefined): "sync" | "async" {
-  if (transport === "api_sse_json" || transport === "websocket_json") return "async"
-  return "sync"
+  return transport === "schedule_only" ? "sync" : "async"
 }
 
 function normalizePublicationMode(value: unknown): "sync" | "async" | undefined {

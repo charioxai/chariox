@@ -138,7 +138,7 @@ fn deployment_route(
             "scope": scope,
             "per_caller_ordering": per_caller_ordering,
         },
-        "streaming": matches!(transport.as_str(), Some("human_http" | "api_sse_json" | "websocket_json")),
+        "streaming": transport.as_str() == Some("human_http"),
         "timeout_ms": timeout_ms.unwrap_or(serde_json::Value::Null),
         "idempotency": "unspecified",
     });

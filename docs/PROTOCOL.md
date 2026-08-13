@@ -718,13 +718,17 @@ artifacts, outputs, or traces.
 
 Public deployment URL contract:
 
-- all transports are rooted at `public_base_url`
+- HTTP triggers are rooted at `public_base_url`
 - `GET /` opens the human/browser-compatible viewer or form
-- `GET /<prompt>` invokes `human_http` with an address-bar prompt path
-- `POST /invoke` invokes `api_sse_json`
-- `/.well-known/chariox/publication/ws` invokes `websocket_json`
-- `POST /mcp` invokes the MCP publication endpoint
+- `GET /<prompt>` invokes the workflow with an address-bar prompt path
+- `POST /invoke` invokes the workflow from a form or API request
 - `GET /.well-known/chariox/publication/status` returns publication status
+
+Workflow trigger V1 exposes HTTP GET/POST only. SSE remains an internal HTTP
+progress mechanism and is not a selectable trigger type. The former
+`api_sse_json`, `websocket_json`, and publication `mcp` transports are rejected
+with an explicit migration error. This removal does not affect MCP servers used
+by agents for tools, skills, or extensions.
 
 The external contract is the same for `local_runtime` and `hosted_container`.
 The caller should not infer execution location from the URL.
@@ -765,17 +769,10 @@ Publication event direction:
 - trace filtering is part of the publication runtime contract: clients and
   publication gateways must not infer or expose hidden workflow internals
   beyond the policy
-- browser-compatible transports share one publication viewer HTML app. The
-  viewer renders output/status on the left and exposed traces on the right, and
-  selects a small client-side adapter for the configured transport
-- `human_http` can invoke from an address-bar GET path or from the shared viewer
-  form; GET result pages subscribe to publication events by SSE
-- `api_sse_json` streams publication events directly from `POST /invoke`
-- `websocket_json` sends publication events over the WebSocket connection
-- the shared viewer can drive `api_sse_json` with browser `fetch` streaming and
-  can drive `websocket_json` over the publication WebSocket path
-- `mcp` maps publication progress/final output to MCP tool progress and result
-  concepts
+- HTTP triggers share one viewer HTML app. The viewer renders output/status on
+  the left and exposed traces on the right.
+- HTTP can invoke from an address-bar GET path or from the shared viewer form;
+  result pages receive publication progress through the internal SSE stream.
 
 Publication trace exposure policy:
 
@@ -813,22 +810,19 @@ Human HTTP renderable output:
 
 Remote terminal and Cloud invocation:
 
-- remote Chariox terminals must invoke a published workflow through its published
-  transport, not by directly calling the workflow endpoint in the kernel
-- when a local-only published workflow is invoked remotely, the kernel/relay may
-  tunnel the transport request and response between the remote terminal and the
-  local publication server
+- remote Chariox terminals invoke an HTTP trigger through its configured ingress,
+  not by bypassing that trigger and directly calling the workflow endpoint
+- when a local-only HTTP trigger is invoked remotely, the kernel/relay may tunnel
+  the HTTP request and response between the remote terminal and the local server
 - the relay remains transport-only and must not inspect workflow prompts,
   artifacts, outputs, or published transport payloads
-- Cloud publication ingress is the public runtime ingress for deployed
-  publications. It forwards HTTP, SSE, WebSocket, and MCP traffic to the active
-  backend target and must preserve streaming semantics.
+- Cloud publication ingress forwards HTTP and its internal SSE progress stream
+  to the active backend target and must preserve streaming semantics.
 - Scalingo Cloud should not proxy runtime publication streams. It may create,
   list, start, stop, and observe deployment metadata, and the web terminal may
   embed `public_base_url` in the central panel.
-- If the active backend is unavailable, transports return transport-appropriate
-  unavailable responses: human HTTP unavailable page, API SSE structured
-  unavailable event/error, WebSocket close reason, and MCP structured error.
+- If the active backend is unavailable, HTTP returns an unavailable page or a
+  structured invocation error as appropriate to the request.
 - Hosted containers receive scoped deployment/runtime identity only. They must
   not receive a general Chariox Cloud user account token.
 - Publication images and packages must not include provider credentials. Real

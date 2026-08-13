@@ -11,14 +11,10 @@
   },
   "dependencies": {
     "@chariox/kernel-client": "workspace:*",
-    "fastify": "^5.1.0",
-    "ws": "^8.18.3"
+    "fastify": "^5.1.0"
   },
   "bin": {
     "chariox-workflow-gateway": "dist/index.js",
     "chariox-workflow-call": "dist/workflow-call.js"
-  },
-  "devDependencies": {
-    "@types/ws": "^8.5.13"
   }
 }

@@ -1092,50 +1092,10 @@ fn validate_workflow_publication_options(
             validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
             validate_human_http_publication_parser(parser)?;
         }
-        "api_sse_json" => {
-            validate_workflow_publication_methods(&kind, methods, &["POST"])?;
-            validate_json_publication_parser(&kind, parser)?;
-            if let Some(mode) = mode {
-                if mode != "async" {
-                    return invalid_workflow_publication_option(
-                        "api_sse_json publications always use async response streaming",
-                    );
-                }
-            }
-        }
-        "websocket_json" => {
-            if !methods.is_empty() {
-                return invalid_workflow_publication_option(
-                    "websocket_json publications do not support HTTP method overrides",
-                );
-            }
-            if parser.is_some() {
-                return invalid_workflow_publication_option(
-                    "websocket_json publications read input from WebSocket invoke messages",
-                );
-            }
-            if let Some(mode) = mode {
-                if mode != "async" {
-                    return invalid_workflow_publication_option(
-                        "websocket_json publications always use async event streaming",
-                    );
-                }
-            }
-        }
-        "mcp" => {
-            validate_workflow_publication_methods(&kind, methods, &["POST"])?;
-            if parser.is_some() {
-                return invalid_workflow_publication_option(
-                    "mcp publications read input from MCP tool arguments",
-                );
-            }
-            if let Some(mode) = mode {
-                if mode != "sync" {
-                    return invalid_workflow_publication_option(
-                        "mcp publications always return a synchronous tool result",
-                    );
-                }
-            }
+        "api_sse_json" | "websocket_json" | "mcp" => {
+            return invalid_workflow_publication_option(&format!(
+                "workflow publication transport `{kind}` was removed; use `human_http` with GET/POST (SSE remains an internal HTTP progress mechanism)",
+            ));
         }
         _ => {
             return invalid_workflow_publication_option(&format!(
@@ -1220,21 +1180,6 @@ fn validate_workflow_publication_methods(
         }
     }
     Ok(())
-}
-
-fn validate_json_publication_parser(
-    transport: &str,
-    parser: &Option<serde_json::Value>,
-) -> Result<(), DaemonError> {
-    let Some(parser) = parser else {
-        return Ok(());
-    };
-    if parser.get("kind").and_then(|value| value.as_str()) == Some("json") {
-        return Ok(());
-    }
-    invalid_workflow_publication_option(&format!(
-        "{transport} publications only support JSON body input"
-    ))
 }
 
 fn validate_human_http_publication_parser(

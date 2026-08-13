@@ -9,7 +9,6 @@ import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
   createServer,
-  createWebSocketReader,
   findWorkflowRunByInvocationRequestId,
   firstSetCookieValue,
   invokePublicationInput,
@@ -25,19 +24,16 @@ import {
   publicationForAgentAppInvocation,
   publicationInvocationEnvelope,
   publishedHttpConfig,
-  publishedTransportConfig,
   readFile,
   registerCloudPublicationDeploymentBackend,
   releaseAgentAppReplicaInvocation,
   rememberAgentAppInvocationRoute,
   rm,
   setOptionalEnv,
-  sseEventNames,
   test,
   tmpdir,
   visibleWorkflowRun,
   waitForCondition,
-  WebSocket,
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
@@ -193,9 +189,9 @@ test("GET publication status reports runtime binding", async () => {
   const { app } = buildServer({
     ...baseConfig,
     source_session_id: "source-session-1",
-    transport: "api_sse_json",
-    methods: ["POST"],
-    route: "/invoke",
+    transport: "human_http",
+    methods: ["GET", "POST"],
+    route: "/",
     mode: "async",
   }, {
     invokeWorkflow: async () => ({ accepted: true }),
@@ -217,10 +213,10 @@ test("GET publication status reports runtime binding", async () => {
       endpoint_ref: "endpoint-1",
       hook_id: null,
       queue_ref: "default",
-      transport: "api_sse_json",
+      transport: "human_http",
       mode: "async",
-      route: "/invoke",
-      methods: ["POST"],
+      route: "/",
+      methods: ["GET", "POST"],
       package: { materialized: true, package_root: null, missing_files: [] },
       provider_readiness: [],
     })
@@ -433,60 +429,23 @@ test("gateway maps kernel-owned publication records to runtime config", async ()
   })
 })
 
-test("gateway defaults publication runtime config by transport", async () => {
-  const apiConfig = publicationConfigFromKernelRecord({
-    id: "pub-api",
+test("gateway defaults publication runtime config to HTTP V1", async () => {
+  const config = publicationConfigFromKernelRecord({
+    id: "pub-http",
     session_id: "session-1",
     workflow_id: "workflow-1",
     endpoint_id: "endpoint-1",
-    alias: "api",
+    alias: "http",
     enabled: true,
-    transport: { kind: "api_sse_json" },
+    transport: { kind: "human_http" },
     created_by_user_id: "local",
     created_at_ms: 0,
     updated_at_ms: 0,
   }, "ws://kernel")
-  assert.equal(apiConfig.route, "/")
-  assert.deepEqual(apiConfig.methods, ["POST"])
-  assert.deepEqual(apiConfig.parser, { kind: "json" })
-  assert.equal(apiConfig.mode, "async")
-
-  const websocketConfig = publicationConfigFromKernelRecord({
-    id: "pub-ws",
-    session_id: "session-1",
-    workflow_id: "workflow-1",
-    endpoint_id: "endpoint-1",
-    alias: "ws",
-    enabled: true,
-    transport: { kind: "websocket_json" },
-    created_by_user_id: "local",
-    created_at_ms: 0,
-    updated_at_ms: 0,
-  }, "ws://kernel")
-  assert.equal(websocketConfig.route, "/")
-  assert.equal(websocketConfig.methods, undefined)
-  assert.equal(websocketConfig.parser, undefined)
-  assert.equal(websocketConfig.mode, "async")
-
-  for (const [transport, expectedParser] of [
-    ["human_http", { kind: "query_params" }],
-    ["mcp", undefined],
-  ] as const) {
-    const config = publicationConfigFromKernelRecord({
-      id: `pub-${transport}`,
-      session_id: "session-1",
-      workflow_id: "workflow-1",
-      endpoint_id: "endpoint-1",
-      alias: transport,
-      enabled: true,
-      transport: { kind: transport },
-      created_by_user_id: "local",
-      created_at_ms: 0,
-      updated_at_ms: 0,
-    }, "ws://kernel")
-    assert.equal(config.route, "/", transport)
-    assert.deepEqual(config.parser, expectedParser, transport)
-  }
+  assert.equal(config.route, "/")
+  assert.deepEqual(config.methods, ["GET", "POST"])
+  assert.deepEqual(config.parser, { kind: "query_params" })
+  assert.equal(config.mode, "async")
 })
 
 test("gateway can load publication config from kernel lookup", async () => {
