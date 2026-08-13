@@ -13,6 +13,7 @@ mod workflow_code_apply_run;
 mod workflow_code_artifact_imports;
 mod workflow_code_artifact_persistence;
 mod workflow_code_extensions_queues;
+mod workflow_code_source_roundtrip;
 mod workflow_code_validation_limits;
 mod workflow_event_publication;
 mod workflow_graph_runtime;

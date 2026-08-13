@@ -248,6 +248,31 @@ impl WorkflowDefinition {
         self.revision = self.revision.saturating_add(1);
     }
 
+    pub(crate) fn replace_code_structure(
+        &mut self,
+        alias: Option<String>,
+        prompt: Option<String>,
+        flush_agent_context_before_run: bool,
+        max_concurrent: u32,
+        run_output_schema_ref: Option<String>,
+        schemas: Vec<WorkflowSchemaDefinition>,
+        nodes: Vec<WorkflowNodeDefinition>,
+        edges: Vec<WorkflowEdgeDefinition>,
+        endpoints: Vec<WorkflowEndpointDefinition>,
+    ) {
+        self.alias = alias;
+        self.prompt = prompt;
+        self.flush_agent_context_before_run = flush_agent_context_before_run;
+        self.max_concurrent = max_concurrent.max(1);
+        self.run_output_schema_ref = run_output_schema_ref;
+        self.schemas = schemas;
+        self.nodes = nodes;
+        self.edges = edges;
+        self.endpoints = endpoints;
+        self.canvas_layout = None;
+        self.bump_revision();
+    }
+
     pub fn flush_agent_context_before_run(&self) -> bool {
         self.flush_agent_context_before_run
     }

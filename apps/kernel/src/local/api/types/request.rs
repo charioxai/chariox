@@ -235,6 +235,8 @@ pub enum LocalDaemonRequest {
     CreateWorkflowCodeArtifact(CreateWorkflowCodeArtifactRequest),
     UpdateWorkflowCodeArtifact(UpdateWorkflowCodeArtifactRequest),
     BindWorkflowCodeSource(BindWorkflowCodeSourceRequest),
+    RebuildWorkflowCodeSource(RebuildWorkflowCodeSourceRequest),
+    UpdateWorkflowCodeSourceFromWorkflow(UpdateWorkflowCodeSourceFromWorkflowRequest),
     GetWorkflowCodeArtifact(GetWorkflowCodeArtifactRequest),
     ListWorkflowCodeArtifacts(ListWorkflowCodeArtifactsRequest),
     DeleteWorkflowCodeArtifact(DeleteWorkflowCodeArtifactRequest),

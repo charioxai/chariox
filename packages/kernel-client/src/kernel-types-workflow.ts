@@ -203,6 +203,43 @@ export type WorkflowCodeApplyWarning = {
   handle?: string | null
 }
 
+export type WorkflowCodeStructuralChange = {
+  resource: string
+  current_count: number
+  source_count: number
+  restore_missing: number
+  remove_visual_only: number
+  replace_existing: number
+}
+
+export type WorkflowCodeRebuildPreview = {
+  workflow_id: string
+  current_workflow_revision: number
+  source_workflow_revision: number
+  source_sha256: string
+  diverged: boolean
+  restored_schemas: number
+  restored_nodes: number
+  restored_edges: number
+  restored_endpoints: number
+  restored_queues: number
+  restored_schedules: number
+  changes: WorkflowCodeStructuralChange[]
+}
+
+export type WorkflowCodeSourceUpdatePreview = {
+  workflow_id: string
+  workflow_revision: number
+  previous_source_sha256: string
+  generated_source_sha256: string
+  changed: boolean
+  previous_line_count: number
+  generated_line_count: number
+  added_lines: number
+  removed_lines: number
+  generated_source: string
+}
+
 export type WorkflowCodeProviderRebinding = {
   node: string
   provider: string
@@ -386,6 +423,34 @@ export type WorkflowCodeAppliedResponse = {
 
 export type WorkflowCodeSourceBoundResponse = {
   WorkflowCodeSourceBound: {
+    workflow: WorkflowDefinition
+    session: RuntimeSession
+  }
+}
+
+export type WorkflowCodeRebuildPreviewResponse = {
+  WorkflowCodeRebuildPreview: {
+    preview: WorkflowCodeRebuildPreview
+  }
+}
+
+export type WorkflowCodeSourceRebuiltResponse = {
+  WorkflowCodeSourceRebuilt: {
+    preview: WorkflowCodeRebuildPreview
+    result: WorkflowCodeApplyReport
+    session: RuntimeSession
+  }
+}
+
+export type WorkflowCodeSourceUpdatePreviewResponse = {
+  WorkflowCodeSourceUpdatePreview: {
+    preview: WorkflowCodeSourceUpdatePreview
+  }
+}
+
+export type WorkflowCodeSourceUpdatedResponse = {
+  WorkflowCodeSourceUpdated: {
+    preview: WorkflowCodeSourceUpdatePreview
     workflow: WorkflowDefinition
     session: RuntimeSession
   }

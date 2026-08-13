@@ -626,6 +626,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateWorkflowCodeArtifact(_) => "workflow_code_artifact.create",
         LocalDaemonRequest::UpdateWorkflowCodeArtifact(_) => "workflow_code_artifact.update",
         LocalDaemonRequest::BindWorkflowCodeSource(_) => "workflow_code_source.bind",
+        LocalDaemonRequest::RebuildWorkflowCodeSource(_) => "workflow_code_source.rebuild",
+        LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(_) => {
+            "workflow_code_source.update_from_workflow"
+        }
         LocalDaemonRequest::GetWorkflowCodeArtifact(_) => "workflow_code_artifact.get",
         LocalDaemonRequest::ListWorkflowCodeArtifacts(_) => "workflow_code_artifact.list",
         LocalDaemonRequest::DeleteWorkflowCodeArtifact(_) => "workflow_code_artifact.delete",

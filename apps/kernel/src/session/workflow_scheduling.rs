@@ -641,6 +641,31 @@ impl WorkflowScheduleDefinition {
         self.updated_at_ms = unix_epoch_ms();
     }
 
+    pub(crate) fn reconfigure(
+        &mut self,
+        endpoint_id: String,
+        queue_id: Option<String>,
+        trigger: WorkflowScheduleTrigger,
+        invocation_prompt: String,
+        overlap_policy: WorkflowScheduleOverlapPolicy,
+        max_runs: Option<u64>,
+        enabled: bool,
+    ) {
+        let now = unix_epoch_ms();
+        self.endpoint_id = endpoint_id;
+        self.queue_id = queue_id;
+        self.trigger = trigger;
+        self.invocation_prompt = invocation_prompt;
+        self.overlap_policy = overlap_policy;
+        self.max_runs = max_runs;
+        self.enabled = enabled;
+        self.next_run_at_ms = self
+            .trigger
+            .next_run_after_ms(now)
+            .unwrap_or_else(|_| now.saturating_add(60_000));
+        self.updated_at_ms = now;
+    }
+
     pub fn set_next_run_at_ms(&mut self, value: u64) {
         self.next_run_at_ms = value;
         self.updated_at_ms = unix_epoch_ms();

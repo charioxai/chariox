@@ -107,16 +107,27 @@ pub(super) fn workflow_code_bindings_for_existing_workflow(
         .iter()
         .filter(|schedule| schedule.workflow_id() == workflow.id())
         .collect::<Vec<_>>();
-    if queues.len() != definition.queues.len() || schedules.len() != definition.schedules.len() {
+    let queues_match = if definition.queues.is_empty() {
+        queues.len() == 1 && queues[0].alias() == "default"
+    } else {
+        queues.len() == definition.queues.len()
+    };
+    if !queues_match || schedules.len() != definition.schedules.len() {
         return Err(DaemonError::LocalTransport {
             operation: "workflow_code.bind",
             message: "generated source no longer matches workflow queues or schedules".to_string(),
         });
     }
-    for (source, current) in definition.queues.iter().zip(queues) {
+    if definition.queues.is_empty() {
         report
             .queue_ids
-            .insert(source.handle.clone(), current.id().to_string());
+            .insert("default".to_string(), queues[0].id().to_string());
+    } else {
+        for (source, current) in definition.queues.iter().zip(queues) {
+            report
+                .queue_ids
+                .insert(source.handle.clone(), current.id().to_string());
+        }
     }
     for (source, current) in definition.schedules.iter().zip(schedules) {
         report

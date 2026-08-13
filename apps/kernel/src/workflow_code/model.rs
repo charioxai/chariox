@@ -50,6 +50,46 @@ impl WorkflowCodeApplyReport {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeRebuildPreview {
+    pub workflow_id: String,
+    pub current_workflow_revision: u64,
+    pub source_workflow_revision: u64,
+    pub source_sha256: String,
+    pub diverged: bool,
+    pub restored_schemas: usize,
+    pub restored_nodes: usize,
+    pub restored_edges: usize,
+    pub restored_endpoints: usize,
+    pub restored_queues: usize,
+    pub restored_schedules: usize,
+    pub changes: Vec<WorkflowCodeStructuralChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeStructuralChange {
+    pub resource: String,
+    pub current_count: usize,
+    pub source_count: usize,
+    pub restore_missing: usize,
+    pub remove_visual_only: usize,
+    pub replace_existing: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeSourceUpdatePreview {
+    pub workflow_id: String,
+    pub workflow_revision: u64,
+    pub previous_source_sha256: String,
+    pub generated_source_sha256: String,
+    pub changed: bool,
+    pub previous_line_count: usize,
+    pub generated_line_count: usize,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    pub generated_source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeApplyWarning {
     pub code: String,
     pub message: String,

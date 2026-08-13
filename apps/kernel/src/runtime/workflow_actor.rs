@@ -335,6 +335,11 @@ fn workflow_session_id(request: &LocalDaemonRequest) -> Option<String> {
         LocalDaemonRequest::RunWorkflowCodeArtifact(request) => request.session_id.clone(),
         LocalDaemonRequest::CreateWorkflowCodeArtifact(request) => request.session_id.clone(),
         LocalDaemonRequest::UpdateWorkflowCodeArtifact(request) => request.session_id.clone(),
+        LocalDaemonRequest::BindWorkflowCodeSource(request) => request.session_id.clone(),
+        LocalDaemonRequest::RebuildWorkflowCodeSource(request) => request.session_id.clone(),
+        LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(request) => {
+            request.session_id.clone()
+        }
         LocalDaemonRequest::GetWorkflowCodeArtifact(request) => request.session_id.clone(),
         LocalDaemonRequest::ListWorkflowCodeArtifacts(request) => request.session_id.clone(),
         LocalDaemonRequest::DeleteWorkflowCodeArtifact(request) => request.session_id.clone(),
