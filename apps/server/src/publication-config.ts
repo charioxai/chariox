@@ -223,7 +223,7 @@ export function publicationConfigFromPackage(
   if (!workflowId) throw new Error("publication package is missing workflow_id")
   if (!endpointId) throw new Error("publication hook is missing endpoint_id")
   const traceExposure = validatePublicationTraceExposure(hook.trace_exposure ?? undefined, snapshot)
-  const transport = publicationTransportKind(hook.transport)
+  const transport = normalizedWorkflowPublicationTransport(hook.transport)
   assertWorkflowPublicationTransport(transport)
   const parser = hook.parser ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
@@ -235,8 +235,8 @@ export function publicationConfigFromPackage(
     hook_id: hook.id,
     queue_ref: hook.queue_ref ?? "default",
     kernel_endpoint: kernelEndpoint,
-    transport: hook.transport,
   }
+  if (transport) config.transport = transport
   if (transport !== "schedule_only") {
     config.route = hook.route ?? defaultRouteForTransport(transport)
     config.mode = hook.mode ?? defaultModeForTransport(transport)
@@ -299,7 +299,7 @@ export function publicationConfigFromKernelRecord(
   kernelEndpoint = defaultKernelEndpoint(),
 ): WorkflowPublicationConfig {
   const traceExposure = asTraceExposure(publication.trace_exposure)
-  const transport = publicationTransportKind(publication.transport)
+  const transport = normalizedWorkflowPublicationTransport(publication.transport)
   assertWorkflowPublicationTransport(transport)
   const parser = asParserConfig(publication.parser) ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
@@ -426,6 +426,11 @@ export function assertWorkflowPublicationTransport(transport: unknown): void {
     )
   }
   throw new Error(`unsupported workflow publication transport \`${kind}\``)
+}
+
+function normalizedWorkflowPublicationTransport(transport: unknown): string | undefined {
+  const kind = publicationTransportKind(transport)
+  return kind === "api_sse_json" ? "human_http" : kind
 }
 
 function defaultRouteForTransport(transport: string | undefined): string {

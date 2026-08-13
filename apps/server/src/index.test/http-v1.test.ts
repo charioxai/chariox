@@ -95,8 +95,27 @@ test("HTTP V1 retains supported request parsers", async () => {
   }
 })
 
-test("removed publication transports fail clearly while agent MCP remains out of scope", () => {
-  for (const transport of ["api_sse_json", "websocket_json", "mcp"] as const) {
+test("legacy API SSE migrates to HTTP while removed WebSocket and publication MCP fail clearly", () => {
+  const migrated = publicationConfigFromKernelRecord({
+    id: "publication-legacy-sse",
+    session_id: "session-1",
+    workflow_id: "workflow-1",
+    endpoint_id: "endpoint-1",
+    transport: { kind: "api_sse_json" },
+    route: "/invoke",
+    methods: ["POST"],
+    parser: { kind: "json" },
+    mode: "async",
+    enabled: true,
+    created_by_user_id: "user-1",
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  })
+  assert.equal(migrated.transport, "human_http")
+  assert.deepEqual(migrated.methods, ["POST"])
+  assert.deepEqual(migrated.parser, { kind: "json" })
+
+  for (const transport of ["websocket_json", "mcp"] as const) {
     assert.throws(
       () => buildServer({ ...baseConfig, transport }),
       new RegExp(`workflow publication transport .*${transport}.* was removed`),
