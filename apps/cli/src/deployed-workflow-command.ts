@@ -646,7 +646,6 @@ export function formatDeploymentProjectState(state: DeployedWorkflowProjectState
     `kind ${state.project.kind}`,
     `ownership ${state.project.ownershipMode ?? "internal_team"}`,
     `builder_account ${state.project.builderAccountId ?? "none"}`,
-    `origin ${state.project.origin}`,
     ...state.environments.flatMap((environment) => [
       `environment ${environment.id} ${environment.slug} ${environment.tier}`,
       `  runtime ${environment.runtimeMode}${environment.region ? ` ${environment.region}` : ""}`,
