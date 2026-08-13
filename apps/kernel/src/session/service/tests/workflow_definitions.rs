@@ -107,7 +107,7 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
 }
 
 #[test]
-fn restore_purges_unsupported_publication_records() {
+fn restore_purges_removed_publication_records() {
     let mut source = SessionService::new(&test_config());
     let session = source
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
