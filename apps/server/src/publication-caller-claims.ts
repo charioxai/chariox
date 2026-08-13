@@ -276,14 +276,7 @@ export function readPrivatePublicationCallerClaimsConfigFile(
 
 function consumePublicationCallerClaimsRuntimeConfigFromEnv(): NormalizedPublicationCallerClaimsRuntimeConfig | null {
   const configFile = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
-  const legacySecret = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET
-  const legacySecretFile = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
   delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
-  delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET
-  delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
-  if (legacySecret !== undefined || legacySecretFile !== undefined) {
-    throw new Error("hosted publication caller claims require a one-shot config file")
-  }
   const normalizedPath = configFile?.trim()
   if (configFile !== undefined && !normalizedPath) {
     throw new Error("publication caller claims config file path must not be empty")

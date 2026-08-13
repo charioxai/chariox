@@ -218,16 +218,16 @@ fn publication_creation_is_revision_safe_idempotent_and_source_independent() {
 }
 
 #[test]
-fn restored_sessions_drop_publications_without_immutable_snapshots() {
+fn restored_sessions_drop_invalid_publications_without_immutable_snapshots() {
     let harness = LocalRouterTestHarness::new();
     let graph = create_publication_test_graph(&harness, "legacy-source");
     let publication = crate::session::WorkflowPublicationDefinition::new(
-        "legacy-publication",
+        "invalid-publication",
         graph.session_id.clone(),
         graph.workflow_id.clone(),
         graph.endpoint_id.clone(),
         Some("default".to_string()),
-        Some("legacy-source".to_string()),
+        Some("invalid-source".to_string()),
         "ingress",
         Some("/legacy/*".to_string()),
         vec!["POST".to_string()],
@@ -243,7 +243,7 @@ fn restored_sessions_drop_publications_without_immutable_snapshots() {
     harness.with_app_mut(|app| {
         app.sessions_mut()
             .restore_workflow_publication(&graph.session_id, publication.clone(), None)
-            .expect("legacy publication should restore");
+            .expect("invalid publication fixture should restore");
     });
     harness.with_app_mut(|app| {
         let session = app
