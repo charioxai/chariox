@@ -277,9 +277,17 @@ impl EventConnectionRegistry {
                     .expires_at_ms
                     .is_some_and(|expires_at_ms| expires_at_ms <= now_ms)
             })
-            .map(|(key, _)| key.clone())
+            .map(|(key, record)| (key.clone(), record.authorization.connection_id.clone()))
             .collect::<Vec<_>>();
-        for (owner_user_id, authorization_id) in expired {
+        for ((owner_user_id, authorization_id), connection_id) in expired {
+            if let Some(connection_id) = connection_id {
+                self.expire_pending_connection_locked(
+                    &mut state,
+                    &owner_user_id,
+                    &connection_id,
+                    now_ms,
+                )?;
+            }
             self.append(
                 AUTHORIZATION_REMOVED,
                 &authorization_id,
@@ -291,6 +299,27 @@ impl EventConnectionRegistry {
             state
                 .authorizations
                 .remove(&(owner_user_id, authorization_id));
+        }
+        let orphaned_pending_connections = state
+            .connections
+            .iter()
+            .filter(|(_, record)| {
+                record.connection.status == crate::local::EventConnectionStatus::Pending
+                    && !state.authorizations.values().any(|authorization| {
+                        authorization.owner_user_id == record.owner_user_id
+                            && authorization.authorization.connection_id.as_deref()
+                                == Some(record.connection.connection_id.as_str())
+                    })
+            })
+            .map(|(key, _)| key.clone())
+            .collect::<Vec<_>>();
+        for (owner_user_id, connection_id) in orphaned_pending_connections {
+            self.expire_pending_connection_locked(
+                &mut state,
+                &owner_user_id,
+                &connection_id,
+                now_ms,
+            )?;
         }
         let mut authorizations = state
             .authorizations
@@ -332,6 +361,15 @@ impl EventConnectionRegistry {
             .expires_at_ms
             .is_some_and(|expires_at_ms| expires_at_ms <= unix_epoch_ms())
         {
+            let now_ms = unix_epoch_ms();
+            if let Some(connection_id) = record.authorization.connection_id.as_deref() {
+                self.expire_pending_connection_locked(
+                    &mut state,
+                    owner_user_id,
+                    connection_id,
+                    now_ms,
+                )?;
+            }
             self.append(
                 AUTHORIZATION_REMOVED,
                 authorization_id,
@@ -344,6 +382,28 @@ impl EventConnectionRegistry {
             return Ok(None);
         }
         Ok(Some(record.authorization))
+    }
+
+    fn expire_pending_connection_locked(
+        &self,
+        state: &mut RegistryState,
+        owner_user_id: &str,
+        connection_id: &str,
+        now_ms: u64,
+    ) -> Result<bool, DaemonError> {
+        let key = (owner_user_id.to_string(), connection_id.to_string());
+        let Some(mut record) = state.connections.get(&key).cloned() else {
+            return Ok(false);
+        };
+        if record.connection.status != crate::local::EventConnectionStatus::Pending {
+            return Ok(false);
+        }
+        record.connection.status = crate::local::EventConnectionStatus::Expired;
+        record.connection.updated_at_ms = now_ms;
+        record.connection.last_validated_at_ms = Some(now_ms);
+        self.append(CONNECTION_UPSERTED, connection_id, &record)?;
+        state.connections.insert(key, record);
+        Ok(true)
     }
 
     pub(crate) fn update_authorization(
@@ -589,6 +649,99 @@ mod tests {
             .authorization("user-a", &authorization.authorization_id)
             .unwrap()
             .is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn expired_authorizations_and_orphaned_pending_connections_require_reauthorization() {
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-authorization-expiry-test"));
+        let path = root.join("state.sqlite3");
+        let registry = EventConnectionRegistry::new(
+            DurableKernelStateStore::open(path.clone()).expect("store should initialize"),
+        );
+        registry
+            .upsert(
+                "user-a",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.github".to_string(),
+                    connection_id: "expired-connection".to_string(),
+                    status: AegsConnectionStatus::Pending,
+                    metadata: json!({"account": "chariox"}),
+                    expires_at_ms: None,
+                    updated_at_ms: 1,
+                },
+            )
+            .expect("pending connection should be stored");
+        let authorization = registry
+            .start_authorization(
+                "user-a",
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.github".to_string(),
+                    status: "user_action_required".to_string(),
+                    connection_id: Some("expired-connection".to_string()),
+                    authorization_url: Some("https://example.test/authorize".to_string()),
+                    user_code: None,
+                    expires_at_ms: Some(1),
+                },
+            )
+            .expect("authorization should be stored before expiry reconciliation");
+
+        assert!(registry
+            .reconcilable_authorizations()
+            .expect("expiry reconciliation should succeed")
+            .is_empty());
+        assert!(registry
+            .authorization("user-a", &authorization.authorization_id)
+            .expect("authorization lookup should succeed")
+            .is_none());
+        assert_eq!(
+            registry
+                .get("user-a", "expired-connection")
+                .expect("connection lookup should succeed")
+                .expect("connection should remain available for reconnect")
+                .status,
+            AegsConnectionStatus::Expired,
+        );
+
+        registry
+            .upsert(
+                "user-a",
+                chariox_event_protocol::AegsConnectionSummary {
+                    generator_id: "dev.chariox.github".to_string(),
+                    connection_id: "orphaned-connection".to_string(),
+                    status: AegsConnectionStatus::Pending,
+                    metadata: json!({}),
+                    expires_at_ms: None,
+                    updated_at_ms: 2,
+                },
+            )
+            .expect("orphaned pending connection should be stored");
+        registry
+            .reconcilable_authorizations()
+            .expect("orphan reconciliation should succeed");
+        assert_eq!(
+            registry
+                .get("user-a", "orphaned-connection")
+                .expect("connection lookup should succeed")
+                .expect("orphan should remain reconnectable")
+                .status,
+            AegsConnectionStatus::Expired,
+        );
+        drop(registry);
+
+        let restored = EventConnectionRegistry::new(
+            DurableKernelStateStore::open(path).expect("store should reopen"),
+        );
+        for connection_id in ["expired-connection", "orphaned-connection"] {
+            assert_eq!(
+                restored
+                    .get("user-a", connection_id)
+                    .expect("restored lookup should succeed")
+                    .expect("expired connection should restore")
+                    .status,
+                AegsConnectionStatus::Expired,
+            );
+        }
         std::fs::remove_dir_all(root).unwrap();
     }
 
