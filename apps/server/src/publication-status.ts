@@ -1,10 +1,10 @@
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
   getWorkflowRunRequest,
   listWorkflowRunsRequest,
   listWorkflowWatchdogsRequest,
-} from "@arroba/kernel-client/ipc-requests"
-import type { WorkflowWatchdogDefinition } from "@arroba/kernel-client/kernel-types"
+} from "@chariox/kernel-client/ipc-requests"
+import type { WorkflowWatchdogDefinition } from "@chariox/kernel-client/kernel-types"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import { normalizeFinalOutput } from "./publication-final-output.js"

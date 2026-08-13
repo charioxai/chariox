@@ -148,13 +148,13 @@ test("publication gateway can mark Cloud local runtime backend unavailable", asy
 
 test("publication gateway can register Cloud backend from env profile", async () => {
   const previous = {
-    apiUrl: process.env.ARROBA_PUBLICATION_CLOUD_API_URL,
-    accountId: process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID,
-    token: process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN,
+    apiUrl: process.env.CHARIOX_PUBLICATION_CLOUD_API_URL,
+    accountId: process.env.CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID,
+    token: process.env.CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN,
   }
-  process.env.ARROBA_PUBLICATION_CLOUD_API_URL = "https://cloud-env.example.test/"
-  process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID = "account-env"
-  process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN = "token-env"
+  process.env.CHARIOX_PUBLICATION_CLOUD_API_URL = "https://cloud-env.example.test/"
+  process.env.CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID = "account-env"
+  process.env.CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN = "token-env"
   try {
     const calls: Array<{ url: string; init: RequestInit }> = []
     const registered = await registerCloudPublicationDeploymentBackend({
@@ -172,9 +172,9 @@ test("publication gateway can register Cloud backend from env profile", async ()
     assert.equal((calls[0]?.init.headers as Record<string, string>).authorization, "Bearer token-env")
     assert.equal(JSON.parse(String(calls[0]?.init.body)).accountId, "account-env")
   } finally {
-    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_API_URL", previous.apiUrl)
-    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID", previous.accountId)
-    setOptionalEnv("ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN", previous.token)
+    setOptionalEnv("CHARIOX_PUBLICATION_CLOUD_API_URL", previous.apiUrl)
+    setOptionalEnv("CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID", previous.accountId)
+    setOptionalEnv("CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN", previous.token)
   }
 })
 

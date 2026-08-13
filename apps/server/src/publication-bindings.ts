@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises"
 import { createInterface } from "node:readline/promises"
 import process from "node:process"
 
-import { getProviderCatalogRequest } from "@arroba/kernel-client/ipc-requests"
+import { getProviderCatalogRequest } from "@chariox/kernel-client/ipc-requests"
 
 import type {
   KernelLookupClient,

@@ -27,8 +27,8 @@ type ViewerTraceNode = {
   levels: PublicationTraceLevel[]
 }
 
-export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/arroba/publication/human-http/invoke"
-export const PUBLICATION_VIEWER_INVOCATION_PATH = "/.well-known/arroba/publication/viewer/invocations"
+export const PUBLICATION_VIEWER_FORM_INVOKE_PATH = "/.well-known/chariox/publication/human-http/invoke"
+export const PUBLICATION_VIEWER_INVOCATION_PATH = "/.well-known/chariox/publication/viewer/invocations"
 
 export function installPublicationViewerRoutes(app: ViewerApp, publication: WorkflowPublicationConfig) {
   app.get("/", async (_request, reply) => {
@@ -51,9 +51,9 @@ export function publicationViewerResultPage(
   const workflowRunId = result.workflow_run?.id ?? null
   const terminal = isTerminalWorkflowRunStatus(result.workflow_run?.status ?? "")
   const eventsUrl = invocationRequestId && (result.queued || (workflowRunId && !terminal))
-    ? `/.well-known/arroba/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
+    ? `/.well-known/chariox/publication/invocations/${encodeURIComponent(invocationRequestId)}/events`
     : workflowRunId && !terminal
-      ? `/.well-known/arroba/publication/runs/${encodeURIComponent(workflowRunId)}/events`
+      ? `/.well-known/chariox/publication/runs/${encodeURIComponent(workflowRunId)}/events`
       : null
   return publicationViewerPage(publication, {
     result,
@@ -121,7 +121,7 @@ export function publicationViewerPage(
       showComposer ? composerMarkup(hasTraces) : "",
       "</main>",
       "<script>",
-      `window.__arrobaPublicationViewerConfig = ${safeJson(config)};`,
+      `window.__charioxPublicationViewerConfig = ${safeJson(config)};`,
       viewerScript(),
       "</script>",
     ].filter(Boolean).join("\n"),
@@ -198,7 +198,7 @@ function composerMarkup(hasTraces: boolean) {
 function viewerScript() {
   return String.raw`
 (() => {
-const viewerConfig = window.__arrobaPublicationViewerConfig || {};
+const viewerConfig = window.__charioxPublicationViewerConfig || {};
 const rootEl = document.querySelector('.publication-viewer');
 const formEl = document.querySelector('#invoke-form');
 const statusEl = document.querySelector('#status');
@@ -210,7 +210,7 @@ const htmlOutputEl = document.querySelector('#html-output');
 const traceRailEl = document.querySelector('#trace-rail');
 const traceStatusEl = document.querySelector('#trace-status');
 const traceKeys = new Set();
-const outputOnlyEmbed = new URLSearchParams(window.location.search).get('arroba_embed') === 'output';
+const outputOnlyEmbed = new URLSearchParams(window.location.search).get('chariox_embed') === 'output';
 
 if (outputOnlyEmbed) rootEl?.classList.add('is-output-only');
 if (!viewerConfig.showComposer && formEl) formEl.hidden = true;
@@ -246,13 +246,13 @@ formEl?.addEventListener('submit', async (event) => {
 
 window.addEventListener('message', (event) => {
   if (event.source !== window.parent) return;
-  if (event.data?.type === 'arroba:publication:snapshot') {
+  if (event.data?.type === 'chariox:publication:snapshot') {
     if (latestWorkflowRun && isTerminalStatus(latestWorkflowRun.status)) {
       postSettledRun(latestWorkflowRun.status, latestWorkflowRun);
     }
     return;
   }
-  if (event.data?.type !== 'arroba:publication:invoke') return;
+  if (event.data?.type !== 'chariox:publication:invoke') return;
   const prompt = String(event.data.prompt ?? '').trim();
   const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
   if (!prompt && artifacts.length === 0) return;
@@ -280,7 +280,7 @@ async function hydrateLatestRun() {
     latestRunHydrationTimer = null;
   }
   try {
-    const response = await fetch(publicationUrl('/.well-known/arroba/publication/status'), {
+    const response = await fetch(publicationUrl('/.well-known/chariox/publication/status'), {
       headers: { accept: 'application/json' },
     });
     if (!response.ok) return;
@@ -306,7 +306,7 @@ async function invokeHumanHttp(prompt, artifacts) {
   });
   const html = await response.text();
   const rootUrl = new URL(publicationUrl('/'), window.location.href);
-  if (outputOnlyEmbed) rootUrl.searchParams.set('arroba_embed', 'output');
+  if (outputOnlyEmbed) rootUrl.searchParams.set('chariox_embed', 'output');
   window.history.replaceState(null, '', rootUrl.pathname + rootUrl.search);
   document.open();
   document.write(html);
@@ -527,7 +527,7 @@ function isTerminalStatus(status) {
 function postSettledRun(status, workflowRun) {
   if (window.parent === window) return;
   window.parent.postMessage({
-    type: 'arroba:publication:settled',
+    type: 'chariox:publication:settled',
     publicationId: viewerConfig.publicationId,
     status: String(status || ''),
     workflowRun,
@@ -875,7 +875,7 @@ function publicationAppAssetUrl(path) {
   if (!viewerConfig.invocationRequestId || !base || !base.startsWith('/')) return base;
   const [pathname, query = ''] = base.split('?');
   const params = new URLSearchParams(query);
-  params.set('arroba_invocation', viewerConfig.invocationRequestId);
+  params.set('chariox_invocation', viewerConfig.invocationRequestId);
   const serialized = params.toString();
   return serialized ? pathname + '?' + serialized : pathname;
 }

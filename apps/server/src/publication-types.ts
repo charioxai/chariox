@@ -355,4 +355,4 @@ export type GatewayRequest = {
   query?: unknown
   raw: unknown
 }
-import type { WorkflowPublicationSnapshot as KernelWorkflowPublicationSnapshot } from "@arroba/kernel-client/kernel-types"
+import type { WorkflowPublicationSnapshot as KernelWorkflowPublicationSnapshot } from "@chariox/kernel-client/kernel-types"

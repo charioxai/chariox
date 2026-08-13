@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use arroba_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
+use chariox_relay::{RelayAuthVerifier, RelayConfig, RelayServer};
 use serde_json::json;
 
 #[tokio::main(flavor = "multi_thread")]
@@ -12,7 +12,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         config.shared_token.is_some(),
         scoped_verifier.is_some(),
         parse_env_flag(
-            std::env::var("ARROBA_RELAY_ALLOW_OPEN_ACCESS")
+            std::env::var("CHARIOX_RELAY_ALLOW_OPEN_ACCESS")
                 .ok()
                 .as_deref(),
         ),
@@ -20,7 +20,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "{}",
             json!({
-                "component": "arroba-relay",
+                "component": "chariox-relay",
                 "level": "error",
                 "event": "relay_open_access_refused",
                 "fields": { "host": config.host, "message": message },
@@ -33,21 +33,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         RelayServer::new(config.clone())
     };
-    let draining = parse_relay_draining(std::env::var("ARROBA_RELAY_DRAINING").ok().as_deref());
+    let draining = parse_relay_draining(std::env::var("CHARIOX_RELAY_DRAINING").ok().as_deref());
     server.set_draining(draining);
     eprintln!(
         "{}",
         json!({
-            "component": "arroba-relay",
+            "component": "chariox-relay",
             "level": "info",
             "event": "relay_process_starting",
             "fields": {
                 "host": config.host,
                 "port": config.port,
                 "package_version": env!("CARGO_PKG_VERSION"),
-                "build_commit": std::env::var("ARROBA_BUILD_COMMIT").ok(),
+                "build_commit": std::env::var("CHARIOX_BUILD_COMMIT").ok(),
                 "draining": draining,
-                "scoped_verifier": std::env::var("ARROBA_RELAY_SCOPED_ISSUER")
+                "scoped_verifier": std::env::var("CHARIOX_RELAY_SCOPED_ISSUER")
                     .ok()
                     .map(|value| !value.trim().is_empty())
                     .unwrap_or(false),
@@ -61,13 +61,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         eprintln!(
             "{}",
             json!({
-                "component": "arroba-relay",
+                "component": "chariox-relay",
                 "level": "info",
                 "event": "revocation_sync_enabled",
                 "fields": { "realm_id": realm },
             })
         );
-        tokio::spawn(arroba_relay::revocation_sync::run_revocation_sync(
+        tokio::spawn(chariox_relay::revocation_sync::run_revocation_sync(
             cloud_url,
             realm,
             server.revocations(),
@@ -83,11 +83,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn revocation_sync_from_env() -> Option<(String, String)> {
-    let cloud_url = std::env::var("ARROBA_RELAY_REVOCATION_URL")
+    let cloud_url = std::env::var("CHARIOX_RELAY_REVOCATION_URL")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;
-    let realm = std::env::var("ARROBA_RELAY_REVOCATION_REALM")
+    let realm = std::env::var("CHARIOX_RELAY_REVOCATION_REALM")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;
@@ -95,12 +95,12 @@ fn revocation_sync_from_env() -> Option<(String, String)> {
 }
 
 fn revocation_sync_interval_from_env() -> std::time::Duration {
-    std::env::var("ARROBA_RELAY_REVOCATION_INTERVAL_SECS")
+    std::env::var("CHARIOX_RELAY_REVOCATION_INTERVAL_SECS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
         .filter(|secs| *secs > 0)
         .map(std::time::Duration::from_secs)
-        .unwrap_or(arroba_relay::revocation_sync::DEFAULT_REVOCATION_SYNC_INTERVAL)
+        .unwrap_or(chariox_relay::revocation_sync::DEFAULT_REVOCATION_SYNC_INTERVAL)
 }
 
 fn parse_relay_draining(value: Option<&str>) -> bool {
@@ -133,8 +133,8 @@ fn open_access_startup_error(
     }
     Some(format!(
         "refusing to start an unauthenticated relay on non-loopback host `{host}`; \
-         set ARROBA_RELAY_TOKEN, configure a scoped issuer, or explicitly opt in \
-         with ARROBA_RELAY_ALLOW_OPEN_ACCESS=1"
+         set CHARIOX_RELAY_TOKEN, configure a scoped issuer, or explicitly opt in \
+         with CHARIOX_RELAY_ALLOW_OPEN_ACCESS=1"
     ))
 }
 
@@ -149,11 +149,11 @@ fn host_is_loopback(host: &str) -> bool {
 }
 
 fn scoped_verifier_from_env() -> Option<RelayAuthVerifier> {
-    let issuer = std::env::var("ARROBA_RELAY_SCOPED_ISSUER")
+    let issuer = std::env::var("CHARIOX_RELAY_SCOPED_ISSUER")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;
-    let secret = std::env::var("ARROBA_RELAY_SCOPED_HMAC_SECRET")
+    let secret = std::env::var("CHARIOX_RELAY_SCOPED_HMAC_SECRET")
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())?;

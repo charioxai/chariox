@@ -35,11 +35,11 @@ export function validateInput(value: unknown, schema: InputSchema | undefined) {
   }
 }
 
-export function isParseErrorPayload(value: unknown): value is { __arroba_parse_error: string } {
+export function isParseErrorPayload(value: unknown): value is { __chariox_parse_error: string } {
   return !!value
     && typeof value === "object"
-    && "__arroba_parse_error" in value
-    && typeof (value as { __arroba_parse_error?: unknown }).__arroba_parse_error === "string"
+    && "__chariox_parse_error" in value
+    && typeof (value as { __chariox_parse_error?: unknown }).__chariox_parse_error === "string"
 }
 
 async function parseRequest(request: GatewayRequest, config: ParserConfig): Promise<unknown> {

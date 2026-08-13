@@ -56,7 +56,7 @@ import {
 test("agent app replica selection preserves caller affinity across hidden sessions", async () => {
   const selectedReplicas: unknown[] = []
   const selectedRequestIds: string[] = []
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replicas-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-replicas-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
   const { app } = buildServer({
@@ -90,7 +90,7 @@ test("agent app replica selection preserves caller affinity across hidden sessio
   try {
     const callerA = await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html" } })
     const callerACookie = firstSetCookieValue(callerA.headers["set-cookie"])
-    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-b" } })
+    await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html", "x-chariox-agent-app-caller": "caller-b" } })
     const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", cookie: callerACookie } })
     assert.match(queued.body, /agent_app_pool_queued/)
     assert.deepEqual(selectedReplicas, ["replica-session-1", "replica-session-2"])
@@ -111,19 +111,19 @@ test("agent app caller affinity ignores the legacy caller header outside managed
   configurePublicationCallerClaimsRuntimeForTests(null)
   try {
     const caller = agentAppCallerSession({
-      "x-arroba-agent-app-caller": "forged-caller",
-      "x-arroba-caller-roles": "admin",
-      "x-arroba-caller-subject": "forged-subject",
+      "x-chariox-agent-app-caller": "forged-caller",
+      "x-chariox-caller-roles": "admin",
+      "x-chariox-caller-subject": "forged-subject",
     }, () => "generated-session")
     assert.equal(caller.callerKey, "generated-session")
-    assert.match(caller.setCookie ?? "", /arroba_agent_app_session=generated-session/)
+    assert.match(caller.setCookie ?? "", /chariox_agent_app_session=generated-session/)
   } finally {
     configurePublicationCallerClaimsRuntimeForTests(undefined)
   }
 })
 
 test("managed agent app runtime verifies caller claims before affinity and role selection", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-caller-claims-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-caller-claims-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>secure app</main>")
   await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -226,9 +226,9 @@ test("managed agent app runtime verifies caller claims before affinity and role 
       headers: {
         accept: "text/html",
         ...validHeaders,
-        "x-arroba-agent-app-caller": "forged-affinity",
-        "x-arroba-caller-subject": "forged-subject",
-        "x-arroba-caller-roles": "admin",
+        "x-chariox-agent-app-caller": "forged-affinity",
+        "x-chariox-caller-subject": "forged-subject",
+        "x-chariox-caller-roles": "admin",
       },
     })
     assert.equal(valid.statusCode, 200)
@@ -267,15 +267,15 @@ test("managed agent app runtime verifies caller claims before affinity and role 
       {
         label: "missing claims",
         headers: {
-          "x-arroba-agent-app-caller": "forged-affinity",
+          "x-chariox-agent-app-caller": "forged-affinity",
         },
         statusCode: 401,
       },
       {
         label: "malformed claims",
         headers: {
-          "x-arroba-caller-claims": "not-a-token",
-          "x-arroba-invocation-id": "invocation-malformed",
+          "x-chariox-caller-claims": "not-a-token",
+          "x-chariox-invocation-id": "invocation-malformed",
         },
         statusCode: 401,
       },
@@ -381,7 +381,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
 })
 
 test("publication caller claims config file is private and consumed once", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-caller-claims-config-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-caller-claims-config-"))
   const configPath = join(root, "caller-claims.json")
   const insecureConfigPath = join(root, "caller-claims-insecure.json")
   try {
@@ -479,7 +479,7 @@ test("agent app single-replica configuration admits only one invocation at a tim
 })
 
 test("agent app replica caller affinity survives gateway restart with runtime storage", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-state-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-replica-state-"))
   const publication: WorkflowPublicationConfig = {
     ...baseConfig,
     publication_id: "pub-replica-state",
@@ -518,7 +518,7 @@ test("agent app replica caller affinity survives gateway restart with runtime st
 
 test("agent app replica scheduler queues different callers until a replica is idle", async () => {
   const invocations: Array<{ caller: unknown; requestId: string; replica: unknown }> = []
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-queue-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-replica-queue-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
   const publication: WorkflowPublicationConfig = {
@@ -558,13 +558,13 @@ test("agent app replica scheduler queues different callers until a replica is id
   try {
     await app.inject({ method: "GET", url: "/add/apples", headers: { accept: "text/html" } })
     await app.inject({ method: "GET", url: "/add/bananas", headers: { accept: "text/html" } })
-    const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-arroba-agent-app-caller": "caller-c" } })
+    const queued = await app.inject({ method: "GET", url: "/add/chips", headers: { accept: "text/html", "x-chariox-agent-app-caller": "caller-c" } })
     const queuedCookie = firstSetCookieValue(queued.headers["set-cookie"])
 
     assert.equal(queued.statusCode, 200)
     assert.match(queued.body, /agent_app_pool_queued/)
     assert.deepEqual(invocations.map((invocation) => invocation.replica), ["replica-session-1", "replica-session-2"])
-    const saturatedStatus = await app.inject({ method: "GET", url: "/.well-known/arroba/agent-app/status" })
+    const saturatedStatus = await app.inject({ method: "GET", url: "/.well-known/chariox/agent-app/status" })
     assert.equal(saturatedStatus.statusCode, 200)
     assert.deepEqual(saturatedStatus.json(), {
       publication_id: "pub-replica-queue",
@@ -583,7 +583,7 @@ test("agent app replica scheduler queues different callers until a replica is id
     )
     assert.equal(invocations[2]?.caller, agentAppSessionId(queuedCookie))
     assert.equal(invocations[2]?.replica, "replica-session-1")
-    const drainedStatus = await app.inject({ method: "GET", url: "/.well-known/arroba/agent-app/status" })
+    const drainedStatus = await app.inject({ method: "GET", url: "/.well-known/chariox/agent-app/status" })
     assert.equal(drainedStatus.statusCode, 200)
     assert.deepEqual(drainedStatus.json(), {
       publication_id: "pub-replica-queue",
@@ -652,7 +652,7 @@ test("agent app replica sessions use distinct kernel attachment clients", async 
 })
 
 test("agent app overlay effects cannot write protected paths", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-protected-overlay-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-protected-overlay-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({
@@ -716,7 +716,7 @@ test("agent app overlay effects cannot write protected paths", async () => {
 })
 
 test("agent app persistent patch effects require package and route opt-in", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-persistent-reject-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-persistent-reject-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({
@@ -776,7 +776,7 @@ test("agent app persistent patch effects require package and route opt-in", asyn
 })
 
 test("agent app persistent patch effects are shared when explicitly enabled", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-persistent-allow-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-persistent-allow-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({
@@ -838,7 +838,7 @@ test("agent app persistent patch effects are shared when explicitly enabled", as
 })
 
 test("agent app session overlay effects survive gateway restart with runtime storage", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-session-restart-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-session-restart-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const publication: WorkflowPublicationConfig = {
@@ -918,7 +918,7 @@ test("agent app session overlay effects survive gateway restart with runtime sto
 })
 
 test("agent app persistent patch effects survive gateway restart", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-persistent-restart-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-persistent-restart-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const publication: WorkflowPublicationConfig = {
@@ -1020,7 +1020,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
   const address = actionServer.address()
   assert.ok(address && typeof address === "object")
   const actionUrl = `http://127.0.0.1:${address.port}/cart/add`
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-actions-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-actions-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({
@@ -1065,7 +1065,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
   try {
     const allowed = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/actions/cart.add",
+      url: "/.well-known/chariox/agent-app/actions/cart.add",
       payload: { sku: "banana", quantity: 2 },
     })
     assert.equal(allowed.statusCode, 200)
@@ -1074,7 +1074,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
 
     const invalid = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/actions/cart.add",
+      url: "/.well-known/chariox/agent-app/actions/cart.add",
       payload: { quantity: 2 },
     })
     assert.equal(invalid.statusCode, 400)
@@ -1083,7 +1083,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
 
     const forbidden = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/actions/cart.admin",
+      url: "/.well-known/chariox/agent-app/actions/cart.admin",
       payload: { sku: "banana" },
     })
     assert.equal(forbidden.statusCode, 403)
@@ -1091,7 +1091,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
 
     const redirect = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/actions/cart.redirect",
+      url: "/.well-known/chariox/agent-app/actions/cart.redirect",
       payload: {},
     })
     assert.equal(redirect.statusCode, 400)
@@ -1100,7 +1100,7 @@ test("agent app action proxy only exposes route-allowed manifest actions", async
 
     const oversized = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/actions/cart.large",
+      url: "/.well-known/chariox/agent-app/actions/cart.large",
       payload: {},
     })
     assert.equal(oversized.statusCode, 400)
@@ -1131,7 +1131,7 @@ function signedCallerClaimsHeaders(options: {
   const invocationId = options.invocationId
   const encodedHeader = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
   const encodedPayload = Buffer.from(JSON.stringify({
-    iss: "arroba-cloud",
+    iss: "chariox-cloud",
     aud: deploymentId,
     sub: options.subject ?? "user:user-1",
     org: "account-1",
@@ -1148,8 +1148,8 @@ function signedCallerClaimsHeaders(options: {
     .update(unsigned)
     .digest("base64url")}`
   return {
-    "x-arroba-caller-claims": token,
-    "x-arroba-invocation-id": options.invocationHeader ?? invocationId,
+    "x-chariox-caller-claims": token,
+    "x-chariox-invocation-id": options.invocationHeader ?? invocationId,
   }
 }
 

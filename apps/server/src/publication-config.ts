@@ -3,22 +3,22 @@ import { readFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import process from "node:process"
 
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
   getSessionStateRequest,
   getWorkflowPublicationRequest,
   materializeWorkflowPublicationRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 import type {
   RuntimeSession,
   WorkflowPublicationDefinition,
-} from "@arroba/kernel-client/kernel-types"
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@arroba/kernel-client/kernel-types"
+} from "@chariox/kernel-client/kernel-types"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 import {
   assertWorkflowPublicationDeploymentRuntimeCompatibility,
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
-} from "@arroba/kernel-client/workflow-publication-deployment-contract"
+} from "@chariox/kernel-client/workflow-publication-deployment-contract"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
@@ -44,14 +44,14 @@ import type {
 
 export function defaultPublicationConfig(): WorkflowPublicationConfig {
   const config: WorkflowPublicationConfig = {
-    publication_id: process.env.ARROBA_PUBLICATION_ID ?? "default",
-    session_id: requiredProcessEnv("ARROBA_PUBLICATION_SESSION_ID"),
-    workflow_ref: requiredProcessEnv("ARROBA_PUBLICATION_WORKFLOW"),
-    endpoint_ref: requiredProcessEnv("ARROBA_PUBLICATION_ENDPOINT"),
-    route: process.env.ARROBA_PUBLICATION_ROUTE ?? "/",
-    mode: process.env.ARROBA_PUBLICATION_MODE === "async" ? "async" : "sync",
+    publication_id: process.env.CHARIOX_PUBLICATION_ID ?? "default",
+    session_id: requiredProcessEnv("CHARIOX_PUBLICATION_SESSION_ID"),
+    workflow_ref: requiredProcessEnv("CHARIOX_PUBLICATION_WORKFLOW"),
+    endpoint_ref: requiredProcessEnv("CHARIOX_PUBLICATION_ENDPOINT"),
+    route: process.env.CHARIOX_PUBLICATION_ROUTE ?? "/",
+    mode: process.env.CHARIOX_PUBLICATION_MODE === "async" ? "async" : "sync",
   }
-  if (process.env.ARROBA_KERNEL_URL) config.kernel_endpoint = process.env.ARROBA_KERNEL_URL
+  if (process.env.CHARIOX_KERNEL_URL) config.kernel_endpoint = process.env.CHARIOX_KERNEL_URL
   const tls = tlsConfigFromEnv()
   if (tls) config.tls = tls
   return config
@@ -327,32 +327,32 @@ export function publicationConfigFromKernelRecord(
 }
 
 export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
-  if (process.env.ARROBA_PUBLICATION_PACKAGE) {
+  if (process.env.CHARIOX_PUBLICATION_PACKAGE) {
     const packageOptions: { kernelEndpoint?: string; hookId?: string; runtimeWorkspace?: string } = {
       kernelEndpoint: defaultKernelEndpoint(),
     }
-    if (process.env.ARROBA_PUBLICATION_HOOK_ID) {
-      packageOptions.hookId = process.env.ARROBA_PUBLICATION_HOOK_ID
+    if (process.env.CHARIOX_PUBLICATION_HOOK_ID) {
+      packageOptions.hookId = process.env.CHARIOX_PUBLICATION_HOOK_ID
     }
-    if (process.env.ARROBA_PUBLICATION_RUNTIME_WORKSPACE) {
-      packageOptions.runtimeWorkspace = process.env.ARROBA_PUBLICATION_RUNTIME_WORKSPACE
+    if (process.env.CHARIOX_PUBLICATION_RUNTIME_WORKSPACE) {
+      packageOptions.runtimeWorkspace = process.env.CHARIOX_PUBLICATION_RUNTIME_WORKSPACE
     }
-    return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.ARROBA_PUBLICATION_PACKAGE, {
+    return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.CHARIOX_PUBLICATION_PACKAGE, {
       ...packageOptions,
       materialize: true,
     }))
   }
-  if (process.env.ARROBA_PUBLICATION_CONFIG) {
-    return withEnvTlsConfig(await loadPublicationConfig(process.env.ARROBA_PUBLICATION_CONFIG))
+  if (process.env.CHARIOX_PUBLICATION_CONFIG) {
+    return withEnvTlsConfig(await loadPublicationConfig(process.env.CHARIOX_PUBLICATION_CONFIG))
   }
   if (
-    process.env.ARROBA_PUBLICATION_SESSION_ID
-    && process.env.ARROBA_PUBLICATION_ID
-    && (!process.env.ARROBA_PUBLICATION_WORKFLOW || !process.env.ARROBA_PUBLICATION_ENDPOINT)
+    process.env.CHARIOX_PUBLICATION_SESSION_ID
+    && process.env.CHARIOX_PUBLICATION_ID
+    && (!process.env.CHARIOX_PUBLICATION_WORKFLOW || !process.env.CHARIOX_PUBLICATION_ENDPOINT)
   ) {
     return withEnvTlsConfig(await loadPublicationConfigFromKernel(
-      process.env.ARROBA_PUBLICATION_SESSION_ID,
-      process.env.ARROBA_PUBLICATION_ID,
+      process.env.CHARIOX_PUBLICATION_SESSION_ID,
+      process.env.CHARIOX_PUBLICATION_ID,
       defaultKernelEndpoint(),
     ))
   }
@@ -387,10 +387,10 @@ export async function materializePublicationConfig(
 }
 
 function tlsConfigFromEnv(): TlsConfig | undefined {
-  const keyFile = process.env.ARROBA_PUBLICATION_TLS_KEY_FILE
-  const certFile = process.env.ARROBA_PUBLICATION_TLS_CERT_FILE
+  const keyFile = process.env.CHARIOX_PUBLICATION_TLS_KEY_FILE
+  const certFile = process.env.CHARIOX_PUBLICATION_TLS_CERT_FILE
   if (!keyFile && !certFile) return undefined
-  const tls: TlsConfig = { enabled: process.env.ARROBA_PUBLICATION_TLS_ENABLED !== "false" }
+  const tls: TlsConfig = { enabled: process.env.CHARIOX_PUBLICATION_TLS_ENABLED !== "false" }
   if (keyFile) tls.key_file = keyFile
   if (certFile) tls.cert_file = certFile
   return tls

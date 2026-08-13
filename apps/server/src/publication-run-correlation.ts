@@ -1,4 +1,4 @@
-import { listWorkflowRunsRequest } from "@arroba/kernel-client/ipc-requests"
+import { listWorkflowRunsRequest } from "@chariox/kernel-client/ipc-requests"
 
 import type {
   KernelLookupClient,

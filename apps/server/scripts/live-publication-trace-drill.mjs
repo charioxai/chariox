@@ -5,7 +5,7 @@ import { tmpdir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
 
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
   applyWorkflowCodeRequest,
   cancelWorkflowRunRequest,
@@ -18,32 +18,32 @@ import {
   getWorkflowRunRequest,
   listWorkflowRunsRequest,
   listWorkflowWatchdogsRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 import { createPublicationTraceProtocol } from "./lib/live-publication-trace-protocol.mjs"
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../..")
-const kernelUrl = process.env.ARROBA_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
-const workflowCodeNodePath = process.env.ARROBA_WORKFLOW_CODE_NODE ?? process.execPath
+const kernelUrl = process.env.CHARIOX_KERNEL_URL ?? "ws://127.0.0.1:44120/kernel"
+const workflowCodeNodePath = process.env.CHARIOX_WORKFLOW_CODE_NODE ?? process.execPath
 const stamp = new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "").replace("T", "-")
-const artifactsDir = resolve(process.env.ARROBA_TRACE_DRILL_ARTIFACTS_DIR ?? join(repoRoot, ".artifacts", `live-publication-traces-${stamp}`))
+const artifactsDir = resolve(process.env.CHARIOX_TRACE_DRILL_ARTIFACTS_DIR ?? join(repoRoot, ".artifacts", `live-publication-traces-${stamp}`))
 const preflightOnly = process.argv.includes("--preflight-only")
 const continueOnPreflightFailure = process.argv.includes("--continue-on-preflight-failure")
-const skipPreflight = process.env.ARROBA_TRACE_DRILL_SKIP_PREFLIGHT === "1"
+const skipPreflight = process.env.CHARIOX_TRACE_DRILL_SKIP_PREFLIGHT === "1"
 const requestedProviders = csvArg("--providers")
 const requestedTransports = csvArg("--transports")
 const requestedPolicies = csvArg("--policies")
 const activeRuntimeStops = []
-const runtimeStartTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
-const protocolTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
-const scheduleOnlyObservationTimeoutMs = Number(process.env.ARROBA_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
+const runtimeStartTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_RUNTIME_START_TIMEOUT_MS ?? 90_000)
+const protocolTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_PROTOCOL_TIMEOUT_MS ?? 300_000)
+const scheduleOnlyObservationTimeoutMs = Number(process.env.CHARIOX_TRACE_DRILL_SCHEDULE_ONLY_TIMEOUT_MS ?? 480_000)
 const {
   freePort,
   invokeTransport,
   waitForGatewayReady,
   waitForPublicationStatus,
 } = createPublicationTraceProtocol({ protocolTimeoutMs, runtimeStartTimeoutMs })
-const allowPartialTraceEvidence = process.env.ARROBA_TRACE_DRILL_ALLOW_PARTIAL_TRACE_EVIDENCE !== "0"
-const modelOverrideForProvider = (provider) => process.env[`ARROBA_TRACE_DRILL_MODEL_${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`] ?? null
+const allowPartialTraceEvidence = process.env.CHARIOX_TRACE_DRILL_ALLOW_PARTIAL_TRACE_EVIDENCE !== "0"
+const modelOverrideForProvider = (provider) => process.env[`CHARIOX_TRACE_DRILL_MODEL_${provider.toUpperCase().replace(/[^A-Z0-9]/g, "_")}`] ?? null
 const requestedModelForProvider = (provider, requestedModel) => modelOverrideForProvider(provider) ?? requestedModel
 const acceptableModelIdsForProvider = (provider, acceptableModelIds) => modelOverrideForProvider(provider) ? [modelOverrideForProvider(provider)] : acceptableModelIds
 const providerSpecs = [

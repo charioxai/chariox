@@ -4,8 +4,8 @@ import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import process from "node:process"
 
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { getProviderAuthStatusRequest } from "@arroba/kernel-client/ipc-requests"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { getProviderAuthStatusRequest } from "@chariox/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import type {
@@ -122,7 +122,7 @@ async function providerReadiness(provider: string, client: LocalIpcClient): Prom
 
 function developmentProviderStubEnabled(): boolean {
   return ["1", "true", "yes", "on"].includes(
-    process.env.ARROBA_PROVIDER_DEV_STUB?.trim().toLowerCase() ?? "",
+    process.env.CHARIOX_PROVIDER_DEV_STUB?.trim().toLowerCase() ?? "",
   )
 }
 
@@ -197,9 +197,9 @@ async function providerAuthStatus(
 }
 
 function providerCommand(provider: string): string {
-  if (provider === "codex") return process.env.ARROBA_CODEX_BIN || "codex"
-  if (provider === "claude") return process.env.ARROBA_CLAUDE_BIN || "claude"
-  if (provider === "opencode") return process.env.ARROBA_OPENCODE_BIN || "opencode"
+  if (provider === "codex") return process.env.CHARIOX_CODEX_BIN || "codex"
+  if (provider === "claude") return process.env.CHARIOX_CLAUDE_BIN || "claude"
+  if (provider === "opencode") return process.env.CHARIOX_OPENCODE_BIN || "opencode"
   return provider
 }
 

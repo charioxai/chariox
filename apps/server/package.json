@@ -1,5 +1,5 @@
 {
-  "name": "@arroba/server",
+  "name": "@chariox/server",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -10,13 +10,13 @@
     "test": "pnpm run build && node --test dist/index.test.js"
   },
   "dependencies": {
-    "@arroba/kernel-client": "workspace:*",
+    "@chariox/kernel-client": "workspace:*",
     "fastify": "^5.1.0",
     "ws": "^8.18.3"
   },
   "bin": {
-    "arroba-workflow-gateway": "dist/index.js",
-    "arroba-workflow-call": "dist/workflow-call.js"
+    "chariox-workflow-gateway": "dist/index.js",
+    "chariox-workflow-call": "dist/workflow-call.js"
   },
   "devDependencies": {
     "@types/ws": "^8.5.13"

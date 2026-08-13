@@ -1,8 +1,8 @@
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
   getWorkflowRunRequest,
   invokeWorkflowEndpointRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 
 import type {
   NormalizedInvocation,
@@ -16,7 +16,7 @@ import { publicationWaitTimeoutMs } from "./publication-timeouts.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
 
 export function defaultKernelEndpoint() {
-  return process.env.ARROBA_KERNEL_URL ?? `ws://${process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT ?? "43118"}`
+  return process.env.CHARIOX_KERNEL_URL ?? `ws://${process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"}:${process.env.CHARIOX_KERNEL_PORT ?? "43118"}`
 }
 
 export async function invokeKernelWorkflow(

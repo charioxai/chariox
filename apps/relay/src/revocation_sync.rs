@@ -119,7 +119,7 @@ pub async fn run_revocation_sync(
                             eprintln!(
                                 "{}",
                                 serde_json::json!({
-                                    "component": "arroba-relay",
+                                    "component": "chariox-relay",
                                     "level": "info",
                                     "event": "revocation_sync_applied",
                                     "fields": { "realm_id": realm_id, "applied": applied },
@@ -140,7 +140,7 @@ fn log_sync_error(realm_id: &str, stage: &str, message: &str) {
     eprintln!(
         "{}",
         serde_json::json!({
-            "component": "arroba-relay",
+            "component": "chariox-relay",
             "level": "warn",
             "event": "revocation_sync_failed",
             "fields": { "realm_id": realm_id, "stage": stage, "message": message },

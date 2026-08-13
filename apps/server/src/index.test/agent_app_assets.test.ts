@@ -43,7 +43,7 @@ import {
 } from "../index.test-support.js"
 
 test("agent app gateway serves packaged app assets", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-assets-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-assets-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
   await writeFile(join(root, "app", "styles.css"), "main { color: red; }")
@@ -77,7 +77,7 @@ test("agent app gateway serves packaged app assets", async () => {
 })
 
 test("agent app config validation rejects invalid launch config before serving", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-invalid-config-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-invalid-config-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
   try {
@@ -171,7 +171,7 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
   let seenProof: Record<string, unknown> | null = null
   const previousPort = process.env.PORT
   process.env.PORT = "34567"
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-route-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-route-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
   const { app } = buildServer({
@@ -244,13 +244,13 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
     assert.deepEqual(Object.keys((proof?.agent_app_actions as Record<string, unknown>) ?? {}), ["cart.add"])
     assert.deepEqual(
       (proof?.agent_app_audit as Record<string, unknown> | undefined)?.url,
-      "http://127.0.0.1:34567/.well-known/arroba/agent-app/audit-log",
+      "http://127.0.0.1:34567/.well-known/chariox/agent-app/audit-log",
     )
     const auditToken = (proof?.agent_app_audit as Record<string, unknown> | undefined)?.token
     assert.equal(typeof auditToken, "string")
     const auditResponse = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/agent-app/audit-log",
+      url: "/.well-known/chariox/agent-app/audit-log",
       payload: {
         token: auditToken,
         entries: [{
@@ -270,7 +270,7 @@ test("agent app wrapped route invokes workflow with path-tail prompt and streams
 })
 
 test("agent app final response effects overlay generated files for serve mode", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-overlay-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-overlay-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({
@@ -377,7 +377,7 @@ test("agent app final response effects overlay generated files for serve mode", 
     assert.match(invoke.body, /cart.checkout ok/)
     assert.match(invoke.body, /frame\.src = publicationAppAssetUrl\(renderable\.src\)/)
     const cookie = firstSetCookieValue(invoke.headers["set-cookie"])
-    assert.match(cookie, /arroba_agent_app_session=/)
+    assert.match(cookie, /chariox_agent_app_session=/)
 
     const checkout = await app.inject({ method: "GET", url: "/generated/checkout.html", headers: { cookie } })
     assert.equal(checkout.statusCode, 200)
@@ -393,7 +393,7 @@ test("agent app final response effects overlay generated files for serve mode", 
 })
 
 test("agent app session overlays are isolated by browser session", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-session-overlay-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-session-overlay-"))
   await mkdir(join(root, "app"), { recursive: true })
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>base shop</main>")
   const { app } = buildServer({

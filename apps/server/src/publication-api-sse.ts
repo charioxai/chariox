@@ -1,5 +1,5 @@
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { getWorkflowRunRequest } from "@chariox/kernel-client/ipc-requests"
 
 import {
   defaultKernelEndpoint,

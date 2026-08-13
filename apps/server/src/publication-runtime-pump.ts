@@ -1,7 +1,7 @@
 import {
   attachToSessionRequest,
   pumpTerminalOutputRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 
 import type { WorkflowPublicationConfig } from "./publication-types.js"
 
@@ -51,7 +51,7 @@ function publicationRuntimeAttachmentKey(publication: WorkflowPublicationConfig,
 function publicationRuntimeClientId(publication: WorkflowPublicationConfig) {
   const safePublicationId = publication.publication_id.replace(/[^A-Za-z0-9_.-]/g, "_")
   const safeSessionId = publication.session_id.replace(/[^A-Za-z0-9_.-]/g, "_")
-  return `arroba-publication-gateway-${process.pid}-${safePublicationId}-${safeSessionId}`
+  return `chariox-publication-gateway-${process.pid}-${safePublicationId}-${safeSessionId}`
 }
 
 function sessionAttachedId(response: unknown) {

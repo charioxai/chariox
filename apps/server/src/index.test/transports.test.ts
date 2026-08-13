@@ -84,7 +84,7 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
   )
   assert.equal(resolvePrefix({ location: { pathname: "/final/hello" } }, viewerConfig), "")
   assert.equal(
-    resolvePrefix({ location: { pathname: "/.well-known/arroba/publication/viewer/invocations/request-1" } }, viewerConfig),
+    resolvePrefix({ location: { pathname: "/.well-known/chariox/publication/viewer/invocations/request-1" } }, viewerConfig),
     "",
   )
   assert.match(html, /"showComposer":false/)
@@ -96,7 +96,7 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     methods: ["GET"],
   })
   const namedRouteConfig = JSON.parse(
-    namedRouteHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+    namedRouteHtml.match(/window\.__charioxPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
   )
   assert.deepEqual(namedRouteConfig.humanPromptTarget, {
     prefix: "/viewer/",
@@ -111,11 +111,11 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     invocationRequestId: "request-1",
   })
   const invocationConfig = JSON.parse(
-    invocationHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+    invocationHtml.match(/window\.__charioxPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
   )
   assert.equal(
     invocationConfig.permalink,
-    "/.well-known/arroba/publication/viewer/invocations/request-1",
+    "/.well-known/chariox/publication/viewer/invocations/request-1",
   )
   assert.match(invocationHtml, /window\.history\.replaceState/)
 
@@ -126,7 +126,7 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
     methods: ["GET"],
   }, { accepted: true, queued: true }, "request-2", true, { prompt: "Visible immediately" })
   const directGetConfig = JSON.parse(
-    directGetHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
+    directGetHtml.match(/window\.__charioxPublicationViewerConfig = ([^\n]+);/)?.[1] ?? "{}",
   )
   assert.equal(directGetConfig.permalink, null)
   assert.equal(directGetConfig.optimisticPrompt, "Visible immediately")
@@ -152,7 +152,7 @@ test("publication viewer preserves canonical and legacy Cloud ingress prefixes",
       }],
     },
   })
-  const serializedConfig = agentAppHtml.match(/window\.__arrobaPublicationViewerConfig = ([^\n]+);/)?.[1]
+  const serializedConfig = agentAppHtml.match(/window\.__charioxPublicationViewerConfig = ([^\n]+);/)?.[1]
   assert.ok(serializedConfig)
   const agentAppViewerConfig = JSON.parse(serializedConfig)
   assert.deepEqual(agentAppViewerConfig.directRouteRoots, ["prompt", "agent"])
@@ -192,14 +192,14 @@ test("publication viewer derives composer capability and one pane per exposed no
 
   const html = publicationViewerPage(publication)
   assert.match(html, /class="publication-viewer has-traces has-composer"/)
-  assert.match(html, /new URLSearchParams\(window\.location\.search\)\.get\('arroba_embed'\) === 'output'/)
+  assert.match(html, /new URLSearchParams\(window\.location\.search\)\.get\('chariox_embed'\) === 'output'/)
   assert.match(html, /rootEl\?\.classList\.add\('is-output-only'\)/)
   assert.match(html, /\.publication-viewer\.is-output-only \.trace-rail/)
-  assert.match(html, /event\.data\?\.type !== 'arroba:publication:invoke'/)
-  assert.match(html, /arroba:publication:snapshot/)
+  assert.match(html, /event\.data\?\.type !== 'chariox:publication:invoke'/)
+  assert.match(html, /chariox:publication:snapshot/)
   assert.doesNotMatch(html, /initialWorkflowRun/)
   assert.match(html, /void invokePublication\(prompt, artifacts\)/)
-  assert.match(html, /type: 'arroba:publication:settled'/)
+  assert.match(html, /type: 'chariox:publication:settled'/)
   assert.match(html, /publicationId: viewerConfig\.publicationId/)
   assert.match(html, /workflowRun,/)
   assert.match(html, /id="rail-resizer"/)
@@ -213,7 +213,7 @@ test("publication viewer derives composer capability and one pane per exposed no
   assert.doesNotMatch(html, /trace\.level, trace\.sequence, trace\.timestamp_ms/)
   assert.match(html, /resetForInvocation\(prompt\)/)
   assert.match(html, /renderOptimisticPrompt\(prompt\)/)
-  assert.match(html, /if \(outputOnlyEmbed\) rootUrl\.searchParams\.set\('arroba_embed', 'output'\)/)
+  assert.match(html, /if \(outputOnlyEmbed\) rootUrl\.searchParams\.set\('chariox_embed', 'output'\)/)
   assert.match(html, /reorderTraceFeed\(feed\)/)
   assert.match(html, /leftLevel === 'output_summary'/)
   assert.match(html, /\['user_prompt', nodeId, workflowRunId, trace\.message\]/)
@@ -478,7 +478,7 @@ test("mcp exposes a published workflow as a tool and returns final output", asyn
       payload: { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } },
     })
     assert.equal(initialize.statusCode, 200)
-    assert.equal(initialize.json().result.serverInfo.name, "arroba-publication")
+    assert.equal(initialize.json().result.serverInfo.name, "chariox-publication")
 
     const tools = await app.inject({
       method: "POST",
@@ -702,7 +702,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
   try {
     const response = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/publication/human-http/invoke",
+      url: "/.well-known/chariox/publication/human-http/invoke",
       headers: { accept: "text/html" },
       payload: {
         prompt: "read image",
@@ -732,7 +732,7 @@ test("human HTTP root form can submit prompt and uploaded artifacts", async () =
 
     const empty = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/publication/human-http/invoke",
+      url: "/.well-known/chariox/publication/human-http/invoke",
       payload: { prompt: "", artifacts: [] },
     })
     assert.equal(empty.statusCode, 400)
@@ -851,7 +851,7 @@ test("managed publication transports enforce signed caller identity and route ro
       const request = { method: "POST" as const, url: "/managed/http", payload: { prompt: "ship" } }
       assert.equal((await human.app.inject({
         ...request,
-        headers: { "x-arroba-agent-app-caller": "forged-human" },
+        headers: { "x-chariox-agent-app-caller": "forged-human" },
       })).statusCode, 401)
       assert.equal((await human.app.inject({
         ...request,
@@ -955,7 +955,7 @@ test("managed publication transports enforce signed caller identity and route ro
       const port = typeof address === "object" && address ? address.port : 0
       const url = `ws://127.0.0.1:${port}/managed/ws`
       assert.deepEqual(await rejectedManagedWebSocket(url, {
-        "x-arroba-agent-app-caller": "forged-websocket",
+        "x-chariox-agent-app-caller": "forged-websocket",
       }), { statusCode: 401, code: "caller_authentication_required" })
       assert.deepEqual(await rejectedManagedWebSocket(
         url,
@@ -995,7 +995,7 @@ const MANAGED_FORGED_SECRET = "forged-caller-claims-runtime-secret-0123456789"
 const MANAGED_CALLER_CLAIMS_NOW_SECONDS = Math.floor(Date.parse("2026-07-15T12:00:00.000Z") / 1_000)
 
 async function createManagedCallerClaimsPackage(): Promise<string> {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-managed-caller-claims-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-managed-caller-claims-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
     package_version: 3,
@@ -1072,7 +1072,7 @@ function managedCallerClaimsHeaders(
 ): Record<string, string> {
   const encodedHeader = Buffer.from(JSON.stringify({ alg: "HS256", typ: "JWT" })).toString("base64url")
   const encodedPayload = Buffer.from(JSON.stringify({
-    iss: "arroba-cloud",
+    iss: "chariox-cloud",
     aud: "deployment-1",
     sub: "user:trusted-user",
     org: "account-1",
@@ -1089,11 +1089,11 @@ function managedCallerClaimsHeaders(
     .update(unsigned)
     .digest("base64url")
   return {
-    "x-arroba-caller-claims": `${unsigned}.${signature}`,
-    "x-arroba-invocation-id": invocationId,
-    ...(options.legacyCaller ? { "x-arroba-agent-app-caller": options.legacyCaller } : {}),
-    ...(options.projectedRoles ? { "x-arroba-caller-roles": options.projectedRoles } : {}),
-    ...(options.projectedSubject ? { "x-arroba-caller-subject": options.projectedSubject } : {}),
+    "x-chariox-caller-claims": `${unsigned}.${signature}`,
+    "x-chariox-invocation-id": invocationId,
+    ...(options.legacyCaller ? { "x-chariox-agent-app-caller": options.legacyCaller } : {}),
+    ...(options.projectedRoles ? { "x-chariox-caller-roles": options.projectedRoles } : {}),
+    ...(options.projectedSubject ? { "x-chariox-caller-subject": options.projectedSubject } : {}),
   }
 }
 

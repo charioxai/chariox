@@ -1,5 +1,5 @@
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { getWorkflowRunRequest } from "@chariox/kernel-client/ipc-requests"
 
 import {
   defaultKernelEndpoint,
@@ -134,7 +134,7 @@ function initializeResponse(request: JsonRpcRequest) {
       resources: { subscribe: false, listChanged: false },
       prompts: { listChanged: false },
     },
-    serverInfo: { name: "arroba-publication", version: "0.1.0" },
+    serverInfo: { name: "chariox-publication", version: "0.1.0" },
   })
 }
 

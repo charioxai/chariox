@@ -1,5 +1,5 @@
 [package]
-name = "arroba-relay"
+name = "chariox-relay"
 version = "0.1.0"
 edition = "2021"
 
@@ -18,9 +18,9 @@ tokio = { version = "1.44.2", features = ["io-util", "macros", "net", "rt-multi-
 tokio-tungstenite = "0.26.2"
 
 [lib]
-name = "arroba_relay"
+name = "chariox_relay"
 path = "src/lib.rs"
 
 [[bin]]
-name = "arroba-relay"
+name = "chariox-relay"
 path = "src/main.rs"

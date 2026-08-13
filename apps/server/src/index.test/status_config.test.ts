@@ -41,7 +41,7 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
-import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@arroba/kernel-client/kernel-types"
+import { LOCAL_DAEMON_PROTOCOL_VERSION } from "@chariox/kernel-client/kernel-types"
 
 test("GET /health returns an ok status payload", async () => {
   const { app } = buildServer(baseConfig, {
@@ -63,7 +63,7 @@ test("GET /health returns an ok status payload", async () => {
 })
 
 test("GET /health reports package materialization and provider readiness", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-health-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-health-"))
   await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
   await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
     schema_version: 1,
@@ -109,8 +109,8 @@ test("GET /health reports package materialization and provider readiness", async
 })
 
 test("GET /health treats the explicitly enabled development provider stub as internally ready", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-dev-stub-health-"))
-  const previousDevStub = process.env.ARROBA_PROVIDER_DEV_STUB
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-dev-stub-health-"))
+  const previousDevStub = process.env.CHARIOX_PROVIDER_DEV_STUB
   await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
   await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
     schema_version: 1,
@@ -120,7 +120,7 @@ test("GET /health treats the explicitly enabled development provider stub as int
     agents: [{ id: "agent-1", provider: "dev-stub", model: "default" }],
   }))
   await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
-  setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", "1")
+  setOptionalEnv("CHARIOX_PROVIDER_DEV_STUB", "1")
   const { app } = buildServer({
     ...baseConfig,
     package_root: root,
@@ -141,14 +141,14 @@ test("GET /health treats the explicitly enabled development provider stub as int
     }])
   } finally {
     await app.close()
-    setOptionalEnv("ARROBA_PROVIDER_DEV_STUB", previousDevStub)
+    setOptionalEnv("CHARIOX_PROVIDER_DEV_STUB", previousDevStub)
     await rm(root, { recursive: true, force: true })
   }
 })
 
 test("GET /health collapses provider runtime aliases before readiness probing", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-provider-alias-health-"))
-  const previousClaudeBin = process.env.ARROBA_CLAUDE_BIN
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-provider-alias-health-"))
+  const previousClaudeBin = process.env.CHARIOX_CLAUDE_BIN
   await writeFile(join(root, "publication.json"), JSON.stringify({ schema_version: 1 }))
   await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
     schema_version: 1,
@@ -162,7 +162,7 @@ test("GET /health collapses provider runtime aliases before readiness probing", 
   }))
   await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
   const missingClaudeBin = join(root, "missing-claude")
-  setOptionalEnv("ARROBA_CLAUDE_BIN", missingClaudeBin)
+  setOptionalEnv("CHARIOX_CLAUDE_BIN", missingClaudeBin)
   const { app } = buildServer({
     ...baseConfig,
     package_root: root,
@@ -184,7 +184,7 @@ test("GET /health collapses provider runtime aliases before readiness probing", 
     }])
   } finally {
     await app.close()
-    setOptionalEnv("ARROBA_CLAUDE_BIN", previousClaudeBin)
+    setOptionalEnv("CHARIOX_CLAUDE_BIN", previousClaudeBin)
     await rm(root, { recursive: true, force: true })
   }
 })
@@ -204,7 +204,7 @@ test("GET publication status reports runtime binding", async () => {
   try {
     const response = await app.inject({
       method: "GET",
-      url: "/.well-known/arroba/publication/status",
+      url: "/.well-known/chariox/publication/status",
     })
 
     assert.equal(response.statusCode, 200)
@@ -286,7 +286,7 @@ test("GET publication status includes runtime watchdog and latest output details
   try {
     const response = await app.inject({
       method: "GET",
-      url: "/.well-known/arroba/publication/status",
+      url: "/.well-known/chariox/publication/status",
     })
 
     assert.equal(response.statusCode, 200)
@@ -375,7 +375,7 @@ test("schedule-only publication exposes status without ingress routes", async ()
   try {
     const status = await app.inject({
       method: "GET",
-      url: "/.well-known/arroba/publication/status",
+      url: "/.well-known/chariox/publication/status",
     })
     assert.equal(status.statusCode, 200)
     const statusPayload = status.json()
@@ -390,7 +390,7 @@ test("schedule-only publication exposes status without ingress routes", async ()
     assert.equal(route.statusCode, 404)
     const formInvoke = await app.inject({
       method: "POST",
-      url: "/.well-known/arroba/publication/human-http/invoke",
+      url: "/.well-known/chariox/publication/human-http/invoke",
       payload: { input: { prompt: "hello" } },
     })
     assert.equal(formInvoke.statusCode, 404)
@@ -520,7 +520,7 @@ test("gateway can load publication config from kernel lookup", async () => {
     {
       AttachToSession: {
         session_id: "session-1",
-        client_id: `arroba-publication-gateway-${process.pid}-pub-1-session-1`,
+        client_id: `chariox-publication-gateway-${process.pid}-pub-1-session-1`,
         capability_level: "FullTerminal",
       },
     },
@@ -584,7 +584,7 @@ test("gateway maps exported publication packages to runtime config", async () =>
 })
 
 test("gateway loads publication package directories", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-package-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-package-"))
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
@@ -648,7 +648,7 @@ test("gateway loads publication package directories", async () => {
 })
 
 test("gateway requires a valid deployment contract for package v3", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-contract-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-contract-"))
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,

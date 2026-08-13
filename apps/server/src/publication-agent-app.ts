@@ -10,7 +10,7 @@ import {
 } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { extname, normalize, resolve, sep } from "node:path"
-import { canonicalUtcInstant } from "@arroba/kernel-client/time"
+import { canonicalUtcInstant } from "@chariox/kernel-client/time"
 
 import {
   appendCloudPublicationDeploymentLogs,
@@ -78,16 +78,16 @@ type AgentAppReply = {
   type: (contentType: string) => AgentAppReply
 }
 
-const AGENT_APP_AUDIT_PATH = "/.well-known/arroba/agent-app/audit-log"
+const AGENT_APP_AUDIT_PATH = "/.well-known/chariox/agent-app/audit-log"
 const AGENT_APP_AUDIT_TOKEN = randomUUID()
 const MAX_AGENT_APP_AUDIT_URL_BYTES = 8 * 1024
 let configuredAgentAppAuditUrl: string | undefined
 
 export function consumeAgentAppAuditUrlFromEnv(): void {
-  const directUrl = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
-  const urlFile = process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE?.trim()
-  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL
-  delete process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
+  const directUrl = process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+  const urlFile = process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE?.trim()
+  delete process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL
+  delete process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE
   if (directUrl && urlFile) throw new Error("publication audit URL and URL file cannot both be configured")
   if (directUrl) {
     configuredAgentAppAuditUrl = normalizeAgentAppAuditUrl(directUrl)
@@ -176,7 +176,7 @@ export function installAgentAppRoutes(
   }
   app.route({
     method: "POST",
-    url: "/.well-known/arroba/agent-app/actions/:actionId",
+    url: "/.well-known/chariox/agent-app/actions/:actionId",
     handler: async (request, reply) => invokeAgentAppAction(request, reply, publication),
   })
   app.route({
@@ -184,7 +184,7 @@ export function installAgentAppRoutes(
     url: AGENT_APP_AUDIT_PATH,
     handler: async (request, reply) => appendAgentAppAuditLog(request, reply),
   })
-  app.get("/.well-known/arroba/agent-app/status", async () => ({
+  app.get("/.well-known/chariox/agent-app/status", async () => ({
     publication_id: publication.publication_id,
     replicas: agentAppReplicaStatus(publication),
   }))
@@ -343,7 +343,7 @@ function normalizeAuditEntry(value: unknown): PublicationDeploymentLogEntry | nu
 
 function agentAppAuditProof(): { url: string; token: string } | undefined {
   const explicitUrl = configuredAgentAppAuditUrl
-    ?? process.env.ARROBA_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
+    ?? process.env.CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL?.trim()
   if (explicitUrl) {
     return { url: explicitUrl, token: AGENT_APP_AUDIT_TOKEN }
   }
@@ -481,7 +481,7 @@ async function serveAgentAppAsset(
   reply: AgentAppReply,
   publication: WorkflowPublicationConfig,
 ) {
-  if (request.url.startsWith("/.well-known/arroba/")) {
+  if (request.url.startsWith("/.well-known/chariox/")) {
     reply.code(404)
     return { error: "not found" }
   }
@@ -497,7 +497,7 @@ async function serveAgentAppAsset(
   const pathname = parsedUrl.pathname
   const effectAsset = resolveAgentAppEffectAsset(publication, pathname, {
     sessionKey: agentAppCallerKey(request.headers, publicationCallerForRequest(request)),
-    invocationRequestId: parsedUrl.searchParams.get("arroba_invocation"),
+    invocationRequestId: parsedUrl.searchParams.get("chariox_invocation"),
   })
   if (effectAsset) {
     reply.type(effectAsset.mimeType)

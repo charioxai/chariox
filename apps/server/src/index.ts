@@ -4,16 +4,16 @@ import Fastify from "fastify"
 import {
   consumeKernelLocalAuthTokenFromEnv,
   LocalIpcClient,
-} from "@arroba/kernel-client/ipc"
+} from "@chariox/kernel-client/ipc"
 import {
   registerWorkflowPublicationEndpointRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 
 import {
   defaultKernelEndpoint,
   invokeKernelWorkflow,
 } from "./kernel-publication-client.js"
-import { ArrobaLogger, createProcessLogger } from "./logging.js"
+import { CharioxLogger, createProcessLogger } from "./logging.js"
 import {
   consumeAgentAppAuditUrlFromEnv,
   installAgentAppRoutes,
@@ -118,7 +118,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     }
   })
 
-  app.get("/.well-known/arroba/publication/status", async () => publicationStatusPayload(publication, deps))
+  app.get("/.well-known/chariox/publication/status", async () => publicationStatusPayload(publication, deps))
 
   app.post(HUMAN_HTTP_FORM_INVOKE_PATH, async (request, reply) => {
     if (scheduleOnly || (publication.transport && publication.transport !== "human_http")) {
@@ -171,10 +171,10 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           }
           const parsed = await parseAndValidateRequest(request as unknown as GatewayRequest, publication).catch((error) => {
             reply.code(400).headers({ "content-type": "application/json" })
-            return { __arroba_parse_error: error instanceof Error ? error.message : String(error) }
+            return { __chariox_parse_error: error instanceof Error ? error.message : String(error) }
           })
           if (isParseErrorPayload(parsed)) {
-            return { error: parsed.__arroba_parse_error }
+            return { error: parsed.__chariox_parse_error }
           }
           const caller = publicationCallerForRequest(request)
           const invocation: NormalizedInvocation = {
@@ -270,8 +270,8 @@ export async function invokePublicationInput(
 if (import.meta.url === `file://${process.argv[1]}`) {
   const config = await loadGatewayPublicationConfig()
   const { app, logger } = buildServer(config)
-  const host = process.env.HOST ?? process.env.ARROBA_PUBLICATION_HOST ?? "0.0.0.0"
-  const port = Number(process.env.PORT ?? process.env.ARROBA_PUBLICATION_PORT ?? 3000)
+  const host = process.env.HOST ?? process.env.CHARIOX_PUBLICATION_HOST ?? "0.0.0.0"
+  const port = Number(process.env.PORT ?? process.env.CHARIOX_PUBLICATION_PORT ?? 3000)
   logger.info("starting workflow gateway", { host, port })
 
   app
@@ -292,7 +292,7 @@ function schedulePublicationEndpointRegistration(
   publication: WorkflowPublicationConfig | undefined,
   host: string,
   port: number,
-  logger: ArrobaLogger,
+  logger: CharioxLogger,
 ) {
   if (!publication) return
   const interval = setInterval(() => {
@@ -303,7 +303,7 @@ function schedulePublicationEndpointRegistration(
 
 function schedulePublicationRuntimePump(
   publication: WorkflowPublicationConfig | undefined,
-  logger: ArrobaLogger,
+  logger: CharioxLogger,
 ) {
   if (!publication) return
   let pumping = false
@@ -331,7 +331,7 @@ async function registerServedPublicationEndpoint(
   publication: WorkflowPublicationConfig | undefined,
   host: string,
   port: number,
-  logger: ArrobaLogger,
+  logger: CharioxLogger,
 ) {
   if (!publication) return
   const sessionId = publication.session_id
@@ -359,8 +359,8 @@ async function registerServedPublicationEndpoint(
     })
     const access = registered?.access ?? "local"
     const openUrl = registered?.open_url ?? localUrl
-    const cloudDeploymentId = process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
-    const cloudRunnerKey = process.env.ARROBA_PUBLICATION_CLOUD_RUNNER_KEY?.trim()
+    const cloudDeploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
+    const cloudRunnerKey = process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY?.trim()
     if (cloudDeploymentId && cloudRunnerKey) {
       logger.info("skipping local-runtime Cloud backend registration for hosted publication container", {
         publication_id: publication.publication_id,
@@ -399,10 +399,10 @@ async function registerServedPublicationEndpoint(
 async function registerCloudDeploymentBackendIfConfigured(
   publication: WorkflowPublicationConfig,
   localUrl: string,
-  logger: ArrobaLogger,
+  logger: CharioxLogger,
   options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null } = {},
 ) {
-  const deploymentId = process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
+  const deploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
   if (!deploymentId) return
   try {
     const registered = await registerCloudPublicationDeploymentBackend({

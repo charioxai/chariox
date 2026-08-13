@@ -13,11 +13,11 @@ import { join } from "node:path"
 import {
   resolveWorkflowPublicationDeploymentContract,
   workflowPublicationDeploymentContractPath,
-} from "@arroba/kernel-client/workflow-publication-deployment-contract"
+} from "@chariox/kernel-client/workflow-publication-deployment-contract"
 
 import type { WorkflowPublicationConfig } from "./publication-types.js"
 
-const PUBLICATION_CLAIMS_ISSUER = "arroba-cloud"
+const PUBLICATION_CLAIMS_ISSUER = "chariox-cloud"
 const MAX_CALLER_CLAIMS_BYTES = 16 * 1024
 const MAX_CALLER_CLAIMS_CONFIG_BYTES = 16 * 1024
 const MIN_CALLER_CLAIMS_SECRET_BYTES = 32
@@ -76,7 +76,7 @@ export function publicationCallerClaimsRuntimeConfigured(): boolean {
 }
 
 export function hasPublicationCallerClaimsHeader(headers: RequestHeaders): boolean {
-  return Object.keys(headers).some((name) => name.toLowerCase() === "x-arroba-caller-claims")
+  return Object.keys(headers).some((name) => name.toLowerCase() === "x-chariox-caller-claims")
 }
 
 export function authorizePublicationCaller(
@@ -156,7 +156,7 @@ export function verifyPublicationCallerClaims(
   if (!config) {
     throw new PublicationCallerClaimsError("Publication caller claims runtime is not configured")
   }
-  const token = requiredHeader(headers, "x-arroba-caller-claims")
+  const token = requiredHeader(headers, "x-chariox-caller-claims")
   if (Buffer.byteLength(token, "utf8") > MAX_CALLER_CLAIMS_BYTES) {
     throw new PublicationCallerClaimsError("Publication caller claims are malformed")
   }
@@ -203,7 +203,7 @@ export function verifyPublicationCallerClaims(
   }
 
   const invocationId = requiredString(payload.invocation_id, "invocation_id", 320)
-  if (requiredHeader(headers, "x-arroba-invocation-id") !== invocationId) {
+  if (requiredHeader(headers, "x-chariox-invocation-id") !== invocationId) {
     throw new PublicationCallerClaimsError("Publication caller claims invocation is invalid")
   }
   const nonce = requiredString(payload.nonce, "nonce", 320)
@@ -275,12 +275,12 @@ export function readPrivatePublicationCallerClaimsConfigFile(
 }
 
 function consumePublicationCallerClaimsRuntimeConfigFromEnv(): NormalizedPublicationCallerClaimsRuntimeConfig | null {
-  const configFile = process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
-  const legacySecret = process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_SECRET
-  const legacySecretFile = process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
-  delete process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
-  delete process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_SECRET
-  delete process.env.ARROBA_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
+  const configFile = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+  const legacySecret = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET
+  const legacySecretFile = process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
+  delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE
+  delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET
+  delete process.env.CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET_FILE
   if (legacySecret !== undefined || legacySecretFile !== undefined) {
     throw new Error("hosted publication caller claims require a one-shot config file")
   }
@@ -289,7 +289,7 @@ function consumePublicationCallerClaimsRuntimeConfigFromEnv(): NormalizedPublica
     throw new Error("publication caller claims config file path must not be empty")
   }
   if (!normalizedPath) {
-    if (process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()) {
+    if (process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()) {
       throw new Error("Cloud publication runtimes require a caller claims config file")
     }
     return null

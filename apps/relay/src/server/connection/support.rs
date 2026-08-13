@@ -949,7 +949,7 @@ pub(super) fn relay_log(level: &str, event: &str, fields: Value) {
     eprintln!(
         "{}",
         json!({
-            "component": "arroba-relay",
+            "component": "chariox-relay",
             "level": level,
             "event": event,
             "fields": fields,

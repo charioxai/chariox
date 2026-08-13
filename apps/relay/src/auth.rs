@@ -358,7 +358,7 @@ impl ScopedTokenVerifier {
                 signed.signing_input.as_bytes(),
                 &signed.signature,
             )?;
-            // The bespoke `arroba-scoped-v1` format is being retired in favor
+            // The bespoke `chariox-scoped-v1` format is being retired in favor
             // of the JWT form the cloud issuer emits. Count and warn on its use
             // so the format can be dropped once the metric reaches zero.
             note_legacy_scoped_token_verification();
@@ -390,19 +390,19 @@ fn note_legacy_scoped_token_verification() {
         eprintln!(
             "{}",
             serde_json::json!({
-                "component": "arroba-relay",
+                "component": "chariox-relay",
                 "level": "warn",
                 "event": "deprecated_scoped_token_format",
                 "fields": {
-                    "format": "arroba-scoped-v1",
-                    "message": "accepting a deprecated arroba-scoped-v1 relay token; migrate issuers to the JWT format",
+                    "format": "chariox-scoped-v1",
+                    "message": "accepting a deprecated chariox-scoped-v1 relay token; migrate issuers to the JWT format",
                 },
             })
         );
     }
 }
 
-/// Number of `arroba-scoped-v1` (pre-JWT) tokens verified this process. The
+/// Number of `chariox-scoped-v1` (pre-JWT) tokens verified this process. The
 /// format can be removed once this stays at zero across a release.
 pub fn legacy_scoped_token_verification_count() -> u64 {
     LEGACY_SCOPED_TOKEN_VERIFICATIONS.load(std::sync::atomic::Ordering::Relaxed)
@@ -416,7 +416,7 @@ pub fn encode_scoped_hmac_token(
     let claims_b64 = URL_SAFE_NO_PAD.encode(payload);
     let signature = sign_hmac(issuer_secret.as_bytes(), claims_b64.as_bytes())?;
     Ok(format!(
-        "arroba-scoped-v1.{claims_b64}.{}",
+        "chariox-scoped-v1.{claims_b64}.{}",
         URL_SAFE_NO_PAD.encode(signature)
     ))
 }
@@ -477,7 +477,7 @@ fn decode_scoped_token_parts(token: &str) -> Result<DecodedScopedToken, RelayAut
     let Some(signature_b64) = parts.next() else {
         return Err(RelayAuthError::InvalidToken);
     };
-    if parts.next().is_some() || prefix != "arroba-scoped-v1" {
+    if parts.next().is_some() || prefix != "chariox-scoped-v1" {
         return Err(RelayAuthError::InvalidToken);
     }
     let claims_payload = URL_SAFE_NO_PAD

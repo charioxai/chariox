@@ -17,7 +17,7 @@ export function createPublicationTraceProtocol(options = {}) {
 }
 
 async function waitForGatewayReady(localUrl) {
-  const statusUrl = new URL("/.well-known/arroba/publication/status", localUrl).toString()
+  const statusUrl = new URL("/.well-known/chariox/publication/status", localUrl).toString()
   const deadline = Date.now() + runtimeStartTimeoutMs
   let lastError = null
   while (Date.now() < deadline) {
@@ -91,7 +91,7 @@ async function invokeHumanHttp(url) {
 }
 
 async function waitForPublicationStatus(localUrl, transport) {
-  const statusUrl = new URL("/.well-known/arroba/publication/status", localUrl).toString()
+  const statusUrl = new URL("/.well-known/chariox/publication/status", localUrl).toString()
   const deadline = Date.now() + (transport.id === "schedule_only" ? 180_000 : 30_000)
   let last = null
   while (Date.now() < deadline) {

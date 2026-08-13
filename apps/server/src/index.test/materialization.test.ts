@@ -43,7 +43,7 @@ import {
 } from "../index.test-support.js"
 
 test("gateway materializes exported publication packages through the kernel", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-materialize-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-materialize-"))
   const runtimeWorkspace = `${root}.runtime`
   const requests: Record<string, unknown>[] = []
   try {
@@ -179,7 +179,7 @@ test("gateway materializes exported publication packages through the kernel", as
 })
 
 test("gateway materializes Agent App replica sessions from package config", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-agent-app-replica-materialize-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-agent-app-replica-materialize-"))
   const requests: Record<string, unknown>[] = []
   let materializeCount = 0
   try {
@@ -281,7 +281,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
 })
 
 test("gateway remaps portable package workspace paths before local materialization", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-portable-workspace-materialize-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-portable-workspace-materialize-"))
   const runtimeWorkspace = `${root}.runtime-${process.pid}`
   const requests: Record<string, unknown>[] = []
   try {
@@ -379,7 +379,7 @@ test("gateway remaps portable package workspace paths before local materializati
 })
 
 test("gateway prompts for unavailable provider/model bindings and persists the replacement", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-bindings-"))
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -481,7 +481,7 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
 })
 
 test("gateway accepts provider-prefixed captured models when the provider matches", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-prefixed-binding-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-prefixed-binding-"))
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -573,7 +573,7 @@ test("gateway accepts provider-prefixed captured models when the provider matche
 })
 
 test("gateway fails before materialization when provider/model bindings cannot be resolved", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-bindings-fail-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-bindings-fail-"))
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
@@ -647,7 +647,7 @@ test("gateway fails before materialization when provider/model bindings cannot b
 })
 
 test("gateway fails package materialization before runtime creation when requirements are missing", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-server-publication-requirements-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-requirements-"))
   const requests: Record<string, unknown>[] = []
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({

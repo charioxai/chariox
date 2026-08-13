@@ -20,7 +20,7 @@ test("publication bindings resolve the default model sentinel without prompting"
 
   const resolved = await resolvePublicationProviderModelBindings(
     snapshot,
-    "/tmp/arroba-publication-default-model-bindings-does-not-exist.json",
+    "/tmp/chariox-publication-default-model-bindings-does-not-exist.json",
     {
       send: async <T>(): Promise<T> => ({
         ProviderCatalog: {
@@ -54,7 +54,7 @@ test("publication bindings keep OpenCode models provider-qualified after catalog
 
     const resolved = await resolvePublicationProviderModelBindings(
       snapshot,
-      `/tmp/arroba-publication-opencode-${capturedModel.replaceAll("/", "-")}-bindings-does-not-exist.json`,
+      `/tmp/chariox-publication-opencode-${capturedModel.replaceAll("/", "-")}-bindings-does-not-exist.json`,
       {
         send: async <T>(): Promise<T> => ({
           ProviderCatalog: {
@@ -88,7 +88,7 @@ test("publication bindings validate the Claude family against runtime adapter ca
 
   const resolved = await resolvePublicationProviderModelBindings(
     snapshot,
-    "/tmp/arroba-publication-claude-family-bindings-does-not-exist.json",
+    "/tmp/chariox-publication-claude-family-bindings-does-not-exist.json",
     {
       send: async <T>(): Promise<T> => ({
         ProviderCatalog: {

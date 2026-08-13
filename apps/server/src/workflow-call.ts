@@ -127,12 +127,12 @@ async function readStdin() {
 }
 
 function defaultKernelEndpoint() {
-  return process.env.ARROBA_KERNEL_URL ?? `ws://${process.env.ARROBA_KERNEL_HOST ?? "127.0.0.1"}:${process.env.ARROBA_KERNEL_PORT ?? "43118"}`
+  return process.env.CHARIOX_KERNEL_URL ?? `ws://${process.env.CHARIOX_KERNEL_HOST ?? "127.0.0.1"}:${process.env.CHARIOX_KERNEL_PORT ?? "43118"}`
 }
 
 function printHelp() {
   process.stdout.write([
-    "usage: arroba-workflow-call [publication-id] [options]",
+    "usage: chariox-workflow-call [publication-id] [options]",
     "",
     "Options:",
     "  --config <path>             Load exported publication.config.json",

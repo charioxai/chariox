@@ -1,5 +1,5 @@
-import { LocalIpcClient } from "@arroba/kernel-client/ipc"
-import { getWorkflowRunRequest } from "@arroba/kernel-client/ipc-requests"
+import { LocalIpcClient } from "@chariox/kernel-client/ipc"
+import { getWorkflowRunRequest } from "@chariox/kernel-client/ipc-requests"
 
 import { defaultKernelEndpoint } from "./kernel-publication-client.js"
 import {
@@ -91,7 +91,7 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
     }
   })
 
-  app.get("/.well-known/arroba/publication/runs/:workflowRunId/events", async (request, reply) => {
+  app.get("/.well-known/chariox/publication/runs/:workflowRunId/events", async (request, reply) => {
     const params = request.params as { workflowRunId?: string }
     const workflowRunId = params.workflowRunId
     if (!workflowRunId) {
@@ -101,7 +101,7 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
     await streamWorkflowRunEvents(reply, publication, workflowRunId)
   })
 
-  app.get("/.well-known/arroba/publication/invocations/:requestId/events", async (request, reply) => {
+  app.get("/.well-known/chariox/publication/invocations/:requestId/events", async (request, reply) => {
     const params = request.params as { requestId?: string }
     const requestId = params.requestId
     if (!requestId) {
@@ -138,9 +138,9 @@ export function installHumanHttpRoutes(app: HumanHttpApp, publication: WorkflowP
 function isPublicationControlRequest(request: HumanHttpRequest): boolean {
   const pathname = new URL(request.url, "http://publication.local").pathname
   return pathname === "/health"
-    || pathname === "/.well-known/arroba/publication/status"
-    || pathname === "/.well-known/arroba/agent-app/status"
-    || pathname === "/.well-known/arroba/agent-app/audit-log"
+    || pathname === "/.well-known/chariox/publication/status"
+    || pathname === "/.well-known/chariox/agent-app/status"
+    || pathname === "/.well-known/chariox/agent-app/audit-log"
 }
 
 export function shouldReturnHumanHtml(

@@ -8,7 +8,7 @@ import test from "node:test"
 import { readPrivateAgentAppAuditUrlFile } from "../publication-agent-app.js"
 
 test("agent app audit URL file is consumed after descriptor validation", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-agent-app-audit-url-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-agent-app-audit-url-"))
   const path = join(root, "audit-url")
   try {
     await writeFile(path, " http://127.0.0.1:43119/audit?capability=test\n", { mode: 0o600 })
@@ -24,7 +24,7 @@ test("agent app audit URL file is consumed after descriptor validation", async (
 })
 
 test("agent app audit URL file rejects symlinks without consuming the target", async () => {
-  const root = await mkdtemp(join(tmpdir(), "arroba-agent-app-audit-symlink-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-agent-app-audit-symlink-"))
   const target = join(root, "target")
   const path = join(root, "audit-url")
   try {

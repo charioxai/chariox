@@ -185,14 +185,14 @@ fn scoped_verifier_checks_action_target_and_expiration() {
 }
 
 // Cross-implementation conformance: this JWT was minted by the
-// arroba-cloud @arroba-cloud/relay-tokens issuer (the canonical issuer)
+// chariox-cloud @chariox-cloud/relay-tokens issuer (the canonical issuer)
 // with the fixed secret/timestamps below. The identical fixture is checked
 // by the TypeScript suite; if either side's claim wire shape drifts, one
 // of the two conformance tests fails. Keep in sync with
-// arroba-cloud/packages/relay-tokens/src/conformance-vectors.json.
+// chariox-cloud/packages/relay-tokens/src/conformance-vectors.json.
 const CONFORMANCE_SECRET: &str = "conformance-shared-secret";
-const CONFORMANCE_ISSUER: &str = "arroba-cloud-conformance";
-const CONFORMANCE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhcnJvYmEtY2xvdWQtY29uZm9ybWFuY2UiLCJzdWIiOiJjbGllbnQtMSIsInJlYWxtX2lkIjoicmVhbG0tMSIsInN1YmplY3Rfa2luZCI6ImNsaWVudCIsImFsbG93ZWRfYWN0aW9ucyI6WyJjbGllbnQuY29ubmVjdCIsImNsaWVudC5tZXRhZGF0YS5yZWFkIiwicGFja2V0LnJvdXRlIl0sImFsbG93ZWRfdGFyZ2V0cyI6WyJkYWVtb24tMSJdLCJpYXQiOjEwMDAwMDAwMDAsImV4cCI6MTAwMDAwMzYwMCwianRpIjoiY29uZm9ybWFuY2UtdG9rZW4tMSIsImFjY291bnRfaWQiOiJhY2NvdW50LTEiLCJ1c2VyX2lkIjoidXNlci0xIiwiY2xpZW50X2lkIjoiY2xpZW50LTEiLCJzZXNzaW9uX2lkIjoic2Vzc2lvbi0xIiwicHVibGljX2tleV90aHVtYnByaW50IjoidGh1bWItMSJ9.jrT5UtSBvvHbr26_lQqVWA2dC41THlz8PdpMlb0yxRo";
+const CONFORMANCE_ISSUER: &str = "chariox-cloud-conformance";
+const CONFORMANCE_TOKEN: &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJjaGFyaW94LWNsb3VkLWNvbmZvcm1hbmNlIiwic3ViIjoiY2xpZW50LTEiLCJyZWFsbV9pZCI6InJlYWxtLTEiLCJzdWJqZWN0X2tpbmQiOiJjbGllbnQiLCJhbGxvd2VkX2FjdGlvbnMiOlsiY2xpZW50LmNvbm5lY3QiLCJjbGllbnQubWV0YWRhdGEucmVhZCIsInBhY2tldC5yb3V0ZSJdLCJhbGxvd2VkX3RhcmdldHMiOlsiZGFlbW9uLTEiXSwiaWF0IjoxMDAwMDAwMDAwLCJleHAiOjEwMDAwMDM2MDAsImp0aSI6ImNvbmZvcm1hbmNlLXRva2VuLTEiLCJhY2NvdW50X2lkIjoiYWNjb3VudC0xIiwidXNlcl9pZCI6InVzZXItMSIsImNsaWVudF9pZCI6ImNsaWVudC0xIiwic2Vzc2lvbl9pZCI6InNlc3Npb24tMSIsInB1YmxpY19rZXlfdGh1bWJwcmludCI6InRodW1iLTEifQ.cpc6rzUGFyfupEMmBg-NZ1VVBkPqAe6CJMMaQ5NZot0";
 
 #[test]
 fn verifies_conformance_token_issued_by_the_typescript_issuer() {
@@ -354,7 +354,7 @@ fn scoped_verifier_rejects_revoked_token_ids_and_accounts() {
 #[test]
 fn scoped_hmac_verifier_accepts_signed_hosted_issuer_tokens() {
     let claims = RelayTokenClaims {
-        issuer: "arroba-cloud-test".to_string(),
+        issuer: "chariox-cloud-test".to_string(),
         subject: "client-1".to_string(),
         subject_kind: RelaySubjectKind::Client,
         realm_id: "realm-1".to_string(),
@@ -375,7 +375,10 @@ fn scoped_hmac_verifier_accepts_signed_hosted_issuer_tokens() {
     };
     let token = encode_scoped_hmac_token(&claims, "issuer-secret").expect("token should encode");
     let verifier = RelayAuthVerifier::scoped_hmac(
-        BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+        BTreeMap::from([(
+            "chariox-cloud-test".to_string(),
+            "issuer-secret".to_string(),
+        )]),
         Some(15),
     );
 
@@ -402,7 +405,7 @@ fn scoped_hmac_verifier_accepts_signed_hosted_issuer_tokens() {
 fn legacy_scoped_token_verification_is_counted_for_deprecation() {
     let before = legacy_scoped_token_verification_count();
     let claims = RelayTokenClaims {
-        issuer: "arroba-cloud-legacy".to_string(),
+        issuer: "chariox-cloud-legacy".to_string(),
         subject: "client-1".to_string(),
         subject_kind: RelaySubjectKind::Client,
         realm_id: "realm-1".to_string(),
@@ -425,7 +428,7 @@ fn legacy_scoped_token_verification_is_counted_for_deprecation() {
         encode_scoped_hmac_token(&claims, "issuer-secret").expect("legacy token should encode");
     let verifier = RelayAuthVerifier::scoped_hmac(
         BTreeMap::from([(
-            "arroba-cloud-legacy".to_string(),
+            "chariox-cloud-legacy".to_string(),
             "issuer-secret".to_string(),
         )]),
         Some(15),
@@ -437,7 +440,7 @@ fn legacy_scoped_token_verification_is_counted_for_deprecation() {
             action: RelayAction::ClientConnect,
             target: None,
         })
-        .expect("legacy arroba-scoped-v1 token should still verify");
+        .expect("legacy chariox-scoped-v1 token should still verify");
 
     assert!(legacy_scoped_token_verification_count() > before);
 }
@@ -445,7 +448,7 @@ fn legacy_scoped_token_verification_is_counted_for_deprecation() {
 #[test]
 fn scoped_hmac_verifier_rejects_tampered_or_unknown_issuer_tokens() {
     let claims = RelayTokenClaims {
-        issuer: "arroba-cloud-test".to_string(),
+        issuer: "chariox-cloud-test".to_string(),
         subject: "client-1".to_string(),
         subject_kind: RelaySubjectKind::Client,
         realm_id: "realm-1".to_string(),
@@ -469,7 +472,10 @@ fn scoped_hmac_verifier_rejects_tampered_or_unknown_issuer_tokens() {
     parts[2].push('x');
     let tampered = parts.join(".");
     let verifier = RelayAuthVerifier::scoped_hmac(
-        BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+        BTreeMap::from([(
+            "chariox-cloud-test".to_string(),
+            "issuer-secret".to_string(),
+        )]),
         Some(15),
     );
     let unknown_issuer = RelayAuthVerifier::scoped_hmac(
@@ -506,7 +512,7 @@ fn scoped_hmac_verifier_accepts_cloud_jwt_tokens() {
         "typ": "JWT",
     });
     let claims = serde_json::json!({
-        "iss": "arroba-cloud-test",
+        "iss": "chariox-cloud-test",
         "sub": "client-1",
         "subject_kind": "client",
         "realm_id": "realm-1",
@@ -528,7 +534,10 @@ fn scoped_hmac_verifier_accepts_cloud_jwt_tokens() {
         URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());
     let token = format!("{signing_input}.{signature}");
     let verifier = RelayAuthVerifier::scoped_hmac(
-        BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+        BTreeMap::from([(
+            "chariox-cloud-test".to_string(),
+            "issuer-secret".to_string(),
+        )]),
         Some(15_000),
     );
 
@@ -557,7 +566,7 @@ fn scoped_hmac_verifier_rejects_cloud_jwt_tokens_with_unknown_actions() {
         "typ": "JWT",
     });
     let claims = serde_json::json!({
-        "iss": "arroba-cloud-test",
+        "iss": "chariox-cloud-test",
         "sub": "client-1",
         "subject_kind": "client",
         "realm_id": "realm-1",
@@ -575,7 +584,10 @@ fn scoped_hmac_verifier_rejects_cloud_jwt_tokens_with_unknown_actions() {
         URL_SAFE_NO_PAD.encode(sign_hmac(b"issuer-secret", signing_input.as_bytes()).unwrap());
     let token = format!("{signing_input}.{signature}");
     let verifier = RelayAuthVerifier::scoped_hmac(
-        BTreeMap::from([("arroba-cloud-test".to_string(), "issuer-secret".to_string())]),
+        BTreeMap::from([(
+            "chariox-cloud-test".to_string(),
+            "issuer-secret".to_string(),
+        )]),
         Some(15_000),
     );
 

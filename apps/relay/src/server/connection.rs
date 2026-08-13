@@ -982,7 +982,7 @@ fn relay_outgoing_queue_capacity() -> usize {
     static CAPACITY: OnceLock<usize> = OnceLock::new();
     *CAPACITY.get_or_init(|| {
         parse_relay_outgoing_queue_capacity(
-            std::env::var("ARROBA_RELAY_OUTGOING_QUEUE_CAPACITY")
+            std::env::var("CHARIOX_RELAY_OUTGOING_QUEUE_CAPACITY")
                 .ok()
                 .as_deref(),
         )

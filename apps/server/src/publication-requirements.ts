@@ -4,7 +4,7 @@ import {
   listMcpServersRequest,
   listScriptsRequest,
   listSkillsRequest,
-} from "@arroba/kernel-client/ipc-requests"
+} from "@chariox/kernel-client/ipc-requests"
 
 import type {
   KernelLookupClient,

@@ -21,7 +21,7 @@ type ReplicaPoolState = {
 }
 
 const replicaPools = new Map<string, ReplicaPoolState>()
-const AGENT_APP_SESSION_COOKIE = "arroba_agent_app_session"
+const AGENT_APP_SESSION_COOKIE = "chariox_agent_app_session"
 
 type PendingReplicaDispatch = {
   readonly publication: WorkflowPublicationConfig
@@ -323,8 +323,8 @@ function optionalStateFile(publication: WorkflowPublicationConfig): { readonly s
 }
 
 function stateFileForPublication(publication: WorkflowPublicationConfig): string | null {
-  const root = process.env.ARROBA_PUBLICATION_RUNTIME_STATE_DIR
-    || (publication.package_root ? join(publication.package_root, ".arroba-publication-runtime") : null)
+  const root = process.env.CHARIOX_PUBLICATION_RUNTIME_STATE_DIR
+    || (publication.package_root ? join(publication.package_root, ".chariox-publication-runtime") : null)
   if (!root) return null
   return join(root, "agent-app", safeStateSegment(publication.publication_id), "replicas.json")
 }

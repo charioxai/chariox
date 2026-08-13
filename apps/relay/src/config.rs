@@ -21,12 +21,12 @@ pub enum RelayConfigError {
 impl RelayConfig {
     pub fn load_from_env() -> Result<Self, RelayConfigError> {
         let config = Self {
-            host: env::var("ARROBA_RELAY_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
-            port: env::var("ARROBA_RELAY_PORT")
+            host: env::var("CHARIOX_RELAY_HOST").unwrap_or_else(|_| "127.0.0.1".to_string()),
+            port: env::var("CHARIOX_RELAY_PORT")
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43130),
-            shared_token: env::var("ARROBA_RELAY_TOKEN")
+            shared_token: env::var("CHARIOX_RELAY_TOKEN")
                 .ok()
                 .map(|value| value.trim().to_string())
                 .filter(|value| !value.is_empty()),

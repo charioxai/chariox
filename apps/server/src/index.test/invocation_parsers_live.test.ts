@@ -61,7 +61,7 @@ test("human HTTP queued browser GET opens an invocation SSE subscription", async
     const response = await app.inject({ method: "GET", url: "/queued", headers: { accept: "text/html" } })
     assert.equal(response.statusCode, 200)
     assert.match(response.body, /EventSource/)
-    assert.match(response.body, /\/\.well-known\/arroba\/publication\/invocations\//)
+    assert.match(response.body, /\/\.well-known\/chariox\/publication\/invocations\//)
     assert.match(response.body, /id="queue-status"/)
     assert.match(response.body, /renderQueueStatus/)
   } finally {
@@ -387,7 +387,7 @@ test("published transports invoke at their root defaults without viewer route co
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26" } }),
       })
       assert.equal(initialize.status, 200)
-      assert.equal((await initialize.json() as { result?: { serverInfo?: { name?: string } } }).result?.serverInfo?.name, "arroba-publication")
+      assert.equal((await initialize.json() as { result?: { serverInfo?: { name?: string } } }).result?.serverInfo?.name, "chariox-publication")
 
       const called = await fetch(address, {
         method: "POST",

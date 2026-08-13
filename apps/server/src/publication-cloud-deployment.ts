@@ -92,12 +92,12 @@ function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, local
 export async function appendCloudPublicationDeploymentLogs(
   input: AppendCloudPublicationDeploymentLogsInput,
 ): Promise<boolean> {
-  const deploymentId = input.deploymentId?.trim() || process.env.ARROBA_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
+  const deploymentId = input.deploymentId?.trim() || process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
   if (!deploymentId || input.entries.length === 0) return false
-  const runnerKey = input.runnerKey ?? process.env.ARROBA_PUBLICATION_CLOUD_RUNNER_KEY?.trim() ?? null
+  const runnerKey = input.runnerKey ?? process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY?.trim() ?? null
   const fetchImpl = input.fetch ?? fetch
   if (runnerKey) {
-    const apiUrl = input.profile?.apiUrl || process.env.ARROBA_PUBLICATION_CLOUD_API_URL?.trim()
+    const apiUrl = input.profile?.apiUrl || process.env.CHARIOX_PUBLICATION_CLOUD_API_URL?.trim()
     if (!apiUrl) return false
     const response = await fetchImpl(
       `${normalizeApiUrl(apiUrl)}/runner/publication-deployments/${encodeURIComponent(deploymentId)}/logs`,
@@ -163,9 +163,9 @@ async function loadCloudPublicationProfile(): Promise<PublicationCloudProfile | 
 }
 
 function loadCloudPublicationProfileFromEnv(): PublicationCloudProfile | null {
-  const apiUrl = process.env.ARROBA_PUBLICATION_CLOUD_API_URL?.trim()
-  const accountId = process.env.ARROBA_PUBLICATION_CLOUD_ACCOUNT_ID?.trim()
-  const cloudSessionToken = process.env.ARROBA_PUBLICATION_CLOUD_SESSION_TOKEN?.trim()
+  const apiUrl = process.env.CHARIOX_PUBLICATION_CLOUD_API_URL?.trim()
+  const accountId = process.env.CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID?.trim()
+  const cloudSessionToken = process.env.CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN?.trim()
   if (!apiUrl || !accountId) return null
   return {
     apiUrl,
@@ -176,8 +176,8 @@ function loadCloudPublicationProfileFromEnv(): PublicationCloudProfile | null {
 
 function preferencesPath(): string {
   const xdg = process.env.XDG_CONFIG_HOME?.trim()
-  if (xdg) return path.join(xdg, "arroba", "config.json")
-  return path.join(os.homedir(), ".arroba", "config.json")
+  if (xdg) return path.join(xdg, "chariox", "config.json")
+  return path.join(os.homedir(), ".chariox", "config.json")
 }
 
 function normalizeApiUrl(apiUrl: string): string {

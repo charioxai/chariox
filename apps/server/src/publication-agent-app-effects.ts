@@ -285,8 +285,8 @@ function persistStore(publication: WorkflowPublicationConfig): void {
 }
 
 function stateFileForPublication(publication: WorkflowPublicationConfig): string | null {
-  const root = process.env.ARROBA_PUBLICATION_RUNTIME_STATE_DIR
-    || (publication.package_root ? join(publication.package_root, ".arroba-publication-runtime") : null)
+  const root = process.env.CHARIOX_PUBLICATION_RUNTIME_STATE_DIR
+    || (publication.package_root ? join(publication.package_root, ".chariox-publication-runtime") : null)
   if (!root) return null
   return join(root, "agent-app", safeStateSegment(publication.publication_id), "effects.json")
 }
