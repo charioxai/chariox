@@ -1,6 +1,6 @@
-# Arroba
+# Chariox
 
-Arroba is a daemon-centered framework for running and orchestrating native AI coding CLIs and compatible agent runtimes through a shared terminal interface.
+Chariox is a daemon-centered framework for running and orchestrating native AI coding CLIs and compatible agent runtimes through a shared terminal interface.
 
 The project is intentionally local-first. A daemon node owns live sessions on the user's machine, local or remote members attach to that node, and a lightweight server can relay remote connections without becoming the authority for runtime state or provider behavior.
 
@@ -37,7 +37,7 @@ specification and architecture docs remain the source of truth for behavior.
 
 ### `apps/kernel`
 
-The daemon is the runtime authority in Arroba v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
+The daemon is the runtime authority in Chariox v1. It is responsible for hosting sessions, managing PTYs, coordinating provider runs, and eventually owning the capability and control lanes described in the architecture docs.
 
 The current local baseline is one local CLI, one provider (`opencode`), one prompt path, and live streamed output through the daemon. The near-term plan is to close that one-provider cycle fully before broadening to more clients or more providers.
 
@@ -49,7 +49,7 @@ Architecturally, the daemon is now better thought of as a node runtime:
 
 The primary CLI path now uses the kernel WebSocket event stream. The daemon implementation target is an actor/event/projection kernel: commands enter through a router, actors own mutation, ordered kernel events drive recovery and replay, and clients read projections. The current `DaemonApp` shape is bootstrap/composition scaffolding around those runtime owners, not the long-term command-state owner.
 
-The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `arroba-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
+The primary local CLI is now the TypeScript OpenTUI app in `apps/cli`. `chariox-cli` remains the familiar entrypoint by launching that TypeScript client through a small Rust compatibility wrapper.
 
 ### `apps/cli`
 
@@ -76,7 +76,7 @@ The Prisma schema is the initial persistence model for the same core entities de
 ## Documentation Map
 
 - `agents/AGENTS.md`: high-level design constraints and current status
-- `docs/spec-v1.md`: the product specification for Arroba v1
+- `docs/spec-v1.md`: the product specification for Chariox v1
 - `docs/ARCHITECTURE.md`: implementation-oriented architecture view
 - `docs/PROTOCOL.md`: protocol lanes and structured message contracts
 - `docs/RUNNING_LOCAL.md`: how to run the current local daemon + CLI path
@@ -106,12 +106,12 @@ pnpm install
 
 ### Run The Local OpenCode Baseline
 
-For a fuller local-runtime guide, see [RUNNING_LOCAL.md](/Users/miguel/arroba/docs/RUNNING_LOCAL.md).
+For a fuller local-runtime guide, see [RUNNING_LOCAL.md](/Users/miguel/chariox/docs/RUNNING_LOCAL.md).
 
 The current local runtime is two processes:
 
-- `arroba-kernel`
-- `arroba-cli` (Rust shim that launches the TypeScript OpenTUI client)
+- `chariox-kernel`
+- `chariox-cli` (Rust shim that launches the TypeScript OpenTUI client)
 
 For normal local use, prefer `pnpm run start:kernel` and `pnpm run start:cli`.
 Those launch the cached debug binaries directly and only rebuild when the Rust
@@ -120,35 +120,35 @@ debugging when you explicitly want Cargo in the loop.
 
 OpenCode setup currently requires:
 
-- `opencode` installed locally and reachable on `PATH`, or `ARROBA_OPENCODE_BIN` set to the executable path
-- `ARROBA_OPENCODE_PORT` set to an explicit local TCP port for `opencode serve`
+- `opencode` installed locally and reachable on `PATH`, or `CHARIOX_OPENCODE_BIN` set to the executable path
+- `CHARIOX_OPENCODE_PORT` set to an explicit local TCP port for `opencode serve`
 - `bun` installed locally and reachable on `PATH`, or `BUN_BIN` set to the executable path
 
 Example:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
+export CHARIOX_OPENCODE_PORT=43111
 pnpm run start:kernel
 ```
 
 Then in another terminal:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
+export CHARIOX_OPENCODE_PORT=43111
 pnpm run start:cli
 ```
 
 Direct TypeScript CLI development path:
 
 ```bash
-export ARROBA_OPENCODE_PORT=43111
-pnpm --filter @arroba/cli run dev
+export CHARIOX_OPENCODE_PORT=43111
+pnpm --filter @chariox/cli run dev
 ```
 
 Current migration status:
 
 - `apps/cli` is the primary local client implementation
-- `arroba-cli` is a compatibility launcher for that TypeScript client
+- `chariox-cli` is a compatibility launcher for that TypeScript client
 
 Current local CLI controls:
 
@@ -171,7 +171,7 @@ Current local CLI controls:
 Optional executable override:
 
 ```bash
-export ARROBA_OPENCODE_BIN=/absolute/path/to/opencode
+export CHARIOX_OPENCODE_BIN=/absolute/path/to/opencode
 ```
 
 Optional Bun override:
@@ -182,21 +182,21 @@ export BUN_BIN=/absolute/path/to/bun
 
 ### Logging And Debugging
 
-For the full logging guide, see [LOGGING.md](/Users/miguel/arroba/docs/LOGGING.md).
+For the full logging guide, see [LOGGING.md](/Users/miguel/chariox/docs/LOGGING.md).
 
-Arroba now uses one machine-local shared log root for runtime processes instead of ad hoc debug files.
+Chariox now uses one machine-local shared log root for runtime processes instead of ad hoc debug files.
 
 Default log root resolution:
 
-- `ARROBA_LOG_DIR`, if set
-- `XDG_STATE_HOME/arroba/logs`
-- `~/.local/state/arroba/logs`
-- `./.arroba/logs` as a final fallback
+- `CHARIOX_LOG_DIR`, if set
+- `XDG_STATE_HOME/chariox/logs`
+- `~/.local/state/chariox/logs`
+- `./.chariox/logs` as a final fallback
 
 Current process coverage:
 
-- `arroba-kernel`
-- the Rust `arroba-cli` launcher
+- `chariox-kernel`
+- the Rust `chariox-cli` launcher
 - the primary TypeScript CLI process in `apps/cli`
 - the Fastify server process in `apps/server`
 
@@ -209,15 +209,15 @@ Current defaults:
 Useful env vars:
 
 ```bash
-export ARROBA_LOG_DIR=/absolute/path/to/arroba-logs
-export ARROBA_LOG_LEVEL=debug
+export CHARIOX_LOG_DIR=/absolute/path/to/chariox-logs
+export CHARIOX_LOG_LEVEL=debug
 ```
 
 Inspect logs directly:
 
 ```bash
-tail -f ~/.local/state/arroba/logs/*.ndjson
-jq 'select(.session_id=="session-1")' ~/.local/state/arroba/logs/*.ndjson
+tail -f ~/.local/state/chariox/logs/*.ndjson
+jq 'select(.session_id=="session-1")' ~/.local/state/chariox/logs/*.ndjson
 ```
 
 Or use the built-in viewer:
@@ -225,7 +225,7 @@ Or use the built-in viewer:
 ```bash
 pnpm run start:cli -- logs --follow
 pnpm run start:cli -- logs --session session-1
-pnpm --filter @arroba/cli run dev -- logs --process-kind daemon --level error
+pnpm --filter @chariox/cli run dev -- logs --process-kind daemon --level error
 ```
 
 ### Verification Commands
