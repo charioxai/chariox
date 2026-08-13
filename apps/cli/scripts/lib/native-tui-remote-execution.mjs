@@ -33,7 +33,7 @@ export async function assertHetznerArrobaBinaries(options) {
     `Hetzner Arroba checkout is not ready at ${options.hetznerRepo}.`,
     `Expected executable binaries: ${kernelBinary} and ${relayBinary}.`,
     "Prepare the worker with:",
-    `  git clone https://github.com/charioxai/arroba.git ${options.hetznerRepo}`,
+    `  git clone https://github.com/charioxai/chariox.git ${options.hetznerRepo}`,
     `  cd ${options.hetznerRepo}`,
     "  git checkout main && git reset --hard origin/main",
     "  export PATH=/root/.cargo/bin:$PATH",

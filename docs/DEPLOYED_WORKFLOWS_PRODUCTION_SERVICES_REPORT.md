@@ -77,12 +77,12 @@ runtime. Cloud secret storage is for Arroba platform secrets, not for provider l
 payloads.
 
 The database model stores profile identity and lifecycle metadata, not credential bytes,
-in [`DeploymentCredentialProfile`](https://github.com/charioxai/arroba-cloud/blob/main/packages/db/prisma/models.prisma).
+in [`DeploymentCredentialProfile`](https://github.com/charioxai/chariox-cloud/blob/main/packages/db/prisma/models.prisma).
 The worker prepares provider-specific `HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
 locations and secures profile trees in
-[`deployment-credential-runner.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/deployment-credential-runner.ts).
+[`deployment-credential-runner.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/deployment-credential-runner.ts).
 The publication runner mounts profiles read-only in
-[`publication-runner.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/publication-runner.ts).
+[`publication-runner.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/publication-runner.ts).
 The browser Vault is a client of the kernel-owned vault path, not a Cloud credential
 database. This boundary also means Arroba does not need to register provider accounts on
 behalf of users; users retain their provider relationship, billing, rotation, and
@@ -98,15 +98,15 @@ growth, retention, restore time, object durability, or transfer throughput cross
 agreed threshold.
 
 **Why and abstraction status:**
-[`package-store.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/package-store.ts)
+[`package-store.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/package-store.ts)
 already selects S3-compatible, Prisma/database, or local-file implementations and
 rejects local files in production. The S3 implementation supports signed `GET` and
 `PUT`, a custom endpoint, path-style addressing, a prefix, and session credentials.
 This is only a partial deployed-workflows abstraction today. Immutable v3 release
 creation writes a `db://publication-releases/...` URI in
-[`deployed-workflow-service.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployed-workflow-service.ts),
+[`deployed-workflow-service.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployed-workflow-service.ts),
 and promotion requires `PublicationReleaseArtifact.archive` bytes in
-[`deployed-workflows-repository.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployed-workflows-repository.ts).
+[`deployed-workflows-repository.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployed-workflows-repository.ts).
 The database schema also contains both `PublicationReleaseArtifact.archive` and the
 operational `PublicationPackageArchive.archive`. Selecting the S3 package store does not
 move the immutable release path out of PostgreSQL.
@@ -174,7 +174,7 @@ self-hosted PostgreSQL instance satisfies the criteria. The currently documented
 addon is a staging resource and is not production evidence by itself.
 
 **Why and abstraction status:**
-[`packages/db/src/index.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/db/src/index.ts)
+[`packages/db/src/index.ts`](https://github.com/charioxai/chariox-cloud/blob/main/packages/db/src/index.ts)
 requires `DATABASE_URL` and creates Prisma through the PostgreSQL adapter. The Prisma
 schema declares `provider = "postgresql"`, and `/ready` executes `SELECT 1`. PostgreSQL is
 the authority for Cloud identity, account, releases, deployments, domains, jobs, usage,
@@ -224,13 +224,13 @@ Fail closed for authorization and new admissions.
 
 - `DATABASE_URL` is consumed by the Cloud database client, Prisma migrations, API, worker,
   and the `Procfile` postdeploy migration.
-- [`packages/db/prisma.config.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/db/prisma.config.ts)
-  and [`packages/db/prisma/schema.prisma`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/db/prisma/schema.prisma)
+- [`packages/db/prisma.config.ts`](https://github.com/charioxai/chariox-cloud/blob/main/packages/db/prisma.config.ts)
+  and [`packages/db/prisma/schema.prisma`](https://github.com/charioxai/chariox-cloud/blob/main/packages/db/prisma/schema.prisma)
   define the PostgreSQL migration surface.
 - Local substitutes are PostgreSQL 16 in
-  [`infra/docker-compose.yml`](https://github.com/mgutierrez09/arroba-cloud/blob/main/infra/docker-compose.yml),
+  [`infra/docker-compose.yml`](https://github.com/charioxai/chariox-cloud/blob/main/infra/docker-compose.yml),
   ephemeral PGlite in
-  [`ephemeral-postgres.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/test-support/ephemeral-postgres.ts),
+  [`ephemeral-postgres.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/test-support/ephemeral-postgres.ts),
   and `ARROBA_LOCAL_DATABASE_URL` for the local browser service.
 - Backup, PITR, replica, and restore settings are infrastructure-provider configuration;
   no repository environment variables currently define them.
@@ -245,7 +245,7 @@ and commercial terms. The documented staging issuer is a US Auth0 tenant, so it 
 silently assumed to satisfy an EU-locality decision.
 
 **Why and abstraction status:**
-[`packages/auth/src/index.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/auth/src/index.ts)
+[`packages/auth/src/index.ts`](https://github.com/charioxai/chariox-cloud/blob/main/packages/auth/src/index.ts)
 loads and validates Auth0-specific web-session configuration and requires HTTPS outside
 localhost. The database enum and identity mapper currently support only `AUTH0`, and
 readiness explicitly requires Auth0 variables. This is not yet a provider-neutral OIDC
@@ -298,7 +298,7 @@ outage.
   `ARROBA_CLOUD_ADMIN_ENABLED`, and `ARROBA_CLOUD_ADMIN_ROLES`.
 - Nonproduction only: `ARROBA_CLOUD_DEV_AUTH_SECRET` and injected test-auth options.
 - The current staging topology and US-tenant note are recorded in
-  [`C5_HOSTED_DEPLOYMENT_MILESTONE.md`](https://github.com/mgutierrez09/arroba-cloud/blob/main/docs/C5_HOSTED_DEPLOYMENT_MILESTONE.md).
+  [`C5_HOSTED_DEPLOYMENT_MILESTONE.md`](https://github.com/charioxai/chariox-cloud/blob/main/docs/C5_HOSTED_DEPLOYMENT_MILESTONE.md).
 
 ## 4. Email And Invitations
 
@@ -309,11 +309,11 @@ service before the product promises transactional invitation delivery, resend, b
 mail, bounce handling, or self-serve invitation workflows.
 
 **Why and abstraction status:**
-[`deployment-access-service.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-access-service.ts)
+[`deployment-access-service.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-access-service.ts)
 creates opaque claim tokens, stores only hashes, defaults to seven days, and permits a
 five-minute to 30-day lifetime. Audience invitations use the same hash-and-return-once
 pattern in
-[`deployment-audience-service.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-audience-service.ts).
+[`deployment-audience-service.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-audience-service.ts).
 The web app constructs copyable waiting-room links. There is no mail package, outbox,
 provider adapter, SMTP configuration, bounce processing, or delivery status in the
 current implementation.
@@ -363,13 +363,13 @@ custom-hostname/CDN service until domain count, WAF/DDoS requirements, certifica
 operations, or global static latency justify it.
 
 **Why and abstraction status:**
-[`deployment-domain-policy.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-domain-policy.ts)
+[`deployment-domain-policy.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-domain-policy.ts)
 normalizes hostnames and verifies the expected `_arroba-verification.<host>` TXT record
 and CNAME target using the system DNS resolver. The API exposes a protected domain
 approval endpoint suitable for a Caddy on-demand TLS ask check in
-[`deployment-domains.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/routes/deployment-domains.ts).
+[`deployment-domains.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/routes/deployment-domains.ts).
 Production also enforces a publication hostname distinct from `ARROBA_CLOUD_WEB_URL` in
-[`node-server.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/node-server.ts).
+[`node-server.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/node-server.ts).
 There is no Caddyfile, DNS-provider API, ACME account configuration, CDN adapter, or edge
 infrastructure definition in the Cloud repository. DNS-state abstraction exists; edge
 provisioning does not.
@@ -420,7 +420,7 @@ to route to another account or deployment.
 - The current two-surface Hetzner drill sets the ingress public protocol to `https` while
   reaching the worker through a local HTTP/tunnel path; it is not real deployed-workflow
   DNS/TLS evidence. The relay's existing Caddy/`sslip.io` staging edge is documented in
-  [`C5_HOSTED_DEPLOYMENT_MILESTONE.md`](https://github.com/mgutierrez09/arroba-cloud/blob/main/docs/C5_HOSTED_DEPLOYMENT_MILESTONE.md).
+  [`C5_HOSTED_DEPLOYMENT_MILESTONE.md`](https://github.com/charioxai/chariox-cloud/blob/main/docs/C5_HOSTED_DEPLOYMENT_MILESTONE.md).
 
 ## 6. Billing And Metering
 
@@ -431,19 +431,19 @@ card payments or automatically granting subscription entitlements. The usage led
 admission budgets remain required even when no charge is made.
 
 **Why and abstraction status:**
-[`apps/api/src/billing/provider.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/billing/provider.ts)
+[`apps/api/src/billing/provider.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/billing/provider.ts)
 has configured, disabled, and misconfigured provider modes. The package-level boundary in
-[`packages/billing/src/index.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/billing/src/index.ts)
+[`packages/billing/src/index.ts`](https://github.com/charioxai/chariox-cloud/blob/main/packages/billing/src/index.ts)
 defines checkout, portal, and idempotent webhook processing, but its provider type and
 database enum currently support only Stripe. Deployment admission persists invocation
 metadata and enforces concurrency, per-minute rate, and `daily_usage_units` in
-[`deployments-repository.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployments-repository.ts).
+[`deployments-repository.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployments-repository.ts).
 `usageUnits` currently defaults to one per invocation; it is an admission unit, not an
 audited provider-token or provider-cost meter.
 
 There is one production configuration inconsistency to resolve: the billing provider can
 be intentionally disabled when all Stripe variables are absent, but
-[`readiness.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/readiness.ts)
+[`readiness.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/readiness.ts)
 always marks missing Stripe variables unready. A free production pilot cannot be both
 honestly unconfigured for billing and `/ready` without changing that readiness policy.
 Production placeholder secrets are not an acceptable workaround.
@@ -491,7 +491,7 @@ Stripe.
 - The resilient worker usage path uses `ARROBA_PUBLICATION_USAGE_SPOOL_PATH`,
   `ARROBA_PUBLICATION_USAGE_SPOOL_SECRET`, and
   `ARROBA_PUBLICATION_USAGE_MAX_PENDING` in
-  [`publication-ingress-usage-observer.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/publication-ingress-usage-observer.ts).
+  [`publication-ingress-usage-observer.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/publication-ingress-usage-observer.ts).
 - User provider consumption remains billed by the user's provider account through the
   provider-native CLI relationship; it is not a Cloud-stored credential or current Arroba
   billable meter.
@@ -507,17 +507,17 @@ stack meets those requirements. Distributed tracing is optional/later for the bo
 first deployment.
 
 **Why and abstraction status:**
-[`operational-telemetry.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/operational-telemetry.ts)
+[`operational-telemetry.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/operational-telemetry.ts)
 uses process-memory counters and a console audit sink. `/metrics` returns a JSON snapshot,
 not a durable metrics backend. Fastify and workers log to stdout. Deployment invocation
 metadata and deployment logs are in PostgreSQL, with a default 30-day policy in
-[`deployment-operations-policy.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-operations-policy.ts).
+[`deployment-operations-policy.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-operations-policy.ts).
 Retention pruning is opportunistic per environment and rate-limited to a 15-minute check
 in
-[`deployment-telemetry-retention.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-telemetry-retention.ts),
+[`deployment-telemetry-retention.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-telemetry-retention.ts),
 not a guaranteed idle-environment scheduler. Inline telemetry exports are capped at
 10,000 records per category and 10 MiB in
-[`deployment-telemetry-export.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/publication/deployment-telemetry-export.ts).
+[`deployment-telemetry-export.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/publication/deployment-telemetry-export.ts).
 No first-party OpenTelemetry exporter, managed log adapter, metrics scraper configuration,
 or pager integration is wired into the deployed-workflows services.
 
@@ -557,7 +557,7 @@ state.
 **Exact configuration surfaces:**
 
 - API routes: `GET /health`, `GET /ready`, and `GET /metrics`; Fastify logging is enabled
-  by default in [`server.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/server.ts).
+  by default in [`server.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/server.ts).
 - Deployment retention and alert thresholds are persisted in each environment's
   `operationsPolicy`; there is no external telemetry-provider env surface.
 - OSS kernel logging uses `ARROBA_LOG_DIR` and `ARROBA_LOG_LEVEL`; relay provenance can use
@@ -658,13 +658,13 @@ required.
 
 **Why and abstraction status:** Cloud relay allocation supports a static pool or a stable
 hash across configured pools in
-[`relay/realm.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/api/src/relay/realm.ts).
+[`relay/realm.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/api/src/relay/realm.ts).
 The OSS relay refuses unauthenticated non-loopback startup unless explicitly overridden,
 supports scoped HMAC verification, draining, and revocation sync in
 [`apps/relay/src/main.rs`](../apps/relay/src/main.rs) and
 [`apps/relay/src/config.rs`](../apps/relay/src/config.rs). The publication worker directly
 operates Docker, host files, networks, credential profiles, and ports through
-[`apps/worker/src/cli.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/cli.ts)
+[`apps/worker/src/cli.ts`](https://github.com/charioxai/chariox-cloud/blob/main/apps/worker/src/cli.ts)
 and `publication-runner.ts`. Relay allocation is abstracted; compute scheduling/IaaS is
 not. The egress orchestration is committed and passes the final local matrix, but remains
 a production launch gate until its fail-closed behavior passes on designated Hetzner
@@ -742,7 +742,7 @@ unrestricted-network fallback.
 ## Configuration Drift Found During Audit
 
 The provisional
-[`C1_DEPLOYMENT_TOPOLOGY.md`](https://github.com/mgutierrez09/arroba-cloud/blob/main/docs/C1_DEPLOYMENT_TOPOLOGY.md)
+[`C1_DEPLOYMENT_TOPOLOGY.md`](https://github.com/charioxai/chariox-cloud/blob/main/docs/C1_DEPLOYMENT_TOPOLOGY.md)
 lists `ARROBA_PUBLICATION_RUNNER_TOKEN_SECRET`, `ARROBA_PUBLICATION_RUNNER_ID`, and
 `ARROBA_PUBLICATION_STAGING_CREDENTIAL_PROFILE`. Repository search finds no code consumer
 for those names. The implemented runner contract instead uses

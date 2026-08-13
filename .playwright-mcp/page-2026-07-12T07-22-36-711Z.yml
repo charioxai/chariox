@@ -15,7 +15,7 @@
         - /url: /resources
     - generic [ref=e13]:
       - link "GitHub" [ref=e14] [cursor=pointer]:
-        - /url: https://github.com/mgutierrez09/arroba
+        - /url: https://github.com/charioxai/chariox
       - link "Log in" [ref=e17] [cursor=pointer]:
         - /url: /auth/login?returnTo=/waiting-room
       - button "Switch color theme" [pressed] [ref=e18] [cursor=pointer]
