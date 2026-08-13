@@ -193,7 +193,7 @@ fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), S
     let package_path = resolve_user_path(package_arg)?;
     if !package_path.exists() {
         return Err(format!(
-            "published workflow package `{}` was not found",
+            "workflow trigger package `{}` was not found",
             package_path.display()
         ));
     }

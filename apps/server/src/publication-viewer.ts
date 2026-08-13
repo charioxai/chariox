@@ -102,7 +102,7 @@ export function publicationViewerPage(
       `<main class="publication-viewer${hasTraces ? " has-traces" : ""}${showComposer ? " has-composer" : ""}">`,
       "  <section class=\"output-pane\">",
       "    <header class=\"viewer-bar\">",
-      "      <div><span class=\"eyebrow\">Published workflow</span><h1>Workflow Run</h1></div>",
+      "      <div><span class=\"eyebrow\">Workflow public view</span><h1>Workflow Run</h1></div>",
       "      <div class=\"run-state\"><span id=\"run-dot\"></span><span id=\"status\">Ready</span></div>",
       "      <p id=\"queue-status\" hidden></p>",
       "    </header>",

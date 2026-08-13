@@ -34,7 +34,7 @@ test("HTTP V1 keeps GET address-bar and POST form/API invocation on one trigger"
   try {
     const viewer = await app.inject({ method: "GET", url: "/", headers: { accept: "text/html" } })
     assert.equal(viewer.statusCode, 200)
-    assert.match(viewer.body, /Published workflow/)
+    assert.match(viewer.body, /Workflow public view/)
     assert.equal(inputs.length, 0)
 
     const addressBar = await app.inject({
