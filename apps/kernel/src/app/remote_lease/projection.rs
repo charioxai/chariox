@@ -779,8 +779,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 session_id.to_string(),
                 agent_id.to_string(),
             );
-            self.app
-                .update_provider_run_projection(projected_run.clone());
+            let projected_run = self
+                .app
+                .update_remote_provider_run_projection(projected_run);
             let _ = self
                 .app
                 .sessions
@@ -1378,6 +1379,40 @@ mod explicit_completion_tests {
                 structured_endpoint: None,
             },
         )
+    }
+
+    #[test]
+    fn remote_provider_projection_does_not_regress_to_starting() {
+        let store = crate::runtime::projection::ProviderRunProjectionStore::default();
+        let mut running = provider_run(
+            "provider-run-1",
+            "session-1",
+            "agent-1",
+            "managed-dev-stub",
+            "managed-dev-stub",
+            ProviderClientInterface::Chariox,
+        );
+        running.mark_running();
+        store.update_remote_snapshot(running);
+
+        let stale_starting = provider_run(
+            "provider-run-1",
+            "session-1",
+            "agent-1",
+            "managed-dev-stub",
+            "managed-dev-stub",
+            ProviderClientInterface::Chariox,
+        );
+        let retained = store.update_remote_snapshot(stale_starting);
+
+        assert_eq!(retained.state(), crate::provider::ProviderRunState::Running);
+        assert_eq!(
+            store
+                .get("provider-run-1")
+                .expect("provider projection should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
     }
 
     #[test]

@@ -475,6 +475,15 @@ impl DaemonApp {
         self.provider_process_projection.invalidate();
     }
 
+    pub(crate) fn update_remote_provider_run_projection(
+        &self,
+        run: RuntimeProviderRun,
+    ) -> RuntimeProviderRun {
+        let run = self.provider_run_projection.update_remote_snapshot(run);
+        self.provider_process_projection.invalidate();
+        run
+    }
+
     pub(crate) fn update_provider_process_projection(&self, processes: Vec<ProviderProcessInfo>) {
         self.provider_process_projection.update_list(processes);
     }

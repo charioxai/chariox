@@ -88,6 +88,22 @@ impl ProviderRunProjectionStore {
             .insert(run.id().to_string(), run);
     }
 
+    pub(crate) fn update_remote_snapshot(&self, run: RuntimeProviderRun) -> RuntimeProviderRun {
+        let mut runs = self
+            .runs
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(current) = runs.get(run.id()) {
+            if run.state() == ProviderRunState::Starting
+                && current.state() != ProviderRunState::Starting
+            {
+                return current.clone();
+            }
+        }
+        runs.insert(run.id().to_string(), run.clone());
+        run
+    }
+
     pub(crate) fn health_snapshot(
         &self,
         sessions: Vec<RuntimeSession>,
