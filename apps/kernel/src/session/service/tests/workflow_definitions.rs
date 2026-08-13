@@ -107,6 +107,96 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
 }
 
 #[test]
+fn restore_purges_unsupported_publication_records() {
+    let mut source = SessionService::new(&test_config());
+    let session = source
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut source, session.id(), &["agent-1"]);
+    let workflow = source
+        .create_workflow(session.id(), Some("review".to_string()))
+        .expect("workflow should be created");
+    let node = source
+        .add_workflow_node(session.id(), workflow.id(), "agent-1")
+        .expect("workflow node should be added");
+    let endpoint = source
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("main".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let supported = source
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("default".to_string()),
+            Some("review_http".to_string()),
+            Some("ingress".to_string()),
+            Some("/review".to_string()),
+            vec!["POST".to_string()],
+            Some(serde_json::json!({"kind": "human_http"})),
+            Some(serde_json::json!({"kind": "json"})),
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "local".to_string(),
+        )
+        .expect("supported publication should be created");
+
+    let mut serialized = serde_json::to_value(
+        source
+            .get_session(session.id())
+            .expect("source session should load"),
+    )
+    .expect("session should serialize");
+    let supported_json = serialized["workflow_publications"]
+        .as_array()
+        .and_then(|publications| publications.first())
+        .cloned()
+        .expect("supported publication should serialize");
+    let supported_snapshot = serialized["workflow_publication_snapshots"]
+        .get(supported.id())
+        .cloned()
+        .expect("supported publication snapshot should serialize");
+    for (id, transport) in [
+        ("removed-api-sse", "api_sse_json"),
+        ("removed-websocket", "websocket_json"),
+        ("removed-publication-mcp", "mcp"),
+    ] {
+        let mut removed = supported_json.clone();
+        removed["id"] = serde_json::json!(id);
+        removed["alias"] = serde_json::json!(id);
+        removed["transport"] = serde_json::json!({ "kind": transport });
+        serialized["workflow_publications"]
+            .as_array_mut()
+            .expect("publication list should be mutable")
+            .push(removed);
+        serialized["workflow_publication_snapshots"]
+            .as_object_mut()
+            .expect("publication snapshots should be mutable")
+            .insert(id.to_string(), supported_snapshot.clone());
+    }
+
+    let restored_session = serde_json::from_value(serialized).expect("session should deserialize");
+    let mut restored = SessionService::new(&test_config());
+    let restored_session = restored.restore_session(restored_session);
+
+    assert_eq!(
+        restored_session
+            .workflow_publications()
+            .iter()
+            .map(|publication| publication.id())
+            .collect::<Vec<_>>(),
+        vec![supported.id()]
+    );
+}
+
+#[test]
 fn create_workflow_generates_default_aliases() {
     let mut service = SessionService::new(&test_config());
     let session = service
