@@ -77,7 +77,7 @@ runtime. Cloud secret storage is for Arroba platform secrets, not for provider l
 payloads.
 
 The database model stores profile identity and lifecycle metadata, not credential bytes,
-in [`DeploymentCredentialProfile`](https://github.com/mgutierrez09/arroba-cloud/blob/main/packages/db/prisma/models.prisma).
+in [`DeploymentCredentialProfile`](https://github.com/charioxai/arroba-cloud/blob/main/packages/db/prisma/models.prisma).
 The worker prepares provider-specific `HOME`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`
 locations and secures profile trees in
 [`deployment-credential-runner.ts`](https://github.com/mgutierrez09/arroba-cloud/blob/main/apps/worker/src/deployment-credential-runner.ts).
