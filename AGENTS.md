@@ -60,6 +60,7 @@ Do not merge protocol shape changes without the version bump and test update.
 - Be lean, don't over engineer and delete all old/unnecessary code along the way.
 - Keep coordinators as wiring only; move policy, state mutation, rendering, transport I/O, and protocol adapters into named responsibility modules before a file becomes a mega-file.
 - Always clean up temporary drill artifacts, orphaned provider processes, and large build outputs you no longer need before handing work back.
+- Store screenshots and other validation evidence under `/Users/miguel/.codex/evidence/<task>/`, never inside a repository or in Git.
 
 ## Provider-Native Permission Visibility
 
