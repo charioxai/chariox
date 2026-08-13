@@ -266,10 +266,10 @@ base app assets, route wrapping, workflow-produced response effects, overlays,
 app actions, endpoint manipulation policy, replica pools, and external web/mobile
 integration. See `docs/AGENT_APPS_CONCEPT.md`.
 
-Cloud-hosted published workflows should behave as independent web apps. Callers
+Cloud-hosted workflow deployments should behave as independent web apps. Callers
 do not need Chariox accounts unless the owner configures Chariox-managed access.
-Publication deployment records and runner/container tokens are scoped runtime
-identities and MUST NOT carry a general Chariox user account session.
+Deployment records and runner/container tokens are scoped execution identities
+and MUST NOT carry a general Chariox user account session.
 
 Images and publication packages MUST NOT include provider credentials or Chariox
 Cloud account credentials. Hosted-container validation may use an explicit
@@ -277,9 +277,11 @@ staging credential profile mounted by the runner, but product credential
 onboarding for arbitrary users is a later phase after the deployment pipeline is
 validated end to end with real providers.
 
-The web CLI should expose a dedicated `Published Workflows` side-panel tab
-rather than nesting publication runtime management under the workflow authoring
-tab.
+The web CLI MUST keep one workflow identity and expose its operational surfaces
+inside the workflow view: Design, Runs, Live, and Code. Creating or enabling a
+local HTTP, schedule, or event trigger MUST NOT clone the workflow, its agents,
+its queues, or its session. A separate session is created only when the workflow
+is exported or deployed into another kernel.
 
 For `human_http`, the preferred web CLI action is central-panel embedding:
 selecting/opening a publication embeds the publication display URL in the main

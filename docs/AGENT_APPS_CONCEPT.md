@@ -10,7 +10,7 @@ An Agent App is a web or native application with one or more routes or actions
 mediated by a Chariox workflow endpoint.
 
 Normal routes continue to behave like normal application routes. Wrapped routes
-invoke a published workflow before, during, or after serving the route. The
+invoke a deployed workflow before, during, or after serving the route. The
 workflow can produce response effects such as generated output, file overlays,
 app-state changes, redirects, streamed progress, app actions, or persistent
 patches within the endpoint's manipulation policy.
@@ -24,7 +24,7 @@ are agent-mediated and how much authority those endpoints have.
 An Agent App deployment contains:
 
 - a base app, such as existing HTML/CSS/JS/assets or a server-rendered app
-- one or more published workflows
+- one or more deployed workflows
 - wrapped routes that map app requests to workflow endpoints
 - optional app actions exposed to the workflow as tools
 - a publication server that serves normal routes and applies workflow effects
@@ -337,7 +337,7 @@ model must make it possible to enforce policy outside the prompt.
 ## Scaling, Replicas, And Queueing
 
 Agent Apps should not require one container per workflow. A deployment should be
-able to host multiple published workflows and multiple replicas of a workflow.
+able to host multiple deployed workflows and multiple replicas of a workflow.
 
 Example:
 
@@ -405,16 +405,17 @@ Queue policy should eventually expose:
 Roles should be first-class at the wrapped endpoint/publication boundary, not
 only at deployment time.
 
-Draft workflows can define desired endpoint roles as design-time metadata, but
-they are advisory until publication. Published workflows freeze the endpoint
-role requirements into the publication artifact. Deployments bind those roles
-to an auth provider or leave them unmanaged/public.
+Workflows can define desired endpoint roles as design-time metadata. Local
+triggers use that same workflow and session; they do not create a second
+published-workflow identity. A deployment freezes the endpoint requirements into
+its deployment artifact and binds those roles to an auth provider or leaves them
+unmanaged/public.
 
 This separation keeps the model portable:
 
 ```text
-draft endpoint role metadata
-  -> published endpoint policy
+workflow endpoint role metadata
+  -> deployment endpoint policy
   -> deployment auth binding
 ```
 
