@@ -1250,7 +1250,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
             <li>Run one dedicated unprivileged CONNECT gateway per revision, dual-homed on the internal revision network and a separate egress-capable network. Do not place the publication container on the egress network.</li>
             <li>Compile a digest-bound policy only from the immutable v3 ceiling and environment tightening. Permit exact canonical lowercase DNS names on TLS port 443 only.</li>
             <li>Reject the request unless every A and AAAA answer is public unicast, pin the chosen validated address for the upstream connection, and require TLS ClientHello SNI to equal the CONNECT host exactly.</li>
-            <li>Provide no direct route and no fallback when the gateway, DNS, policy or provider bundle is missing or unhealthy. Hosted start, restart, recovery and promotion must reject <code>legacy_unrestricted</code>.</li>
+            <li>Provide no direct route and no fallback when the gateway, DNS, policy or provider bundle is missing or unhealthy. Hosted start, restart, recovery and promotion must reject packages without an enforced deny-by-default policy.</li>
           </ul>
 
           <div class="callout danger">
@@ -2099,7 +2099,7 @@ publication container (no direct public route)</pre>
             <li><strong>Audience isolation:</strong> exercise allowed, denied, expired, removed and forged identities across every transport; verify route roles and caller state cannot cross.</li>
             <li><strong>Custom domain transport:</strong> bind temporary hostname, validate DNS/TLS, authenticate, stream all transports, switch canonical host, simulate DNS drift and remove binding.</li>
             <li><strong>Runtime outage recovery:</strong> restart relay, ingress, Cloud API, runner, kernel/container and provider individually and in combinations; validate desired state reconciliation and clear in-flight outcomes.</li>
-            <li><strong>Egress containment:</strong> prove the publication revision has no direct public route, permitted TLS/443 reaches only the pinned validated address through its dual-homed gateway, every DNS/SNI/policy bypass is denied, gateway failure has no fallback and <code>legacy_unrestricted</code> cannot activate hosted.</li>
+            <li><strong>Egress containment:</strong> prove the workflow revision has no direct public route, permitted TLS/443 reaches only the pinned validated address through its dual-homed gateway, every DNS/SNI/policy bypass is denied, and gateway or policy failure has no fallback.</li>
             <li><strong>Resource and cleanup:</strong> record idle/active/peak CPU, RSS, disk, open files, processes, containers, and network on local machine, slices, and Hetzner; then remove every dedicated relay/kernel/server, temporary artifact, container, state/profile directory, and port allocation and prove the baseline returns.</li>
           </ol>
 

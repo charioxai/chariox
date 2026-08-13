@@ -407,13 +407,13 @@ impl WorkflowPublicationDefinition {
     ) -> Result<(), String> {
         let source_revision = self.source_workflow_revision.ok_or_else(|| {
             format!(
-                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                "workflow trigger `{}` is missing its immutable source revision",
                 self.id
             )
         })?;
         let source_digest = self.source_snapshot_digest.as_deref().ok_or_else(|| {
             format!(
-                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                "workflow trigger `{}` is missing its immutable source digest",
                 self.id
             )
         })?;

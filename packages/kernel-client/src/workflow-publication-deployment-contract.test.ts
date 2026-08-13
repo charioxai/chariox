@@ -10,17 +10,19 @@ import {
 
 const TARGET_RUNTIME = { targetLocalDaemonProtocolVersion: 240 }
 
-test("publication deployment contract adapter preserves legacy v1 and v2 packages", () => {
-  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 1 }, undefined), {
-    kind: "legacy_adapter",
-    packageVersion: 1,
-    contract: null,
-  })
-  assert.deepEqual(resolveWorkflowPublicationDeploymentContract({ package_version: 2 }, undefined), {
-    kind: "legacy_adapter",
-    packageVersion: 2,
-    contract: null,
-  })
+test("publication deployment contract rejects obsolete package versions", () => {
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract({ package_version: 1 }, undefined),
+    /unsupported publication package_version 1/,
+  )
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract({ package_version: 2 }, undefined),
+    /unsupported publication package_version 2/,
+  )
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract({}, undefined),
+    /publication package_version must be 3/,
+  )
 })
 
 test("publication deployment contract validates v3 provenance", () => {
@@ -150,24 +152,19 @@ test("publication deployment contract validates an exact deny-by-default egress 
   }, inconsistent), /destination ceiling is inconsistent/)
 })
 
-test("publication deployment contract classifies missing and placeholder egress as legacy unrestricted", () => {
+test("publication deployment contract rejects missing and obsolete egress policies", () => {
   const contract = fixture()
-  const validated = resolveWorkflowPublicationDeploymentContract({
+  contract.capabilities = {}
+  assert.throws(() => resolveWorkflowPublicationDeploymentContract({
     package_version: 3,
     deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
-  }, contract)
-  assert.equal(validated.kind, "native")
-  if (validated.kind !== "native") assert.fail("expected native deployment contract")
-  assert.deepEqual(workflowPublicationDeploymentNetworkPolicy(validated.contract), { kind: "legacy_unrestricted" })
+  }, contract), /deployment contract network policy must be an object/)
 
   contract.capabilities = { network: { egress_policy: "deployment_tightens" } }
-  const placeholder = resolveWorkflowPublicationDeploymentContract({
+  assert.throws(() => resolveWorkflowPublicationDeploymentContract({
     package_version: 3,
     deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
-  }, contract)
-  assert.equal(placeholder.kind, "native")
-  if (placeholder.kind !== "native") assert.fail("expected native deployment contract")
-  assert.deepEqual(workflowPublicationDeploymentNetworkPolicy(placeholder.contract), { kind: "legacy_unrestricted" })
+  }, contract), /network policy fields are invalid/)
 })
 
 function fixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {
@@ -197,7 +194,14 @@ function fixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknow
     provider_requirements: [],
     credential_slots: [{ slot_id: "provider:codex" }],
     configuration: [],
-    capabilities: {},
+    capabilities: {
+      network: {
+        policy_version: 1,
+        default_action: "deny",
+        destinations: [],
+        provider_access: [],
+      },
+    },
     resources: {},
     presentation: {},
     signatures: [],

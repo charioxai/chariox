@@ -362,7 +362,7 @@ impl KernelRuntimeOwnedState {
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "export workflow publication package",
                 message: format!(
-                    "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                    "workflow trigger `{}` is missing its immutable source snapshot",
                     publication.id()
                 ),
             })?;

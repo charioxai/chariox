@@ -145,6 +145,7 @@ impl SessionService {
         mut session: RuntimeSession,
         default_project_name_hint: Option<&str>,
     ) -> RuntimeSession {
+        session.remove_obsolete_workflow_publications();
         if session.is_hidden() {
             session.clear_project_id_for_hidden_restore();
         } else if session.project_id().is_empty() {

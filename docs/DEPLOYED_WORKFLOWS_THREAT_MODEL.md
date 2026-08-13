@@ -140,7 +140,7 @@ those boundaries.
   runner whose immutable image reports a compatible local daemon protocol.
 - Package v1/v2 and the old `egress_policy: deployment_tightens` marker are
   explicit legacy adapters. They may remain usable locally, but hosted start,
-  restart, promotion, and recovery must classify them as `legacy_unrestricted`
+  restart, promotion, and recovery must reject them as obsolete unrestricted packages
   and reject them before a runner can claim the job.
 - Package identity and capability declarations are immutable release data.
 - Cloud stores package bytes or object references, not provider credentials.
@@ -304,7 +304,7 @@ those boundaries.
 | Duplicate slug hijack | Stable deployment ID or verified host; ambiguous legacy slug fails closed |
 | Runner credential theft | Hashed opaque key, account scope, rotation/revocation, no logging |
 | Package substitution | V3 archive/contract digest verification, immutable release pointer, and production authenticity policy |
-| Legacy package activates hosted | Managed admission rejects v1/v2 and `legacy_unrestricted` before job claim |
+| Obsolete package activates hosted | Managed admission rejects v1/v2 and packages without an enforced deny-by-default policy before job claim |
 | Provider CLI or bundle substitution | Exact package versions verified at image build, immutable image ID launch, and contract-bound bundle refs |
 | Malicious archive | Bounded structured extraction and traversal/bomb fixtures |
 | Credential exfiltration | Provider-native stores, opaque bindings, redaction, egress policy |
@@ -376,7 +376,7 @@ The following still block a production customer-hosting claim:
   cancel, timeout, replay, expiry, rotation, revocation, proof-of-possession, and
   cleanup through the committed protocol-241 callback path
 - repeat the committed v3 egress snapshot, unsupported-bundle and
-  `legacy_unrestricted` denials, revision-scoped internal network, dual-homed
+  obsolete unrestricted-package denials, revision-scoped internal network, dual-homed
   gateway, host enforcement, no-direct-route invariant, and
   start/restart/promotion/recovery/teardown behavior on Hetzner
 - validate immutable package admission, caller claims, resource ceilings, child

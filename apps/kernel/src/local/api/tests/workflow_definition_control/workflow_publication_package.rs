@@ -219,7 +219,7 @@ fn publication_creation_is_revision_safe_idempotent_and_source_independent() {
 }
 
 #[test]
-fn legacy_publication_requires_republication_before_export() {
+fn restored_sessions_drop_publications_without_immutable_snapshots() {
     let harness = LocalRouterTestHarness::new();
     let graph = create_publication_test_graph(&harness, "legacy-source");
     let publication = crate::session::WorkflowPublicationDefinition::new(
@@ -246,20 +246,14 @@ fn legacy_publication_requires_republication_before_export() {
             .restore_workflow_publication(&graph.session_id, publication.clone(), None)
             .expect("legacy publication should restore");
     });
-    let error = harness
-        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
-            ExportWorkflowPublicationPackageRequest {
-                session_id: graph.session_id,
-                publication_ref: publication.id().to_string(),
-                kernel_url: None,
-                agent_app: None,
-                agent_app_assets_dir: None,
-            },
-        ))
-        .expect_err("legacy publication should not export mutable source");
-    assert!(error
-        .to_string()
-        .contains("predates immutable snapshots; republish it before exporting"));
+    harness.with_app_mut(|app| {
+        let session = app
+            .sessions()
+            .get_session(&graph.session_id)
+            .expect("session should exist before restore cleanup");
+        let restored = app.sessions_mut().restore_session(session);
+        assert!(restored.workflow_publications().is_empty());
+    });
 }
 
 #[test]
