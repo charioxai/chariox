@@ -839,37 +839,6 @@ fn local_request_api_validates_publication_transport_options() {
         .to_string()
         .contains("human_http publications do not support parser `regex`"));
 
-    for removed_transport in ["api_sse_json", "websocket_json", "mcp"] {
-        let error = harness.dispatch(LocalDaemonRequest::CreateWorkflowPublication(
-            CreateWorkflowPublicationRequest {
-                session_id: graph.session_id.clone(),
-                workflow_ref: graph.workflow_id.clone(),
-                endpoint_ref: graph.endpoint_id.clone(),
-                expected_workflow_revision: None,
-                operation_key: None,
-                queue_ref: Some("default".to_string()),
-                alias: Some(format!("removed-{removed_transport}")),
-                kind: Some("ingress".to_string()),
-                route: None,
-                methods: Vec::new(),
-                transport: Some(serde_json::json!({ "kind": removed_transport })),
-                parser: None,
-                input_schema: None,
-                trace_exposure: None,
-                mode: None,
-                sync_timeout_ms: None,
-                poll_ms: None,
-            },
-        ));
-        let message = error
-            .expect_err("removed V1 transport should fail clearly")
-            .to_string();
-        assert!(message.contains(&format!(
-            "workflow publication transport `{removed_transport}` was removed"
-        )));
-        assert!(message.contains("use `human_http` with GET/POST"));
-    }
-
     let schedule_without_watchdog = harness.dispatch(
         LocalDaemonRequest::CreateWorkflowPublication(CreateWorkflowPublicationRequest {
             session_id: graph.session_id.clone(),

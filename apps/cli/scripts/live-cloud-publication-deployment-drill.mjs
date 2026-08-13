@@ -5,16 +5,13 @@ import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { withDevStubProviderInventory } from './lib/drill-runtime-helpers.mjs'
 import {
-  assertSuccessfulMcpToolCall,
   assertSuccessfulSseTranscript,
-  assertSuccessfulWebSocketEvents,
   assertWorkflowRunCompleted,
   buildRustBinary,
   copyCloudProfile,
   delay,
   errorMessage,
   freePort,
-  invokeWebSocket,
   parseHumanHttpViewerConfig,
   readSse,
   run,
@@ -99,7 +96,7 @@ function usage() {
     'Usage: node apps/cli/scripts/live-cloud-publication-deployment-drill.mjs --mode hosted-container|local-runtime [options]',
     '',
     'Options:',
-    '  --transport human_http|api_sse_json|websocket_json|mcp|schedule',
+    '  --transport human_http|schedule',
     '  --slug SLUG',
     '  --provider dev-stub|codex|opencode|claude',
     '  --model MODEL',
@@ -217,14 +214,14 @@ function requiredPort(value, label) {
 
 function normalizeTransport(value) {
   if (value === 'watchdog') return 'schedule'
-  if (['human_http', 'api_sse_json', 'websocket_json', 'mcp', 'schedule'].includes(value)) return value
-  throw new Error('--transport must be human_http, api_sse_json, websocket_json, mcp, or schedule')
+  if (['human_http', 'schedule'].includes(value)) return value
+  throw new Error('--transport must be human_http or schedule')
 }
 
 function defaultModel(provider, transport, realDashboard) {
   if (provider === 'dev-stub') {
     if (realDashboard) return 'workflow-html-final-node'
-    if (transport === 'mcp' || transport === 'schedule') return 'workflow-single-turn-node'
+    if (transport === 'schedule') return 'workflow-single-turn-node'
     return 'workflow-intermediate-node'
   }
   if (provider === 'codex') return 'gpt-5.4'
@@ -638,24 +635,16 @@ function publicationOptions(transport, nodeId) {
     alias: `cloud_${transport}`,
     route: routeForTransport(transport),
     methods: methodsForTransport(transport),
-    parser: transport === 'human_http'
-      ? { kind: 'path_template', template: '/final/:prompt' }
-      : { kind: 'json' },
+    parser: { kind: 'path_template', template: '/final/:prompt' },
     traceExposure: { nodes: { [nodeId]: ['output_summary', 'assistant_messages', 'thinking', 'tool_use'] } },
-    mode: transport === 'human_http' || transport === 'schedule' ? 'async' : 'sync',
+    mode: 'async',
   }
   if (transport === 'human_http') return { ...base, transport: { kind: 'human_http' } }
-  if (transport === 'api_sse_json') return { ...base, transport: { kind: 'api_sse_json' }, parser: { kind: 'json' } }
-  if (transport === 'websocket_json') return { ...base, transport: { kind: 'websocket_json' }, parser: { kind: 'json' } }
-  if (transport === 'mcp') return { ...base, transport: { kind: 'mcp' }, parser: { kind: 'json' } }
-  if (transport === 'schedule') return { ...base, route: '/schedule', methods: ['POST'], transport: { kind: 'api_sse_json' }, parser: { kind: 'json' } }
+  if (transport === 'schedule') return { ...base, route: null, methods: [], transport: { kind: 'schedule_only' }, parser: null }
   throw new Error(`unsupported transport ${transport}`)
 }
 
 function routeForTransport(transport) {
-  if (transport === 'mcp') return '/mcp'
-  if (transport === 'websocket_json') return '/.well-known/chariox/publication/ws'
-  if (transport === 'api_sse_json') return '/invoke'
   return '/final/*'
 }
 

@@ -2,7 +2,6 @@ import { spawn } from 'node:child_process'
 import net from 'node:net'
 import path from 'node:path'
 import { cp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
-import { WebSocket } from 'ws'
 import { LocalIpcClient } from '../../../../packages/kernel-client/dist/ipc.js'
 import {
   getDaemonHealthRequest,
@@ -16,13 +15,24 @@ import {
   rustBinaryPath,
   rustManifestPath,
 } from '../../../../scripts/rust-workspace.mjs'
-import { publicationStatusWatchdogCount, publicationStatusWatchdogs } from './live-workflow-publication-drill-runtime.mjs'
 
 const repoRoot = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..', '..', '..', '..')
 
 const SHOPPING_LIST_PROMPT_B = '2 red apples, 1 bag of coffee beans, and 3 packs of pasta'
 const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
 const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'apples', 'coffee', 'pasta']
+
+function publicationStatusWatchdogs(status) {
+  if (Array.isArray(status?.watchdogs)) return status.watchdogs
+  if (Array.isArray(status?.schedules)) return status.schedules
+  return []
+}
+
+function publicationStatusWatchdogCount(status) {
+  if (Number.isInteger(status?.watchdog_count)) return status.watchdog_count
+  if (Number.isInteger(status?.schedule_count)) return status.schedule_count
+  return publicationStatusWatchdogs(status).length
+}
 
 export async function validateTransport(input) {
   const base = input.publicBaseUrl.replace(/\/+$/, '')
@@ -75,74 +85,6 @@ export async function validateTransport(input) {
     await writeFile(htmlPath, body)
     await writeFile(transcriptPath, eventTranscript)
     return { promptUrl, htmlPath, transcriptPath }
-  }
-  if (input.transport === 'api_sse_json') {
-    const body = await readSse(`${base}/invoke`, { prompt: input.prompt })
-    const transcriptPath = path.join(input.artifactsDir, `${input.slug}-api-sse.txt`)
-    await writeFile(transcriptPath, body)
-    for (const event of ['queued', 'started', 'trace', 'final']) {
-      if (!body.includes(`event: ${event}`)) throw new Error(`API SSE transcript missing ${event}:\n${body}`)
-    }
-    assertSuccessfulSseTranscript(body, 'API SSE')
-    if (input.expectHtmlDashboard) {
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
-        if (!body.includes(snippet)) throw new Error(`API SSE final transcript missing dashboard snippet ${snippet}:\n${body}`)
-      }
-    }
-    return { transcriptPath }
-  }
-  if (input.transport === 'websocket_json') {
-    const events = await invokeWebSocket(`${base}/.well-known/chariox/publication/ws`, { prompt: input.prompt })
-    const transcriptPath = path.join(input.artifactsDir, `${input.slug}-websocket.json`)
-    await writeFile(transcriptPath, `${JSON.stringify(events, null, 2)}\n`)
-    for (const type of ['ready', 'accepted', 'trace', 'final']) {
-      if (!events.some((event) => event.type === type)) throw new Error(`WebSocket transcript missing ${type}: ${JSON.stringify(events)}`)
-    }
-    assertSuccessfulWebSocketEvents(events)
-    if (!events.some((event) => event.type === 'queued' || event.type === 'started' || event.type === 'status')) {
-      throw new Error(`WebSocket transcript missing queued/started/status progress event: ${JSON.stringify(events)}`)
-    }
-    if (input.expectHtmlDashboard) {
-      const body = JSON.stringify(events)
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
-        if (!body.includes(snippet)) throw new Error(`WebSocket final transcript missing dashboard snippet ${snippet}: ${body}`)
-      }
-    }
-    return { transcriptPath }
-  }
-  if (input.transport === 'mcp') {
-    const listResponse = await fetch(`${base}/mcp`, {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
-    })
-    const transcriptPath = path.join(input.artifactsDir, `${input.slug}-mcp-tools-list.json`)
-    const listBody = await listResponse.text()
-    await writeFile(transcriptPath, listBody)
-    if (!listResponse.ok || !listBody.includes('tools')) throw new Error(`MCP tools/list failed: ${listResponse.status} ${listBody}`)
-    const toolName = JSON.parse(listBody)?.result?.tools?.[0]?.name
-    if (!toolName) throw new Error(`MCP tools/list did not return a tool name: ${listBody}`)
-    const callResponse = await fetch(`${base}/mcp`, {
-      method: 'POST',
-      headers: { accept: 'application/json', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 2,
-        method: 'tools/call',
-        params: { name: toolName, arguments: { prompt: input.prompt } },
-      }),
-    })
-    const callBody = await callResponse.text()
-    const callTranscriptPath = path.join(input.artifactsDir, `${input.slug}-mcp-tools-call.json`)
-    await writeFile(callTranscriptPath, callBody)
-    if (!callResponse.ok || !callBody.includes('content')) throw new Error(`MCP tools/call failed: ${callResponse.status} ${callBody}`)
-    assertSuccessfulMcpToolCall(callBody)
-    if (input.expectHtmlDashboard) {
-      for (const snippet of ['Real Provider Workflow Dashboard', 'data-chariox-real-provider-dashboard']) {
-        if (!callBody.includes(snippet)) throw new Error(`MCP tools/call final missing dashboard snippet ${snippet}:\n${callBody}`)
-      }
-    }
-    return { transcriptPath, callTranscriptPath }
   }
   if (input.transport === 'schedule') {
     const status = await waitForSchedulePublicationStatus(base, {
@@ -216,30 +158,6 @@ export function parseSseTranscript(transcript) {
   return frames
 }
 
-export function assertSuccessfulWebSocketEvents(events) {
-  const finalEvent = [...events].reverse().find((event) => event.type === 'final')
-  if (!finalEvent?.workflow_run) throw new Error(`WebSocket final event did not include workflow_run: ${JSON.stringify(events)}`)
-  assertWorkflowRunCompleted(finalEvent.workflow_run, 'WebSocket transcript')
-}
-
-export function assertSuccessfulMcpToolCall(callBody) {
-  let payload
-  try {
-    payload = JSON.parse(callBody)
-  } catch (error) {
-    throw new Error(`MCP tools/call response was not JSON: ${errorMessage(error)}\n${callBody}`)
-  }
-  const result = payload?.result
-  const structured = result?.structuredContent
-  if (!structured) throw new Error(`MCP tools/call response missing structuredContent:\n${callBody}`)
-  if (structured.status !== 'Completed' || result.isError) {
-    throw new Error(`MCP tools/call workflow did not complete successfully:\n${callBody}`)
-  }
-  if (JSON.stringify(structured).includes('provider_failure')) {
-    throw new Error(`MCP tools/call exposed provider failure:\n${callBody}`)
-  }
-}
-
 export function assertWorkflowRunCompleted(workflowRun, label) {
   if (workflowRun.status !== 'Completed') {
     throw new Error(`${label} workflow status was ${workflowRun.status}, expected Completed:\n${JSON.stringify(workflowRun, null, 2)}`)
@@ -270,52 +188,6 @@ export async function readSse(url, payload, options = {}) {
   const body = await response.text()
   if (!response.ok) throw new Error(`SSE failed: ${response.status} ${body}`)
   return body
-}
-
-export async function invokeWebSocket(url, payload) {
-  const socket = new WebSocket(url)
-  const events = []
-  return await new Promise((resolve, reject) => {
-    let invoked = false
-    const timeout = setTimeout(() => {
-      socket.close()
-      reject(new Error(`timed out waiting for websocket event; events=${JSON.stringify(events)}`))
-    }, 300_000)
-    socket.on('message', (data) => {
-      try {
-        const event = JSON.parse(data.toString())
-        events.push(event)
-        if (event.type === 'ready' && !invoked) {
-          invoked = true
-          socket.send(JSON.stringify({ type: 'invoke', input: payload }))
-        }
-        if (event.type === 'final') {
-          clearTimeout(timeout)
-          socket.close()
-          resolve(events)
-        }
-        if (event.type === 'error') {
-          clearTimeout(timeout)
-          socket.close()
-          reject(new Error(`websocket error: ${event.error ?? 'unknown'}; events=${JSON.stringify(events)}`))
-        }
-      } catch (error) {
-        clearTimeout(timeout)
-        socket.close()
-        reject(error)
-      }
-    })
-    socket.on('error', (error) => {
-      clearTimeout(timeout)
-      reject(error)
-    })
-    socket.on('close', () => {
-      if (!events.some((event) => event.type === 'final')) {
-        clearTimeout(timeout)
-        reject(new Error(`websocket closed before final; events=${JSON.stringify(events)}`))
-      }
-    })
-  })
 }
 
 export async function runHumanHttpDashboardBrowserScreenshot({ url, artifactsDir, slug }) {

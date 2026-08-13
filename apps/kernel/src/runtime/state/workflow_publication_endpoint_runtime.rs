@@ -15,7 +15,7 @@ use chariox_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 use super::KernelRuntimeState;
 
 const PUBLICATION_TUNNEL_TTL_MS: u64 = 10 * 60 * 1_000;
-const PUBLICATION_TUNNEL_CAPABILITIES: [&str; 3] = ["http", "websocket", "publication"];
+const PUBLICATION_TUNNEL_CAPABILITIES: [&str; 2] = ["http", "publication"];
 
 pub(crate) fn restore_durable_workflow_publication_tunnels(
     relay_state: &mut RelayClientState,

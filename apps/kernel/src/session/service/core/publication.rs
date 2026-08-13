@@ -1092,11 +1092,6 @@ fn validate_workflow_publication_options(
             validate_workflow_publication_methods(&kind, methods, &["GET", "POST"])?;
             validate_human_http_publication_parser(parser)?;
         }
-        "api_sse_json" | "websocket_json" | "mcp" => {
-            return invalid_workflow_publication_option(&format!(
-                "workflow publication transport `{kind}` was removed; use `human_http` with GET/POST (SSE remains an internal HTTP progress mechanism)",
-            ));
-        }
         _ => {
             return invalid_workflow_publication_option(&format!(
                 "unsupported workflow publication transport `{kind}`"

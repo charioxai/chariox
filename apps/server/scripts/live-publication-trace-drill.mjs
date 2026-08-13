@@ -68,9 +68,6 @@ const providerSpecs = [
 ]
 const transports = [
   { id: "human_http", route: "/prompt/*", methods: ["GET", "POST"], transport: { kind: "human_http" }, parser: { kind: "path_template", template: "/prompt/:prompt" }, mode: "sync" },
-  { id: "api_sse_json", route: "/invoke", methods: ["POST"], transport: { kind: "api_sse_json" }, parser: { kind: "json" }, mode: "async" },
-  { id: "websocket_json", route: "/socket", methods: [], transport: { kind: "websocket_json" }, parser: null, mode: "async" },
-  { id: "mcp", route: "/mcp", methods: ["POST"], transport: { kind: "mcp" }, parser: null, mode: "sync" },
   { id: "schedule_only", route: null, methods: [], transport: { kind: "schedule_only" }, parser: null, mode: "async", kind: "schedule_only" },
 ]
 const policies = [
@@ -857,18 +854,6 @@ function protocolFailures(raw, statusPayload, workflowRun, transport, policy, pr
   }
   if (!hasPartialTraceEvidence && raw?.timed_out) failures.push(`${transport.id} protocol stream timed out before completion`)
   if (!hasPartialTraceEvidence && raw?.error && raw.status == null) failures.push(`${transport.id} protocol invocation error: ${raw.error}`)
-  if (transport.id === "api_sse_json") {
-    const events = Array.isArray(raw?.events) ? raw.events.map((event) => event.event) : []
-    if (!hasPartialTraceEvidence && !events.includes("final")) failures.push("api_sse_json stream did not emit final event")
-  }
-  if (transport.id === "websocket_json") {
-    const messages = Array.isArray(raw?.messages) ? raw.messages.join("\n") : ""
-    if (!hasPartialTraceEvidence && !messages.includes('"type":"final"')) failures.push("websocket_json stream did not emit final frame")
-  }
-  if (transport.id === "mcp") {
-    if (!hasPartialTraceEvidence && raw?.called_raw?.timed_out) failures.push("mcp tools/call timed out before returning JSON-RPC result")
-    if (!hasPartialTraceEvidence && !raw?.called?.result) failures.push("mcp tools/call did not return a result")
-  }
   if (!hasPartialTraceEvidence && transport.id === "human_http" && !(raw?.status >= 200 && raw?.status < 300)) failures.push(`human_http returned HTTP ${raw?.status ?? "unknown"}`)
   if (!hasPartialTraceEvidence && workflowRun?.status && workflowRun.status !== "Completed") failures.push(`workflow run ended validation in status ${workflowRun.status}`)
   if (!workflowRun?.id) failures.push("workflow run snapshot was not captured")

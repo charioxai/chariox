@@ -223,7 +223,7 @@ export function publicationConfigFromPackage(
   if (!workflowId) throw new Error("publication package is missing workflow_id")
   if (!endpointId) throw new Error("publication hook is missing endpoint_id")
   const traceExposure = validatePublicationTraceExposure(hook.trace_exposure ?? undefined, snapshot)
-  const transport = normalizedWorkflowPublicationTransport(hook.transport)
+  const transport = publicationTransportKind(hook.transport)
   assertWorkflowPublicationTransport(transport)
   const parser = hook.parser ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
@@ -299,7 +299,7 @@ export function publicationConfigFromKernelRecord(
   kernelEndpoint = defaultKernelEndpoint(),
 ): WorkflowPublicationConfig {
   const traceExposure = asTraceExposure(publication.trace_exposure)
-  const transport = normalizedWorkflowPublicationTransport(publication.transport)
+  const transport = publicationTransportKind(publication.transport)
   assertWorkflowPublicationTransport(transport)
   const parser = asParserConfig(publication.parser) ?? defaultParserForTransport(transport)
   const config: WorkflowPublicationConfig = {
@@ -420,17 +420,7 @@ function publicationTransportKind(value: unknown): string | undefined {
 export function assertWorkflowPublicationTransport(transport: unknown): void {
   const kind = publicationTransportKind(transport)
   if (!kind || kind === "human_http" || kind === "schedule_only") return
-  if (kind === "api_sse_json" || kind === "websocket_json" || kind === "mcp") {
-    throw new Error(
-      `workflow publication transport \`${kind}\` was removed; use \`human_http\` with GET/POST`,
-    )
-  }
   throw new Error(`unsupported workflow publication transport \`${kind}\``)
-}
-
-function normalizedWorkflowPublicationTransport(transport: unknown): string | undefined {
-  const kind = publicationTransportKind(transport)
-  return kind === "api_sse_json" ? "human_http" : kind
 }
 
 function defaultRouteForTransport(transport: string | undefined): string {

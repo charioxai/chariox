@@ -1574,7 +1574,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
               </thead>
               <tbody>
                 <tr><td>1. Source</td><td>Workflow revision, change summary, endpoint readiness, unresolved validation, and snapshot intent.</td><td>Publication identity, digest, provenance, source revision, compatibility, and revocation state.</td></tr>
-                <tr><td>2. Interface</td><td>Select endpoint and queue; configure HTTP, API SSE JSON, WebSocket JSON, MCP, or schedule-only transport; route, methods, parser, response mode, input schema, trace exposure, timeout, and polling.</td><td>Read-only summary of the publication contract. Return to the draft to change interface semantics; create a new publication rather than mutating this one.</td></tr>
+                <tr><td>2. Interface</td><td>Select endpoint and queue; configure HTTP GET/POST or schedule-only behavior, route, parser, input schema, trace exposure, timeout, and polling.</td><td>Read-only summary of the trigger contract. Return to the workflow to change interface semantics.</td></tr>
                 <tr><td>3. Release</td><td>Review provider bundles, extension and credential slots, Agent App assets, resource/network ceilings, package digest, and compatibility preflight before publication.</td><td>Verify the existing package and deployment contract; select an existing Cloud release when already imported, otherwise import it once by digest.</td></tr>
                 <tr><td>4. Target</td><td colspan="2">Choose hosted Chariox container or ingress-only local runtime, organization/project, environment, region, size, replicas, concurrency, schedule behavior, and update strategy.</td></tr>
                 <tr><td>5. Ownership and access</td><td colspan="2">Choose internal, customer-owned, or builder-managed ownership; select the mapped WorkOS organization; configure public, WorkOS invitation/organization/SSO, explicit allowlist, generic OIDC/JWT, or machine access; define route-role mapping and surface enterprise connection readiness.</td></tr>
@@ -2071,7 +2071,7 @@ publication container (no direct public route)</pre>
                 <tr><td>Identity client</td><td>Cloud web, default-host Agent App, custom-host Agent App, browser-approved TUI/CLI, React Native iOS and React Native Android; organization switching and logout across devices.</td></tr>
                 <tr><td>Runtime</td><td>Local runtime, hosted Hetzner container, remote machine/slice where applicable.</td></tr>
                 <tr><td>Provider</td><td>Codex, Claude, OpenCode, plus deterministic test adapter for failure injection.</td></tr>
-                <tr><td>Transport</td><td>Human HTTP, API SSE JSON, WebSocket JSON, MCP and schedule-only.</td></tr>
+                <tr><td>Trigger</td><td>HTTP GET/POST, schedule, or event notification.</td></tr>
                 <tr><td>Egress</td><td>Empty policy, one/multiple exact hosts, mixed public/private DNS answers, alternate ports, SNI mismatch, gateway loss, direct-route probe and legacy unrestricted denial.</td></tr>
                 <tr><td>Access</td><td>Public, WorkOS invitation, verified email domain, mapped organization, WorkOS SSO/directory group, generic OIDC/JWT, API key, webhook signature and denied/expired/deprovisioned/revoked credentials.</td></tr>
                 <tr><td>Lifecycle</td><td>Save/resume/abandon setup; publish/import/create/configure/preflight/activate; invite, claim, propose update, promote, rollback, stop, restart, transfer, revoke, export and delete.</td></tr>

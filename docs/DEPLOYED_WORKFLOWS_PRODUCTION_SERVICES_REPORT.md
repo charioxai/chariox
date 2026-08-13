@@ -376,7 +376,7 @@ provisioning does not.
 
 **Decision criteria:** Select direct Caddy versus a managed edge from measured hostname
 count, certificate issuance/renewal load, abuse controls, WAF/DDoS need, origin shielding,
-HTTP/SSE/WebSocket/MCP compatibility, upload/body limits, global latency, log access,
+HTTP compatibility, upload/body limits, global latency, log access,
 support, and cost. Confirm the edge preserves host and transport semantics and does not
 inspect or store runtime content beyond the approved metadata policy.
 

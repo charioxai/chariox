@@ -519,7 +519,7 @@
             <tr>
               <td><code>chariox</code></td>
               <td><code>09e9decf0</code> <span class="muted">Extract publication trace protocol helpers</span></td>
-              <td>The live publication trace drill now keeps provider preflight, workflow publication setup, runtime lifecycle, matrix evaluation, exposure assertions, cleanup, and artifact reporting in the executable script, while gateway readiness, publication status polling, HTTP/SSE/WebSocket/MCP invocation, JSON capture, prompt construction, and free-port allocation live in a focused protocol helper.</td>
+              <td>The live publication trace drill keeps provider preflight, workflow trigger setup, runtime lifecycle, exposure assertions, cleanup, and artifact reporting in the executable script, while gateway readiness, status polling, HTTP invocation, prompt construction, and free-port allocation live in a focused protocol helper.</td>
               <td><code>node --check</code> for the entrypoint and protocol helper, protocol helper import/free-port smoke check, <code>node scripts/check-line-cap.mjs</code>, path-scoped <code>git diff --check</code>. Full live drill was not run because it requires provider auth and a live kernel/publication runtime.</td>
             </tr>
             <tr>

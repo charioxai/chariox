@@ -202,16 +202,14 @@ Required behavior:
 - ingress rejects oversized request bodies
 - ingress strips hop-by-hop and sensitive internal headers
 - ingress preserves encoded prompt path segments
-- ingress preserves streaming behavior for SSE
-- ingress preserves WebSocket close codes and reasons
+- ingress preserves internal HTTP progress streaming
 - action proxy blocks external URLs by default
 - non-local action URLs require explicit route policy opt-in
 
 Validation:
 
 - HTTP GET prompt path with encoded characters reaches the workflow unchanged
-- API SSE streams through Cloud ingress
-- WebSocket streams through Cloud ingress and close/error reasons survive
+- HTTP GET/POST reaches the deployed workflow through Cloud ingress
 - oversized POST receives 413
 - sensitive headers are not forwarded
 - external action URL is rejected by default in a deployed container

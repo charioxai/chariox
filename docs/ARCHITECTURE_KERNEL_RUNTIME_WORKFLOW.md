@@ -203,9 +203,9 @@ Rules:
 - the kernel remains the authority for materialized publication runtime
   sessions, workflow queues, workflow runs, provider runs, artifacts, and
   outputs
-- the generated publication app/gateway owns transport handling, static/editable
-  HTML/assets, request parsing, SSE/WebSocket/MCP interaction, and response
-  forwarding only
+- the generated publication app/gateway owns HTTP transport handling,
+  static/editable HTML/assets, request parsing, internal progress streaming, and
+  response forwarding only
 - a published workflow may have multiple hooks; those hooks share the same
   materialized runtime session and queue namespace so workflow queue priority
   semantics remain meaningful
@@ -230,13 +230,11 @@ Rules:
   a replacement provider/model from the kernel's available catalog and persist
   the choice in local publication bindings
 
-V1 transports:
+V1 ingress:
 
-- `human_http`: browser GET prompt entry plus HTML/SSE output page
-- `api_sse_json`: JSON API invocation with SSE events until final output
-- `websocket_json`: JSON WebSocket invocation, output, and artifact chunk
-  protocol
-- `mcp`: MCP tool surface over the same published runtime
+- HTTP GET: browser prompt entry and generated output page
+- HTTP POST: form and API invocation
+- internal HTTP event streaming for viewer progress
 
 Deployment modes:
 

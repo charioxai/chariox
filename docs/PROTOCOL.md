@@ -725,10 +725,8 @@ Public deployment URL contract:
 - `GET /.well-known/chariox/publication/status` returns publication status
 
 Workflow trigger V1 exposes HTTP GET/POST only. SSE remains an internal HTTP
-progress mechanism and is not a selectable trigger type. The former
-`api_sse_json`, `websocket_json`, and publication `mcp` transports are rejected
-with an explicit migration error. This removal does not affect MCP servers used
-by agents for tools, skills, or extensions.
+progress mechanism and is not a selectable trigger type. Agent tool servers and
+kernel/relay transport channels are independent of the workflow trigger model.
 
 The external contract is the same for `local_runtime` and `hosted_container`.
 The caller should not infer execution location from the URL.
