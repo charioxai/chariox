@@ -1,10 +1,10 @@
-# Copilot Instructions For Arroba iOS
+# Copilot Instructions For Chariox iOS
 
-- This is the native SwiftUI iOS client for the Arroba OSS runtime.
+- This is the native SwiftUI iOS client for the Chariox OSS runtime.
 - The app targets iOS 17+ in the first slice.
 - The kernel is the runtime authority. Do not duplicate session, agent,
   workflow, provider, permission, or relay authority in the client.
-- Put feature code in `ArrobaPackage/Sources/ArrobaFeature/`; keep the app
+- Put feature code in `CharioxPackage/Sources/CharioxFeature/`; keep the app
   target as a thin shell.
 - Prefer SwiftUI, Swift Concurrency, and `@Observable` state.
 - Keep runtime protocol changes covered by Swift tests and aligned with

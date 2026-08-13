@@ -1,6 +1,6 @@
-# Arroba iOS Agent Notes
+# Chariox iOS Agent Notes
 
-This is the native iOS client for the Arroba OSS runtime.
+This is the native iOS client for the Chariox OSS runtime.
 
 ## Product Boundary
 
@@ -14,11 +14,11 @@ This is the native iOS client for the Arroba OSS runtime.
 
 ## Project Shape
 
-- Open `Arroba.xcworkspace` in Xcode.
-- Keep the app shell in `Arroba/` minimal.
-- Put feature code in `ArrobaPackage/Sources/ArrobaFeature/`.
-- Put package tests in `ArrobaPackage/Tests/ArrobaFeatureTests/`.
-- Put simulator UI tests in `ArrobaUITests/`.
+- Open `Chariox.xcworkspace` in Xcode.
+- Keep the app shell in `Chariox/` minimal.
+- Put feature code in `CharioxPackage/Sources/CharioxFeature/`.
+- Put package tests in `CharioxPackage/Tests/CharioxFeatureTests/`.
+- Put simulator UI tests in `CharioxUITests/`.
 
 ## Swift Guidelines
 

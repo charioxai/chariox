@@ -1,6 +1,6 @@
-# Arroba iOS
+# Chariox iOS
 
-Native SwiftUI client for the Arroba OSS runtime.
+Native SwiftUI client for the Chariox OSS runtime.
 
 The iOS app is a client surface like the terminal CLI and Cloud WEB_CLI. It
 does not own runtime authority: sessions, agents, workflow runs, provider
@@ -10,17 +10,17 @@ state, permissions, and relay behavior remain kernel-owned.
 
 ```
 apps/ios/
-├── Arroba.xcworkspace          # Open this in Xcode
-├── Arroba.xcodeproj            # Minimal app shell
-├── Arroba/                     # App target and assets
-├── ArrobaPackage/              # Main SwiftUI feature package
-└── ArrobaUITests/              # XCUITest launch and flow coverage
+├── Chariox.xcworkspace          # Open this in Xcode
+├── Chariox.xcodeproj            # Minimal app shell
+├── Chariox/                     # App target and assets
+├── CharioxPackage/              # Main SwiftUI feature package
+└── CharioxUITests/              # XCUITest launch and flow coverage
 ```
 
 Most implementation belongs in:
 
 ```
-apps/ios/ArrobaPackage/Sources/ArrobaFeature/
+apps/ios/CharioxPackage/Sources/CharioxFeature/
 ```
 
 Current package areas:
@@ -46,11 +46,11 @@ ws://127.0.0.1:43118/kernel
 The iOS Simulator can reach the Mac's local kernel through `127.0.0.1`. A
 physical device cannot use that loopback URL; point it at a kernel bound to a
 reachable host, or use the Cloud/relay path when that client flow is enabled.
-The kernel bind host and port come from `ARROBA_KERNEL_HOST` and
-`ARROBA_KERNEL_PORT`; defaults are `127.0.0.1` and `43118`.
+The kernel bind host and port come from `CHARIOX_KERNEL_HOST` and
+`CHARIOX_KERNEL_PORT`; defaults are `127.0.0.1` and `43118`.
 
 Workspace/worktree paths default to empty unless
-`ARROBA_IOS_DEFAULT_WORKSPACE` is set for the app process. Set them from the
+`CHARIOX_IOS_DEFAULT_WORKSPACE` is set for the app process. Set them from the
 waiting-room UI or with `/workspace set <path>` before creating a session.
 
 Current local-kernel flow:
@@ -105,15 +105,15 @@ Current local-kernel flow:
 Run package tests:
 
 ```sh
-swift test --package-path apps/ios/ArrobaPackage
+swift test --package-path apps/ios/CharioxPackage
 ```
 
 Build for the local simulator:
 
 ```sh
 xcodebuild \
-  -workspace apps/ios/Arroba.xcworkspace \
-  -scheme Arroba \
+  -workspace apps/ios/Chariox.xcworkspace \
+  -scheme Chariox \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
   build
 ```
@@ -122,8 +122,8 @@ Run package and UI tests through Xcode:
 
 ```sh
 xcodebuild \
-  -workspace apps/ios/Arroba.xcworkspace \
-  -scheme Arroba \
+  -workspace apps/ios/Chariox.xcworkspace \
+  -scheme Chariox \
   -destination 'platform=iOS Simulator,name=iPhone 17,OS=26.2' \
   test
 ```
