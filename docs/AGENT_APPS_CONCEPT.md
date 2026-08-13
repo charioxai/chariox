@@ -154,8 +154,7 @@ not a default public-user capability.
 ## Wrapped Routes
 
 A wrapped route maps an application route to a workflow endpoint. The path tail,
-query, body, headers, or WebSocket message can become workflow input depending
-on transport.
+query, body, or headers can become workflow input through HTTP GET or POST.
 
 Example:
 

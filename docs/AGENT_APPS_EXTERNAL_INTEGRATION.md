@@ -54,9 +54,11 @@ The deployment can include:
 - queue and replica pool
 - generated app-action tools
 
-This is the most complete mode. It supports prompt-in-URL HTTP GET, API/SSE,
-WebSocket, MCP-style access, generated HTML, dynamic web-app views, traces,
-overlays, app actions, replica pools, and persistent patches when policy allows.
+This is the most complete mode. It supports prompt-in-URL HTTP GET and HTTP
+POST, internal progress streaming, generated HTML, dynamic web-app views,
+traces, overlays, app actions, replica pools, and persistent patches when
+policy allows. Schedule and notification triggers enter through the same
+workflow queue without creating public ingress.
 
 The tradeoff is that the app route being mediated by the agent is served through
 the Chariox deployment or a Chariox-controlled ingress.
@@ -108,8 +110,8 @@ a remote runtime: Chariox Cloud, a customer VM, a customer container, or another
 self-hosted runner.
 
 This avoids pretending that every serverless request handler can run provider
-CLIs, hold long-lived workflow queues, store overlays, or keep WebSocket/SSE
-sessions open reliably.
+CLIs, hold long-lived workflow queues, store overlays, or keep long-running
+HTTP responses open reliably.
 
 ### Embedded Development Mode
 
@@ -142,7 +144,7 @@ The gateway can be distributed as:
 Its responsibilities are:
 
 - match wrapped routes
-- extract prompts from path, query, body, headers, or WebSocket messages
+- extract prompts from HTTP paths, query parameters, bodies, or headers
 - return a streaming shell immediately for browser routes
 - call the published workflow runtime
 - stream queued, started, partial, trace, final, and error events
@@ -304,8 +306,8 @@ It should not be available to arbitrary public users.
 A complete deployment flow should look like this:
 
 ```text
-draft workflow
-  -> publish endpoint
+workflow
+  -> add an HTTP trigger
   -> package workflow snapshot, requirements, trace policy, route manifest,
      action manifest, and optional app assets
   -> deploy Agent App Runtime/Gateway
@@ -332,7 +334,7 @@ Common limitations:
 - request timeouts
 - no durable long-running provider process
 - limited or ephemeral filesystem
-- uncertain WebSocket/SSE support depending on platform
+- uncertain long-running HTTP response support depending on platform
 - no local provider CLI login state
 - cold starts
 - limited background processing
@@ -434,4 +436,3 @@ The following cannot be guaranteed across every external app host:
 - arbitrary native mobile source mutation at runtime
 
 These are deployment capabilities, not core Agent App assumptions.
-
