@@ -3,7 +3,6 @@ import { readFile, writeFile } from "node:fs/promises"
 
 import {
   acceptDeploymentClaim,
-  adoptLegacyDeploymentProject,
   armDeploymentCredentialCallbackChannel,
   bindDeploymentEnvironmentCredential,
   changeDeploymentEnvironmentLifecycle,
@@ -151,11 +150,6 @@ export async function executeDeployedWorkflowCommand(
     const options = parseCreateOptions(argv.slice(2))
     const result = await createDeploymentProject(profile, { name, ...options })
     return { notice: formatDeploymentProjectState(result.state), footer: `created deployment ${result.state.project.slug}` }
-  }
-  if (action === "adopt") {
-    const deploymentId = requiredArg(argv[1], "usage: deployments adopt <legacy-deployment-id>")
-    const result = await adoptLegacyDeploymentProject(profile, deploymentId)
-    return { notice: formatDeploymentProjectState(result.state), footer: `adopted deployment ${result.state.project.slug}` }
   }
   if (action === "preflight") {
     const packagePath = requiredArg(argv[1], "usage: deployments preflight <package-dir|publication.json>")
@@ -1291,7 +1285,7 @@ const operationsUsage = "usage: deployments operations show|deny|resume|set ..."
 const telemetryExportUsage = "usage: deployments telemetry export <project-id> <environment-id> <output-path>"
 const telemetryDeleteUsage = "usage: deployments telemetry delete <project-id> <environment-id> [--idempotency-key value]"
 const telemetryUsage = "usage: deployments telemetry export|delete ..."
-const deploymentsUsage = `usage: deployments list | show <project-id> | setup|wizard ... | create <name> | adopt <legacy-id> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | audience show|policy|grant|invite|key|jwt|webhook ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ...\n${deploymentSetupUsage}`
+const deploymentsUsage = `usage: deployments list | show <project-id> | setup|wizard ... | create <name> | preflight <package> | release <project-id> <package> | promote <project-id> <environment-id> <release-id> | rollback <project-id> <environment-id> <promotion-id> | start|stop|restart <project-id> <environment-id> | usage <project-id> <environment-id> | limits show|set ... | operations show|deny|resume|set ... | telemetry export|delete ... | credentials list|show|setup|retry|enrollment|test|rotate|revoke|purge|bind|unbind ... | domains show|add|verify|canonical|remove ... | audience show|policy|grant|invite|key|jwt|webhook ... | claim create|review|accept|revoke ... | access <project-id> | member add|revoke ...\n${deploymentSetupUsage}`
 
 function lifecycleUsage(action: "start" | "stop" | "restart"): string {
   return `usage: deployments ${action} <project-id> <environment-id> [--idempotency-key value]`

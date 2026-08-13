@@ -502,7 +502,6 @@ function projectState(setup: DeploymentSetup) {
       name: setup.configuration.deployment.name,
       slug: setup.configuration.deployment.slug,
       kind: setup.configuration.deployment.kind,
-      origin: "native",
       defaultEnvironmentSlug: "production",
       createdAt: timestamp,
       updatedAt: timestamp,

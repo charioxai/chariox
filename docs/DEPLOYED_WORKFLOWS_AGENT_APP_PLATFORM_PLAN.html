@@ -1218,7 +1218,7 @@ provisioning: received -> verified -> applied | ignored | retrying | failed</pre
         <section id="security">
           <p class="eyebrow">06 / Security foundation</p>
           <h2>Keep the landed containment controls below every client.</h2>
-          <p>Phase 0 control-plane containment is implemented: authenticated identity and membership are service-derived, browser mutations are CSRF checked, cross-account object access is denied, canonical routing is deployment-scoped, ambiguous legacy slugs fail closed and managed persistent patches are rejected. Later work added signed caller claims, credential and process isolation, immutable runtime compatibility, resource ceilings and an audit bridge. These controls remain implementation baselines, not proof that the final hosted product matrix has passed.</p>
+          <p>Phase 0 control-plane containment is implemented: authenticated identity and membership are service-derived, browser mutations are CSRF checked, cross-account object access is denied, canonical routing is deployment-scoped and managed persistent patches are rejected. Later work added signed caller claims, credential and process isolation, immutable runtime compatibility, resource ceilings and an audit bridge. These controls remain implementation baselines, not proof that the final hosted product matrix has passed.</p>
           <p>The normative actor, asset, trust-boundary, abuse-case, residual-risk and verification baseline is maintained in <a href="DEPLOYED_WORKFLOWS_THREAT_MODEL.md">Deployed Workflows Threat Model</a>.</p>
 
           <h3>Control-plane requirements</h3>

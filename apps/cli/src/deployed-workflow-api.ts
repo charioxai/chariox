@@ -76,16 +76,6 @@ export async function createDeploymentProject(
   })
 }
 
-export async function adoptLegacyDeploymentProject(
-  profile: RelayCloudProfile,
-  deploymentId: string,
-): Promise<DeploymentProjectResult> {
-  return postJson(profile, "/deployment-projects/legacy-adoptions", {
-    accountId: profile.accountId,
-    deploymentId,
-  })
-}
-
 export async function createDeploymentRelease(
   profile: RelayCloudProfile,
   projectId: string,

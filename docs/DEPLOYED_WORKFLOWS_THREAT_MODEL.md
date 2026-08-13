@@ -301,7 +301,7 @@ those boundaries.
 | Forged account or creator fields | Session-derived actor plus repository membership checks |
 | Browser cross-site mutation | CSRF on browser mutations, secure cookie policy, Origin/CORS tests |
 | Cross-account object reference | Account-scoped service/repository lookup and denial regression tests |
-| Duplicate slug hijack | Stable deployment ID or verified host; ambiguous legacy slug fails closed |
+| Duplicate slug hijack | Canonical deployment ID or a verified deployment hostname is required |
 | Runner credential theft | Hashed opaque key, account scope, rotation/revocation, no logging |
 | Package substitution | V3 archive/contract digest verification, immutable release pointer, and production authenticity policy |
 | Obsolete package activates hosted | Managed admission rejects v1/v2 and packages without an enforced deny-by-default policy before job claim |

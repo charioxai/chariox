@@ -686,7 +686,6 @@ test("cloud deployments command projects the linked account portfolio", async ()
           name: "Support app",
           slug: "support-app",
           kind: "agent_app",
-          origin: "native",
           defaultEnvironmentSlug: "production",
           createdAt: "2026-01-01T00:00:00.000Z",
           updatedAt: "2026-01-01T00:00:00.000Z",

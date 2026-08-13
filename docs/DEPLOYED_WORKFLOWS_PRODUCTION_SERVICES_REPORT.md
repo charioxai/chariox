@@ -642,7 +642,6 @@ do not fall back to development defaults, another tenant's profile, or Cloud pla
 - There is no current KMS, managed-vault, or external-secret-provider env/config surface.
 - Development-only bypasses such as `CHARIOX_CLOUD_DEV_AUTH_SECRET`,
   `CHARIOX_PUBLICATION_ENABLE_DEV_STUB`,
-  `CHARIOX_PUBLICATION_SELF_HOST_DEV_ALLOW_LEGACY_CREDENTIAL_SOURCE_FALLBACK`, and
   `CHARIOX_RELAY_ALLOW_OPEN_ACCESS` must be absent from production.
 
 ## 9. Relay And Compute

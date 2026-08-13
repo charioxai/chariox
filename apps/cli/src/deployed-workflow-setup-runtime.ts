@@ -203,9 +203,6 @@ async function resolveSetupProject(
   if (existing && existing.kind !== deployment.kind) {
     throw new Error(`deployment slug ${deployment.slug} belongs to another project kind`)
   }
-  if (existing?.origin && existing.origin !== "native") {
-    throw new Error(`deployment slug ${deployment.slug} belongs to a legacy deployment that must be migrated`)
-  }
   const state = existing
     ? (await getDeploymentProject(profile, existing.id)).state
     : (await createDeploymentProject(profile, {

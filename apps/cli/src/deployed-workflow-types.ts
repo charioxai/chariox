@@ -37,7 +37,6 @@ export interface DeploymentProjectSummary {
   readonly kind: DeploymentProjectKind
   readonly ownershipMode?: DeploymentOwnershipMode
   readonly builderAccountId?: string | null
-  readonly origin: string
   readonly defaultEnvironmentSlug: string
   readonly createdAt: string
   readonly updatedAt: string
