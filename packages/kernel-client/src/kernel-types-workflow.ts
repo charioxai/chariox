@@ -28,6 +28,7 @@ export type WorkflowCodeSourceBinding = {
   source_sha256: string
   origin: WorkflowCodeSourceOrigin
   workflow_revision: number
+  bindings: WorkflowCodeApplyReport
   created_at_ms: number
   updated_at_ms: number
 }

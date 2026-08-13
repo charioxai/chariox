@@ -32,6 +32,23 @@ pub struct WorkflowCodeApplyReport {
     pub warnings: Vec<WorkflowCodeApplyWarning>,
 }
 
+impl WorkflowCodeApplyReport {
+    pub fn for_workflow(workflow_id: impl Into<String>) -> Self {
+        Self {
+            workflow_id: workflow_id.into(),
+            schema_refs: BTreeMap::new(),
+            node_ids: BTreeMap::new(),
+            agent_ids: BTreeMap::new(),
+            edge_ids: BTreeMap::new(),
+            endpoint_ids: BTreeMap::new(),
+            queue_ids: BTreeMap::new(),
+            schedule_ids: BTreeMap::new(),
+            canvas_layout_applied: false,
+            warnings: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeApplyWarning {
     pub code: String,

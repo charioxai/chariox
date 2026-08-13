@@ -13,6 +13,7 @@ impl SessionService {
         language: crate::workflow_code::WorkflowCodeLanguage,
         source_sha256: String,
         origin: crate::session::WorkflowCodeSourceOrigin,
+        bindings: crate::workflow_code::WorkflowCodeApplyReport,
     ) -> Result<WorkflowDefinition, DaemonError> {
         let workflow_id = self
             .resolve_workflow_ref(session_id, workflow_ref)?
@@ -42,7 +43,7 @@ impl SessionService {
                 });
             }
         }
-        workflow.bind_code_source(artifact_name, language, source_sha256, origin);
+        workflow.bind_code_source(artifact_name, language, source_sha256, origin, bindings);
         Ok(workflow.clone())
     }
 

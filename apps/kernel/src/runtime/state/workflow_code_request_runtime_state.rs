@@ -96,6 +96,7 @@ impl KernelRuntimeState {
                     artifact.metadata.language,
                     artifact.metadata.source_sha256,
                     crate::session::WorkflowCodeSourceOrigin::Authored,
+                    result.apply.clone(),
                 )?;
                 let session =
                     crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id)?;

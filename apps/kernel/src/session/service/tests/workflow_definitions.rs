@@ -21,6 +21,7 @@ fn binds_workflow_code_source_with_revision_conflict_protection() {
             crate::workflow_code::WorkflowCodeLanguage::JavaScript,
             "sha256".to_string(),
             crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
         )
         .expect("source should bind");
     let binding = bound.code_source().expect("binding should be projected");
@@ -36,6 +37,7 @@ fn binds_workflow_code_source_with_revision_conflict_protection() {
             crate::workflow_code::WorkflowCodeLanguage::JavaScript,
             "stale".to_string(),
             crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
         )
         .expect_err("stale revision should conflict");
     assert!(error.to_string().contains("revision conflict"));

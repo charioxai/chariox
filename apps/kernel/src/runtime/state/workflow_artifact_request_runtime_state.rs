@@ -107,6 +107,12 @@ impl KernelRuntimeState {
                     ),
                 }
             })?;
+            let bindings = workflow_code_bindings_for_existing_workflow(
+                app,
+                &request.session_id,
+                &request.workflow_ref,
+                &artifact.definition,
+            )?;
             let workflow = app.sessions_mut().bind_workflow_code_source(
                 &request.session_id,
                 &request.workflow_ref,
@@ -115,6 +121,7 @@ impl KernelRuntimeState {
                 artifact.metadata.language,
                 artifact.metadata.source_sha256,
                 request.origin,
+                bindings,
             )?;
             let session = crate::app::KernelSessionReadService::new(app)
                 .session_snapshot(&request.session_id)?;

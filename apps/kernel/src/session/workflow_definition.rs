@@ -33,6 +33,7 @@ pub struct WorkflowCodeSourceBinding {
     source_sha256: String,
     origin: WorkflowCodeSourceOrigin,
     workflow_revision: u64,
+    bindings: crate::workflow_code::WorkflowCodeApplyReport,
     created_at_ms: u64,
     updated_at_ms: u64,
 }
@@ -52,6 +53,9 @@ impl WorkflowCodeSourceBinding {
     }
     pub fn workflow_revision(&self) -> u64 {
         self.workflow_revision
+    }
+    pub fn bindings(&self) -> &crate::workflow_code::WorkflowCodeApplyReport {
+        &self.bindings
     }
     pub fn created_at_ms(&self) -> u64 {
         self.created_at_ms
@@ -216,6 +220,7 @@ impl WorkflowDefinition {
         language: crate::workflow_code::WorkflowCodeLanguage,
         source_sha256: String,
         origin: WorkflowCodeSourceOrigin,
+        bindings: crate::workflow_code::WorkflowCodeApplyReport,
     ) {
         let now = unix_epoch_ms();
         let created_at_ms = self
@@ -229,6 +234,7 @@ impl WorkflowDefinition {
             source_sha256,
             origin,
             workflow_revision: self.revision,
+            bindings,
             created_at_ms,
             updated_at_ms: now,
         });

@@ -622,6 +622,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         crate::workflow_code::WorkflowCodeLanguage::JavaScript,
         "sha256".to_string(),
         crate::session::WorkflowCodeSourceOrigin::Generated,
+        crate::workflow_code::WorkflowCodeApplyReport::for_workflow("workflow-1"),
     );
     let bind_source_response = LocalDaemonResponse::WorkflowCodeSourceBound {
         workflow: bound_workflow,
