@@ -145,10 +145,10 @@ impl KernelRuntimeOwnedState {
                 dispatch.node_run.id(),
             ) {
                 Ok(dispatches) => {
-                    // A successful admission produces either a local/remote dispatch or a
-                    // provider-launch continuation.  An empty result means the prompt was not
-                    // admitted; do not retain the claim acquired above in that case.
-                    if dispatches.is_empty() {
+                    // A queued prompt can be successfully admitted without producing a concrete
+                    // dispatch while its provider is busy. Retain the claim for every admitted
+                    // prompt; release it only when admission itself returned no prompt.
+                    if !dispatches.admitted_workflow_prompt {
                         self.release_workflow_node_workspace_claim(
                             session_id,
                             workflow_run_id,

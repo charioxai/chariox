@@ -125,6 +125,7 @@ impl KernelRuntimeOwnedState {
                 None => return Ok(dispatches),
             },
         };
+        dispatches.mark_workflow_prompt_admitted();
         if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome {
             let _ = self.session_store.write().mark_workflow_turn_dispatched(
                 &prepared.session_id,
