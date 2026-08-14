@@ -319,6 +319,26 @@ impl ProviderProcessService {
     }
 
     #[cfg(test)]
+    pub(crate) fn push_finished_structured_prompt_submit_for_test(
+        &mut self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        prompt_id: String,
+        result: Result<crate::provider::ProviderPromptSubmitAcknowledgement, DaemonError>,
+    ) {
+        self.run_actor_mailbox.push_finished_submit_for_test(
+            crate::provider::FinishedProviderPromptSubmitJob {
+                session_id,
+                provider_run_id,
+                agent_id,
+                prompt_id,
+                result,
+            },
+        );
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_finished_structured_output_poll_for_test(
         &mut self,
         provider_run_id: String,

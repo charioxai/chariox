@@ -287,6 +287,13 @@ impl ProviderRunActorMailbox {
     }
 
     #[cfg(test)]
+    pub(crate) fn push_finished_submit_for_test(&self, finished: FinishedProviderPromptSubmitJob) {
+        let provider_run_id = finished.provider_run_id.clone();
+        push_finished_submit(&self.finished_submits, finished);
+        self.completion_signal.record_completion(&provider_run_id);
+    }
+
+    #[cfg(test)]
     pub(crate) fn push_finished_output_poll_for_test(
         &self,
         finished: FinishedProviderOutputPollJob,

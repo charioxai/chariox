@@ -14,12 +14,12 @@ mod native_interaction;
 mod operation_lanes;
 mod runtime_slots;
 mod worker;
-#[cfg(test)]
-use finished_jobs::push_finished_output_poll;
 use finished_jobs::{
     drain_finished_aborts, drain_finished_output_polls, drain_finished_selection_syncs,
     drain_finished_submits,
 };
+#[cfg(test)]
+use finished_jobs::{push_finished_output_poll, push_finished_submit};
 pub(crate) use finished_jobs::{
     FinishedProviderOutputPollJob, FinishedProviderPromptAbortJob, FinishedProviderPromptSubmitJob,
     FinishedProviderRunSelectionSyncJob, ProviderPromptSubmitAcknowledgement,
