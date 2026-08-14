@@ -18,6 +18,8 @@ pub(super) struct CodexTurnTracker {
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
     tool_started: bool,
+    assistant_content_observed: bool,
+    assistant_item_completed: bool,
     assistant_content_after_tool_activity: bool,
     last_activity_at: Option<Instant>,
 }
@@ -39,6 +41,8 @@ impl CodexTurnTracker {
         self.active_tool_ids.clear();
         self.pending_terminal = None;
         self.tool_started = false;
+        self.assistant_content_observed = false;
+        self.assistant_item_completed = false;
         self.assistant_content_after_tool_activity = false;
         self.last_activity_at = Some(Instant::now());
     }
@@ -71,9 +75,14 @@ impl CodexTurnTracker {
 
     pub(super) fn note_assistant_content(&mut self) {
         self.note_activity();
+        self.assistant_content_observed = true;
         if self.tool_started {
             self.assistant_content_after_tool_activity = true;
         }
+    }
+
+    pub(super) fn note_assistant_item_completed(&mut self) {
+        self.assistant_item_completed = true;
     }
 
     pub(super) fn has_pending_terminal(&self) -> bool {
@@ -85,7 +94,12 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn has_terminal_assistant_evidence(&self) -> bool {
-        self.assistant_content_after_tool_activity
+        // A managed turn can finish with a plain assistant answer and no tool call.
+        // When tools did run, require content after the tool activity so commentary
+        // emitted before the tool cannot trigger an authoritative completion lookup.
+        self.assistant_content_observed
+            && ((!self.tool_started && self.assistant_item_completed)
+                || self.assistant_content_after_tool_activity)
     }
 
     pub(super) fn has_quiet_terminal_assistant_evidence(&self, quiet_for: Duration) -> bool {
@@ -157,6 +171,7 @@ pub(super) fn note_assistant_item_completed(
         || text_from_content_value(item.get("content")).is_some_and(|text| !text.is_empty());
     if has_text {
         turn_tracker.note_assistant_content();
+        turn_tracker.note_assistant_item_completed();
     }
     has_text
 }
