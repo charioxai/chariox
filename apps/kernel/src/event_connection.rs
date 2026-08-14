@@ -13,6 +13,7 @@ const CONNECTION_UPSERTED: &str = "event_connection.upserted";
 const CONNECTION_REMOVED: &str = "event_connection.removed";
 const AUTHORIZATION_UPSERTED: &str = "event_connection.authorization.upserted";
 const AUTHORIZATION_REMOVED: &str = "event_connection.authorization.removed";
+const CONNECTION_OBSERVATION_PERSIST_INTERVAL_MS: u64 = 60 * 60 * 1_000;
 
 pub(crate) fn canonical_event_generator_id(value: &str) -> String {
     value.trim().strip_prefix("dev.arroba.").map_or_else(
@@ -39,6 +40,7 @@ pub(crate) struct EventConnectionRegistry {
 struct RegistryState {
     connections: BTreeMap<(String, String), StoredConnection>,
     authorizations: BTreeMap<(String, String), StoredAuthorization>,
+    connection_last_persisted_at_ms: BTreeMap<(String, String), u64>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -135,8 +137,17 @@ impl EventConnectionRegistry {
             .get(&key)
             .map(|record| record.connection.created_at_ms)
             .unwrap_or(now_ms);
-        let previous = state.connections.get(&key).map(|record| &record.connection);
-        let lifecycle_state = lifecycle_state_for_status(summary.status);
+        let previous = state
+            .connections
+            .get(&key)
+            .map(|record| record.connection.clone());
+        let lifecycle_state = previous
+            .as_ref()
+            .filter(|value| value.status == summary.status)
+            .map_or_else(
+                || lifecycle_state_for_status(summary.status),
+                |value| value.lifecycle_state,
+            );
         let record = StoredConnection {
             owner_user_id: owner_user_id.to_string(),
             connection: EventConnection {
@@ -145,12 +156,15 @@ impl EventConnectionRegistry {
                 status: summary.status,
                 lifecycle_state,
                 scopes: previous
+                    .as_ref()
                     .map(|value| value.scopes.clone())
                     .unwrap_or_default(),
                 resources: previous
+                    .as_ref()
                     .map(|value| value.resources.clone())
                     .unwrap_or_default(),
                 attached_trigger_count: previous
+                    .as_ref()
                     .map(|value| value.attached_trigger_count)
                     .unwrap_or_default(),
                 metadata: summary.metadata,
@@ -159,20 +173,33 @@ impl EventConnectionRegistry {
                 updated_at_ms: summary.updated_at_ms,
                 last_validated_at_ms: Some(now_ms),
                 last_successful_health_check_at_ms: previous
+                    .as_ref()
                     .and_then(|value| value.last_successful_health_check_at_ms),
                 last_accepted_event_at_ms: previous
+                    .as_ref()
                     .and_then(|value| value.last_accepted_event_at_ms),
-                problem_code: None,
-                problem_message: None,
-                recovery_action: None,
+                problem_code: previous
+                    .as_ref()
+                    .and_then(|value| value.problem_code.clone()),
+                problem_message: previous
+                    .as_ref()
+                    .and_then(|value| value.problem_message.clone()),
+                recovery_action: previous
+                    .as_ref()
+                    .and_then(|value| value.recovery_action.clone()),
                 test_event_supported: previous.is_some_and(|value| value.test_event_supported),
             },
         };
-        self.append(
-            CONNECTION_UPSERTED,
-            &record.connection.connection_id,
-            &record,
-        )?;
+        if connection_observation_requires_persistence(&state, &key, &record.connection, now_ms) {
+            self.append(
+                CONNECTION_UPSERTED,
+                &record.connection.connection_id,
+                &record,
+            )?;
+            state
+                .connection_last_persisted_at_ms
+                .insert(key.clone(), now_ms);
+        }
         let connection = record.connection.clone();
         state.connections.insert(key, record);
         Ok(connection)
@@ -208,12 +235,18 @@ impl EventConnectionRegistry {
         record.connection.problem_message = inspection.problem_message;
         record.connection.recovery_action = inspection.recovery_action;
         record.connection.test_event_supported = inspection.test_event_supported;
-        record.connection.updated_at_ms = unix_epoch_ms();
-        self.append(
-            CONNECTION_UPSERTED,
-            &record.connection.connection_id,
-            &record,
-        )?;
+        let now_ms = unix_epoch_ms();
+        record.connection.updated_at_ms = now_ms;
+        if connection_observation_requires_persistence(&state, &key, &record.connection, now_ms) {
+            self.append(
+                CONNECTION_UPSERTED,
+                &record.connection.connection_id,
+                &record,
+            )?;
+            state
+                .connection_last_persisted_at_ms
+                .insert(key.clone(), now_ms);
+        }
         let connection = record.connection.clone();
         state.connections.insert(key, record);
         Ok(connection)
@@ -290,6 +323,7 @@ impl EventConnectionRegistry {
             },
         )?;
         state.connections.remove(&key);
+        state.connection_last_persisted_at_ms.remove(&key);
         Ok(true)
     }
 
@@ -507,6 +541,9 @@ impl EventConnectionRegistry {
         record.connection.updated_at_ms = now_ms;
         record.connection.last_validated_at_ms = Some(now_ms);
         self.append(CONNECTION_UPSERTED, connection_id, &record)?;
+        state
+            .connection_last_persisted_at_ms
+            .insert(key.clone(), now_ms);
         state.connections.insert(key, record);
         Ok(true)
     }
@@ -521,8 +558,11 @@ impl EventConnectionRegistry {
             authorization.authorization_id.clone(),
         );
         let mut state = self.lock_state()?;
-        if !state.authorizations.contains_key(&key) {
+        let Some(current) = state.authorizations.get(&key) else {
             return Err(registry_error("authorization was not found".to_string()));
+        };
+        if current.authorization == authorization {
+            return Ok(current.authorization.clone());
         }
         let record = StoredAuthorization {
             owner_user_id: owner_user_id.to_string(),
@@ -576,19 +616,20 @@ impl EventConnectionRegistry {
                         record.connection.lifecycle_state =
                             lifecycle_state_for_status(record.connection.status);
                     }
-                    state.connections.insert(
-                        (
-                            record.owner_user_id.clone(),
-                            record.connection.connection_id.clone(),
-                        ),
-                        record,
+                    let key = (
+                        record.owner_user_id.clone(),
+                        record.connection.connection_id.clone(),
                     );
+                    state
+                        .connection_last_persisted_at_ms
+                        .insert(key.clone(), event.timestamp_ms);
+                    state.connections.insert(key, record);
                 }
                 CONNECTION_REMOVED => {
                     let removed: RemovedRecord = decode(event.payload)?;
-                    state
-                        .connections
-                        .remove(&(removed.owner_user_id, removed.id));
+                    let key = (removed.owner_user_id, removed.id);
+                    state.connections.remove(&key);
+                    state.connection_last_persisted_at_ms.remove(&key);
                 }
                 AUTHORIZATION_UPSERTED => {
                     let record: StoredAuthorization = decode(event.payload)?;
@@ -624,6 +665,37 @@ impl EventConnectionRegistry {
             .append_event(kind, Some(subject_id.to_string()), payload)?;
         Ok(())
     }
+}
+
+fn connection_observation_requires_persistence(
+    state: &RegistryState,
+    key: &(String, String),
+    next: &EventConnection,
+    now_ms: u64,
+) -> bool {
+    let Some(previous) = state.connections.get(key).map(|record| &record.connection) else {
+        return true;
+    };
+    if connection_semantics_changed(previous, next) {
+        return true;
+    }
+    state
+        .connection_last_persisted_at_ms
+        .get(key)
+        .is_none_or(|persisted_at_ms| {
+            now_ms.saturating_sub(*persisted_at_ms) >= CONNECTION_OBSERVATION_PERSIST_INTERVAL_MS
+        })
+}
+
+fn connection_semantics_changed(previous: &EventConnection, next: &EventConnection) -> bool {
+    let mut previous = previous.clone();
+    let mut next = next.clone();
+    for connection in [&mut previous, &mut next] {
+        connection.updated_at_ms = 0;
+        connection.last_validated_at_ms = None;
+        connection.last_successful_health_check_at_ms = None;
+    }
+    previous != next
 }
 
 // Durable registry decoding follows the same shared error contract as the registry operations.
@@ -841,6 +913,90 @@ mod tests {
             .authorization("user-a", &authorization.authorization_id)
             .unwrap()
             .is_none());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repeated_authorization_observation_does_not_grow_the_durable_journal() {
+        let root = std::env::temp_dir().join(opaque_id("chariox-event-observation-test"));
+        let path = root.join("state.sqlite3");
+        let store = DurableKernelStateStore::open(path).unwrap();
+        let registry = EventConnectionRegistry::new(store.clone());
+        let authorization = registry
+            .start_authorization(
+                "user-a",
+                chariox_event_protocol::AegsAuthorizationFlow {
+                    generator_id: "dev.chariox.github".to_string(),
+                    status: "connected".to_string(),
+                    connection_id: Some("github-connection-1".to_string()),
+                    authorization_url: None,
+                    user_code: None,
+                    expires_at_ms: None,
+                },
+            )
+            .unwrap();
+        let summary = chariox_event_protocol::AegsConnectionSummary {
+            generator_id: "dev.chariox.github".to_string(),
+            connection_id: "github-connection-1".to_string(),
+            status: AegsConnectionStatus::Ready,
+            metadata: json!({"account": "chariox"}),
+            expires_at_ms: None,
+            updated_at_ms: 42,
+        };
+        registry.upsert("user-a", summary.clone()).unwrap();
+        let inspection = chariox_event_protocol::AegsConnectionInspection {
+            generator_id: "dev.chariox.github".to_string(),
+            connection_id: "github-connection-1".to_string(),
+            lifecycle_state:
+                chariox_event_protocol::AegsConnectionLifecycleState::ConnectedRestricted,
+            scopes: vec![chariox_event_protocol::AegsConnectionScope {
+                id: "repository:charioxai/chariox".to_string(),
+                label: "charioxai/chariox".to_string(),
+                granted: true,
+                required: true,
+            }],
+            resources: Vec::new(),
+            last_successful_health_check_at_ms: Some(1),
+            last_accepted_event_at_ms: None,
+            problem_code: None,
+            problem_message: None,
+            recovery_action: None,
+            test_event_supported: true,
+        };
+        registry
+            .apply_inspection("user-a", inspection.clone())
+            .unwrap();
+
+        for health_check_at_ms in 2..=100 {
+            registry
+                .update_authorization("user-a", authorization.clone())
+                .unwrap();
+            registry.upsert("user-a", summary.clone()).unwrap();
+            registry
+                .apply_inspection(
+                    "user-a",
+                    chariox_event_protocol::AegsConnectionInspection {
+                        last_successful_health_check_at_ms: Some(health_check_at_ms),
+                        ..inspection.clone()
+                    },
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            store
+                .load_events_by_kind(AUTHORIZATION_UPSERTED)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .load_events_by_kind(CONNECTION_UPSERTED)
+                .unwrap()
+                .len(),
+            2
+        );
         std::fs::remove_dir_all(root).unwrap();
     }
 
