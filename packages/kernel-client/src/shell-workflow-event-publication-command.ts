@@ -363,7 +363,7 @@ function parseBindingOptions(args: string[]):
 }
 
 function bindingUsage(): string {
-  return "usage: workflow trigger event bind <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>]"
+  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>]"
 }
 
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {
