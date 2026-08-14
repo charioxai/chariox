@@ -54,6 +54,11 @@ transfer; deploying into a distinct environment creates independent routes.
 
 ## Delivery
 
+The kernel/AEDS event-delivery wire protocol is version 3. Version 3 carries the
+optional provider-owned `reply_context` through `PublishEventRequest` and
+`EventDeliveryEnvelope`; peers that do not advertise version 3 are rejected rather
+than silently dropping reply capability.
+
 The kernel maintains one authenticated outbound WebSocket connection to AEDS. It
 sends its stable kernel/environment identity, route claims, and last accepted cursor
 on connect and reconciliation. AEDS durably stores pending delivery before sending

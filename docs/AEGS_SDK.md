@@ -23,6 +23,10 @@ only authentic provider events, normalize a provider occurrence once, apply
 the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
 
+The event-delivery wire contract is version 3. AEDS and every producer that sends
+reply-capable events must use the same protocol revision so the opaque provider
+`reply_context` cannot be silently discarded by an older peer.
+
 Management protocol version 4 also requires the shared installed-connection
 lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROTOCOL.md):
 
