@@ -83,6 +83,10 @@ impl KernelRuntimeOwnedState {
                             &finished.session_id,
                             &finished.provider_run_id,
                         ) {
+                            let _ = self.clear_active_provider_run_session_pointer(
+                                &finished.session_id,
+                                outcome.run().id(),
+                            );
                             self.provider_run_projection.update(outcome.into_run());
                         }
                     }
