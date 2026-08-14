@@ -174,25 +174,6 @@ impl SessionService {
                 message: format!("workflow event binding `{binding_id}` was not found"),
             })?;
         if status == WorkflowEventBindingStatus::Active {
-            for session in self.store.list() {
-                if let Some(existing) = session.workflow_event_bindings().iter().find(|binding| {
-                    binding.id != candidate.id
-                        && binding.environment_id == candidate.environment_id
-                        && binding.event_interest_key == candidate.event_interest_key
-                        && binding.active()
-                }) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "set workflow event binding status",
-                        message: format!(
-                            "event route conflict: environment `{}` already routes interest `{}` to binding `{}` on publication `{}`; transfer it explicitly",
-                            candidate.environment_id,
-                            candidate.event_interest_key,
-                            existing.id,
-                            existing.publication_id
-                        ),
-                    });
-                }
-            }
             let publication =
                 self.resolve_workflow_publication_ref(session_id, &candidate.publication_id)?;
             if !publication.enabled() {
