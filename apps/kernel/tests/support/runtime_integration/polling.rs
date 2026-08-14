@@ -111,12 +111,32 @@ where
     let mut output = Vec::new();
 
     loop {
-        let records = chariox_kernel::transport::TransportService::pump_terminal_output(
-            app,
-            session_id,
-            attachment_id,
-        )
-        .expect("terminal output should fan out");
+        // ProviderOutputPump is the single owner for both structured provider
+        // sockets and legacy PTY output. Going through it here keeps this
+        // integration helper aligned with production polling; the old
+        // attachment pump can race a structured provider and consume its
+        // completion before the runtime settles the prompt.
+        let provider_run_id = app
+            .sessions()
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| session.active_provider_run_id().map(str::to_string));
+        let records = if let Some(provider_run_id) = provider_run_id {
+            chariox_kernel::transport::TransportService::pump_provider_output(
+                app,
+                session_id,
+                &provider_run_id,
+                vec![attachment_id.to_string()],
+            )
+            .expect("provider output should fan out")
+        } else {
+            chariox_kernel::transport::TransportService::pump_terminal_output(
+                app,
+                session_id,
+                attachment_id,
+            )
+            .expect("terminal output should fan out")
+        };
         for record in records {
             output.extend(record.bytes);
         }
