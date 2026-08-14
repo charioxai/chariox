@@ -17,6 +17,7 @@ use super::CodexAssistantCompletion;
 pub(super) struct CodexTurnTracker {
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
+    legacy_completion_hint: bool,
     tool_started: bool,
     assistant_content_observed: bool,
     assistant_item_completed: bool,
@@ -40,6 +41,7 @@ impl CodexTurnTracker {
     pub(super) fn reset_for_started(&mut self) {
         self.active_tool_ids.clear();
         self.pending_terminal = None;
+        self.legacy_completion_hint = false;
         self.tool_started = false;
         self.assistant_content_observed = false;
         self.assistant_item_completed = false;
@@ -67,6 +69,19 @@ impl CodexTurnTracker {
     pub(super) fn note_terminal(&mut self, signal: CodexTerminalSignal) {
         self.note_activity();
         self.pending_terminal = Some(CodexPendingTerminal { signal });
+    }
+
+    pub(super) fn note_legacy_completion_hint(&mut self) {
+        self.note_activity();
+        self.legacy_completion_hint = true;
+    }
+
+    pub(super) fn has_legacy_completion_hint(&self) -> bool {
+        self.legacy_completion_hint
+    }
+
+    pub(super) fn clear_legacy_completion_hint(&mut self) {
+        self.legacy_completion_hint = false;
     }
 
     pub(super) fn note_activity(&mut self) {

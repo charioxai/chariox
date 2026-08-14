@@ -309,15 +309,12 @@ pub(super) fn apply_notification_with_manifest(
                 );
                 return;
             }
-            // This signal is intentionally not treated as authoritative.  It
-            // arms the existing backfill path, which reads the provider's
-            // durable turn record and requires final output/error evidence
-            // before settling the kernel prompt.
-            turn_tracker.note_terminal(CodexTerminalSignal {
-                turn_id: active_turn_id_value,
-                status: "completed".to_string(),
-                error_message: None,
-            });
+            // This signal is intentionally not treated as authoritative and
+            // must not enter `pending_terminal`: that slot is consumed by
+            // `maybe_finalize_terminal_signal`. It only arms the existing
+            // backfill path, which reads the provider's durable turn record
+            // and requires final output/error evidence before settling.
+            turn_tracker.note_legacy_completion_hint();
         }
         CodexNotification::TurnAborted { reason } => {
             let Some(turn_id) = active_turn_id.clone() else {

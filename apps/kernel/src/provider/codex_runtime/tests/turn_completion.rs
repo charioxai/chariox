@@ -93,7 +93,8 @@ fn legacy_task_complete_arms_authoritative_turn_backfill() {
         &mut resolved_usage,
     );
 
-    assert!(turn_tracker.has_pending_terminal());
+    assert!(turn_tracker.has_legacy_completion_hint());
+    assert!(!turn_tracker.has_pending_terminal());
     assert!(codex_turn_should_backfill(
         crate::provider::AgentEndpointMode::Managed,
         true,
