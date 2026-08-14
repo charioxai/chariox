@@ -269,3 +269,14 @@ test("workflow event publication command maps lifecycle actions to shared kernel
     { GetEventDeliveryStatus: {} },
   ])
 })
+
+test("workflow event attachment reports the canonical attach command in its usage", async () => {
+  const result = await executeWorkflowEventPublicationCommand(
+    ["attach"],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    { send: async () => ({}) },
+  )
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /usage: workflow trigger event attach/)
+})
