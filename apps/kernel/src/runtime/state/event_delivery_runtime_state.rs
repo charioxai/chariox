@@ -239,6 +239,7 @@ impl KernelRuntimeState {
                 "occurrence_id": &delivery.occurrence_id,
                 "occurred_at": &delivery.occurred_at,
                 "metadata": &delivery.metadata,
+                "reply_context": &delivery.reply_context,
             }),
             artifacts,
             mode: None,

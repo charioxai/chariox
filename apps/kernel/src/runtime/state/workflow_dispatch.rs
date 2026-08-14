@@ -144,8 +144,29 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id,
                 dispatch.node_run.id(),
             ) {
-                Ok(dispatches) => prepared.extend(dispatches),
+                Ok(dispatches) => {
+                    // A queued prompt can be successfully admitted without producing a concrete
+                    // dispatch while its provider is busy. Retain the claim for every admitted
+                    // prompt; release it only when admission itself returned no prompt.
+                    if !dispatches.admitted_workflow_prompt {
+                        self.release_workflow_node_workspace_claim(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                        );
+                    }
+                    prepared.extend(dispatches)
+                }
                 Err(error) => {
+                    // The claim is acquired before prompt admission.  If admission fails
+                    // (for example because the provider was replaced during recovery), release
+                    // it here; otherwise every later event for the session is falsely blocked
+                    // behind a node that never reached the provider queue.
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run_id,
+                        dispatch.node_run.id(),
+                    );
                     self.record_notice(
                         session_id,
                         None,

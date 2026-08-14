@@ -17,7 +17,10 @@ use super::CodexAssistantCompletion;
 pub(super) struct CodexTurnTracker {
     active_tool_ids: BTreeSet<String>,
     pending_terminal: Option<CodexPendingTerminal>,
+    legacy_completion_hint: bool,
     tool_started: bool,
+    assistant_content_observed: bool,
+    assistant_item_completed: bool,
     assistant_content_after_tool_activity: bool,
     last_activity_at: Option<Instant>,
 }
@@ -38,7 +41,10 @@ impl CodexTurnTracker {
     pub(super) fn reset_for_started(&mut self) {
         self.active_tool_ids.clear();
         self.pending_terminal = None;
+        self.legacy_completion_hint = false;
         self.tool_started = false;
+        self.assistant_content_observed = false;
+        self.assistant_item_completed = false;
         self.assistant_content_after_tool_activity = false;
         self.last_activity_at = Some(Instant::now());
     }
@@ -65,15 +71,33 @@ impl CodexTurnTracker {
         self.pending_terminal = Some(CodexPendingTerminal { signal });
     }
 
+    pub(super) fn note_legacy_completion_hint(&mut self) {
+        self.note_activity();
+        self.legacy_completion_hint = true;
+    }
+
+    pub(super) fn has_legacy_completion_hint(&self) -> bool {
+        self.legacy_completion_hint
+    }
+
+    pub(super) fn clear_legacy_completion_hint(&mut self) {
+        self.legacy_completion_hint = false;
+    }
+
     pub(super) fn note_activity(&mut self) {
         self.last_activity_at = Some(Instant::now());
     }
 
     pub(super) fn note_assistant_content(&mut self) {
         self.note_activity();
+        self.assistant_content_observed = true;
         if self.tool_started {
             self.assistant_content_after_tool_activity = true;
         }
+    }
+
+    pub(super) fn note_assistant_item_completed(&mut self) {
+        self.assistant_item_completed = true;
     }
 
     pub(super) fn has_pending_terminal(&self) -> bool {
@@ -85,11 +109,29 @@ impl CodexTurnTracker {
     }
 
     pub(super) fn has_terminal_assistant_evidence(&self) -> bool {
-        self.assistant_content_after_tool_activity
+        // A managed turn can finish with a plain assistant answer and no tool call.
+        // When tools did run, require content after the tool activity so commentary
+        // emitted before the tool cannot trigger an authoritative completion lookup.
+        self.assistant_content_observed
+            && ((!self.tool_started && self.assistant_item_completed)
+                || self.assistant_content_after_tool_activity)
     }
 
     pub(super) fn has_quiet_terminal_assistant_evidence(&self, quiet_for: Duration) -> bool {
         self.has_terminal_assistant_evidence()
+            && self
+                .last_activity_at
+                .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
+    }
+
+    /// A managed app-server can finish a turn without emitting the legacy
+    /// `turn/completed` notification.  A completed tool followed by a quiet
+    /// socket is still safe evidence to ask the server for the authoritative
+    /// turn record; `backfill_completed_turn` only settles when that record is
+    /// terminal and contains final assistant output (or an error).
+    pub(super) fn has_quiet_completed_tool_activity(&self, quiet_for: Duration) -> bool {
+        self.tool_started
+            && self.active_tool_count() == 0
             && self
                 .last_activity_at
                 .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
@@ -144,6 +186,7 @@ pub(super) fn note_assistant_item_completed(
         || text_from_content_value(item.get("content")).is_some_and(|text| !text.is_empty());
     if has_text {
         turn_tracker.note_assistant_content();
+        turn_tracker.note_assistant_item_completed();
     }
     has_text
 }

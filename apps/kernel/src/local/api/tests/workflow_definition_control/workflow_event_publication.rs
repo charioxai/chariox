@@ -169,7 +169,7 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavaila
 }
 
 #[test]
-fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() {
+fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
     let server = ReadyConnectionServer::start();
     let mut config = crate::DaemonConfig::for_tests();
     config
@@ -220,6 +220,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         filter: serde_json::json!({"channel": "default"}),
         environment_id: Some("environment-local".to_string()),
         queue_ref: Some("default".to_string()),
+        reply_mode: None,
     };
     let binding = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
@@ -248,13 +249,20 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         response => panic!("unexpected response: {response:?}"),
     };
     assert_eq!(idempotent.id, binding.id);
-    let duplicate_error = harness
+    let fan_out = harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
             binding_request(second.id()),
         ))
-        .expect_err("same event interest must not be active twice in one environment");
-    assert!(duplicate_error.to_string().contains("event route conflict"));
-    assert!(duplicate_error.to_string().contains(first.id()));
+        .expect("same event interest should fan out to a second workflow");
+    let fan_out_binding = match fan_out {
+        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_ne!(fan_out_binding.id, binding.id);
+    assert_eq!(
+        fan_out_binding.event_interest_key,
+        binding.event_interest_key
+    );
 
     let package_files = match harness
         .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
@@ -352,7 +360,11 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         }
         response => panic!("unexpected response: {response:?}"),
     };
-    assert_eq!(tested.workflow_event_bindings().len(), 1);
+    assert_eq!(
+        tested.workflow_event_bindings().len(),
+        2,
+        "a second publication may intentionally fan out the same event interest"
+    );
 
     let active_route_count = || match harness
         .dispatch(LocalDaemonRequest::GetEventDeliveryStatus(
@@ -363,7 +375,11 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         LocalDaemonResponse::EventDeliveryStatus { status } => status.active_route_count,
         response => panic!("unexpected response: {response:?}"),
     };
-    assert_eq!(active_route_count(), 1);
+    assert_eq!(
+        active_route_count(),
+        2,
+        "both active publications advertise the intentional fan-out"
+    );
     harness.runtime_state().apply_event_route_conflicts(&[
         chariox_event_protocol::EventRouteConflict {
             environment_id: binding.environment_id.clone(),
@@ -375,8 +391,8 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     ]);
     assert_eq!(
         active_route_count(),
-        0,
-        "an AEDS ownership conflict must fence the old kernel route"
+        1,
+        "an AEDS ownership conflict must fence only the old kernel route"
     );
     harness
         .dispatch(LocalDaemonRequest::SetWorkflowEventBindingStatus(
@@ -387,7 +403,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
             },
         ))
         .expect("a locally resolved conflict should be resumable");
-    assert_eq!(active_route_count(), 1);
+    assert_eq!(active_route_count(), 2);
 
     let disabled = match harness
         .dispatch(LocalDaemonRequest::DisableWorkflowPublication(
@@ -408,8 +424,8 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     );
     assert_eq!(
         active_route_count(),
-        0,
-        "a disabled publication must not continue advertising an active AEDS route"
+        1,
+        "a disabled publication must not continue advertising its active AEDS route"
     );
     let subscribe_error = harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
@@ -652,6 +668,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "removal"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
+                    reply_mode: None,
                 },
             ))
             .expect("event binding should be created")
@@ -777,6 +794,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "reattach"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
+                    reply_mode: None,
                 },
             ))
             .expect_err("a revoked connection must reject a fresh attachment");

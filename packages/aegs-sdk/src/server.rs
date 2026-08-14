@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -10,7 +10,8 @@ use chariox_event_protocol::{
     AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
     AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
     AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
-    AegsConnectionTestEventResponse, AegsProviderResourceQuery, PublishEventRequest,
+    AegsConnectionTestEventResponse, AegsProviderActionRequest, AegsProviderResourceQuery,
+    PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -20,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use crate::store::ActionReceiptLookupError;
 use crate::{
     baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
     AegsProvider, AegsStore, ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION,
@@ -33,6 +35,35 @@ struct AegsServer {
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
+    action_locks: ActionLockMap,
+}
+
+type ActionLock = Arc<tokio::sync::Mutex<()>>;
+type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
+
+struct ActionLockLease {
+    key: String,
+    action_lock: Weak<tokio::sync::Mutex<()>>,
+    locks: ActionLockMap,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for ActionLockLease {
+    fn drop(&mut self) {
+        // Release the owned guard before checking the reference count. If a
+        // retry arrived while this action was running, its Arc keeps the map
+        // entry alive and the waiter will remove it when it finishes.
+        let _ = self.guard.take();
+        let Ok(mut locks) = self.locks.lock() else {
+            return;
+        };
+        let remove = locks.get(&self.key).is_some_and(|entry| {
+            Weak::ptr_eq(&Arc::downgrade(entry), &self.action_lock) && Arc::strong_count(entry) == 2
+        });
+        if remove {
+            locks.remove(&self.key);
+        }
+    }
 }
 
 pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn std::error::Error>>
@@ -72,6 +103,7 @@ where
         ),
         store,
         provider,
+        action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     if server.provider.authorization_configured() {
         spawn_subscription_maintenance(Arc::clone(&server.provider));
@@ -263,6 +295,147 @@ impl AegsServer {
                     }
                     Err(message) => error(StatusCode::BAD_REQUEST, "invalid_subscription", message),
                 }
+            }
+            (Method::POST, "/v1/actions") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let action: AegsProviderActionRequest = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = action.validate() {
+                    return error(StatusCode::BAD_REQUEST, "invalid_action", message);
+                }
+                if action.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, action.generator_id
+                        ),
+                    );
+                }
+                let connection = match self
+                    .store
+                    .claim_connection_owner(&action.connection_id, &action.owner_id)
+                {
+                    Ok(connection) => connection,
+                    Err(message) => {
+                        return error(StatusCode::NOT_FOUND, "connection_not_found", message)
+                    }
+                };
+                if connection.status != "ready" {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "connection_not_ready",
+                        "the provider connection is not ready for outbound actions",
+                    );
+                }
+                // Serialize each idempotency key across concurrent HTTP retries. The durable
+                // receipt makes retries safe after completion; this lock also prevents two
+                // simultaneous retries from both reaching the provider before that receipt is
+                // written.
+                let action_lock_key = format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    action.owner_id, action.connection_id, action.idempotency_key
+                );
+                let action_lock = match self.action_locks.lock() {
+                    Ok(mut locks) => locks
+                        .entry(action_lock_key.clone())
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .clone(),
+                    Err(_) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "action_lock_failed",
+                            "AEGS action lock was poisoned",
+                        )
+                    }
+                };
+                let _action_lock_lease = ActionLockLease {
+                    key: action_lock_key,
+                    action_lock: Arc::downgrade(&action_lock),
+                    locks: Arc::clone(&self.action_locks),
+                    guard: Some(Arc::clone(&action_lock).lock_owned().await),
+                };
+                let request_fingerprint = crate::action_request_fingerprint(
+                    &action.action_id,
+                    &action.input,
+                    &action.context,
+                );
+                match self.store.action_receipt(
+                    &action.owner_id,
+                    &action.connection_id,
+                    &action.idempotency_key,
+                    &request_fingerprint,
+                ) {
+                    Ok(Some(response)) => return json(StatusCode::OK, response),
+                    Ok(None) => {}
+                    Err(ActionReceiptLookupError::Conflict(message)) => {
+                        return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
+                    }
+                    Err(ActionReceiptLookupError::Storage(message)) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "action_receipt_lookup_failed",
+                            message,
+                        )
+                    }
+                }
+                let provider = Arc::clone(&self.provider);
+                let action_for_provider = action.clone();
+                let response = match tokio::task::spawn_blocking(move || {
+                    provider.perform_action(&action_for_provider)
+                })
+                .await
+                {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(message)) => {
+                        return error(StatusCode::BAD_GATEWAY, "provider_action_failed", message)
+                    }
+                    Err(message) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "provider_action_failed",
+                            message.to_string(),
+                        )
+                    }
+                };
+                if response.action_id != action.action_id
+                    || response.idempotency_key != action.idempotency_key
+                {
+                    return error(
+                        StatusCode::BAD_GATEWAY,
+                        "invalid_provider_action_response",
+                        "provider action response identity did not match the request",
+                    );
+                }
+                if let Err(message) = self.store.record_action_receipt(
+                    &action.owner_id,
+                    &action.connection_id,
+                    &response,
+                    &request_fingerprint,
+                    now_ms(),
+                ) {
+                    return error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "action_receipt_failed",
+                        message,
+                    );
+                }
+                json(StatusCode::ACCEPTED, response)
             }
             (Method::POST, "/v1/authorizations") => {
                 if let Err(response) = self.authorize_management(&request) {
@@ -974,6 +1147,7 @@ impl AegsServer {
                         prompt: normalized.prompt.clone(),
                         artifacts: Vec::new(),
                         metadata: normalized.metadata.clone(),
+                        reply_context: normalized.reply_context.clone(),
                         ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                     };
                     match self.publisher.publish(event).await {
@@ -1099,6 +1273,7 @@ impl AegsServer {
                     prompt: normalized.prompt.clone(),
                     artifacts: Vec::new(),
                     metadata: normalized.metadata.clone(),
+                    reply_context: normalized.reply_context.clone(),
                     ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                 })
                 .await?;

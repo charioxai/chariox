@@ -886,6 +886,13 @@ fn test_aegs_connection(
     )
 }
 
+pub(crate) fn invoke_aegs_action(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    request: &chariox_event_protocol::AegsProviderActionRequest,
+) -> Result<chariox_event_protocol::AegsProviderActionResponse, DaemonError> {
+    post_aegs_json(targets, &request.generator_id, "/v1/actions", request)
+}
+
 fn revoke_aegs_connection(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
@@ -933,7 +940,7 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .map_err(|error| catalog_error(format!("AEGS response is invalid: {error}")))
 }
 
-fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
+pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -> String {
     use sha2::{Digest, Sha256};
 
     let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());

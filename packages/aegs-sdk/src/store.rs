@@ -4,8 +4,27 @@ use std::sync::{Arc, Mutex};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
+use sha2::{Digest, Sha256};
+
+use chariox_event_protocol::AegsProviderActionResponse;
 
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionReceiptLookupError {
+    Conflict(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for ActionReceiptLookupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) | Self::Storage(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ActionReceiptLookupError {}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
@@ -119,11 +138,22 @@ impl AegsStore {
                 PRIMARY KEY(connection_id, connection_scope),
                 FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
             );
+            CREATE TABLE IF NOT EXISTS action_receipts (
+                owner_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL DEFAULT '',
+                response_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(owner_id, connection_id, idempotency_key)
+            );
             ",
         )?;
         migrate_subscription_owner(&connection)?;
         migrate_connection_owner(&connection)?;
         migrate_connection_lifecycle_timestamps(&connection)?;
+        migrate_action_receipt_fingerprint(&connection)?;
         Ok(Self {
             connection: Arc::new(Mutex::new(connection)),
         })
@@ -435,6 +465,70 @@ impl AegsStore {
             connections: count("connections", None)?,
             provider_hooks: count("provider_hooks", None)?,
         })
+    }
+
+    pub fn action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        idempotency_key: &str,
+        request_fingerprint: &str,
+    ) -> Result<Option<AegsProviderActionResponse>, ActionReceiptLookupError> {
+        let connection = self.connection.lock().map_err(|_| {
+            ActionReceiptLookupError::Storage("AEGS action store lock was poisoned".to_string())
+        })?;
+        connection
+            .query_row(
+                "SELECT response_json, request_fingerprint FROM action_receipts
+                 WHERE owner_id = ?1 AND connection_id = ?2 AND idempotency_key = ?3",
+                params![owner_id, connection_id, idempotency_key],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
+            )
+            .optional()
+            .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))?
+            .map(|(response_json, stored_fingerprint)| {
+                if stored_fingerprint != request_fingerprint {
+                    return Err(ActionReceiptLookupError::Conflict(format!(
+                        "idempotency key `{idempotency_key}` was already used for a different action request"
+                    )));
+                }
+                serde_json::from_str(&response_json)
+                    .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))
+            })
+            .transpose()
+    }
+
+    pub fn record_action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        response: &AegsProviderActionResponse,
+        request_fingerprint: &str,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let response_json = serde_json::to_string(response).map_err(|error| error.to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS action store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "INSERT INTO action_receipts
+                 (owner_id, connection_id, idempotency_key, action_id, request_fingerprint, response_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(owner_id, connection_id, idempotency_key) DO NOTHING",
+                params![
+                    owner_id,
+                    connection_id,
+                    response.idempotency_key,
+                    response.action_id,
+                    request_fingerprint,
+                    response_json,
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub fn create_authorization(
@@ -981,6 +1075,20 @@ impl AegsStore {
     }
 }
 
+pub(crate) fn action_request_fingerprint(
+    action_id: &str,
+    input: &Value,
+    context: &Value,
+) -> String {
+    let canonical = serde_json::to_vec(&serde_json::json!({
+        "action_id": action_id,
+        "input": input,
+        "context": context,
+    }))
+    .expect("action request fingerprint is serializable");
+    format!("sha256:{:x}", Sha256::digest(canonical))
+}
+
 fn migrate_subscription_owner(connection: &Connection) -> Result<(), rusqlite::Error> {
     let mut columns = connection.prepare("PRAGMA table_info(subscriptions)")?;
     let has_owner = columns
@@ -1036,6 +1144,20 @@ fn migrate_connection_lifecycle_timestamps(connection: &Connection) -> Result<()
     {
         connection.execute(
             "ALTER TABLE connections ADD COLUMN last_accepted_event_at_ms INTEGER",
+            [],
+        )?;
+    }
+    Ok(())
+}
+
+fn migrate_action_receipt_fingerprint(connection: &Connection) -> Result<(), rusqlite::Error> {
+    let mut columns = connection.prepare("PRAGMA table_info(action_receipts)")?;
+    let columns = columns
+        .query_map([], |row| row.get::<_, String>(1))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if !columns.iter().any(|column| column == "request_fingerprint") {
+        connection.execute(
+            "ALTER TABLE action_receipts ADD COLUMN request_fingerprint TEXT NOT NULL DEFAULT ''",
             [],
         )?;
     }
@@ -1375,5 +1497,47 @@ mod tests {
         assert_eq!(ready.connection_id, "connection-owner-a");
         assert_eq!(ready.owner_id, "owner-a");
         assert_eq!(ready.status, "ready");
+    }
+
+    #[test]
+    fn action_receipts_are_durable_and_idempotent() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let fingerprint = action_request_fingerprint(
+            "notification.reply",
+            &serde_json::json!({"text": "hello"}),
+            &serde_json::json!({"channel": "C1"}),
+        );
+        let response = chariox_event_protocol::AegsProviderActionResponse {
+            action_id: "notification.reply".to_string(),
+            idempotency_key: "reply-1".to_string(),
+            accepted: true,
+            result: serde_json::json!({"message_ts": "123.456"}),
+        };
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, &fingerprint, 10)
+            .unwrap();
+        assert_eq!(
+            store
+                .action_receipt("owner-a", "connection-a", "reply-1", &fingerprint)
+                .unwrap(),
+            Some(response.clone())
+        );
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, &fingerprint, 11)
+            .unwrap();
+        assert!(store
+            .action_receipt("owner-b", "connection-a", "reply-1", &fingerprint)
+            .unwrap()
+            .is_none());
+        let different = action_request_fingerprint(
+            "notification.reply",
+            &serde_json::json!({"text": "different"}),
+            &serde_json::json!({"channel": "C1"}),
+        );
+        assert!(store
+            .action_receipt("owner-a", "connection-a", "reply-1", &different)
+            .unwrap_err()
+            .to_string()
+            .contains("already used for a different action request"));
     }
 }

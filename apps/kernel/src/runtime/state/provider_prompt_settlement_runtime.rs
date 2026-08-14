@@ -329,9 +329,13 @@ impl KernelRuntimeState {
                 }
             }
         }
-        let provider_run_state = provider_run.state();
-        let next_queued_prompt = if provider_run_state == crate::provider::ProviderRunState::Running
-        {
+        // A provider can terminate at the same time that it reports the active prompt as
+        // complete (for example, when a managed provider socket is replaced during recovery).
+        // Keep this fact so the common completion path can create a replacement run for queued
+        // work instead of leaving the queue parked behind the ended run.
+        let provider_run_was_running =
+            provider_run.state() == crate::provider::ProviderRunState::Running;
+        let next_queued_prompt = if provider_run_was_running {
             owned
                 .prompt_state_owner
                 .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
@@ -451,6 +455,42 @@ impl KernelRuntimeState {
                 .await
             {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        }
+        if completion.completion.started_next.is_none() && !provider_run_was_running {
+            let session_id_for_queue = session_id.to_string();
+            let agent_id_for_queue = agent_id.clone();
+            let agent_id_for_log = agent_id_for_queue.clone();
+            match self
+                .with_app_side_effect(move |app| {
+                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
+                })
+                .await
+            {
+                Ok(Some(_started_next)) => {
+                    crate::logging::info_with_fields(
+                        "daemon.provider",
+                        "advanced queued prompt after terminal provider recovery",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id_for_log,
+                            "ended_provider_run_id": provider_run_id,
+                        }),
+                    );
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    self.owned.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        self.owned
+                            .attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Queued prompt remained pending after terminal provider recovery: {error}"
+                        ),
+                    );
+                }
             }
         }
         self.spawn_workflow_prompt_dispatches(

@@ -65,6 +65,47 @@ fn delayed_previous_turn_start_cannot_replace_the_submitted_turn() {
 }
 
 #[test]
+fn legacy_task_complete_arms_authoritative_turn_backfill() {
+    let mut active_turn_id = Some("turn-1".to_string());
+    let mut turn_tracker = CodexTurnTracker::default();
+    let mut text_items = BTreeMap::new();
+    let mut tool_items = BTreeMap::new();
+    let mut chunks = Vec::new();
+    let mut completions = Vec::new();
+    let mut notices = Vec::new();
+    let mut prompt_completed = false;
+    let mut terminal_failure = None;
+    let mut resolved_usage = None;
+
+    apply_notification(
+        CodexNotification::TaskComplete {
+            turn_id: Some("turn-1".to_string()),
+        },
+        &mut active_turn_id,
+        &mut turn_tracker,
+        &mut text_items,
+        &mut tool_items,
+        &mut chunks,
+        &mut completions,
+        &mut notices,
+        &mut prompt_completed,
+        &mut terminal_failure,
+        &mut resolved_usage,
+    );
+
+    assert!(turn_tracker.has_legacy_completion_hint());
+    assert!(!turn_tracker.has_pending_terminal());
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        false,
+    ));
+    assert!(!prompt_completed);
+    assert!(completions.is_empty());
+}
+
+#[test]
 fn delayed_previous_turn_start_cannot_arm_the_next_prompt_before_submission() {
     let mut active_turn_id = None;
     let mut turn_tracker = CodexTurnTracker::default();
@@ -1452,6 +1493,42 @@ fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal
         true,
     ));
     turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+}
+
+#[test]
+fn managed_turn_backfills_after_completed_tool_when_final_message_has_no_item_event() {
+    use std::time::Duration;
+
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("review-call");
+    turn_tracker.note_tool_completed("review-call");
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    assert!(turn_tracker.has_quiet_completed_tool_activity(Duration::from_millis(250)));
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+}
+
+#[test]
+fn managed_turn_backfills_after_quiet_final_output_without_terminal_notification() {
+    use std::time::Duration;
+
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_assistant_content();
+    turn_tracker.note_assistant_item_completed();
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    assert!(turn_tracker.has_terminal_assistant_evidence());
     assert!(codex_turn_should_backfill(
         crate::provider::AgentEndpointMode::Managed,
         true,

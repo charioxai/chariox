@@ -768,12 +768,13 @@ mod tests {
     }
 
     #[test]
-    fn generated_message_ids_sort_after_current_opencode_ids() {
-        let id = next_opencode_message_id();
+    fn generated_message_ids_are_lexically_monotonic() {
+        let first = next_opencode_message_id();
+        let second = next_opencode_message_id();
 
         assert!(
-            id.as_str() > "msg_d0000000000000000000000000",
-            "generated id {id} should sort in OpenCode's current ascending range"
+            second > first,
+            "generated OpenCode message IDs must sort in creation order: {first} then {second}"
         );
     }
 

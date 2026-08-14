@@ -24,6 +24,7 @@ pub(super) fn pump_session_active_prompt_outputs(
         if let Some(provider_run_id) = app
             .providers
             .get_run_for_agent(session.id(), &agent_id)
+            .filter(|run| provider_run_requires_background_pump(app, &session, run))
             .map(|run| run.id().to_string())
         {
             provider_run_ids.insert(provider_run_id);
@@ -37,6 +38,13 @@ pub(super) fn pump_session_active_prompt_outputs(
             .filter(should_pump_background_provider_run)
             .map(|run| run.id().to_string()),
     );
+    // Keep the final set defensive: every discovery path above must obey the
+    // single-owner rule before any legacy pump is invoked.
+    provider_run_ids.retain(|provider_run_id| {
+        app.providers
+            .get_run(provider_run_id)
+            .is_ok_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
+    });
     let mut pumped_provider_run_ids = Vec::new();
     for provider_run_id in provider_run_ids {
         let agent_id = app
@@ -69,7 +77,8 @@ pub(super) fn pump_session_active_prompt_outputs(
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
-    crate::provider::provider_run_uses_claude_native_bridge(run)
+    !crate::provider::provider_run_uses_structured_prompt_io(run)
+        && crate::provider::provider_run_uses_claude_native_bridge(run)
         && matches!(
             run.state(),
             ProviderRunState::Starting | ProviderRunState::Running
@@ -81,6 +90,13 @@ fn provider_run_requires_background_pump(
     session: &crate::session::RuntimeSession,
     run: &RuntimeProviderRun,
 ) -> bool {
+    // Structured provider output is owned by KernelRuntimeState's single
+    // transport-runtime pump. Letting this legacy app/transport path poll the
+    // same provider socket races notification consumption and can strand the
+    // provider turn without its terminal completion transition.
+    if crate::provider::provider_run_uses_structured_prompt_io(run) {
+        return false;
+    }
     if run.state() == ProviderRunState::Starting || should_pump_background_provider_run(run) {
         return true;
     }

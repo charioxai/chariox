@@ -74,6 +74,12 @@ pub enum CodexNotification {
         error_message: Option<String>,
         items: Vec<Value>,
     },
+    /// Legacy app-server terminal signal.  It does not always carry the
+    /// structured `turn/completed` payload, so the runtime uses it only to
+    /// trigger an authoritative `thread/turns/list` backfill.
+    TaskComplete {
+        turn_id: Option<String>,
+    },
     TurnAborted {
         reason: Option<String>,
     },
@@ -304,6 +310,16 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
                 .to_string(),
         }),
         "turn/completed" => parse_turn_completed_notification(&params),
+        "codex/event/task_complete" => Some(CodexNotification::TaskComplete {
+            turn_id: params
+                .get("turnId")
+                .or_else(|| params.get("turn_id"))
+                .or_else(|| params.get("id"))
+                .or_else(|| params.get("msg").and_then(|msg| msg.get("turnId")))
+                .or_else(|| params.get("msg").and_then(|msg| msg.get("turn_id")))
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        }),
         "codex/event/turn_aborted" => Some(CodexNotification::TurnAborted {
             reason: params
                 .get("msg")

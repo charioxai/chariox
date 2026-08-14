@@ -155,7 +155,6 @@ impl DaemonApp {
                 shutdown_rx.clone(),
             ),
         );
-        runtime_state.spawn_durable_restart_recovery();
         let external_provider_session_discovery_task = tokio::spawn(
             crate::runtime::external_provider_session_control::run_external_provider_session_discovery_poller(
                 Arc::clone(&app),

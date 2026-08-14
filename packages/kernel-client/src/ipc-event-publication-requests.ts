@@ -176,6 +176,7 @@ export type CreateWorkflowEventBindingInput = {
   filter?: unknown
   environmentId?: string | null
   queueRef?: string | null
+  replyMode?: 'disabled' | 'thread' | 'channel' | null
 }
 
 export function createWorkflowEventBindingRequest(
@@ -197,6 +198,7 @@ export function createWorkflowEventBindingRequest(
       filter: input.filter ?? null,
       environment_id: input.environmentId ?? null,
       queue_ref: input.queueRef ?? null,
+      reply_mode: input.replyMode ?? null,
     },
   }
 }

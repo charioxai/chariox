@@ -85,6 +85,9 @@ impl KernelRuntimeOwnedState {
             crate::transport::runtime_tools::AGENT_APP_ACTION_TOOL => {
                 self.workflow_agent_app_action_tool_result(&arguments, &context)
             }
+            crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL => {
+                self.workflow_reply_to_event_tool_result(&arguments, &context)
+            }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
                 message: format!("unsupported runtime tool `{other}`"),
@@ -314,6 +317,150 @@ impl KernelRuntimeOwnedState {
                 "status": response.status,
                 "content_type": response.content_type,
                 "body": response.body,
+            }),
+        })
+    }
+
+    fn workflow_reply_to_event_tool_result(
+        &self,
+        arguments: &serde_json::Value,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args = serde_json::from_value::<crate::transport::runtime_tools::ReplyToEventArgs>(
+            arguments.clone(),
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_reply_to_event",
+            message: format!("invalid tool arguments: {error}"),
+        })?;
+        let text = args.text.trim();
+        if text.is_empty() || text.len() > 40_000 {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_reply_to_event",
+                message: "reply text must contain between 1 and 40000 characters".to_string(),
+            });
+        }
+        let (binding, invocation, workflow_run_id) = {
+            let workflow_run = self
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+            let invocation = workflow_run
+                .publication_invocation()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_reply_to_event",
+                    message: "reply_to_event is only available for event-triggered workflow runs"
+                        .to_string(),
+                })?;
+            if invocation.transport != "event" {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_reply_to_event",
+                    message: "reply_to_event is only available for event-triggered workflow runs"
+                        .to_string(),
+                });
+            }
+            let binding_id =
+                invocation
+                    .hook_id
+                    .clone()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_reply_to_event",
+                        message: "event invocation is missing its binding identity".to_string(),
+                    })?;
+            let binding = self
+                .session_store
+                .read()
+                .get_session(&context.session_id)?
+                .workflow_event_bindings()
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_reply_to_event",
+                    message: format!("event binding `{binding_id}` was not found"),
+                })?;
+            (binding, invocation, workflow_run.id().to_string())
+        };
+        let configured_mode = binding.reply_mode.as_deref().unwrap_or("disabled");
+        if configured_mode == "disabled" {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_reply_to_event",
+                message: "replies are disabled for this event subscription".to_string(),
+            });
+        }
+        if !matches!(configured_mode, "thread" | "channel") {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_reply_to_event",
+                message: "event subscription has an invalid reply mode".to_string(),
+            });
+        }
+        let mode = args.mode.as_deref().unwrap_or(configured_mode);
+        if mode != configured_mode {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_reply_to_event",
+                message: format!(
+                    "reply mode `{mode}` is not enabled; configured mode is `{configured_mode}`"
+                ),
+            });
+        }
+        let reply_context = invocation
+            .input
+            .get("reply_context")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_reply_to_event",
+                message: "this event does not provide a reply context".to_string(),
+            })?;
+        // Event connections are owned by the kernel-scoped identity used by the
+        // catalog-management path, not by the raw session owner stored in the
+        // in-memory registry. Derive the same identity here so replies can use
+        // the connection that authorized this workflow.
+        let daemon_id = self.config_projection.snapshot().daemon_id;
+        let session_owner = self
+            .session_store
+            .read()
+            .get_session(&context.session_id)?
+            .owner_user_id()
+            .to_string();
+        let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+            &daemon_id,
+            &session_owner,
+        );
+        let idempotency_key = args.idempotency_key.unwrap_or_else(|| {
+            format!(
+                "chariox:{workflow_run_id}:{}:notification-reply",
+                context.workflow_node_run_id
+            )
+        });
+        let request = chariox_event_protocol::AegsProviderActionRequest {
+            generator_id: binding.generator_id,
+            owner_id,
+            connection_id: binding.connection_id,
+            action_id: "notification.reply".to_string(),
+            input: serde_json::json!({"text": text, "mode": mode}),
+            context: reply_context,
+            idempotency_key,
+        };
+        let response = crate::runtime::event_catalog_control::invoke_aegs_action(
+            &self
+                .config_projection
+                .snapshot()
+                .event_generator_management_targets,
+            &request,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_reply_to_event",
+            message: error.to_string(),
+        })?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: response.accepted,
+            payload: serde_json::json!({
+                "action_id": response.action_id,
+                "accepted": response.accepted,
+                "idempotency_key": response.idempotency_key,
+                "result": response.result,
             }),
         })
     }

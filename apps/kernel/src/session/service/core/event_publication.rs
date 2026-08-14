@@ -20,6 +20,7 @@ impl SessionService {
         filter: Value,
         environment_id: Option<String>,
         queue_ref: Option<String>,
+        reply_mode: Option<String>,
     ) -> Result<WorkflowEventBinding, DaemonError> {
         let publication = self.resolve_workflow_publication_ref(session_id, publication_ref)?;
         if publication.kind() != WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
@@ -68,6 +69,7 @@ impl SessionService {
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
             .or_else(|| publication.queue_ref().map(str::to_string));
+        let reply_mode = normalize_event_reply_mode(reply_mode)?;
         self.resolve_workflow_prompt_queue_ref(
             session_id,
             publication.workflow_id(),
@@ -95,15 +97,25 @@ impl SessionService {
                     && existing.endpoint_id == publication.endpoint_id()
                     && existing.queue_ref == queue_ref
                 {
-                    return Ok(existing.clone());
+                    if existing.reply_mode.as_deref() == Some(reply_mode.as_str()) {
+                        return Ok(existing.clone());
+                    }
+                    let binding = self
+                        .store
+                        .get_mut(session.id())
+                        .and_then(|session| session.workflow_event_binding_mut(&existing.id))
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "update workflow event binding reply mode",
+                            message: format!(
+                                "workflow event binding `{}` was not found",
+                                existing.id
+                            ),
+                        })?;
+                    binding.reply_mode = Some(reply_mode.clone());
+                    binding.revision = binding.revision.saturating_add(1);
+                    binding.updated_at_ms = unix_epoch_ms();
+                    return Ok(binding.clone());
                 }
-                return Err(DaemonError::LocalTransport {
-                    operation: "create workflow event binding",
-                    message: format!(
-                        "event route conflict: environment `{environment_id}` already routes interest `{event_interest_key}` to binding `{}` on publication `{}`; transfer it explicitly",
-                        existing.id, existing.publication_id
-                    ),
-                });
             }
         }
 
@@ -123,6 +135,7 @@ impl SessionService {
             environment_id,
             endpoint_id: publication.endpoint_id().to_string(),
             queue_ref,
+            reply_mode: Some(reply_mode),
             revision: 1,
             status: WorkflowEventBindingStatus::Active,
             created_at_ms: now,
@@ -178,25 +191,6 @@ impl SessionService {
                 message: format!("workflow event binding `{binding_id}` was not found"),
             })?;
         if status == WorkflowEventBindingStatus::Active {
-            for session in self.store.list() {
-                if let Some(existing) = session.workflow_event_bindings().iter().find(|binding| {
-                    binding.id != candidate.id
-                        && binding.environment_id == candidate.environment_id
-                        && binding.event_interest_key == candidate.event_interest_key
-                        && binding.active()
-                }) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "set workflow event binding status",
-                        message: format!(
-                            "event route conflict: environment `{}` already routes interest `{}` to binding `{}` on publication `{}`; transfer it explicitly",
-                            candidate.environment_id,
-                            candidate.event_interest_key,
-                            existing.id,
-                            existing.publication_id
-                        ),
-                    });
-                }
-            }
             let publication =
                 self.resolve_workflow_publication_ref(session_id, &candidate.publication_id)?;
             if !publication.enabled() {
@@ -353,5 +347,20 @@ impl SessionService {
         session.prune_expired_workflow_event_delivery_receipts(unix_epoch_ms());
         session.record_workflow_event_delivery_receipt(receipt);
         Ok(())
+    }
+}
+
+fn normalize_event_reply_mode(value: Option<String>) -> Result<String, DaemonError> {
+    let value = value
+        .unwrap_or_else(|| "disabled".to_string())
+        .trim()
+        .to_ascii_lowercase();
+    if matches!(value.as_str(), "disabled" | "thread" | "channel") {
+        Ok(value)
+    } else {
+        Err(DaemonError::LocalTransport {
+            operation: "create workflow event binding",
+            message: "reply_mode must be `disabled`, `thread`, or `channel`".to_string(),
+        })
     }
 }

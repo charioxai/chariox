@@ -20,15 +20,22 @@ const JSON_RPC_VERSION: &str = "2.0";
 
 type HttpBody = Full<Bytes>;
 
-pub(crate) async fn run_mcp_http_server(router: Arc<CommandRouter>) -> Result<(), DaemonError> {
+pub(crate) async fn bind_mcp_http_server(
+    router: &CommandRouter,
+) -> Result<TcpListener, DaemonError> {
     let (bind_host, bind_port) = router.runtime_mcp_bind_address();
-    let listener = TcpListener::bind((bind_host.as_str(), bind_port))
+    TcpListener::bind((bind_host.as_str(), bind_port))
         .await
         .map_err(|error| DaemonError::LocalTransport {
             operation: "bind runtime mcp",
             message: error.to_string(),
-        })?;
+        })
+}
 
+pub(crate) async fn run_mcp_http_server_on_listener(
+    router: Arc<CommandRouter>,
+    listener: TcpListener,
+) -> Result<(), DaemonError> {
     loop {
         let (stream, _) = listener
             .accept()

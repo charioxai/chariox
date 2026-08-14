@@ -2,7 +2,8 @@ use std::collections::HashMap;
 
 use chariox_event_protocol::{
     AegsAuthorizationFlow, AegsConnectionInspection, AegsConnectionLifecycleState,
-    AegsProviderResourcePage, AegsProviderResourceQuery,
+    AegsProviderActionRequest, AegsProviderActionResponse, AegsProviderResourcePage,
+    AegsProviderResourceQuery,
 };
 use serde_json::Value;
 
@@ -22,6 +23,7 @@ pub struct NormalizedEvent {
     pub connection_scope: String,
     pub prompt: String,
     pub metadata: Value,
+    pub reply_context: Option<Value>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -112,6 +114,15 @@ pub trait AegsProvider: Send + Sync {
         _event_type: Option<&str>,
     ) -> Result<Option<NormalizedEvent>, String> {
         Ok(None)
+    }
+
+    /// Executes a provider-owned outbound action using the credentials held by this AEGS.
+    /// Providers should validate the action name and input, and return a stable provider result.
+    fn perform_action(
+        &self,
+        _request: &AegsProviderActionRequest,
+    ) -> Result<AegsProviderActionResponse, String> {
+        Err("provider outbound actions are not supported".to_string())
     }
 
     fn maintain_subscriptions(&self) -> Result<(), String> {

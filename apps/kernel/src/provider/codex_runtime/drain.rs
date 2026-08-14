@@ -89,6 +89,9 @@ pub fn drain_codex_events(
             &mut prompt_completed,
             &mut terminal_failure,
         )?;
+        if prompt_completed {
+            state.turn_tracker.clear_legacy_completion_hint();
+        }
     }
     if drained_to_quiet && !prompt_completed {
         maybe_finalize_terminal_signal(
@@ -120,7 +123,10 @@ pub(super) fn codex_turn_should_backfill(
     has_active_turn
         && (endpoint_mode == AgentEndpointMode::External
             || turn_tracker.has_pending_terminal()
+            || turn_tracker.has_legacy_completion_hint()
             || (drained_to_quiet
-                && turn_tracker
-                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)))
+                && (turn_tracker
+                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)
+                    || turn_tracker
+                        .has_quiet_completed_tool_activity(CODEX_MANAGED_BACKFILL_QUIET_GRACE))))
 }
