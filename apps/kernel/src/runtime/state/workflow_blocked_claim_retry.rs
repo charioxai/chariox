@@ -111,6 +111,14 @@ impl KernelRuntimeOwnedState {
         ) {
             Ok(prepared) => Some(prepared),
             Err(error) => {
+                // Admission owns the claim only after it succeeds.  A provider/runtime
+                // failure must not leave the blocked node's workspace claim behind and starve
+                // subsequent event deliveries.
+                self.release_workflow_node_workspace_claim(
+                    &retry.session_id,
+                    &retry.workflow_run_id,
+                    &retry.workflow_node_run_id,
+                );
                 self.record_blocked_workflow_claim_retry_error(&retry, error);
                 None
             }

@@ -144,8 +144,29 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id,
                 dispatch.node_run.id(),
             ) {
-                Ok(dispatches) => prepared.extend(dispatches),
+                Ok(dispatches) => {
+                    // A successful admission produces either a local/remote dispatch or a
+                    // provider-launch continuation.  An empty result means the prompt was not
+                    // admitted; do not retain the claim acquired above in that case.
+                    if dispatches.is_empty() {
+                        self.release_workflow_node_workspace_claim(
+                            session_id,
+                            workflow_run_id,
+                            dispatch.node_run.id(),
+                        );
+                    }
+                    prepared.extend(dispatches)
+                }
                 Err(error) => {
+                    // The claim is acquired before prompt admission.  If admission fails
+                    // (for example because the provider was replaced during recovery), release
+                    // it here; otherwise every later event for the session is falsely blocked
+                    // behind a node that never reached the provider queue.
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run_id,
+                        dispatch.node_run.id(),
+                    );
                     self.record_notice(
                         session_id,
                         None,
