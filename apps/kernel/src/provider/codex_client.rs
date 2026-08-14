@@ -956,7 +956,12 @@ mod tests {
             result: None,
             error: None,
         });
-        assert_eq!(raw_task_complete, None);
+        assert_eq!(
+            raw_task_complete,
+            Some(CodexNotification::TaskComplete {
+                turn_id: Some("turn-raw-1".to_string()),
+            })
+        );
 
         let raw_turn_aborted = parse_notification(JsonRpcMessage {
             id: None,

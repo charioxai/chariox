@@ -291,6 +291,34 @@ pub(super) fn apply_notification_with_manifest(
                 error_message,
             });
         }
+        CodexNotification::TaskComplete { turn_id } => {
+            let Some(active_turn_id_value) = active_turn_id.clone() else {
+                return;
+            };
+            if turn_id
+                .as_deref()
+                .is_some_and(|turn_id| turn_id != active_turn_id_value)
+            {
+                crate::logging::debug_with_fields(
+                    "daemon.provider.codex",
+                    "codex legacy task completion ignored by active turn mismatch",
+                    json!({
+                        "active_turn_id": active_turn_id,
+                        "turn_id": turn_id,
+                    }),
+                );
+                return;
+            }
+            // This signal is intentionally not treated as authoritative.  It
+            // arms the existing backfill path, which reads the provider's
+            // durable turn record and requires final output/error evidence
+            // before settling the kernel prompt.
+            turn_tracker.note_terminal(CodexTerminalSignal {
+                turn_id: active_turn_id_value,
+                status: "completed".to_string(),
+                error_message: None,
+            });
+        }
         CodexNotification::TurnAborted { reason } => {
             let Some(turn_id) = active_turn_id.clone() else {
                 return;
