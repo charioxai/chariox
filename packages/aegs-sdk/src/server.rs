@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Weak};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -42,7 +42,7 @@ type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
 
 struct ActionLockLease {
     key: String,
-    action_lock: ActionLock,
+    action_lock: Weak<tokio::sync::Mutex<()>>,
     locks: ActionLockMap,
     guard: Option<tokio::sync::OwnedMutexGuard<()>>,
 }
@@ -57,7 +57,7 @@ impl Drop for ActionLockLease {
             return;
         };
         let remove = locks.get(&self.key).is_some_and(|entry| {
-            Arc::ptr_eq(entry, &self.action_lock) && Arc::strong_count(entry) == 2
+            Weak::ptr_eq(&Arc::downgrade(entry), &self.action_lock) && Arc::strong_count(entry) == 2
         });
         if remove {
             locks.remove(&self.key);
@@ -365,14 +365,20 @@ impl AegsServer {
                 };
                 let _action_lock_lease = ActionLockLease {
                     key: action_lock_key,
-                    action_lock: Arc::clone(&action_lock),
+                    action_lock: Arc::downgrade(&action_lock),
                     locks: Arc::clone(&self.action_locks),
                     guard: Some(Arc::clone(&action_lock).lock_owned().await),
                 };
+                let request_fingerprint = crate::action_request_fingerprint(
+                    &action.action_id,
+                    &action.input,
+                    &action.context,
+                );
                 match self.store.action_receipt(
                     &action.owner_id,
                     &action.connection_id,
                     &action.idempotency_key,
+                    &request_fingerprint,
                 ) {
                     Ok(Some(response)) => return json(StatusCode::OK, response),
                     Ok(None) => {}
@@ -416,6 +422,7 @@ impl AegsServer {
                     &action.owner_id,
                     &action.connection_id,
                     &response,
+                    &request_fingerprint,
                     now_ms(),
                 ) {
                     return error(

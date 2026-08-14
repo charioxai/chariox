@@ -166,7 +166,9 @@ impl KernelRuntimeState {
         // transcript reconciliation for unrelated interactive sessions, which may require slow
         // provider scans or retries.
         for (session_id, agent_id, prompt_id) in queued_recovery_targets {
-            match self.recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id) {
+            match self
+                .recover_queued_local_prompt_after_restart(session_id, agent_id, prompt_id, true)
+            {
                 Ok(Some(dispatches)) => {
                     summary.queued_local_prompts_started += 1;
                     self.spawn_workflow_prompt_dispatches(dispatches);
@@ -384,6 +386,7 @@ impl KernelRuntimeState {
                 session_id,
                 agent_id,
                 &queued_prompt_id,
+                false,
             )? {
                 self.spawn_workflow_prompt_dispatches(dispatches);
             }
@@ -397,6 +400,7 @@ impl KernelRuntimeState {
         session_id: &str,
         agent_id: &str,
         expected_prompt_id: &str,
+        require_publication: bool,
     ) -> Result<Option<WorkflowPromptDispatches>, DaemonError> {
         let session = self.owned.session_store.get_session(session_id)?;
         if self
@@ -420,7 +424,7 @@ impl KernelRuntimeState {
         if prompt.id() != expected_prompt_id {
             return Ok(None);
         }
-        if !recoverable_queued_publication_prompt(&session, &prompt) {
+        if require_publication && !recoverable_queued_publication_prompt(&session, &prompt) {
             return Ok(None);
         }
         let agent = self.owned.agent_store.get_agent(agent_id)?;

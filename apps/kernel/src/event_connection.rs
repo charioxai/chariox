@@ -124,18 +124,6 @@ impl EventConnectionRegistry {
             .map(|record| record.connection.clone()))
     }
 
-    pub(crate) fn owner_id_for_connection(
-        &self,
-        connection_id: &str,
-    ) -> Result<Option<String>, DaemonError> {
-        let state = self.lock_state()?;
-        Ok(state
-            .connections
-            .values()
-            .find(|record| record.connection.connection_id == connection_id)
-            .map(|record| record.owner_user_id.clone()))
-    }
-
     pub(crate) fn upsert(
         &self,
         owner_user_id: &str,

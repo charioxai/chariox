@@ -44,3 +44,4 @@ pub use auth::{
     PROVIDER_HTTP_TIMEOUT,
 };
 pub use hooks::{event_configuration_digest, reconcile_provider_hooks};
+pub(crate) use store::action_request_fingerprint;

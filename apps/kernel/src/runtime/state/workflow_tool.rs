@@ -413,13 +413,21 @@ impl KernelRuntimeOwnedState {
                 operation: "runtime_tool_reply_to_event",
                 message: "this event does not provide a reply context".to_string(),
             })?;
-        let owner_id = self
-            .event_connection_registry
-            .owner_id_for_connection(&binding.connection_id)?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "runtime_tool_reply_to_event",
-                message: "the event connection is no longer installed on this kernel".to_string(),
-            })?;
+        // Event connections are owned by the kernel-scoped identity used by the
+        // catalog-management path, not by the raw session owner stored in the
+        // in-memory registry. Derive the same identity here so replies can use
+        // the connection that authorized this workflow.
+        let daemon_id = self.config_projection.snapshot().daemon_id;
+        let session_owner = self
+            .session_store
+            .read()
+            .get_session(&context.session_id)?
+            .owner_user_id()
+            .to_string();
+        let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+            &daemon_id,
+            &session_owner,
+        );
         let idempotency_key = args.idempotency_key.unwrap_or_else(|| {
             format!(
                 "chariox:{workflow_run_id}:{}:notification-reply",
