@@ -43,6 +43,17 @@ pub struct AgentAppActionArgs {
     pub delivery_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyToEventArgs {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idempotency_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
@@ -152,6 +163,21 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: REPLY_TO_EVENT_TOOL_QUALIFIED.to_string(),
+            description: "Reply through the notification provider that delivered the current event. The default posts in the originating thread; use mode `channel` to post in the originating channel without a thread. This is only available for event-triggered workflow runs with reply permission enabled.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["text"],
+                "properties": {
+                    "text": {"type": "string", "minLength": 1, "maxLength": 40000},
+                    "mode": {"type": "string", "enum": ["thread", "channel"]},
+                    "idempotency_key": {"type": "string"},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -174,6 +200,11 @@ pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_agent_app_action"
         | "mcp__chariox__agent_app_action"
         | "mcp__chariox__chariox_agent_app_action" => Some(AGENT_APP_ACTION_TOOL),
+        REPLY_TO_EVENT_TOOL
+        | REPLY_TO_EVENT_TOOL_QUALIFIED
+        | "chariox_reply_to_event"
+        | "mcp__chariox__reply_to_event"
+        | "mcp__chariox__chariox_reply_to_event" => Some(REPLY_TO_EVENT_TOOL),
         _ => None,
     }
 }

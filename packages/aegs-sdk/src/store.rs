@@ -5,6 +5,8 @@ use std::sync::{Arc, Mutex};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
+use chariox_event_protocol::AegsProviderActionResponse;
+
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -118,6 +120,15 @@ impl AegsStore {
                 updated_at_ms INTEGER NOT NULL,
                 PRIMARY KEY(connection_id, connection_scope),
                 FOREIGN KEY(connection_id) REFERENCES connections(connection_id)
+            );
+            CREATE TABLE IF NOT EXISTS action_receipts (
+                owner_id TEXT NOT NULL,
+                connection_id TEXT NOT NULL,
+                idempotency_key TEXT NOT NULL,
+                action_id TEXT NOT NULL,
+                response_json TEXT NOT NULL,
+                created_at_ms INTEGER NOT NULL,
+                PRIMARY KEY(owner_id, connection_id, idempotency_key)
             );
             ",
         )?;
@@ -435,6 +446,60 @@ impl AegsStore {
             connections: count("connections", None)?,
             provider_hooks: count("provider_hooks", None)?,
         })
+    }
+
+    pub fn action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        idempotency_key: &str,
+    ) -> Result<Option<AegsProviderActionResponse>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS action store lock was poisoned".to_string())?;
+        connection
+            .query_row(
+                "SELECT response_json FROM action_receipts
+                 WHERE owner_id = ?1 AND connection_id = ?2 AND idempotency_key = ?3",
+                params![owner_id, connection_id, idempotency_key],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .map(|value| serde_json::from_str(&value).map_err(|error| error.to_string()))
+            .transpose()
+    }
+
+    pub fn record_action_receipt(
+        &self,
+        owner_id: &str,
+        connection_id: &str,
+        response: &AegsProviderActionResponse,
+        now_ms: u64,
+    ) -> Result<(), String> {
+        let response_json = serde_json::to_string(response).map_err(|error| error.to_string())?;
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS action store lock was poisoned".to_string())?;
+        connection
+            .execute(
+                "INSERT INTO action_receipts
+                 (owner_id, connection_id, idempotency_key, action_id, response_json, created_at_ms)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(owner_id, connection_id, idempotency_key) DO NOTHING",
+                params![
+                    owner_id,
+                    connection_id,
+                    response.idempotency_key,
+                    response.action_id,
+                    response_json,
+                    now_ms as i64,
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
     }
 
     pub fn create_authorization(

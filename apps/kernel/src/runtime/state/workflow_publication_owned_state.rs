@@ -43,6 +43,7 @@ impl KernelRuntimeOwnedState {
             request.filter,
             request.environment_id,
             request.queue_ref,
+            request.reply_mode,
         )?;
         Ok(LocalDaemonResponse::WorkflowEventBindingCreated {
             binding,
@@ -254,6 +255,7 @@ impl KernelRuntimeOwnedState {
                 .unwrap_or_else(|| "Process this Chariox event notification test.".to_string()),
             artifacts: Vec::new(),
             metadata: serde_json::json!({"test": true}),
+            reply_context: None,
             expires_at_ms: now_ms.saturating_add(60 * 60 * 1000),
         })
     }

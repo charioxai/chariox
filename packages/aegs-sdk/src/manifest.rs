@@ -29,6 +29,7 @@ impl PublishEventBuilder {
                 prompt: prompt.into(),
                 artifacts: Vec::new(),
                 metadata: Value::Null,
+                reply_context: None,
                 ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
             },
         }
@@ -75,9 +76,9 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
         .get("protocol_version")
         .and_then(Value::as_u64)
         .ok_or_else(|| "manifest protocol_version is required".to_string())?;
-    if protocol_version != super::AEGS_PROTOCOL_VERSION as u64 {
+    if protocol_version == 0 || protocol_version > super::AEGS_PROTOCOL_VERSION as u64 {
         return Err(format!(
-            "manifest protocol_version {protocol_version} is not supported"
+            "manifest protocol_version {protocol_version} is newer than the supported protocol"
         ));
     }
     for registry_field in [

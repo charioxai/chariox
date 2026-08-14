@@ -316,6 +316,9 @@ pub struct CreateWorkflowEventBindingRequest {
     pub environment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_ref: Option<String>,
+    /// `disabled`, `thread`, or `channel`; defaults to `disabled`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

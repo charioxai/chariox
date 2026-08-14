@@ -40,10 +40,22 @@ pub struct WorkflowEventBinding {
     pub endpoint_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_ref: Option<String>,
+    /// Controls whether an event-triggered run may send a provider reply.
+    /// `disabled` is the backwards-compatible default; `thread` and `channel`
+    /// select the originating Slack thread/channel respectively.
+    #[serde(
+        default = "default_event_reply_mode",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub reply_mode: Option<String>,
     pub revision: u64,
     pub status: WorkflowEventBindingStatus,
     pub created_at_ms: u64,
     pub updated_at_ms: u64,
+}
+
+fn default_event_reply_mode() -> Option<String> {
+    Some("disabled".to_string())
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]

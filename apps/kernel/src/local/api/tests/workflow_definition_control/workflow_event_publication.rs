@@ -220,6 +220,7 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         filter: serde_json::json!({"channel": "default"}),
         environment_id: Some("environment-local".to_string()),
         queue_ref: Some("default".to_string()),
+        reply_mode: None,
     };
     let binding = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
@@ -652,6 +653,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "removal"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
+                    reply_mode: None,
                 },
             ))
             .expect("event binding should be created")
@@ -777,6 +779,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     filter: serde_json::json!({"channel": "reattach"}),
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
+                    reply_mode: None,
                 },
             ))
             .expect_err("a revoked connection must reject a fresh attachment");

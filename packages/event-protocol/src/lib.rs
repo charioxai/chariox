@@ -4,7 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 2;
-pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 3;
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -79,6 +79,10 @@ pub struct EventDeliveryEnvelope {
     pub artifacts: Vec<EventArtifact>,
     #[serde(default, skip_serializing_if = "is_json_null")]
     pub metadata: Value,
+    /// Provider-owned context that an authorized workflow action may use to reply to the
+    /// originating notification. This is intentionally opaque to AEDS.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_context: Option<Value>,
     pub expires_at_ms: u64,
 }
 
@@ -393,6 +397,36 @@ pub struct AegsConnectionTestEventResponse {
     pub message: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsProviderActionRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+    pub action_id: String,
+    #[serde(default)]
+    pub input: Value,
+    #[serde(default, skip_serializing_if = "is_json_null")]
+    pub context: Value,
+    pub idempotency_key: String,
+}
+
+impl AegsProviderActionRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)?;
+        require_opaque_id("action_id", &self.action_id)?;
+        require_opaque_id("idempotency_key", &self.idempotency_key)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AegsProviderActionResponse {
+    pub action_id: String,
+    pub idempotency_key: String,
+    pub accepted: bool,
+    #[serde(default)]
+    pub result: Value,
+}
+
 fn require_connection_identity(
     generator_id: &str,
     owner_id: &str,
@@ -592,6 +626,8 @@ pub struct PublishEventRequest {
     pub artifacts: Vec<EventArtifact>,
     #[serde(default, skip_serializing_if = "is_json_null")]
     pub metadata: Value,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply_context: Option<Value>,
     #[serde(default = "default_delivery_ttl_seconds")]
     pub ttl_seconds: u64,
 }
@@ -728,6 +764,7 @@ mod tests {
             prompt: "Handle the test event.".to_string(),
             artifacts: Vec::new(),
             metadata: Value::Null,
+            reply_context: None,
             expires_at_ms: 9,
         };
         assert!(delivery.validate(10).unwrap_err().contains("expired"));

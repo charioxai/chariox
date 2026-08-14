@@ -8,6 +8,7 @@ mod publisher;
 mod server;
 mod store;
 
+pub use chariox_event_protocol::{AegsProviderActionRequest, AegsProviderActionResponse};
 pub use conformance::{
     verify_provider_contract, verify_webhook_conformance, WebhookConformanceCase,
 };

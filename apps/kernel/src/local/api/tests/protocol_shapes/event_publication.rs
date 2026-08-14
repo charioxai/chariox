@@ -84,6 +84,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                 filter: serde_json::json!({"repository": "chariox"}),
                 environment_id: Some("environment-1".to_string()),
                 queue_ref: Some("priority".to_string()),
+                reply_mode: None,
             },
         ),
         LocalDaemonRequest::ListWorkflowEventBindings(
