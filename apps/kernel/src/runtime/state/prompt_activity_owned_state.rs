@@ -76,6 +76,16 @@ impl KernelRuntimeOwnedState {
                     }
                 }
                 Err(error) => {
+                    let provider_run = self.provider_store.get_run(&finished.provider_run_id).ok();
+                    if let Some(provider_run) = provider_run.as_ref() {
+                        self.clear_failed_provider_resume_state(provider_run, &error);
+                        if let Ok(outcome) = self.provider_store.terminate_run_provider_only(
+                            &finished.session_id,
+                            &finished.provider_run_id,
+                        ) {
+                            self.provider_run_projection.update(outcome.into_run());
+                        }
+                    }
                     let diagnostic = format!("Provider prompt dispatch failed: {error}");
                     if let Ok(run) = self
                         .provider_store
@@ -190,6 +200,69 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
+    }
+
+    fn clear_failed_provider_resume_state(
+        &self,
+        provider_run: &crate::provider::RuntimeProviderRun,
+        error: &DaemonError,
+    ) {
+        let Some(replacement_resume_state) =
+            crate::app::failed_provider_resume_state_replacement(provider_run, error)
+        else {
+            return;
+        };
+        let Some(agent_id) = provider_run.agent_instance_id() else {
+            return;
+        };
+        let provider = provider_run.adapter_key();
+        let Some(stale_provider_session_id) = provider_run
+            .resume_state()
+            .provider_session_id(provider)
+            .map(str::to_string)
+        else {
+            return;
+        };
+        let Ok(current) = self.agent_store.get_agent(agent_id) else {
+            return;
+        };
+        if current
+            .provider_resume_state()
+            .provider_session_id(provider)
+            != Some(stale_provider_session_id.as_str())
+        {
+            return;
+        }
+        let Ok(agent) = self.agent_store.set_agent_runtime_profile(
+            agent_id,
+            provider_run.provider(),
+            Some(provider_run.model().to_string()),
+            provider_run.variant().map(str::to_string),
+            replacement_resume_state,
+        ) else {
+            return;
+        };
+        let _ = self.durable_state_store.append_event(
+            "agent.runtime_profile_updated",
+            Some(agent.id().to_string()),
+            serde_json::json!({
+                "agent": &agent,
+                "provider_run_id": provider_run.id(),
+                "reason": "failed_provider_resume_state_cleared",
+            }),
+        );
+        self.record_notice(
+            provider_run.session_id(),
+            Some(provider_run.id()),
+            self.attachment_store
+                .list_session_attachment_ids(provider_run.session_id()),
+            crate::provider::provider_resume_failure_notice(provider, &stale_provider_session_id)
+                .unwrap_or_else(|| {
+                    format!(
+                        "Provider session `{stale_provider_session_id}` is no longer available. Chariox cleared it from the agent profile so the next prompt can start a new durable provider session."
+                    )
+                }),
+        );
     }
 
     fn finish_structured_prompt_delivery(

@@ -104,7 +104,10 @@ impl KernelRuntimeState {
         message: &str,
     ) {
         let Some(replacement_resume_state) =
-            crate::app::failed_provider_resume_state_replacement_from_message(provider_run, message)
+            crate::app::failed_provider_resume_state_replacement_from_message(
+                provider_run,
+                message,
+            )
         else {
             return;
         };
