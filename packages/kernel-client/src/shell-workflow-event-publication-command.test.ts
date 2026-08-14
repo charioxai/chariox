@@ -122,6 +122,7 @@ test("workflow event publication command browses a bounded catalog and binds an 
       filter: { repository: "charioxai/chariox" },
       environment_id: null,
       queue_ref: null,
+      reply_mode: null,
     },
   })
 })
