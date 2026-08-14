@@ -26,6 +26,23 @@ async fn codex_tool_output_text_does_not_classify_as_terminal_failure() {
         "gpt-5.5",
     )
     .with_agent_id(agent.id());
+    app.agents
+        .set_agent_runtime_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::from_codex_thread_id("stale-thread"),
+        )
+        .expect("agent should start with the stale provider session");
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should exist")
+            .provider_resume_state()
+            .codex_thread_id(),
+        Some("stale-thread")
+    );
     let mut run = crate::provider::RuntimeProviderRun::new(
         "provider-run-codex",
         &request,
