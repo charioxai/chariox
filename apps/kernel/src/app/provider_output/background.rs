@@ -24,6 +24,7 @@ pub(super) fn pump_session_active_prompt_outputs(
         if let Some(provider_run_id) = app
             .providers
             .get_run_for_agent(session.id(), &agent_id)
+            .filter(|run| provider_run_requires_background_pump(app, &session, run))
             .map(|run| run.id().to_string())
         {
             provider_run_ids.insert(provider_run_id);
