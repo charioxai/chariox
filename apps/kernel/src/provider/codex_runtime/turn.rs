@@ -95,6 +95,19 @@ impl CodexTurnTracker {
                 .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
     }
 
+    /// A managed app-server can finish a turn without emitting the legacy
+    /// `turn/completed` notification.  A completed tool followed by a quiet
+    /// socket is still safe evidence to ask the server for the authoritative
+    /// turn record; `backfill_completed_turn` only settles when that record is
+    /// terminal and contains final assistant output (or an error).
+    pub(super) fn has_quiet_completed_tool_activity(&self, quiet_for: Duration) -> bool {
+        self.tool_started
+            && self.active_tool_count() == 0
+            && self
+                .last_activity_at
+                .is_some_and(|last_activity_at| last_activity_at.elapsed() >= quiet_for)
+    }
+
     #[cfg(test)]
     pub(super) fn force_pending_terminal_quiet_for_tests(&mut self) {}
 

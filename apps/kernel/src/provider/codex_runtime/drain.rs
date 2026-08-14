@@ -121,6 +121,9 @@ pub(super) fn codex_turn_should_backfill(
         && (endpoint_mode == AgentEndpointMode::External
             || turn_tracker.has_pending_terminal()
             || (drained_to_quiet
-                && turn_tracker
-                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)))
+                && (turn_tracker
+                    .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)
+                    || turn_tracker.has_quiet_completed_tool_activity(
+                        CODEX_MANAGED_BACKFILL_QUIET_GRACE,
+                    ))))
 }

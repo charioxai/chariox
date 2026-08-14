@@ -1461,6 +1461,24 @@ fn managed_turn_backfills_after_completed_tool_and_final_output_without_terminal
 }
 
 #[test]
+fn managed_turn_backfills_after_completed_tool_when_final_message_has_no_item_event() {
+    use std::time::Duration;
+
+    let mut turn_tracker = CodexTurnTracker::default();
+    turn_tracker.note_tool_started("review-call");
+    turn_tracker.note_tool_completed("review-call");
+    turn_tracker.force_assistant_evidence_quiet_for_tests(Duration::from_millis(250));
+
+    assert!(turn_tracker.has_quiet_completed_tool_activity(Duration::from_millis(250)));
+    assert!(codex_turn_should_backfill(
+        crate::provider::AgentEndpointMode::Managed,
+        true,
+        &turn_tracker,
+        true,
+    ));
+}
+
+#[test]
 fn managed_turn_does_not_backfill_from_pre_tool_commentary() {
     use std::time::Duration;
 
