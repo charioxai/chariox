@@ -99,13 +99,6 @@ impl SessionService {
                 {
                     return Ok(existing.clone());
                 }
-                return Err(DaemonError::LocalTransport {
-                    operation: "create workflow event binding",
-                    message: format!(
-                        "event route conflict: environment `{environment_id}` already routes interest `{event_interest_key}` to binding `{}` on publication `{}`; transfer it explicitly",
-                        existing.id, existing.publication_id
-                    ),
-                });
             }
         }
 

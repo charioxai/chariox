@@ -249,13 +249,20 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
         response => panic!("unexpected response: {response:?}"),
     };
     assert_eq!(idempotent.id, binding.id);
-    let duplicate_error = harness
+    let fan_out = harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
             binding_request(second.id()),
         ))
-        .expect_err("same event interest must not be active twice in one environment");
-    assert!(duplicate_error.to_string().contains("event route conflict"));
-    assert!(duplicate_error.to_string().contains(first.id()));
+        .expect("same event interest should fan out to a second workflow");
+    let fan_out_binding = match fan_out {
+        LocalDaemonResponse::WorkflowEventBindingCreated { binding, .. } => binding,
+        response => panic!("unexpected response: {response:?}"),
+    };
+    assert_ne!(fan_out_binding.id, binding.id);
+    assert_eq!(
+        fan_out_binding.event_interest_key,
+        binding.event_interest_key
+    );
 
     let package_files = match harness
         .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(

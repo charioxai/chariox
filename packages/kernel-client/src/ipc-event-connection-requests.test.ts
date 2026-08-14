@@ -15,8 +15,8 @@ import {
 } from "./ipc-event-publication-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("event connection lifecycle requests match protocol 257", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 257)
+test("event connection lifecycle requests match protocol 258", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 258)
   assert.deepEqual(listEventConnectionsRequest({ generatorId: "dev.chariox.github" }), {
     ListEventConnections: {
       generator_id: "dev.chariox.github",
