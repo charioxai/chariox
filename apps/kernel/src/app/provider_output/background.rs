@@ -69,7 +69,8 @@ pub(super) fn pump_session_active_prompt_outputs(
 }
 
 fn should_pump_background_provider_run(run: &RuntimeProviderRun) -> bool {
-    crate::provider::provider_run_uses_claude_native_bridge(run)
+    !crate::provider::provider_run_uses_structured_prompt_io(run)
+        && crate::provider::provider_run_uses_claude_native_bridge(run)
         && matches!(
             run.state(),
             ProviderRunState::Starting | ProviderRunState::Running
@@ -81,6 +82,13 @@ fn provider_run_requires_background_pump(
     session: &crate::session::RuntimeSession,
     run: &RuntimeProviderRun,
 ) -> bool {
+    // Structured provider output is owned by KernelRuntimeState's single
+    // transport-runtime pump. Letting this legacy app/transport path poll the
+    // same provider socket races notification consumption and can strand the
+    // provider turn without its terminal completion transition.
+    if crate::provider::provider_run_uses_structured_prompt_io(run) {
+        return false;
+    }
     if run.state() == ProviderRunState::Starting || should_pump_background_provider_run(run) {
         return true;
     }
