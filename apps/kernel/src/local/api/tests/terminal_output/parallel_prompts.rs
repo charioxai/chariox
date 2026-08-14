@@ -48,8 +48,8 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
 
     let (default_run_id, spawned_run_id) = harness.with_app_mut(|app| {
         (
-            launch_slow_structured_run(app, session.id(), default_agent.id()),
-            launch_slow_structured_run(app, session.id(), spawned.id()),
+            launch_parallel_structured_run(app, session.id(), default_agent.id()),
+            launch_parallel_structured_run(app, session.id(), spawned.id()),
         )
     });
 
@@ -77,12 +77,6 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
 
     thread::sleep(Duration::from_millis(1_000));
     harness.with_app_mut(|app| {
-        crate::app::provider_output::pump_terminal_output_for_attachment(
-            app,
-            session.id(),
-            attachment.id(),
-        )
-        .expect("pre-prompt polls should drain");
         for (agent_id, provider_run_id) in [
             (default_agent.id(), default_run_id.as_str()),
             (spawned.id(), spawned_run_id.as_str()),
@@ -130,12 +124,25 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
     let mut seen_agents = std::collections::BTreeSet::new();
     while Instant::now() < deadline && seen_agents.len() < 2 {
         let records = harness.with_app_mut(|app| {
-            crate::app::provider_output::pump_terminal_output_for_attachment(
-                app,
-                session.id(),
-                attachment.id(),
-            )
-            .expect("terminal output should keep pumping")
+            let mut records = Vec::new();
+            for (agent_id, provider_run_id) in [
+                (default_agent.id(), default_run_id.as_str()),
+                (spawned.id(), spawned_run_id.as_str()),
+            ] {
+                let mut pump = crate::app::provider_output::ProviderOutputPump::new(app);
+                let pumped = pump
+                    .pump_provider_output(crate::app::provider_output::ProviderOutputPumpRequest {
+                        session_id: session.id(),
+                        provider_run_id,
+                        recipient_attachment_ids: vec![attachment.id().to_string()],
+                        // The fixture injects finished structured polls directly; avoid
+                        // reconciling the synthetic PTY liveness before consuming them.
+                        initial_liveness_already_checked: true,
+                    })
+                    .unwrap_or_else(|error| panic!("structured terminal output should keep pumping for {agent_id}: {error}"));
+                records.extend(pumped);
+            }
+            records
         });
         for record in records {
             if let Some(agent_id) = record.agent_id {
@@ -150,4 +157,37 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
         "expected output from both active agent prompts, saw {:?}",
         seen_agents
     );
+}
+
+fn launch_parallel_structured_run(app: &mut DaemonApp, session_id: &str, agent_id: &str) -> String {
+    let request = LaunchProviderRequest::new(
+        session_id,
+        "dev-stub",
+        "slow-structured",
+        "default",
+        "default",
+    )
+    .with_agent_id(agent_id);
+    let mut run = RuntimeProviderRun::new(
+        format!("parallel-structured-{agent_id}"),
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "parallel-structured-test".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("parallel-structured-test".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions_mut()
+        .set_active_provider_run(session_id, Some(run.id().to_string()))
+        .expect("provider run should be active");
+    app.update_provider_run_projection(run.clone());
+    run.id().to_string()
 }
