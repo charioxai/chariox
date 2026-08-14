@@ -485,7 +485,7 @@ impl KernelRuntimeState {
                         Some(provider_run_id),
                         self.owned
                             .attachment_store
-                            .list_session_attachment_ids(&session_id),
+                            .list_session_attachment_ids(session_id),
                         format!(
                             "Queued prompt remained pending after terminal provider recovery: {error}"
                         ),
