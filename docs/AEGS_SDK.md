@@ -23,7 +23,7 @@ only authentic provider events, normalize a provider occurrence once, apply
 the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
 
-Management protocol version 3 also requires the shared installed-connection
+Management protocol version 4 also requires the shared installed-connection
 lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROTOCOL.md):
 
 - inspect connection state, scopes, resources, health, and recovery guidance;

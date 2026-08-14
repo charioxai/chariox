@@ -45,10 +45,12 @@ The registry supplies and authenticates those catalog fields separately.
 - `delivery_id` identifies one AEDS-to-kernel delivery. `occurrence_id` identifies the
   upstream fact after AEGS source deduplication.
 
-Only one active route may exist for an
-`(environment_id, event_interest_key)` pair. A conflicting trigger is rejected
-with the existing binding and workflow/trigger identity. Moving a route is an explicit,
-atomic transfer; deploying into a distinct environment creates an independent route.
+Multiple active routes may exist for an
+`(environment_id, event_interest_key)` pair. Each binding is an independent route,
+so AEDS fans one occurrence out to every matching active binding in that environment;
+intentional fan-out is preserved even when workflows share a session. A binding ID
+still has one authoritative owner, and moving that binding is an explicit, atomic
+transfer; deploying into a distinct environment creates independent routes.
 
 ## Delivery
 
@@ -103,7 +105,7 @@ canonical `connection_scope` used in an event interest. Both operations are boun
 shared kernel requests used unchanged by web and TUI clients. An AEGS must not return
 provider access tokens, refresh tokens, webhook secrets, or raw credential material.
 
-Management protocol version 3 adds the reusable-connection lifecycle contract:
+Management protocol version 4 adds the reusable-connection lifecycle contract:
 
 - `POST /v1/connections/inspect` returns explicit lifecycle state, granted/required
   scopes, connected resources, health/event timestamps, recovery guidance, and test

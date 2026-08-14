@@ -3,7 +3,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 2;
+// Version 3 adds provider reply context to publish and delivery envelopes and
+// makes same-interest fan-out an explicit route contract.
+pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 3;
 pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 4;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;

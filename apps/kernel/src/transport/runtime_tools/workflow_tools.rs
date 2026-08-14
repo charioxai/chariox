@@ -165,7 +165,7 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: REPLY_TO_EVENT_TOOL_QUALIFIED.to_string(),
-            description: "Reply through the notification provider that delivered the current event. The default posts in the originating thread; use mode `channel` to post in the originating channel without a thread. This is only available for event-triggered workflow runs with reply permission enabled.".to_string(),
+            description: "Reply through the notification provider that delivered the current event. Omitting mode uses the event binding's configured reply mode; explicitly choose `thread` or `channel` when the binding permits it. This is only available for event-triggered workflow runs with reply permission enabled.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["text"],

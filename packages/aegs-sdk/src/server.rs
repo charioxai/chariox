@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use crate::store::ActionReceiptLookupError;
 use crate::{
     baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
     AegsProvider, AegsStore, ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION,
@@ -382,7 +383,10 @@ impl AegsServer {
                 ) {
                     Ok(Some(response)) => return json(StatusCode::OK, response),
                     Ok(None) => {}
-                    Err(message) => {
+                    Err(ActionReceiptLookupError::Conflict(message)) => {
+                        return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
+                    }
+                    Err(ActionReceiptLookupError::Storage(message)) => {
                         return error(
                             StatusCode::INTERNAL_SERVER_ERROR,
                             "action_receipt_lookup_failed",

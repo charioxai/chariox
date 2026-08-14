@@ -10,6 +10,22 @@ use chariox_event_protocol::AegsProviderActionResponse;
 
 pub use chariox_event_protocol::AegsSubscriptionClaim as SubscriptionClaim;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionReceiptLookupError {
+    Conflict(String),
+    Storage(String),
+}
+
+impl std::fmt::Display for ActionReceiptLookupError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Conflict(message) | Self::Storage(message) => formatter.write_str(message),
+        }
+    }
+}
+
+impl std::error::Error for ActionReceiptLookupError {}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct AuthorizationRecord {
     pub state_digest: String,
@@ -457,11 +473,10 @@ impl AegsStore {
         connection_id: &str,
         idempotency_key: &str,
         request_fingerprint: &str,
-    ) -> Result<Option<AegsProviderActionResponse>, String> {
-        let connection = self
-            .connection
-            .lock()
-            .map_err(|_| "AEGS action store lock was poisoned".to_string())?;
+    ) -> Result<Option<AegsProviderActionResponse>, ActionReceiptLookupError> {
+        let connection = self.connection.lock().map_err(|_| {
+            ActionReceiptLookupError::Storage("AEGS action store lock was poisoned".to_string())
+        })?;
         connection
             .query_row(
                 "SELECT response_json, request_fingerprint FROM action_receipts
@@ -470,14 +485,15 @@ impl AegsStore {
             |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)),
             )
             .optional()
-            .map_err(|error| error.to_string())?
+            .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))?
             .map(|(response_json, stored_fingerprint)| {
                 if stored_fingerprint != request_fingerprint {
-                    return Err(format!(
+                    return Err(ActionReceiptLookupError::Conflict(format!(
                         "idempotency key `{idempotency_key}` was already used for a different action request"
-                    ));
+                    )));
                 }
-                serde_json::from_str(&response_json).map_err(|error| error.to_string())
+                serde_json::from_str(&response_json)
+                    .map_err(|error| ActionReceiptLookupError::Storage(error.to_string()))
             })
             .transpose()
     }
@@ -1521,6 +1537,7 @@ mod tests {
         assert!(store
             .action_receipt("owner-a", "connection-a", "reply-1", &different)
             .unwrap_err()
+            .to_string()
             .contains("already used for a different action request"));
     }
 }
