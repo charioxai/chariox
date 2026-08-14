@@ -34,7 +34,35 @@ struct AegsServer {
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
-    action_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
+    action_locks: ActionLockMap,
+}
+
+type ActionLock = Arc<tokio::sync::Mutex<()>>;
+type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
+
+struct ActionLockLease {
+    key: String,
+    action_lock: ActionLock,
+    locks: ActionLockMap,
+    guard: Option<tokio::sync::OwnedMutexGuard<()>>,
+}
+
+impl Drop for ActionLockLease {
+    fn drop(&mut self) {
+        // Release the owned guard before checking the reference count. If a
+        // retry arrived while this action was running, its Arc keeps the map
+        // entry alive and the waiter will remove it when it finishes.
+        let _ = self.guard.take();
+        let Ok(mut locks) = self.locks.lock() else {
+            return;
+        };
+        let remove = locks.get(&self.key).is_some_and(|entry| {
+            Arc::ptr_eq(entry, &self.action_lock) && Arc::strong_count(entry) == 2
+        });
+        if remove {
+            locks.remove(&self.key);
+        }
+    }
 }
 
 pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn std::error::Error>>
@@ -324,7 +352,7 @@ impl AegsServer {
                 );
                 let action_lock = match self.action_locks.lock() {
                     Ok(mut locks) => locks
-                        .entry(action_lock_key)
+                        .entry(action_lock_key.clone())
                         .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
                         .clone(),
                     Err(_) => {
@@ -335,7 +363,12 @@ impl AegsServer {
                         )
                     }
                 };
-                let _action_guard = action_lock.lock().await;
+                let _action_lock_lease = ActionLockLease {
+                    key: action_lock_key,
+                    action_lock: Arc::clone(&action_lock),
+                    locks: Arc::clone(&self.action_locks),
+                    guard: Some(Arc::clone(&action_lock).lock_owned().await),
+                };
                 match self.store.action_receipt(
                     &action.owner_id,
                     &action.connection_id,

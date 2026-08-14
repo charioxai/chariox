@@ -97,7 +97,24 @@ impl SessionService {
                     && existing.endpoint_id == publication.endpoint_id()
                     && existing.queue_ref == queue_ref
                 {
-                    return Ok(existing.clone());
+                    if existing.reply_mode.as_deref() == Some(reply_mode.as_str()) {
+                        return Ok(existing.clone());
+                    }
+                    let binding = self
+                        .store
+                        .get_mut(session.id())
+                        .and_then(|session| session.workflow_event_binding_mut(&existing.id))
+                        .ok_or_else(|| DaemonError::LocalTransport {
+                            operation: "update workflow event binding reply mode",
+                            message: format!(
+                                "workflow event binding `{}` was not found",
+                                existing.id
+                            ),
+                        })?;
+                    binding.reply_mode = Some(reply_mode.clone());
+                    binding.revision = binding.revision.saturating_add(1);
+                    binding.updated_at_ms = unix_epoch_ms();
+                    return Ok(binding.clone());
                 }
             }
         }

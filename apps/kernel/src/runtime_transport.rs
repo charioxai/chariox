@@ -589,11 +589,9 @@ where
     let mcp_listener = crate::transport::mcp_server::bind_mcp_http_server(&router).await?;
     let mcp_router = Arc::clone(&router);
     let mcp_task = tokio::spawn(async move {
-        let _ = crate::transport::mcp_server::run_mcp_http_server_on_listener(
-            mcp_router,
-            mcp_listener,
-        )
-        .await;
+        let _ =
+            crate::transport::mcp_server::run_mcp_http_server_on_listener(mcp_router, mcp_listener)
+                .await;
     });
     router.runtime_state().spawn_durable_restart_recovery();
 

@@ -36,7 +36,6 @@ pub(crate) async fn run_mcp_http_server_on_listener(
     router: Arc<CommandRouter>,
     listener: TcpListener,
 ) -> Result<(), DaemonError> {
-
     loop {
         let (stream, _) = listener
             .accept()
