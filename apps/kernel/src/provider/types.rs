@@ -88,6 +88,7 @@ impl fmt::Display for AgentEndpointMode {
 #[serde(rename_all = "snake_case")]
 pub enum ProviderClientInterface {
     #[default]
+    #[serde(alias = "arroba")]
     Chariox,
     NativeTui,
 }
@@ -118,5 +119,22 @@ impl fmt::Display for ProviderRunState {
         };
 
         write!(f, "{value}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ProviderClientInterface;
+
+    #[test]
+    fn renamed_provider_client_interface_restores_and_serializes_canonically() {
+        let interface: ProviderClientInterface = serde_json::from_str(r#""arroba""#)
+            .expect("renamed provider client interface should restore");
+
+        assert_eq!(interface, ProviderClientInterface::Chariox);
+        assert_eq!(
+            serde_json::to_string(&interface).expect("provider client interface should serialize"),
+            r#""chariox""#
+        );
     }
 }

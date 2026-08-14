@@ -115,6 +115,10 @@ impl DaemonConfig {
 }
 
 pub(super) fn default_state_dir() -> PathBuf {
+    if let Some(home_dir) = chariox_home_dir() {
+        return home_dir.join("state");
+    }
+
     if let Some(state_dir) = env::var_os("XDG_STATE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -133,6 +137,10 @@ pub(super) fn default_state_dir() -> PathBuf {
 }
 
 pub(super) fn default_config_dir() -> PathBuf {
+    if let Some(home_dir) = chariox_home_dir() {
+        return home_dir;
+    }
+
     if let Some(config_dir) = env::var_os("XDG_CONFIG_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -151,6 +159,10 @@ pub(super) fn default_config_dir() -> PathBuf {
 }
 
 fn default_runtime_dir() -> PathBuf {
+    if let Some(home_dir) = chariox_home_dir() {
+        return home_dir.join("run");
+    }
+
     if let Some(runtime_dir) = env::var_os("XDG_RUNTIME_DIR")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -170,6 +182,14 @@ fn default_runtime_dir() -> PathBuf {
 
 fn expand_user_path(value: &str) -> PathBuf {
     let value = value.trim();
+    if let Some(home_dir) = chariox_home_dir() {
+        if value == "~/.chariox" {
+            return home_dir;
+        }
+        if let Some(suffix) = value.strip_prefix("~/.chariox/") {
+            return home_dir.join(suffix);
+        }
+    }
     if value == "~" {
         return env::var_os("HOME")
             .map(PathBuf::from)
@@ -181,4 +201,10 @@ fn expand_user_path(value: &str) -> PathBuf {
         }
     }
     PathBuf::from(value)
+}
+
+fn chariox_home_dir() -> Option<PathBuf> {
+    env::var_os("CHARIOX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
 }
