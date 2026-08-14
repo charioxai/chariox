@@ -203,9 +203,6 @@ async function resolveSetupProject(
   if (existing && existing.kind !== deployment.kind) {
     throw new Error(`deployment slug ${deployment.slug} belongs to another project kind`)
   }
-  if (existing?.origin && existing.origin !== "native") {
-    throw new Error(`deployment slug ${deployment.slug} belongs to a legacy deployment that must be migrated`)
-  }
   const state = existing
     ? (await getDeploymentProject(profile, existing.id)).state
     : (await createDeploymentProject(profile, {
@@ -374,13 +371,13 @@ function reusablePublication(
 
 function parsePublications(response: Record<string, unknown>): WorkflowPublicationDefinition[] {
   const payload = variant(response, "WorkflowPublicationsListed")
-  if (!Array.isArray(payload.publications)) throw new Error("kernel did not return workflow publications")
+  if (!Array.isArray(payload.publications)) throw new Error("kernel did not return workflow triggers")
   return payload.publications.filter(objectRecord) as unknown as WorkflowPublicationDefinition[]
 }
 
 function parseCreatedPublication(response: Record<string, unknown>): WorkflowPublicationDefinition {
   const publication = objectRecord(variant(response, "WorkflowPublicationCreated").publication)
-  if (typeof publication?.id !== "string") throw new Error("kernel did not return a workflow publication")
+  if (typeof publication?.id !== "string") throw new Error("kernel did not return a workflow trigger")
   return publication as unknown as WorkflowPublicationDefinition
 }
 

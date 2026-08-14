@@ -42,6 +42,9 @@ test("TUI deployment setup publishes a draft and binds a local runtime", async (
     ])
     assert.equal(fixture.cloud.setup?.sourceWorkflowRevision, "7")
     assert.equal(fixture.cloud.setup?.configuration.publication.alias, "demo-local-r7")
+    assert.equal(fixture.cloud.setup?.configuration.publication.route, "/")
+    assert.deepEqual(fixture.cloud.setup?.configuration.publication.methods, ["GET", "POST"])
+    assert.deepEqual(fixture.cloud.setup?.configuration.publication.parser, { kind: "query_params" })
     assert.equal(fixture.cloud.promotionKeys[0], fixture.cloud.setup?.operationKeys.runtime)
     assert.equal(fixture.cloud.checkpoints.at(-1)?.kind, "runtime_bound")
   } finally {
@@ -499,7 +502,6 @@ function projectState(setup: DeploymentSetup) {
       name: setup.configuration.deployment.name,
       slug: setup.configuration.deployment.slug,
       kind: setup.configuration.deployment.kind,
-      origin: "native",
       defaultEnvironmentSlug: "production",
       createdAt: timestamp,
       updatedAt: timestamp,

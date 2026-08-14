@@ -32,6 +32,63 @@ pub struct WorkflowCodeApplyReport {
     pub warnings: Vec<WorkflowCodeApplyWarning>,
 }
 
+impl WorkflowCodeApplyReport {
+    pub fn for_workflow(workflow_id: impl Into<String>) -> Self {
+        Self {
+            workflow_id: workflow_id.into(),
+            schema_refs: BTreeMap::new(),
+            node_ids: BTreeMap::new(),
+            agent_ids: BTreeMap::new(),
+            edge_ids: BTreeMap::new(),
+            endpoint_ids: BTreeMap::new(),
+            queue_ids: BTreeMap::new(),
+            schedule_ids: BTreeMap::new(),
+            canvas_layout_applied: false,
+            warnings: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeRebuildPreview {
+    pub workflow_id: String,
+    pub current_workflow_revision: u64,
+    pub source_workflow_revision: u64,
+    pub source_sha256: String,
+    pub diverged: bool,
+    pub restored_schemas: usize,
+    pub restored_nodes: usize,
+    pub restored_edges: usize,
+    pub restored_endpoints: usize,
+    pub restored_queues: usize,
+    pub restored_schedules: usize,
+    pub changes: Vec<WorkflowCodeStructuralChange>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeStructuralChange {
+    pub resource: String,
+    pub current_count: usize,
+    pub source_count: usize,
+    pub restore_missing: usize,
+    pub remove_visual_only: usize,
+    pub replace_existing: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeSourceUpdatePreview {
+    pub workflow_id: String,
+    pub workflow_revision: u64,
+    pub previous_source_sha256: String,
+    pub generated_source_sha256: String,
+    pub changed: bool,
+    pub previous_line_count: usize,
+    pub generated_line_count: usize,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    pub generated_source: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeApplyWarning {
     pub code: String,
@@ -56,12 +113,12 @@ pub struct WorkflowCodeRunResult {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum WorkflowCodeRunInvocation {
     Started {
-        workflow_run: crate::session::WorkflowRun,
+        workflow_run: Box<crate::session::WorkflowRun>,
         workflow: crate::session::WorkflowDefinition,
         endpoint: crate::session::WorkflowEndpointDefinition,
     },
     Enqueued {
-        queued_prompt: crate::session::WorkflowQueuedPrompt,
+        queued_prompt: Box<crate::session::WorkflowQueuedPrompt>,
         workflow: crate::session::WorkflowDefinition,
         endpoint: crate::session::WorkflowEndpointDefinition,
     },

@@ -53,6 +53,90 @@ pub(super) fn workflow_code_registry_for_session(
     ))
 }
 
+pub(super) fn workflow_code_bindings_for_existing_workflow(
+    app: &crate::app::DaemonApp,
+    session_id: &str,
+    workflow_ref: &str,
+    definition: &crate::workflow_code::WorkflowCodeDefinition,
+) -> Result<crate::workflow_code::WorkflowCodeApplyReport, DaemonError> {
+    let session = app.sessions().get_session(session_id)?;
+    let workflow = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_ref)?;
+    if workflow.schemas().len() != definition.schemas.len()
+        || workflow.nodes().len() != definition.nodes.len()
+        || workflow.edges().len() != definition.edges.len()
+        || workflow.endpoints().len() != definition.endpoints.len()
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "workflow_code.bind",
+            message: "generated source no longer matches the workflow structure".to_string(),
+        });
+    }
+    let mut report = crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id());
+    for (source, current) in definition.schemas.iter().zip(workflow.schemas()) {
+        report
+            .schema_refs
+            .insert(source.handle.clone(), current.id().to_string());
+    }
+    for (source, current) in definition.nodes.iter().zip(workflow.nodes()) {
+        report
+            .node_ids
+            .insert(source.handle.clone(), current.id().to_string());
+        report
+            .agent_ids
+            .insert(source.handle.clone(), current.agent_id().to_string());
+    }
+    for (source, current) in definition.edges.iter().zip(workflow.edges()) {
+        report
+            .edge_ids
+            .insert(source.handle.clone(), current.id().to_string());
+    }
+    for (source, current) in definition.endpoints.iter().zip(workflow.endpoints()) {
+        report
+            .endpoint_ids
+            .insert(source.handle.clone(), current.id().to_string());
+    }
+    let queues = session
+        .workflow_prompt_queues()
+        .iter()
+        .filter(|queue| queue.workflow_id() == workflow.id())
+        .collect::<Vec<_>>();
+    let schedules = session
+        .workflow_schedules()
+        .iter()
+        .filter(|schedule| schedule.workflow_id() == workflow.id())
+        .collect::<Vec<_>>();
+    let queues_match = if definition.queues.is_empty() {
+        queues.len() == 1 && queues[0].alias() == "default"
+    } else {
+        queues.len() == definition.queues.len()
+    };
+    if !queues_match || schedules.len() != definition.schedules.len() {
+        return Err(DaemonError::LocalTransport {
+            operation: "workflow_code.bind",
+            message: "generated source no longer matches workflow queues or schedules".to_string(),
+        });
+    }
+    if definition.queues.is_empty() {
+        report
+            .queue_ids
+            .insert("default".to_string(), queues[0].id().to_string());
+    } else {
+        for (source, current) in definition.queues.iter().zip(queues) {
+            report
+                .queue_ids
+                .insert(source.handle.clone(), current.id().to_string());
+        }
+    }
+    for (source, current) in definition.schedules.iter().zip(schedules) {
+        report
+            .schedule_ids
+            .insert(source.handle.clone(), current.id().to_string());
+    }
+    Ok(report)
+}
+
 pub(super) fn workflow_registry_for_session(
     app: &crate::app::DaemonApp,
     session_id: &str,

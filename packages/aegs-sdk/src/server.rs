@@ -6,9 +6,11 @@ use std::time::Duration;
 
 use bytes::Bytes;
 use chariox_event_protocol::{
-    AegsAuthorizationStartRequest, AegsConnectionPage, AegsConnectionQuery,
-    AegsConnectionReconnectRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
-    AegsConnectionStatus, AegsConnectionSummary, AegsProviderResourceQuery, PublishEventRequest,
+    AegsAuthorizationStartRequest, AegsConnectionInspection, AegsConnectionInspectionRequest,
+    AegsConnectionPage, AegsConnectionQuery, AegsConnectionReconnectRequest,
+    AegsConnectionRefreshRequest, AegsConnectionRevokeRequest, AegsConnectionRevokeResponse,
+    AegsConnectionStatus, AegsConnectionSummary, AegsConnectionTestEventRequest,
+    AegsConnectionTestEventResponse, AegsProviderResourceQuery, PublishEventRequest,
 };
 use http_body_util::{BodyExt, Full};
 use hyper::body::Incoming;
@@ -19,8 +21,9 @@ use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
 use crate::{
-    metadata_matches_filter, now_ms, AedsPublisher, AegsProvider, AegsStore,
-    ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION, MAX_WEBHOOK_BYTES,
+    baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
+    AegsProvider, AegsStore, ControlWebhookResponse, WebhookInput, AEGS_PROTOCOL_VERSION,
+    MAX_WEBHOOK_BYTES,
 };
 
 #[derive(Clone)]
@@ -416,6 +419,198 @@ impl AegsServer {
                     }),
                 )
             }
+            (Method::POST, "/v1/connections/inspect") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let inspection: AegsConnectionInspectionRequest =
+                    match serde_json::from_slice(&body) {
+                        Ok(value) => value,
+                        Err(error_value) => {
+                            return error(
+                                StatusCode::BAD_REQUEST,
+                                "invalid_json",
+                                error_value.to_string(),
+                            )
+                        }
+                    };
+                if let Err(message) = inspection.validate() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_connection_inspection",
+                        message,
+                    );
+                }
+                match self
+                    .inspect_owned_connection(
+                        &inspection.generator_id,
+                        &inspection.owner_id,
+                        &inspection.connection_id,
+                    )
+                    .await
+                {
+                    Ok(inspection) => json(StatusCode::OK, inspection),
+                    Err((status, code, message)) => error(status, code, message),
+                }
+            }
+            (Method::POST, "/v1/connections/refresh") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let refresh: AegsConnectionRefreshRequest = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = refresh.validate() {
+                    return error(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_connection_refresh",
+                        message,
+                    );
+                }
+                if refresh.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, refresh.generator_id
+                        ),
+                    );
+                }
+                if self
+                    .store
+                    .claim_connection_owner(&refresh.connection_id, &refresh.owner_id)
+                    .is_err()
+                {
+                    return error(
+                        StatusCode::NOT_FOUND,
+                        "connection_not_found",
+                        "the owned connection was not found",
+                    );
+                }
+                let provider = Arc::clone(&self.provider);
+                let connection_id = refresh.connection_id.clone();
+                match tokio::task::spawn_blocking(move || {
+                    provider.refresh_connection(&connection_id)
+                })
+                .await
+                {
+                    Ok(Ok(())) => {}
+                    Ok(Err(message)) => {
+                        return error(StatusCode::BAD_GATEWAY, "provider_refresh_failed", message)
+                    }
+                    Err(message) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "provider_refresh_failed",
+                            message.to_string(),
+                        )
+                    }
+                }
+                match self
+                    .inspect_owned_connection(
+                        &refresh.generator_id,
+                        &refresh.owner_id,
+                        &refresh.connection_id,
+                    )
+                    .await
+                {
+                    Ok(inspection) => json(StatusCode::OK, inspection),
+                    Err((status, code, message)) => error(status, code, message),
+                }
+            }
+            (Method::POST, "/v1/connections/test-event") => {
+                if let Err(response) = self.authorize_management(&request) {
+                    return *response;
+                }
+                let body = match read_body(request).await {
+                    Ok(body) => body,
+                    Err(response) => return response,
+                };
+                let test: AegsConnectionTestEventRequest = match serde_json::from_slice(&body) {
+                    Ok(value) => value,
+                    Err(error_value) => {
+                        return error(
+                            StatusCode::BAD_REQUEST,
+                            "invalid_json",
+                            error_value.to_string(),
+                        )
+                    }
+                };
+                if let Err(message) = test.validate() {
+                    return error(StatusCode::BAD_REQUEST, "invalid_test_event", message);
+                }
+                if test.generator_id != self.producer_id {
+                    return error(
+                        StatusCode::CONFLICT,
+                        "generator_mismatch",
+                        format!(
+                            "this AEGS owns {}, not {}",
+                            self.producer_id, test.generator_id
+                        ),
+                    );
+                }
+                if self
+                    .store
+                    .claim_connection_owner(&test.connection_id, &test.owner_id)
+                    .is_err()
+                {
+                    return error(
+                        StatusCode::NOT_FOUND,
+                        "connection_not_found",
+                        "the owned connection was not found",
+                    );
+                }
+                let provider = Arc::clone(&self.provider);
+                let connection_id = test.connection_id.clone();
+                let event_type = test.event_type.clone();
+                let normalized = match tokio::task::spawn_blocking(move || {
+                    provider.test_event(&connection_id, event_type.as_deref())
+                })
+                .await
+                {
+                    Ok(Ok(Some(event))) => event,
+                    Ok(Ok(None)) => {
+                        return error(
+                            StatusCode::NOT_IMPLEMENTED,
+                            "test_event_unsupported",
+                            "this event generator does not support test events",
+                        )
+                    }
+                    Ok(Err(message)) => {
+                        return error(StatusCode::BAD_GATEWAY, "test_event_failed", message)
+                    }
+                    Err(message) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "test_event_failed",
+                            message.to_string(),
+                        )
+                    }
+                };
+                match self
+                    .publish_normalized_event(normalized, Some(test.connection_id.as_str()))
+                    .await
+                {
+                    Ok(response) => json(StatusCode::ACCEPTED, response),
+                    Err(message) => error(StatusCode::BAD_GATEWAY, "aeds_rejected", message),
+                }
+            }
             (Method::POST, "/v1/connections/revoke") => {
                 if let Err(response) = self.authorize_management(&request) {
                     return *response;
@@ -768,6 +963,7 @@ impl AegsServer {
                     if !interest_keys.insert(subscription.event_interest_key.clone()) {
                         continue;
                     }
+                    let connection_id = subscription.connection_id.clone();
                     let event = PublishEventRequest {
                         producer_id: self.producer_id.clone(),
                         event_interest_key: subscription.event_interest_key,
@@ -781,7 +977,19 @@ impl AegsServer {
                         ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
                     };
                     match self.publisher.publish(event).await {
-                        Ok(response) => responses.push(response),
+                        Ok(response) => {
+                            if let Err(message) = self
+                                .store
+                                .mark_connection_event_accepted(&connection_id, now_ms())
+                            {
+                                return error(
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    "store_failed",
+                                    message,
+                                );
+                            }
+                            responses.push(response)
+                        }
                         Err(message) => {
                             return error(StatusCode::BAD_GATEWAY, "aeds_rejected", message)
                         }
@@ -798,6 +1006,112 @@ impl AegsServer {
             }
             _ => error(StatusCode::NOT_FOUND, "not_found", "route was not found"),
         }
+    }
+
+    async fn inspect_owned_connection(
+        &self,
+        generator_id: &str,
+        owner_id: &str,
+        connection_id: &str,
+    ) -> Result<AegsConnectionInspection, (StatusCode, &'static str, String)> {
+        if generator_id != self.producer_id {
+            return Err((
+                StatusCode::CONFLICT,
+                "generator_mismatch",
+                format!("this AEGS owns {}, not {generator_id}", self.producer_id),
+            ));
+        }
+        let connection = self
+            .store
+            .claim_connection_owner(connection_id, owner_id)
+            .map_err(|_| {
+                (
+                    StatusCode::NOT_FOUND,
+                    "connection_not_found",
+                    "the owned connection was not found".to_string(),
+                )
+            })?;
+        let provider = Arc::clone(&self.provider);
+        let requested_connection_id = connection_id.to_string();
+        let provider_inspection = tokio::task::spawn_blocking(move || {
+            provider.inspect_connection(&requested_connection_id)
+        })
+        .await
+        .map_err(|error| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "provider_inspection_failed",
+                error.to_string(),
+            )
+        })?
+        .map_err(|message| {
+            (
+                StatusCode::BAD_GATEWAY,
+                "provider_inspection_failed",
+                message,
+            )
+        })?;
+        let inspection = provider_inspection.unwrap_or_else(|| {
+            baseline_provider_connection_inspection(&self.producer_id, &connection, false)
+        });
+        if inspection.generator_id != self.producer_id
+            || inspection.connection_id != connection.connection_id
+        {
+            return Err((
+                StatusCode::BAD_GATEWAY,
+                "invalid_provider_inspection",
+                "provider inspection returned a different connection identity".to_string(),
+            ));
+        }
+        Ok(inspection)
+    }
+
+    async fn publish_normalized_event(
+        &self,
+        normalized: crate::NormalizedEvent,
+        connection_id: Option<&str>,
+    ) -> Result<AegsConnectionTestEventResponse, String> {
+        let subscriptions = self.store.matching(
+            &self.producer_id,
+            &normalized.event_type,
+            &normalized.connection_scope,
+        )?;
+        let mut interest_keys = HashSet::new();
+        for subscription in subscriptions {
+            if connection_id.is_some_and(|value| subscription.connection_id != value) {
+                continue;
+            }
+            if !metadata_matches_filter(&normalized.metadata, &subscription.filter) {
+                continue;
+            }
+            if !interest_keys.insert(subscription.event_interest_key.clone()) {
+                continue;
+            }
+            let accepted_connection_id = subscription.connection_id.clone();
+            self.publisher
+                .publish(PublishEventRequest {
+                    producer_id: self.producer_id.clone(),
+                    event_interest_key: subscription.event_interest_key,
+                    occurrence_id: normalized.occurrence_id.clone(),
+                    event_type: normalized.event_type.clone(),
+                    event_type_version: subscription.event_type_version,
+                    occurred_at: normalized.occurred_at.clone(),
+                    prompt: normalized.prompt.clone(),
+                    artifacts: Vec::new(),
+                    metadata: normalized.metadata.clone(),
+                    ttl_seconds: chariox_event_protocol::DEFAULT_EVENT_DELIVERY_TTL_SECONDS,
+                })
+                .await?;
+            self.store
+                .mark_connection_event_accepted(&accepted_connection_id, now_ms())?;
+        }
+        let accepted = !interest_keys.is_empty();
+        Ok(AegsConnectionTestEventResponse {
+            occurrence_id: normalized.occurrence_id,
+            accepted,
+            message: (!accepted)
+                .then(|| "no active workflow trigger matched the requested test event".to_string()),
+        })
     }
 
     fn authorize_management(
@@ -980,6 +1294,7 @@ fn error(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chariox_event_protocol::AegsConnectionLifecycleState;
 
     #[test]
     fn query_parser_rejects_duplicate_callback_parameters() {
@@ -1001,5 +1316,31 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("no-store")
         );
+    }
+
+    #[test]
+    fn baseline_inspection_never_claims_provider_health_or_test_support() {
+        let inspection = baseline_provider_connection_inspection(
+            "dev.chariox.github",
+            &crate::ConnectionRecord {
+                connection_id: "connection-1".to_string(),
+                owner_id: "owner-1".to_string(),
+                provider: "github".to_string(),
+                status: "ready".to_string(),
+                encrypted_credential: None,
+                metadata: serde_json::Value::Null,
+                expires_at_ms: None,
+                updated_at_ms: 1,
+                last_successful_health_check_at_ms: None,
+                last_accepted_event_at_ms: None,
+            },
+            false,
+        );
+        assert_eq!(
+            inspection.lifecycle_state,
+            AegsConnectionLifecycleState::Connected
+        );
+        assert_eq!(inspection.last_successful_health_check_at_ms, None);
+        assert!(!inspection.test_event_supported);
     }
 }

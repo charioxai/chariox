@@ -6,7 +6,7 @@ import type {
   DeploymentSetupRuntimeMode,
 } from "./deployed-workflow-setup-api.js"
 
-export type PublicationTransport = "human_http" | "api_sse_json" | "websocket_json" | "mcp"
+export type PublicationTransport = "human_http"
 export type AgentAppManipulationLevel = "none" | "state" | "overlay" | "state_and_overlay" | "full_ephemeral"
 
 export interface ParsedSetupOptions {
@@ -28,7 +28,7 @@ export const deploymentSetupUsage = [
   "usage: deployments setup list",
   "       deployments setup show <setup-id>",
   "       deployments setup resume <setup-id> [--agent-app-assets path]",
-  "       deployments setup draft <workflow-ref> <endpoint-ref> --slug value --transport human-http|api-sse-json|websocket-json|mcp --mode local-runtime|hosted-container [agent-app options]",
+  "       deployments setup draft <workflow-ref> <endpoint-ref> --slug value --transport human-http --mode local-runtime|hosted-container [agent-app options]",
   "       deployments setup publication <publication-ref> --slug value --mode local-runtime|hosted-container [agent-app options]",
   "       access options: [--access current-account|email|verified-domain|public] [--access-subject value]",
 ].join("\n")
@@ -194,7 +194,7 @@ function publicationConfiguration(
     transport: { kind: transport },
     parser: publicationParser(transport),
     traceExposure: null,
-    mode: transport === "mcp" ? "sync" : "async",
+    mode: "async",
   }
 }
 
@@ -204,27 +204,18 @@ function versionedPublicationAlias(slug: string, revision: number): string {
 }
 
 function publicationRoute(transport: PublicationTransport): string {
-  switch (transport) {
-    case "human_http": return "/prompt/*"
-    case "api_sse_json": return "/invoke"
-    case "websocket_json": return "/socket"
-    case "mcp": return "/mcp"
-  }
+  void transport
+  return "/"
 }
 
 function publicationMethods(transport: PublicationTransport): readonly string[] {
-  switch (transport) {
-    case "human_http": return ["GET"]
-    case "api_sse_json":
-    case "mcp": return ["POST"]
-    case "websocket_json": return []
-  }
+  void transport
+  return ["GET", "POST"]
 }
 
 function publicationParser(transport: PublicationTransport): unknown | null {
-  if (transport === "api_sse_json") return { kind: "json" }
-  if (transport === "human_http") return { kind: "path_template", template: "/prompt/:prompt" }
-  return null
+  void transport
+  return { kind: "query_params" }
 }
 
 function parseRuntimeMode(value: string): DeploymentSetupRuntimeMode {
@@ -235,10 +226,8 @@ function parseRuntimeMode(value: string): DeploymentSetupRuntimeMode {
 
 function parseTransport(value: string): PublicationTransport {
   const normalized = value.replaceAll("-", "_")
-  if (normalized === "human_http" || normalized === "api_sse_json" || normalized === "websocket_json" || normalized === "mcp") {
-    return normalized
-  }
-  throw new Error("deployment transport must be human-http, api-sse-json, websocket-json, or mcp")
+  if (normalized === "human_http") return normalized
+  throw new Error("deployment transport must be human-http")
 }
 
 function parseManipulationLevel(value: string): AgentAppManipulationLevel {

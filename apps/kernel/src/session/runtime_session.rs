@@ -881,6 +881,59 @@ impl RuntimeSession {
         &self.workflow_publication_state.workflow_publications
     }
 
+    pub(crate) fn purge_unsupported_workflow_publications(&mut self) -> usize {
+        let state = self.workflow_publication_state.as_mut();
+        let before = state.workflow_publications.len();
+        state.workflow_publications.retain(|publication| {
+            let Some(snapshot) = state.workflow_publication_snapshots.get(publication.id()) else {
+                return false;
+            };
+            if publication.validate_source_snapshot(snapshot).is_err() {
+                return false;
+            }
+            match publication.kind() {
+                super::WORKFLOW_PUBLICATION_KIND_INGRESS => publication
+                    .transport()
+                    .and_then(|transport| {
+                        transport
+                            .as_str()
+                            .or_else(|| transport.get("kind").and_then(serde_json::Value::as_str))
+                    })
+                    .is_none_or(|kind| kind == "human_http"),
+                super::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY => publication
+                    .transport()
+                    .and_then(|transport| {
+                        transport
+                            .as_str()
+                            .or_else(|| transport.get("kind").and_then(serde_json::Value::as_str))
+                    })
+                    .is_none_or(|kind| kind == super::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY),
+                super::WORKFLOW_PUBLICATION_KIND_EVENT_BASED => publication.transport().is_none(),
+                _ => false,
+            }
+        });
+        let retained_publication_ids = state
+            .workflow_publications
+            .iter()
+            .map(|publication| publication.id().to_string())
+            .collect::<BTreeSet<_>>();
+        state
+            .workflow_publication_snapshots
+            .retain(|publication_id, _| retained_publication_ids.contains(publication_id));
+        state
+            .workflow_event_bindings
+            .retain(|binding| retained_publication_ids.contains(&binding.publication_id));
+        let retained_binding_ids = state
+            .workflow_event_bindings
+            .iter()
+            .map(|binding| binding.id.clone())
+            .collect::<BTreeSet<_>>();
+        state
+            .workflow_event_delivery_receipts
+            .retain(|_, receipt| retained_binding_ids.contains(&receipt.binding_id));
+        before.saturating_sub(state.workflow_publications.len())
+    }
+
     pub fn workflow_event_bindings(&self) -> &[WorkflowEventBinding] {
         &self.workflow_publication_state.workflow_event_bindings
     }

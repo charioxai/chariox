@@ -7,6 +7,7 @@ import type {
   WorkflowCodeSourceExportAgentMode,
   WorkflowCodeSourceExportFormat,
   WorkflowCodeSourceExportTarget,
+  WorkflowCodeSourceOrigin,
   WorkflowDesignOp,
   WorkflowRegistrySourceInput,
   WorkflowRegistrySourceScope,
@@ -429,6 +430,88 @@ export function updateWorkflowCodeArtifactRequest(
       language,
       node_path: nodePath,
       source,
+    },
+  }
+}
+
+export type BindWorkflowCodeSourceRequest = {
+  BindWorkflowCodeSource: {
+    session_id: string
+    workflow_ref: string
+    artifact_name: string
+    origin: WorkflowCodeSourceOrigin
+    expected_workflow_revision?: number | null
+  }
+}
+
+export function bindWorkflowCodeSourceRequest(
+  sessionId: string,
+  workflowRef: string,
+  artifactName: string,
+  origin: WorkflowCodeSourceOrigin,
+  expectedWorkflowRevision?: number | null,
+): BindWorkflowCodeSourceRequest {
+  return {
+    BindWorkflowCodeSource: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      artifact_name: artifactName,
+      origin,
+      ...(expectedWorkflowRevision == null ? {} : { expected_workflow_revision: expectedWorkflowRevision }),
+    },
+  }
+}
+
+export type RebuildWorkflowCodeSourceRequest = {
+  RebuildWorkflowCodeSource: {
+    session_id: string
+    workflow_ref: string
+    expected_workflow_revision: number
+    confirm: boolean
+  }
+}
+
+export function rebuildWorkflowCodeSourceRequest(
+  sessionId: string,
+  workflowRef: string,
+  expectedWorkflowRevision: number,
+  confirm = false,
+): RebuildWorkflowCodeSourceRequest {
+  return {
+    RebuildWorkflowCodeSource: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      expected_workflow_revision: expectedWorkflowRevision,
+      confirm,
+    },
+  }
+}
+
+export type UpdateWorkflowCodeSourceFromWorkflowRequest = {
+  UpdateWorkflowCodeSourceFromWorkflow: {
+    session_id: string
+    workflow_ref: string
+    expected_workflow_revision: number
+    expected_generated_source_sha256?: string
+    confirm: boolean
+  }
+}
+
+export function updateWorkflowCodeSourceFromWorkflowRequest(
+  sessionId: string,
+  workflowRef: string,
+  expectedWorkflowRevision: number,
+  expectedGeneratedSourceSha256?: string,
+): UpdateWorkflowCodeSourceFromWorkflowRequest {
+  return {
+    UpdateWorkflowCodeSourceFromWorkflow: {
+      session_id: sessionId,
+      workflow_ref: workflowRef,
+      expected_workflow_revision: expectedWorkflowRevision,
+      ...(expectedGeneratedSourceSha256
+        ? { expected_generated_source_sha256: expectedGeneratedSourceSha256 }
+        : {}),
+      confirm: Boolean(expectedGeneratedSourceSha256),
     },
   }
 }

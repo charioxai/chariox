@@ -13,7 +13,7 @@
     "summary": { "type": "string", "maxLength": 1000 },
     "provider": { "type": "string", "minLength": 1, "maxLength": 200 },
     "publisher": { "$ref": "#/$defs/party" },
-    "protocol_version": { "const": 2 },
+    "protocol_version": { "const": 3 },
     "categories": { "type": "array", "maxItems": 20, "items": { "type": "string" } },
     "authorization": {
       "type": "object",

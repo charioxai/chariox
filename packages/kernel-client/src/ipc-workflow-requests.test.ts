@@ -15,11 +15,52 @@ import {
   importWorkflowCodeArtifactRequest,
   listWorkflowCodeArtifactsRequest,
   pauseWorkflowRunRequest,
+  rebuildWorkflowCodeSourceRequest,
   runWorkflowCodeArtifactRequest,
   runWorkflowCodeRequest,
   runWorkflowRegistryEntryRequest,
   setWorkflowNodeWaitForAllInputsRequest,
+  updateWorkflowCodeSourceFromWorkflowRequest,
 } from "./ipc-workflow-requests.js"
+
+test("workflow source rebuild request supports preview and confirmed apply", () => {
+  assert.deepEqual(rebuildWorkflowCodeSourceRequest("session-1", "workflow-1", 7), {
+    RebuildWorkflowCodeSource: {
+      session_id: "session-1",
+      workflow_ref: "workflow-1",
+      expected_workflow_revision: 7,
+      confirm: false,
+    },
+  })
+  assert.deepEqual(rebuildWorkflowCodeSourceRequest("session-1", "workflow-1", 7, true), {
+    RebuildWorkflowCodeSource: {
+      session_id: "session-1",
+      workflow_ref: "workflow-1",
+      expected_workflow_revision: 7,
+      confirm: true,
+    },
+  })
+})
+
+test("workflow source update request binds confirmation to the previewed hash", () => {
+  assert.deepEqual(updateWorkflowCodeSourceFromWorkflowRequest("session-1", "workflow-1", 8), {
+    UpdateWorkflowCodeSourceFromWorkflow: {
+      session_id: "session-1",
+      workflow_ref: "workflow-1",
+      expected_workflow_revision: 8,
+      confirm: false,
+    },
+  })
+  assert.deepEqual(updateWorkflowCodeSourceFromWorkflowRequest("session-1", "workflow-1", 8, "sha256"), {
+    UpdateWorkflowCodeSourceFromWorkflow: {
+      session_id: "session-1",
+      workflow_ref: "workflow-1",
+      expected_workflow_revision: 8,
+      expected_generated_source_sha256: "sha256",
+      confirm: true,
+    },
+  })
+})
 
 test("pause workflow run request matches kernel shape", () => {
   assert.deepEqual(pauseWorkflowRunRequest("session-1", "run-1"), {
@@ -30,7 +71,7 @@ test("pause workflow run request matches kernel shape", () => {
   })
 })
 
-test("export workflow publication package request matches kernel shape", () => {
+test("export workflow trigger package request matches kernel shape", () => {
   assert.deepEqual(exportWorkflowPublicationPackageRequest("session-1", "publication-1", {
     kernelUrl: "ws://127.0.0.1:43118",
     agentApp: {
@@ -52,7 +93,7 @@ test("export workflow publication package request matches kernel shape", () => {
   })
 })
 
-test("workflow publication runtime control request matches kernel shape", () => {
+test("workflow trigger runtime control request matches kernel shape", () => {
   assert.deepEqual(controlWorkflowPublicationRuntimeRequest("session-1", "publication-1", "start", {
     host: "127.0.0.1",
     port: 3000,
@@ -89,7 +130,7 @@ test("workflow publication runtime control request matches kernel shape", () => 
   })
 })
 
-test("workflow publication deployment bind request matches kernel shape", () => {
+test("workflow trigger deployment bind request matches kernel shape", () => {
   assert.deepEqual(bindWorkflowPublicationDeploymentRequest("session-1", "publication-1", {
     setupId: "setup-1",
     operationKey: "deployment-setup:setup-1:runtime",

@@ -1450,7 +1450,7 @@ mod tests {
             crate::session::RuntimeProjectKind::Default,
         );
         let mut hidden_session = crate::session::RuntimeSession::new(
-            "legacy-publication-runtime",
+            "hidden-deployment-runtime",
             None,
             "legacy-workspace",
             "legacy-worktree",
@@ -1460,8 +1460,8 @@ mod tests {
         hidden_session.set_hidden(true);
         assert!(hidden_session.assign_project_id(project.id()));
         let default_agent = crate::agent::AgentInstance::new(
-            "legacy-publication-agent",
-            "legacy-publication-agent-ref",
+            "hidden-deployment-agent",
+            "hidden-deployment-agent-ref",
             hidden_session.id(),
             None,
             "dev-stub",
@@ -1489,7 +1489,7 @@ mod tests {
                         "project": &project,
                     }),
                 )
-                .expect("legacy hidden publication runtime should persist");
+                .expect("hidden deployment runtime should persist");
         }
 
         let app = DaemonApp::bootstrap(config.clone()).expect("daemon should restore");
@@ -1497,7 +1497,7 @@ mod tests {
         assert_eq!(
             app.sessions()
                 .get_session(hidden_session.id())
-                .expect("hidden publication runtime should remain")
+                .expect("hidden deployment runtime should remain")
                 .project_id(),
             ""
         );
@@ -1508,7 +1508,7 @@ mod tests {
         assert_eq!(
             app.sessions()
                 .get_session(hidden_session.id())
-                .expect("hidden publication runtime should survive cleanup restart")
+                .expect("hidden deployment runtime should survive cleanup restart")
                 .project_id(),
             ""
         );

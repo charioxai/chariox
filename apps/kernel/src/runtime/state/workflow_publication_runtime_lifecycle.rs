@@ -1,13 +1,11 @@
 //! Kernel-owned lifecycle control for local workflow publication runtimes.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
 use std::net::{TcpListener, TcpStream};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::Arc;
 
-use base64::Engine;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream as TokioTcpStream;
 use tokio::process::{Child, Command};
@@ -18,7 +16,7 @@ use crate::error::DaemonError;
 use crate::local::{
     BindWorkflowPublicationDeploymentRequest, ControlWorkflowPublicationRuntimeRequest,
     LocalDaemonResponse, RegisterWorkflowPublicationEndpointRequest,
-    WorkflowPublicationPackageFile, WorkflowPublicationRuntimeAction,
+    WorkflowPublicationRuntimeAction,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::session::WorkflowPublicationDefinition;
@@ -49,7 +47,6 @@ struct WorkflowPublicationRuntimeProcess {
     host: String,
     port: u16,
     local_url: Option<String>,
-    package_root: PathBuf,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -457,7 +454,7 @@ async fn inspect_publication_runtime(
                 "port": process.port,
                 "local_url": process.local_url,
                 "process_id": process.process_id,
-                "package_root": process.package_root,
+                "package_root": serde_json::Value::Null,
             })),
         )?
     } else if publication.status() == Some("error") {
@@ -640,7 +637,7 @@ async fn start_publication_runtime_claimed(
                 "port": existing.port,
                 "local_url": existing.local_url,
                 "process_id": existing.process_id,
-                "package_root": existing.package_root,
+                "package_root": serde_json::Value::Null,
             })),
         )?;
         let open_url = refreshed.open_url().map(str::to_string);
@@ -672,27 +669,24 @@ async fn start_publication_runtime_claimed(
         );
         return Err(error);
     }
-    let package = runtime_state.owned.workflow_export_publication_package(
-        crate::local::ExportWorkflowPublicationPackageRequest {
-            session_id: request.session_id.clone(),
-            publication_ref: publication.id().to_string(),
-            kernel_url: package_kernel_url,
-            agent_app: None,
-            agent_app_assets_dir: None,
-        },
-    )?;
-    let LocalDaemonResponse::WorkflowPublicationPackageExported {
-        package_digest,
-        package_files,
-        ..
-    } = package
-    else {
-        return Err(DaemonError::LocalTransport {
-            operation: "start workflow publication runtime",
-            message: "publication package export returned an unexpected response".to_string(),
-        });
-    };
     if let Some(expected) = launch_context.expected_package_digest.as_deref() {
+        let package = runtime_state.owned.workflow_export_publication_package(
+            crate::local::ExportWorkflowPublicationPackageRequest {
+                session_id: request.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: package_kernel_url,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        )?;
+        let LocalDaemonResponse::WorkflowPublicationPackageExported { package_digest, .. } =
+            package
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "start workflow publication runtime",
+                message: "publication package export returned an unexpected response".to_string(),
+            });
+        };
         if package_digest != expected {
             return Err(publication_runtime_error(
                 "start workflow publication runtime",
@@ -702,12 +696,6 @@ async fn start_publication_runtime_claimed(
             ));
         }
     }
-    let package_root = materialize_publication_package(
-        &request.session_id,
-        publication.id(),
-        &package_digest,
-        &package_files,
-    )?;
     let local_url = if is_schedule_only {
         None
     } else {
@@ -716,7 +704,9 @@ async fn start_publication_runtime_claimed(
     let mut command = Command::new(resolve_chariox_cli_bin()?);
     command
         .arg("serve")
-        .arg(&package_root)
+        .arg("source")
+        .arg(&request.session_id)
+        .arg(publication.id())
         .arg(port.to_string())
         .arg("--host")
         .arg(&host)
@@ -766,7 +756,6 @@ async fn start_publication_runtime_claimed(
                 host: host.clone(),
                 port,
                 local_url: local_url.clone(),
-                package_root: package_root.clone(),
             },
         )
         .await;
@@ -784,7 +773,6 @@ async fn start_publication_runtime_claimed(
             local_url.as_deref(),
             &kernel_url,
             process_id,
-            &package_root,
             launch_context.binding.as_ref(),
         )),
     )?;
@@ -870,7 +858,6 @@ fn publication_runtime_deployment_metadata(
     local_url: Option<&str>,
     kernel_url: &str,
     process_id: Option<u32>,
-    package_root: &Path,
     binding: Option<&WorkflowPublicationDeploymentBinding>,
 ) -> serde_json::Value {
     let mut deployment = serde_json::json!({
@@ -881,7 +868,7 @@ fn publication_runtime_deployment_metadata(
         "local_url": local_url,
         "kernel_url": kernel_url,
         "process_id": process_id,
-        "package_root": package_root,
+        "package_root": serde_json::Value::Null,
     });
     if let Some(binding) = binding {
         deployment["binding"] = serde_json::json!({
@@ -1106,105 +1093,6 @@ fn publication_runtime_package_kernel_url(
         .then(|| kernel_url.to_string())
 }
 
-fn materialize_publication_package(
-    session_id: &str,
-    publication_id: &str,
-    package_digest: &str,
-    package_files: &[WorkflowPublicationPackageFile],
-) -> Result<PathBuf, DaemonError> {
-    let root = publication_runtime_root()
-        .join(safe_path_segment(session_id))
-        .join(format!(
-            "{}-{}",
-            safe_path_segment(publication_id),
-            safe_path_segment(package_digest)
-        ));
-    if root.exists() {
-        fs::remove_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
-            operation: "materialize workflow publication runtime package",
-            message: format!(
-                "failed to replace package directory `{}`: {error}",
-                root.display()
-            ),
-        })?;
-    }
-    fs::create_dir_all(&root).map_err(|error| DaemonError::LocalTransport {
-        operation: "materialize workflow publication runtime package",
-        message: format!(
-            "failed to create package directory `{}`: {error}",
-            root.display()
-        ),
-    })?;
-    for file in package_files {
-        let relative = safe_relative_package_path(&file.path)?;
-        let path = root.join(relative);
-        if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
-                operation: "materialize workflow publication runtime package",
-                message: format!(
-                    "failed to create package directory `{}`: {error}",
-                    parent.display()
-                ),
-            })?;
-        }
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(&file.content_base64)
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "materialize workflow publication runtime package",
-                message: format!("failed to decode package file `{}`: {error}", file.path),
-            })?;
-        fs::write(&path, bytes).map_err(|error| DaemonError::LocalTransport {
-            operation: "materialize workflow publication runtime package",
-            message: format!("failed to write package file `{}`: {error}", path.display()),
-        })?;
-        #[cfg(unix)]
-        if file.executable {
-            use std::os::unix::fs::PermissionsExt;
-            let mut permissions = fs::metadata(&path)
-                .map_err(|error| DaemonError::LocalTransport {
-                    operation: "materialize workflow publication runtime package",
-                    message: format!(
-                        "failed to inspect package file `{}`: {error}",
-                        path.display()
-                    ),
-                })?
-                .permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&path, permissions).map_err(|error| {
-                DaemonError::LocalTransport {
-                    operation: "materialize workflow publication runtime package",
-                    message: format!(
-                        "failed to mark package file executable `{}`: {error}",
-                        path.display()
-                    ),
-                }
-            })?;
-        }
-    }
-    Ok(root)
-}
-
-fn safe_relative_package_path(value: &str) -> Result<PathBuf, DaemonError> {
-    let path = Path::new(value);
-    if path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, std::path::Component::ParentDir))
-    {
-        return Err(DaemonError::LocalTransport {
-            operation: "materialize workflow publication runtime package",
-            message: format!("unsafe package file path `{value}`"),
-        });
-    }
-    Ok(path.to_path_buf())
-}
-
-fn publication_runtime_root() -> PathBuf {
-    std::env::var_os("CHARIOX_PUBLICATION_RUNTIME_ROOT")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("chariox-publication-runtimes"))
-}
-
 fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
     if let Some(value) = std::env::var_os("CHARIOX_CLI_BIN") {
         return Ok(PathBuf::from(value));
@@ -1241,19 +1129,6 @@ fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
 
 fn publication_runtime_process_key(session_id: &str, publication_id: &str) -> String {
     format!("{session_id}:{publication_id}")
-}
-
-fn safe_path_segment(value: &str) -> String {
-    value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.') {
-                character
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 fn publication_local_url(host: &str, port: u16) -> String {
@@ -1316,7 +1191,6 @@ struct RunningPublicationRuntime {
     host: String,
     port: u16,
     local_url: Option<String>,
-    package_root: PathBuf,
 }
 
 impl WorkflowPublicationRuntimeProcessStore {
@@ -1373,7 +1247,6 @@ impl WorkflowPublicationRuntimeProcessStore {
             host: process.host.clone(),
             port: process.port,
             local_url: process.local_url.clone(),
-            package_root: process.package_root.clone(),
         }))
     }
 
@@ -1487,7 +1360,7 @@ mod tests {
     }
 
     #[test]
-    fn bound_deployment_materializes_the_canonical_release_package() {
+    fn bound_deployment_digest_validation_uses_a_portable_kernel_url() {
         assert_eq!(
             super::publication_runtime_package_kernel_url(
                 "ws://127.0.0.1:43118",
@@ -1498,7 +1371,7 @@ mod tests {
     }
 
     #[test]
-    fn direct_runtime_package_keeps_its_requested_kernel_url() {
+    fn direct_runtime_digest_validation_keeps_its_requested_kernel_url() {
         assert_eq!(
             super::publication_runtime_package_kernel_url("ws://127.0.0.1:43118", None),
             Some("ws://127.0.0.1:43118".to_string()),

@@ -323,6 +323,7 @@ version = "0.1.0"
 dependencies = [
  "chariox-aegs-sdk",
  "chariox-event-protocol",
+ "chrono",
  "serde_json",
  "tokio",
 ]

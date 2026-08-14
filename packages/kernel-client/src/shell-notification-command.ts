@@ -2,6 +2,7 @@ import type {
   EventConnection,
   EventConnectionAuthorization,
   EventConnectionPage,
+  EventConnectionTestResult,
   EventGeneratorCatalogDetail,
   EventGeneratorCatalogPage,
   EventGeneratorResourcePage,
@@ -21,6 +22,7 @@ import {
   refreshEventConnectionRequest,
   removeEventConnectionRequest,
   searchEventGeneratorCatalogRequest,
+  testEventConnectionRequest,
 } from "./ipc-event-publication-requests.js"
 import type { ShellCommandResult } from "./shell-core.js"
 
@@ -134,7 +136,7 @@ async function executeConnectionAction(
 ): Promise<ShellCommandResult> {
   const [action, connectionId, ...rest] = args
   if (!action || !connectionId) {
-    return failure("usage: notifications connection show|resources|refresh|reconnect|dependencies|remove <connection-id>")
+    return failure("usage: notifications connection show|resources|refresh|test|reconnect|dependencies|remove <connection-id>")
   }
   if (action === "show") {
     const connection = expectField<EventConnection>(
@@ -158,6 +160,19 @@ async function executeConnectionAction(
       await client.send(refreshEventConnectionRequest(connectionId)), "EventConnection", "connection",
     )
     return { ok: true, message: `refreshed\n${formatConnection(connection)}`, data: connection }
+  }
+  if (action === "test") {
+    const result = expectField<EventConnectionTestResult>(
+      await client.send(testEventConnectionRequest(connectionId, rest[0])),
+      "EventConnectionTested", "result",
+    )
+    return {
+      ok: result.accepted,
+      message: result.accepted
+        ? `test event accepted as ${result.occurrence_id}`
+        : (result.message ?? "test event did not match an active workflow trigger"),
+      data: result,
+    }
   }
   if (action === "reconnect") {
     const authorization = expectField<EventConnectionAuthorization>(
@@ -247,7 +262,11 @@ function formatConnections(page: EventConnectionPage): string {
 
 function formatConnection(connection: EventConnection): string {
   const validated = connection.last_validated_at_ms ? new Date(connection.last_validated_at_ms).toISOString() : "never"
-  return `${connection.connection_id}  ${connection.status}  ${connection.generator_id}  last validated=${validated}`
+  const health = connection.last_successful_health_check_at_ms
+    ? new Date(connection.last_successful_health_check_at_ms).toISOString()
+    : "unsupported or never"
+  const problem = connection.problem_message ? `  problem=${connection.problem_message}` : ""
+  return `${connection.connection_id}  ${connection.lifecycle_state}  ${connection.generator_id}  triggers=${connection.attached_trigger_count}  last validated=${validated}  health=${health}${problem}`
 }
 
 function formatAuthorization(authorization: EventConnectionAuthorization): string {
@@ -262,7 +281,7 @@ function formatAuthorization(authorization: EventConnectionAuthorization): strin
 function formatDependencies(items: WorkflowEventBindingDependency[]): string {
   return items.length === 0
     ? "no workflow event bindings depend on this connection"
-    : items.map((item) => `${item.status}  session=${item.session_id} publication=${item.publication_id} binding=${item.binding_id}`).join("\n")
+    : items.map((item) => `${item.status}  session=${item.session_id} trigger-owner=${item.publication_id} binding=${item.binding_id}`).join("\n")
 }
 
 function expectField<T>(response: Record<string, unknown>, variant: string, field: string): T {

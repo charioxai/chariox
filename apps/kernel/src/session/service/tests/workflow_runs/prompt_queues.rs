@@ -120,6 +120,48 @@ fn workflow_prompt_can_be_enqueued_while_a_workflow_run_is_active() {
 }
 
 #[test]
+fn queued_workflow_run_captures_revision_and_intake_context() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let workflow = workflow_with_endpoint(&mut service, session.id(), "queued", "agent-1");
+    let queue = service
+        .create_workflow_prompt_queue(
+            session.id(),
+            workflow.workflow.id(),
+            "reviews".to_string(),
+            5,
+        )
+        .expect("workflow queue should create");
+    let queued = service
+        .enqueue_workflow_prompt(
+            session.id(),
+            workflow.workflow.id(),
+            workflow.endpoint.id(),
+            Some("review this".to_string()),
+            Some(queue.id()),
+            WorkflowQueuedPromptSource::Event,
+            None,
+        )
+        .expect("workflow prompt should queue");
+    let expected_revision = service
+        .resolve_workflow_ref(session.id(), workflow.workflow.id())
+        .expect("workflow should resolve")
+        .revision();
+
+    let run = service
+        .invoke_queued_workflow_endpoint(session.id(), &queued)
+        .expect("queued workflow run should create");
+
+    assert_eq!(run.workflow_revision(), expected_revision);
+    assert_eq!(run.queue_ref(), Some(queue.id()));
+    assert_eq!(run.received_at_ms(), queued.created_at_ms());
+    assert_eq!(run.queued_at_ms(), Some(queued.created_at_ms()));
+}
+
+#[test]
 fn workflow_prompt_queue_dispatches_by_queue_priority_then_fifo() {
     let mut service = SessionService::new(&test_config());
     let session = service

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 253);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 257);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -228,7 +228,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: crate::workflow_code::WorkflowCodeRunResult {
             apply: apply_result.clone(),
             invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
-                workflow_run: crate::session::WorkflowRun::new(
+                workflow_run: Box::new(crate::session::WorkflowRun::new(
                     "workflow-run-1",
                     "workflow-1",
                     "endpoint-1",
@@ -237,7 +237,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                     None,
                     Vec::new(),
                     Vec::new(),
-                ),
+                )),
                 workflow: run_workflow,
                 endpoint: run_endpoint,
             },
@@ -576,16 +576,18 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: crate::workflow_code::WorkflowCodeRunResult {
             apply: apply_result,
             invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
-                queued_prompt: crate::session::WorkflowQueuedPrompt::new(
-                    "queue-1",
-                    "default",
-                    "workflow-1",
-                    "endpoint-1",
-                    Some("Run this registered workflow.".to_string()),
-                    None,
-                    crate::session::WorkflowQueuedPromptSource::Manual,
-                    None,
-                ),
+                queued_prompt: Box::new(crate::session::WorkflowQueuedPrompt::new(
+                    crate::session::WorkflowQueuedPromptInput {
+                        id: "queue-1".to_string(),
+                        queue_id: "default".to_string(),
+                        workflow_id: "workflow-1".to_string(),
+                        endpoint_id: "endpoint-1".to_string(),
+                        prompt: Some("Run this registered workflow.".to_string()),
+                        publication_invocation: None,
+                        source: crate::session::WorkflowQueuedPromptSource::Manual,
+                        schedule_id: None,
+                    },
+                )),
                 workflow: crate::session::WorkflowDefinition::new(
                     "workflow-1",
                     Some("toy".to_string()),
@@ -597,6 +599,132 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                 ),
             },
         },
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+
+    let bind_source_request =
+        LocalDaemonRequest::BindWorkflowCodeSource(crate::local::BindWorkflowCodeSourceRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            artifact_name: "workflow-source-session-1-workflow-1".to_string(),
+            origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            expected_workflow_revision: Some(7),
+        });
+    let mut bound_workflow =
+        crate::session::WorkflowDefinition::new("workflow-1", Some("toy".to_string()));
+    bound_workflow.bind_code_source(
+        "workflow-source-session-1-workflow-1".to_string(),
+        crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+        "sha256".to_string(),
+        crate::session::WorkflowCodeSourceOrigin::Generated,
+        crate::workflow_code::WorkflowCodeApplyReport::for_workflow("workflow-1"),
+    );
+    let bind_source_response = LocalDaemonResponse::WorkflowCodeSourceBound {
+        workflow: bound_workflow,
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+    let rebuild_preview_request = LocalDaemonRequest::RebuildWorkflowCodeSource(
+        crate::local::RebuildWorkflowCodeSourceRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            expected_workflow_revision: 8,
+            confirm: false,
+        },
+    );
+    let rebuild_preview = crate::workflow_code::WorkflowCodeRebuildPreview {
+        workflow_id: "workflow-1".to_string(),
+        current_workflow_revision: 8,
+        source_workflow_revision: 7,
+        source_sha256: "sha256".to_string(),
+        diverged: true,
+        restored_schemas: 1,
+        restored_nodes: 2,
+        restored_edges: 1,
+        restored_endpoints: 1,
+        restored_queues: 1,
+        restored_schedules: 1,
+        changes: vec![crate::workflow_code::WorkflowCodeStructuralChange {
+            resource: "nodes".to_string(),
+            current_count: 3,
+            source_count: 2,
+            restore_missing: 0,
+            remove_visual_only: 1,
+            replace_existing: 2,
+        }],
+    };
+    let rebuild_preview_response = LocalDaemonResponse::WorkflowCodeRebuildPreview {
+        preview: rebuild_preview.clone(),
+    };
+    let rebuild_confirm_request = LocalDaemonRequest::RebuildWorkflowCodeSource(
+        crate::local::RebuildWorkflowCodeSourceRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            expected_workflow_revision: 8,
+            confirm: true,
+        },
+    );
+    let rebuild_response = LocalDaemonResponse::WorkflowCodeSourceRebuilt {
+        preview: rebuild_preview,
+        result: crate::workflow_code::WorkflowCodeApplyReport::for_workflow("workflow-1"),
+        session: crate::session::RuntimeSession::new(
+            "session-1",
+            None,
+            "workspace-1",
+            "worktree-1",
+            "machine-1",
+            "daemon-1",
+        ),
+    };
+    let update_source_preview_request = LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(
+        crate::local::UpdateWorkflowCodeSourceFromWorkflowRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            expected_workflow_revision: 9,
+            expected_generated_source_sha256: None,
+            confirm: false,
+        },
+    );
+    let update_source_preview = crate::workflow_code::WorkflowCodeSourceUpdatePreview {
+        workflow_id: "workflow-1".to_string(),
+        workflow_revision: 9,
+        previous_source_sha256: "old-sha256".to_string(),
+        generated_source_sha256: "new-sha256".to_string(),
+        changed: true,
+        previous_line_count: 10,
+        generated_line_count: 12,
+        added_lines: 3,
+        removed_lines: 1,
+        generated_source: "export default workflow({});\n".to_string(),
+    };
+    let update_source_preview_response = LocalDaemonResponse::WorkflowCodeSourceUpdatePreview {
+        preview: update_source_preview.clone(),
+    };
+    let update_source_confirm_request = LocalDaemonRequest::UpdateWorkflowCodeSourceFromWorkflow(
+        crate::local::UpdateWorkflowCodeSourceFromWorkflowRequest {
+            session_id: "session-1".to_string(),
+            workflow_ref: "workflow-1".to_string(),
+            expected_workflow_revision: 9,
+            expected_generated_source_sha256: Some("new-sha256".to_string()),
+            confirm: true,
+        },
+    );
+    let update_source_response = LocalDaemonResponse::WorkflowCodeSourceUpdated {
+        preview: update_source_preview,
+        workflow: crate::session::WorkflowDefinition::new("workflow-1", Some("toy".to_string())),
         session: crate::session::RuntimeSession::new(
             "session-1",
             None,
@@ -649,7 +777,17 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         registry_entry_added_response,
         registry_entry_deleted_response,
         registry_entry_loaded_response,
-        registry_entry_run_response
+        registry_entry_run_response,
+        bind_source_request,
+        bind_source_response,
+        rebuild_preview_request,
+        rebuild_preview_response,
+        rebuild_confirm_request,
+        rebuild_response,
+        update_source_preview_request,
+        update_source_preview_response,
+        update_source_confirm_request,
+        update_source_response
     ]);
     assert_eq!(
         snapshot.pointer("/0/ValidateWorkflowCode/session_id"),
@@ -940,5 +1078,54 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
     assert_eq!(
         snapshot.pointer("/41/WorkflowRegistryEntryRun/result/invocation/kind"),
         Some(&serde_json::json!("enqueued"))
+    );
+    assert_eq!(
+        snapshot.pointer("/42/BindWorkflowCodeSource/origin"),
+        Some(&serde_json::json!("generated"))
+    );
+    assert_eq!(
+        snapshot.pointer("/42/BindWorkflowCodeSource/expected_workflow_revision"),
+        Some(&serde_json::json!(7))
+    );
+    assert_eq!(
+        snapshot.pointer("/43/WorkflowCodeSourceBound/workflow/code_source/artifact_name"),
+        Some(&serde_json::json!("workflow-source-session-1-workflow-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/43/WorkflowCodeSourceBound/workflow/code_source/workflow_revision"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer("/44/RebuildWorkflowCodeSource/confirm"),
+        Some(&serde_json::json!(false))
+    );
+    assert_eq!(
+        snapshot.pointer("/45/WorkflowCodeRebuildPreview/preview/changes/0/remove_visual_only"),
+        Some(&serde_json::json!(1))
+    );
+    assert_eq!(
+        snapshot.pointer("/46/RebuildWorkflowCodeSource/confirm"),
+        Some(&serde_json::json!(true))
+    );
+    assert_eq!(
+        snapshot.pointer("/47/WorkflowCodeSourceRebuilt/result/workflow_id"),
+        Some(&serde_json::json!("workflow-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/48/UpdateWorkflowCodeSourceFromWorkflow/confirm"),
+        Some(&serde_json::json!(false))
+    );
+    assert_eq!(
+        snapshot.pointer("/49/WorkflowCodeSourceUpdatePreview/preview/added_lines"),
+        Some(&serde_json::json!(3))
+    );
+    assert_eq!(
+        snapshot
+            .pointer("/50/UpdateWorkflowCodeSourceFromWorkflow/expected_generated_source_sha256"),
+        Some(&serde_json::json!("new-sha256"))
+    );
+    assert_eq!(
+        snapshot.pointer("/51/WorkflowCodeSourceUpdated/preview/changed"),
+        Some(&serde_json::json!(true))
     );
 }

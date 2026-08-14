@@ -16,6 +16,7 @@ pub enum PromptStatus {
 #[serde(rename_all = "snake_case")]
 pub enum PromptOrigin {
     #[default]
+    #[serde(alias = "arroba")]
     Chariox,
     External,
 }
@@ -700,6 +701,18 @@ mod tests {
 
         assert_eq!(item.prompt(), "VISIBLE_PROMPT_TOKEN");
         assert_eq!(item.hidden_system_context(), "");
+    }
+
+    #[test]
+    fn renamed_prompt_origin_restores_and_serializes_canonically() {
+        let origin: PromptOrigin =
+            serde_json::from_str(r#""arroba""#).expect("renamed prompt origin should restore");
+
+        assert_eq!(origin, PromptOrigin::Chariox);
+        assert_eq!(
+            serde_json::to_string(&origin).expect("prompt origin should serialize"),
+            r#""chariox""#
+        );
     }
 
     #[test]

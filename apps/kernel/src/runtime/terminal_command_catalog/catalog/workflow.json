@@ -586,10 +586,10 @@
         ]
       },
       {
-        "id": "workflow-publication",
-        "label": "publication",
-        "description": "Create, inspect, export, configure, or disable workflow publications",
-        "value": "/workflow publication ",
+        "id": "workflow-trigger",
+        "label": "trigger",
+        "description": "Create, inspect, export, configure, or disable workflow triggers",
+        "value": "/workflow trigger ",
         "searchAliases": [
           "publish workflow",
           "export publication",
@@ -598,60 +598,60 @@
         ],
         "children": [
           {
-            "id": "workflow-publication-list",
+            "id": "workflow-trigger-list",
             "label": "list",
-            "description": "List workflow publications in the current session",
-            "value": "/workflow publication list"
+            "description": "List workflow triggers in the current session",
+            "value": "/workflow trigger list"
           },
           {
-            "id": "workflow-publication-create",
+            "id": "workflow-trigger-create",
             "label": "create",
-            "description": "Publish a workflow endpoint; append the workflow, endpoint, and optional alias",
-            "value": "/workflow publication create "
+            "description": "Create a workflow trigger; append the workflow, endpoint, and optional alias",
+            "value": "/workflow trigger create "
           },
           {
-            "id": "workflow-publication-show",
+            "id": "workflow-trigger-show",
             "label": "show",
-            "description": "Show a workflow publication; append its reference",
-            "value": "/workflow publication show "
+            "description": "Show a workflow trigger; append its reference",
+            "value": "/workflow trigger show "
           },
           {
-            "id": "workflow-publication-export",
+            "id": "workflow-trigger-export",
             "label": "export",
-            "description": "Export a portable workflow publication package; append its reference and output directory",
-            "value": "/workflow publication export "
+            "description": "Build a portable workflow deployment package; append the trigger reference and output directory",
+            "value": "/workflow trigger export "
           },
           {
-            "id": "workflow-publication-config",
+            "id": "workflow-trigger-config",
             "label": "config",
             "description": "Show, set, or clear provider bindings in an exported publication package",
-            "value": "/workflow publication config ",
+            "value": "/workflow trigger config ",
             "children": [
               {
-                "id": "workflow-publication-config-show",
+                "id": "workflow-trigger-config-show",
                 "label": "show",
                 "description": "Show provider bindings in an exported publication package",
-                "value": "/workflow publication config show "
+                "value": "/workflow trigger config show "
               },
               {
-                "id": "workflow-publication-config-set",
+                "id": "workflow-trigger-config-set",
                 "label": "set",
                 "description": "Set a provider binding in an exported publication package",
-                "value": "/workflow publication config set "
+                "value": "/workflow trigger config set "
               },
               {
-                "id": "workflow-publication-config-clear",
+                "id": "workflow-trigger-config-clear",
                 "label": "clear",
                 "description": "Clear a provider binding in an exported publication package",
-                "value": "/workflow publication config clear "
+                "value": "/workflow trigger config clear "
               }
             ]
           },
           {
-            "id": "workflow-publication-event",
+            "id": "workflow-trigger-event",
             "label": "event",
             "description": "Discover event generators and manage event subscriptions",
-            "value": "/workflow publication event ",
+            "value": "/workflow trigger event ",
             "searchAliases": [
               "event notifications",
               "subscribe webhook",
@@ -660,96 +660,96 @@
             ],
             "children": [
               {
-                "id": "workflow-publication-event-catalog",
+                "id": "workflow-trigger-event-catalog",
                 "label": "catalog",
                 "description": "Open the recommended catalog or search by app, event, or publisher",
-                "value": "/workflow publication event catalog "
+                "value": "/workflow trigger event catalog "
               },
               {
-                "id": "workflow-publication-event-category",
+                "id": "workflow-trigger-event-category",
                 "label": "category",
                 "description": "Browse one paginated event-generator category",
-                "value": "/workflow publication event category "
+                "value": "/workflow trigger event category "
               },
               {
-                "id": "workflow-publication-event-show",
+                "id": "workflow-trigger-event-show",
                 "label": "show",
                 "description": "Show one event generator and its supported events",
-                "value": "/workflow publication event show "
+                "value": "/workflow trigger event show "
               },
               {
-                "id": "workflow-publication-event-events",
+                "id": "workflow-trigger-event-events",
                 "label": "events",
                 "description": "Search and page through a generator's supported event types",
-                "value": "/workflow publication event events "
+                "value": "/workflow trigger event events "
               },
               {
-                "id": "workflow-publication-event-connections",
+                "id": "workflow-trigger-event-connections",
                 "label": "connections",
                 "description": "List reusable kernel-owned connections for attachment",
-                "value": "/workflow publication event connections"
+                "value": "/workflow trigger event connections"
               },
               {
-                "id": "workflow-publication-event-install",
+                "id": "workflow-trigger-event-install",
                 "label": "install",
                 "description": "Install a reusable notification connection from workflow configuration",
-                "value": "/workflow publication event install "
+                "value": "/workflow trigger event install "
               },
               {
-                "id": "workflow-publication-event-resources",
+                "id": "workflow-trigger-event-resources",
                 "label": "resources",
                 "description": "Search and page through resources available to an authorized connection",
-                "value": "/workflow publication event resources "
+                "value": "/workflow trigger event resources "
               },
               {
-                "id": "workflow-publication-event-list",
+                "id": "workflow-trigger-event-list",
                 "label": "list",
-                "description": "List event subscriptions, optionally for one publication",
-                "value": "/workflow publication event list"
+                "description": "List event subscriptions, optionally for one trigger",
+                "value": "/workflow trigger event list"
               },
               {
-                "id": "workflow-publication-event-attach",
+                "id": "workflow-trigger-event-attach",
                 "label": "attach",
-                "description": "Attach an installed connection and event to this workflow publication",
-                "value": "/workflow publication event attach "
+                "description": "Attach an installed connection and event to this workflow trigger",
+                "value": "/workflow trigger event attach "
               },
               {
-                "id": "workflow-publication-event-pause",
+                "id": "workflow-trigger-event-pause",
                 "label": "pause",
                 "description": "Pause a workflow event subscription",
-                "value": "/workflow publication event pause "
+                "value": "/workflow trigger event pause "
               },
               {
-                "id": "workflow-publication-event-resume",
+                "id": "workflow-trigger-event-resume",
                 "label": "resume",
                 "description": "Resume a workflow event subscription after exclusivity validation",
-                "value": "/workflow publication event resume "
+                "value": "/workflow trigger event resume "
               },
               {
-                "id": "workflow-publication-event-transfer",
+                "id": "workflow-trigger-event-transfer",
                 "label": "transfer",
-                "description": "Move the exclusive event route to another published workflow",
-                "value": "/workflow publication event transfer "
+                "description": "Move the exclusive event route to another workflow trigger",
+                "value": "/workflow trigger event transfer "
               },
               {
-                "id": "workflow-publication-event-test",
+                "id": "workflow-trigger-event-test",
                 "label": "test",
                 "description": "Queue a test notification through the selected workflow endpoint",
-                "value": "/workflow publication event test "
+                "value": "/workflow trigger event test "
               },
               {
-                "id": "workflow-publication-event-status",
+                "id": "workflow-trigger-event-status",
                 "label": "status",
                 "description": "Inspect the kernel connection to AEDS",
-                "value": "/workflow publication event status"
+                "value": "/workflow trigger event status"
               }
             ]
           },
           {
-            "id": "workflow-publication-disable",
+            "id": "workflow-trigger-disable",
             "label": "disable",
-            "description": "Disable a workflow publication; append its reference",
-            "value": "/workflow publication disable "
+            "description": "Disable a workflow trigger; append its reference",
+            "value": "/workflow trigger disable "
           }
         ]
       },

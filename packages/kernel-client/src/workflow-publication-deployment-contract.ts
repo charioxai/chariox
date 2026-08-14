@@ -15,15 +15,13 @@ export interface WorkflowPublicationDeploymentProviderAccess {
   readonly bundle_id: string
 }
 
-export type WorkflowPublicationDeploymentNetworkPolicy =
-  | { readonly kind: "legacy_unrestricted" }
-  | {
-    readonly kind: "enforced"
-    readonly policy_version: 1
-    readonly default_action: "deny"
-    readonly destinations: readonly WorkflowPublicationDeploymentNetworkDestination[]
-    readonly provider_access: readonly WorkflowPublicationDeploymentProviderAccess[]
-  }
+export type WorkflowPublicationDeploymentNetworkPolicy = {
+  readonly kind: "enforced"
+  readonly policy_version: 1
+  readonly default_action: "deny"
+  readonly destinations: readonly WorkflowPublicationDeploymentNetworkDestination[]
+  readonly provider_access: readonly WorkflowPublicationDeploymentProviderAccess[]
+}
 
 export interface WorkflowPublicationPackageContractMetadata {
   readonly package_version?: number
@@ -71,17 +69,11 @@ export interface WorkflowPublicationDeploymentContract {
   readonly signatures: readonly Record<string, unknown>[]
 }
 
-export type WorkflowPublicationDeploymentContractResolution =
-  | {
-    readonly kind: "native"
-    readonly packageVersion: 3
-    readonly contract: WorkflowPublicationDeploymentContract
-  }
-  | {
-    readonly kind: "legacy_adapter"
-    readonly packageVersion: 1 | 2
-    readonly contract: null
-  }
+export type WorkflowPublicationDeploymentContractResolution = {
+  readonly kind: "native"
+  readonly packageVersion: 3
+  readonly contract: WorkflowPublicationDeploymentContract
+}
 
 export interface WorkflowPublicationDeploymentAdmissionContext {
   readonly targetLocalDaemonProtocolVersion: number
@@ -91,7 +83,6 @@ export function workflowPublicationDeploymentContractPath(
   publicationPackage: WorkflowPublicationPackageContractMetadata,
 ): string | null {
   const packageVersion = normalizedPackageVersion(publicationPackage.package_version)
-  if (packageVersion <= 2) return null
   if (packageVersion !== WORKFLOW_PUBLICATION_PACKAGE_VERSION) {
     throw new Error(`unsupported publication package_version ${packageVersion}`)
   }
@@ -112,9 +103,6 @@ export function resolveWorkflowPublicationDeploymentContract(
 ): WorkflowPublicationDeploymentContractResolution {
   const packageVersion = normalizedPackageVersion(publicationPackage.package_version)
   const path = workflowPublicationDeploymentContractPath(publicationPackage)
-  if (packageVersion <= 2) {
-    return { kind: "legacy_adapter", packageVersion: packageVersion === 2 ? 2 : 1, contract: null }
-  }
   if (!path) throw new Error("publication package v3 is missing deployment_contract")
   const contract = validateWorkflowPublicationDeploymentContract(value)
   if (contract.compatibility.package_version !== packageVersion) {
@@ -227,11 +215,14 @@ export function assertWorkflowPublicationDeploymentRuntimeCompatibility(
 }
 
 function normalizedPackageVersion(value: unknown): number {
-  if (value === undefined || value === null) return 1
-  if (!Number.isInteger(value) || Number(value) < 1) {
-    throw new Error("publication package_version must be a positive integer")
+  if (!Number.isInteger(value)) {
+    throw new Error(`publication package_version must be ${WORKFLOW_PUBLICATION_PACKAGE_VERSION}`)
   }
-  return Number(value)
+  const packageVersion = Number(value)
+  if (packageVersion !== WORKFLOW_PUBLICATION_PACKAGE_VERSION) {
+    throw new Error(`unsupported publication package_version ${packageVersion}`)
+  }
+  return packageVersion
 }
 
 function objectRecord(value: unknown, label: string): Record<string, unknown> {
@@ -260,12 +251,7 @@ function requireSha256(value: unknown, label: string): void {
 }
 
 function validateDeploymentNetworkPolicy(value: unknown): WorkflowPublicationDeploymentNetworkPolicy {
-  if (value === undefined) return { kind: "legacy_unrestricted" }
   const policy = objectRecord(value, "deployment contract network policy")
-  if (policy.egress_policy === "deployment_tightens") {
-    requireExactKeys(policy, ["egress_policy"], "deployment contract legacy network policy")
-    return { kind: "legacy_unrestricted" }
-  }
   requireExactKeys(
     policy,
     ["policy_version", "default_action", "destinations", "provider_access"],
@@ -357,7 +343,6 @@ function validateDeploymentNetworkBindings(
   slots: unknown[],
   providerRequirementsValue: unknown,
 ): void {
-  if (policy.kind !== "enforced") return
   const slotRecords = slots.map((slot, index) => objectRecord(slot, `deployment contract credential_slots[${index}]`))
   const slotIds = new Set(slotRecords.map((slot, index) => requireCredentialSlotId(
     slot.slot_id,

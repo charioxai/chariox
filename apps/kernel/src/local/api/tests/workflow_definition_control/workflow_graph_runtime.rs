@@ -443,7 +443,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
     let materialized = match harness
         .dispatch_as_user(
             runtime_owner_user_id,
-            LocalDaemonRequest::MaterializeWorkflowPublication(
+            LocalDaemonRequest::MaterializeWorkflowPublication(Box::new(
                 MaterializeWorkflowPublicationRequest {
                     publication_id: "publication-1".to_string(),
                     snapshot: WorkflowPublicationSnapshot {
@@ -462,7 +462,7 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
                         agents: vec![source_agent.clone()],
                     },
                 },
-            ),
+            )),
         )
         .expect("publication should materialize")
     {

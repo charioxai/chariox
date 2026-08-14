@@ -3,13 +3,11 @@ import type {
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
-import { apiSseInvokePath } from "./publication-api-sse.js"
 import {
   collectPublicationTraceEvents,
   createPublicationTraceStreamState,
 } from "./publication-trace-events.js"
 import { isTerminalWorkflowRunStatus } from "./workflow-run-status.js"
-import { websocketInvokePath } from "./publication-websocket.js"
 
 type ViewerApp = {
   get: (path: string, handler: (_request: unknown, reply: ViewerReply) => unknown) => unknown
@@ -92,8 +90,6 @@ export function publicationViewerPage(
     optimisticPrompt: publicationInputPrompt(options.invocationInput),
     traceNodes,
     eventsUrl: options.eventsUrl ?? null,
-    apiSseInvokePath: apiSseInvokePath(publication),
-    websocketInvokePath: websocketInvokePath(publication),
     humanFormInvokePath: PUBLICATION_VIEWER_FORM_INVOKE_PATH,
     humanPromptTarget: promptTargetParts(publication.route ?? "/"),
     directRouteRoots: publicationDirectRouteRoots(publication),
@@ -106,7 +102,7 @@ export function publicationViewerPage(
       `<main class="publication-viewer${hasTraces ? " has-traces" : ""}${showComposer ? " has-composer" : ""}">`,
       "  <section class=\"output-pane\">",
       "    <header class=\"viewer-bar\">",
-      "      <div><span class=\"eyebrow\">Published workflow</span><h1>Workflow Run</h1></div>",
+      "      <div><span class=\"eyebrow\">Workflow public view</span><h1>Workflow Run</h1></div>",
       "      <div class=\"run-state\"><span id=\"run-dot\"></span><span id=\"status\">Ready</span></div>",
       "      <p id=\"queue-status\" hidden></p>",
       "    </header>",
@@ -145,7 +141,6 @@ export function viewerTraceNodes(publication: WorkflowPublicationConfig): Viewer
 
 export function viewerComposerEnabled(publication: WorkflowPublicationConfig): boolean {
   const transport = viewerTransport(publication)
-  if (transport === "api_sse_json" || transport === "websocket_json") return true
   if (transport !== "human_http") return false
   return (publication.methods ?? ["GET", "POST"]).includes("POST")
 }
@@ -159,9 +154,7 @@ function publicationInputPrompt(input: unknown): string | null {
 
 function viewerTransport(publication: WorkflowPublicationConfig) {
   const transport = publication.transport ?? "human_http"
-  return transport === "human_http" || transport === "api_sse_json" || transport === "websocket_json"
-    ? transport
-    : null
+  return transport === "human_http" ? transport : null
 }
 
 function traceRailMarkup(nodes: ViewerTraceNode[]) {
@@ -264,9 +257,7 @@ async function invokePublication(prompt, artifacts) {
   if (button) button.disabled = true;
   setStatus('Submitting');
   try {
-    if (viewerConfig.transport === 'human_http') await invokeHumanHttp(prompt, artifacts);
-    if (viewerConfig.transport === 'api_sse_json') await invokeApiSse(prompt, artifacts);
-    if (viewerConfig.transport === 'websocket_json') await invokeWebSocket(prompt, artifacts);
+    await invokeHumanHttp(prompt, artifacts);
   } catch (error) {
     setStatus(error instanceof Error ? error.message : String(error), true);
   } finally {
@@ -311,63 +302,6 @@ async function invokeHumanHttp(prompt, artifacts) {
   document.open();
   document.write(html);
   document.close();
-}
-
-async function invokeApiSse(prompt, artifacts) {
-  resetForInvocation(prompt);
-  const response = await fetch(publicationUrl(viewerConfig.apiSseInvokePath), {
-    method: 'POST',
-    headers: { accept: 'text/event-stream', 'content-type': 'application/json' },
-    body: JSON.stringify(inputPayload(prompt, artifacts)),
-  });
-  if (!response.ok) throw new Error('HTTP ' + response.status);
-  if (!response.body) throw new Error('stream unavailable');
-  await consumeSseStream(response.body);
-}
-
-async function invokeWebSocket(prompt, artifacts) {
-  resetForInvocation(prompt);
-  const socket = new WebSocket(publicationWebSocketUrl(viewerConfig.websocketInvokePath));
-  const readyArtifacts = new Set();
-  await new Promise((resolve, reject) => {
-    let invoked = false;
-    socket.addEventListener('message', (event) => {
-      const payload = JSON.parse(String(event.data || '{}'));
-      if (payload.type === 'ready') { void sendArtifacts().catch(reject); return; }
-      if (payload.type === 'artifact' && payload.artifact?.artifact_id) {
-        readyArtifacts.add(payload.artifact.artifact_id);
-        if (!invoked && readyArtifacts.size >= artifacts.length) {
-          invoked = true;
-          socket.send(JSON.stringify({ type: 'invoke', input: { prompt } }));
-        }
-        return;
-      }
-      if (payload.type === 'error') reject(new Error(payload.error || 'websocket error'));
-      applyPublicationEvent(payload.type, payload);
-      if (payload.type === 'final' || payload.type === 'timeout') { socket.close(); resolve(); }
-    });
-    socket.addEventListener('error', () => reject(new Error('websocket connection failed')));
-    socket.addEventListener('close', () => {
-      if (!invoked && artifacts.length === 0) reject(new Error('websocket closed before invocation'));
-    });
-    async function sendArtifacts() {
-      if (!artifacts.length) {
-        invoked = true;
-        socket.send(JSON.stringify({ type: 'invoke', input: inputPayload(prompt, []) }));
-        return;
-      }
-      for (const artifact of artifacts) {
-        const artifactId = 'artifact_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-        socket.send(JSON.stringify({ type: 'artifact_begin', artifact_id: artifactId, name: artifact.name, mime_type: artifact.type, size_bytes: artifact.size_bytes }));
-        socket.send(JSON.stringify({ type: 'artifact_chunk', artifact_id: artifactId, data: artifact.base64 }));
-        socket.send(JSON.stringify({ type: 'artifact_end', artifact_id: artifactId }));
-      }
-    }
-  });
-}
-
-function inputPayload(prompt, artifacts) {
-  return artifacts.length ? { prompt, artifacts } : { prompt };
 }
 
 function resetForInvocation(prompt) {
@@ -880,19 +814,13 @@ function publicationAppAssetUrl(path) {
   return serialized ? pathname + '?' + serialized : pathname;
 }
 
-function publicationWebSocketUrl(path) {
-  const url = new URL(publicationUrl(path), window.location.href);
-  url.protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  return url.toString();
-}
-
 function publicationIngressPrefix() {
   const parts = window.location.pathname.split('/').filter(Boolean);
   if (!parts.length) return '';
   if (parts[0] === '~d' && parts[1] && parts[2]) return '/' + parts.slice(0, 3).join('/');
   if (parts[0] === 'publication-ingress' && parts[1] === '~d' && parts[2] && parts[3]) return '/' + parts.slice(0, 4).join('/');
   if (parts[0] === 'publication-ingress' && parts[1]) return '/' + parts.slice(0, 2).join('/');
-  if (['.well-known', 'invoke', 'mcp', 'health'].includes(parts[0])) return '';
+  if (['.well-known', 'invoke', 'health'].includes(parts[0])) return '';
   const directRouteRoots = Array.isArray(viewerConfig.directRouteRoots) ? viewerConfig.directRouteRoots : [];
   if (directRouteRoots.includes('*') || directRouteRoots.includes(parts[0])) return '';
   const routeFirst = String(viewerConfig.humanPromptTarget?.prefix || '').split('/').filter(Boolean)[0] || '';

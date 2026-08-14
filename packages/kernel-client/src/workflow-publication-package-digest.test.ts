@@ -3,7 +3,7 @@ import test from "node:test"
 
 import { workflowPublicationPackageDigest } from "./workflow-publication-package-digest.js"
 
-test("workflow publication package digest matches the kernel and Cloud vector", () => {
+test("workflow trigger package digest matches the kernel and Cloud vector", () => {
   assert.equal(workflowPublicationPackageDigest([
     {
       path: "publication.json",
@@ -18,7 +18,7 @@ test("workflow publication package digest matches the kernel and Cloud vector", 
   ]), "sha256:41adbfede761eb36ea3202865c16f8e3c1f5b232994d16bde44852ebb3687f4a")
 })
 
-test("workflow publication package digest length-frames structural records", () => {
+test("workflow trigger package digest length-frames structural records", () => {
   const left = workflowPublicationPackageDigest([{
     path: "z",
     content: Buffer.from("b"),

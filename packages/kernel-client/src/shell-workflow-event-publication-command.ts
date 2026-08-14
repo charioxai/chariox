@@ -59,7 +59,7 @@ export async function executeWorkflowEventPublicationCommand(
   if (action === "category") {
     const [category, ...optionArgs] = rest
     if (!category) {
-      return failure("usage: workflow publication event category <category> [--cursor <cursor>] [--limit <n>]")
+      return failure("usage: workflow trigger event category <category> [--cursor <cursor>] [--limit <n>]")
     }
     const parsed = parseCatalogOptions(optionArgs)
     if (!parsed.ok) return parsed
@@ -73,7 +73,7 @@ export async function executeWorkflowEventPublicationCommand(
 
   if (action === "show") {
     const [generatorId, version] = rest
-    if (!generatorId) return failure("usage: workflow publication event show <generator-id> [version]")
+    if (!generatorId) return failure("usage: workflow trigger event show <generator-id> [version]")
     const detail = expectField<EventGeneratorCatalogDetail>(
       await client.send(getEventGeneratorDetailRequest(generatorId, version)),
       "EventGeneratorDetail",
@@ -85,7 +85,7 @@ export async function executeWorkflowEventPublicationCommand(
   if (action === "events") {
     const [generatorId, ...options] = rest
     if (!generatorId) {
-      return failure("usage: workflow publication event events <generator-id> [query] [--cursor <cursor>] [--limit <n>]")
+      return failure("usage: workflow trigger event events <generator-id> [query] [--cursor <cursor>] [--limit <n>]")
     }
     const parsed = parseCatalogOptions(options)
     if (!parsed.ok) return parsed
@@ -112,7 +112,7 @@ export async function executeWorkflowEventPublicationCommand(
   if (action === "authorize" || action === "install") {
     const [generatorId, returnUrl] = rest
     if (!generatorId) {
-      return failure(`usage: workflow publication event ${action} <generator-id> [return-url]`)
+      return failure(`usage: workflow trigger event ${action} <generator-id> [return-url]`)
     }
     const authorization = expectField<EventConnectionAuthorization>(
       await client.send(installEventConnectionRequest(generatorId, returnUrl)),
@@ -135,7 +135,7 @@ export async function executeWorkflowEventPublicationCommand(
     const options = generatorId ? rest.slice(1) : rest
     const parsed = parseCatalogOptions(options)
     if (!parsed.ok) return parsed
-    if (parsed.query) return failure("usage: workflow publication event connections [generator-id] [--cursor <cursor>] [--limit <n>]")
+    if (parsed.query) return failure("usage: workflow trigger event connections [generator-id] [--cursor <cursor>] [--limit <n>]")
     const page = expectField<EventConnectionPage>(
       await client.send(listEventConnectionsRequest({
         ...(generatorId ? { generatorId } : {}),
@@ -155,7 +155,7 @@ export async function executeWorkflowEventPublicationCommand(
   if (action === "resources") {
     const [connectionId, ...options] = rest
     if (!connectionId) {
-      return failure("usage: workflow publication event resources <connection-id> [query] [--cursor <cursor>] [--limit <n>]")
+      return failure("usage: workflow trigger event resources <connection-id> [query] [--cursor <cursor>] [--limit <n>]")
     }
     const parsed = parseCatalogOptions(options)
     if (!parsed.ok) return parsed
@@ -203,7 +203,7 @@ export async function executeWorkflowEventPublicationCommand(
 
   if (action === "pause" || action === "resume" || action === "delete" || action === "remove") {
     const bindingId = rest[0]
-    if (!bindingId) return failure(`usage: workflow publication event ${action} <binding-id>`)
+    if (!bindingId) return failure(`usage: workflow trigger event ${action} <binding-id>`)
     const status = action === "pause" ? "paused" : action === "resume" ? "active" : "tombstoned"
     const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
       await client.send(setWorkflowEventBindingStatusRequest(sessionId, bindingId, status)),
@@ -215,7 +215,7 @@ export async function executeWorkflowEventPublicationCommand(
   if (action === "transfer") {
     const [bindingId, targetSessionId, targetPublicationRef] = rest
     if (!bindingId || !targetSessionId || !targetPublicationRef) {
-      return failure("usage: workflow publication event transfer <binding-id> <target-session> <target-publication>")
+      return failure("usage: workflow trigger event transfer <binding-id> <target-session> <target-publication>")
     }
     const payload = expectVariant<{ binding: WorkflowEventBinding; session: RuntimeSession }>(
       await client.send(transferWorkflowEventBindingRequest(
@@ -235,7 +235,7 @@ export async function executeWorkflowEventPublicationCommand(
 
   if (action === "test") {
     const [bindingId, ...promptParts] = rest
-    if (!bindingId) return failure("usage: workflow publication event test <binding-id> [prompt]")
+    if (!bindingId) return failure("usage: workflow trigger event test <binding-id> [prompt]")
     const payload = expectVariant<Record<string, unknown>>(
       await client.send(testWorkflowEventBindingRequest(
         sessionId,
@@ -260,7 +260,7 @@ export async function executeWorkflowEventPublicationCommand(
     return { ok: true, message: formatDeliveryStatus(status), data: status }
   }
 
-  return failure("usage: workflow publication event catalog|category|show|events|connections|install|resources|list|attach|pause|resume|delete|transfer|test|status")
+  return failure("usage: workflow trigger event catalog|category|show|events|connections|install|resources|list|attach|pause|resume|delete|transfer|test|status")
 }
 
 function parseCatalogOptions(args: string[]):
@@ -363,7 +363,7 @@ function parseBindingOptions(args: string[]):
 }
 
 function bindingUsage(): string {
-  return "usage: workflow publication event bind <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>]"
+  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>]"
 }
 
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {

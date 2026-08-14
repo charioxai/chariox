@@ -131,6 +131,19 @@ fn serve_ready_connection(stream: &mut TcpStream, revoked: &AtomicBool, unavaila
             }]
         })
         .to_string()
+    } else if request.starts_with("POST /v1/connections/inspect HTTP/1.1")
+        || request.starts_with("POST /v1/connections/refresh HTTP/1.1")
+    {
+        serde_json::json!({
+            "generator_id": "dev.chariox.dummy",
+            "connection_id": "connection-local",
+            "lifecycle_state": if revoked.load(Ordering::Relaxed) { "disconnected" } else { "connected" },
+            "scopes": [],
+            "resources": [],
+            "last_successful_health_check_at_ms": 1,
+            "test_event_supported": false
+        })
+        .to_string()
     } else if request.starts_with("POST /v1/connections/revoke HTTP/1.1") {
         revoked.store(true, Ordering::Relaxed);
         serde_json::json!({"revoked": true}).to_string()
@@ -278,6 +291,28 @@ fn event_publication_binding_is_environment_exclusive_and_uses_workflow_queue() 
     assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
     assert!(binding_template.contains("\"connection_id\": null"));
     assert!(!binding_template.contains("connection-local"));
+    let publication_json = package_json_file(&package_files, "publication.json");
+    assert_eq!(
+        publication_json["hooks"][0]["transport"],
+        serde_json::json!("event_based")
+    );
+    assert!(publication_json["hooks"][0].get("route").is_none());
+    assert!(publication_json["hooks"][0].get("methods").is_none());
+    assert!(publication_json["hooks"][0].get("parser").is_none());
+    assert!(publication_json["hooks"][0].get("mode").is_none());
+    assert!(!package_files
+        .iter()
+        .any(|file| file.path.starts_with("public/")));
+    let deployment_contract = package_json_file(&package_files, "deployment-contract.json");
+    assert_eq!(
+        deployment_contract["routes"][0]["transport"],
+        serde_json::json!("event_based")
+    );
+    assert_eq!(
+        deployment_contract["routes"][0]["methods"],
+        serde_json::json!([])
+    );
+    assert!(deployment_contract["routes"][0].get("path").is_none());
 
     let tested = match harness
         .dispatch(LocalDaemonRequest::TestWorkflowEventBinding(

@@ -88,6 +88,7 @@ impl UserCredentialVaultConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CredentialVaultBackend {
+    #[serde(alias = "arroba_encrypted")]
     CharioxEncrypted,
     ProcessMemory,
 }

@@ -125,6 +125,21 @@ pub(crate) fn failed_provider_resume_state_replacement(
         .replacement_after_provider_resume_failure(run.adapter_key(), operation)
 }
 
+pub(crate) fn failed_provider_resume_state_replacement_from_message(
+    run: &RuntimeProviderRun,
+    message: &str,
+) -> Option<ProviderResumeState> {
+    let operation = if message.contains("thread/resume") {
+        "thread/resume"
+    } else if message.contains("codex_thread_resume") {
+        "codex_thread_resume"
+    } else {
+        return None;
+    };
+    run.resume_state()
+        .replacement_after_provider_resume_failure(run.adapter_key(), operation)
+}
+
 pub(crate) fn generate_runtime_mcp_auth_token() -> String {
     Alphanumeric.sample_string(&mut rand::thread_rng(), 32)
 }

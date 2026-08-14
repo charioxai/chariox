@@ -56,7 +56,7 @@ async function executeAndRenderPublicationCommand(
       workflowId: deps.selectedWorkflowId?.() ?? session.workflows?.[0]?.id,
     }))
   if (!result.ok) {
-    deps.flashFooter(result.message ?? "workflow publication command failed", "error")
+    deps.flashFooter(result.message ?? "workflow trigger command failed", "error")
     return
   }
   const updatedSession = sessionFromResult(result.data)

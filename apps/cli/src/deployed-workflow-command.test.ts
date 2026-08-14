@@ -914,7 +914,6 @@ function projectState() {
       name: "Demo app",
       slug: "demo",
       kind: "agent_app" as const,
-      origin: "native",
       defaultEnvironmentSlug: "production",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",

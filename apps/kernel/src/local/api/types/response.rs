@@ -326,6 +326,26 @@ pub enum LocalDaemonResponse {
     },
     WorkflowCodeArtifactCreated { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeArtifactUpdated { artifact: crate::workflow_code::WorkflowCodeArtifact, },
+    WorkflowCodeSourceBound {
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
+    WorkflowCodeRebuildPreview {
+        preview: crate::workflow_code::WorkflowCodeRebuildPreview,
+    },
+    WorkflowCodeSourceRebuilt {
+        preview: crate::workflow_code::WorkflowCodeRebuildPreview,
+        result: crate::workflow_code::WorkflowCodeApplyReport,
+        session: RuntimeSession,
+    },
+    WorkflowCodeSourceUpdatePreview {
+        preview: crate::workflow_code::WorkflowCodeSourceUpdatePreview,
+    },
+    WorkflowCodeSourceUpdated {
+        preview: crate::workflow_code::WorkflowCodeSourceUpdatePreview,
+        workflow: WorkflowDefinition,
+        session: RuntimeSession,
+    },
     WorkflowCodeArtifact { artifact: crate::workflow_code::WorkflowCodeArtifact, },
     WorkflowCodeArtifactsListed { artifacts: Vec<crate::workflow_code::WorkflowCodeArtifactMetadata>, },
     WorkflowCodeArtifactDeleted { name: String, path: PathBuf, },
@@ -353,6 +373,7 @@ pub enum LocalDaemonResponse {
         connection: Option<EventConnection>,
     },
     EventConnectionResourcesPage { page: EventGeneratorResourcePage, },
+    EventConnectionTested { result: chariox_event_protocol::AegsConnectionTestEventResponse, },
     EventConnectionDependencies { connection_id: String, dependencies: Vec<WorkflowEventBindingDependency>, },
     EventConnectionRemoved { connection: EventConnection, deactivated_bindings: Vec<WorkflowEventBindingDependency>, },
     WorkflowEventBindingCreated { binding: crate::session::WorkflowEventBinding, session: RuntimeSession, },

@@ -211,11 +211,7 @@ fn bootstrap_restores_unexpired_workflow_publication_tunnel_intent() {
     assert_eq!(target.expires_at_ms, expires_at_ms);
     assert_eq!(
         target.capabilities,
-        vec![
-            "http".to_string(),
-            "websocket".to_string(),
-            "publication".to_string(),
-        ]
+        vec!["http".to_string(), "publication".to_string()]
     );
 }
 

@@ -23,6 +23,20 @@ only authentic provider events, normalize a provider occurrence once, apply
 the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
 
+Management protocol version 3 also requires the shared installed-connection
+lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROTOCOL.md):
+
+- inspect connection state, scopes, resources, health, and recovery guidance;
+- refresh/reconcile provider state without changing the stable connection ID;
+- reconnect and revoke/disconnect;
+- emit an authentic test occurrence through AEDS when supported.
+
+Implement `AegsProvider::inspect_connection`, `refresh_connection`, and
+`test_event` for provider-specific behavior. The SDK supplies a conservative
+baseline inspection, but it intentionally does not claim that provider health
+was checked or that test events are supported. A test event must use the same
+subscription match and AEDS publication path as a real webhook.
+
 The OSS repository intentionally contains no production AEDS and no
 Chariox-maintained production provider implementation. Those components live in
 the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
@@ -53,7 +67,7 @@ Publisher paths:
 Generator IDs are publisher-scoped. Chariox uses `dev.chariox.<provider>` and
 does not claim the provider's official namespace. Registry promotion requires
 signed manifests, conformance, live provider evidence, and the deployment
-failure matrix described in `EVENT_BASED_PUBLICATION_SURFACE_PLAN.html`.
+failure matrix described by the integration's release evidence.
 
 Every implementation should call `verify_provider_contract` from its tests.
 Provider webhook fixtures can additionally use `verify_webhook_conformance` to

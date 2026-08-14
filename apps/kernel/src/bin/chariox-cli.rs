@@ -69,19 +69,7 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         print_serve_help();
         return Ok(ExitCode::SUCCESS);
     }
-    let package_arg = args.first().ok_or_else(|| {
-        "usage: chariox serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
-    })?;
-    let port = args.get(1).ok_or_else(|| {
-        "usage: chariox serve <publication-package-or-publication.json> <port> [--host <host>] [--hook <id>] [--kernel-url <url>] [--cloud-deployment <id>]".to_string()
-    })?;
-    let package_path = resolve_user_path(package_arg)?;
-    if !package_path.exists() {
-        return Err(format!(
-            "published workflow package `{}` was not found",
-            package_path.display()
-        ));
-    }
+    let (target, port, mut index) = parse_serve_target(args)?;
 
     let mut host = "127.0.0.1".to_string();
     let mut hook_id: Option<String> = None;
@@ -89,7 +77,6 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
     let mut tls_key_file: Option<String> = None;
     let mut tls_cert_file: Option<String> = None;
     let mut cloud_deployment_id: Option<String> = None;
-    let mut index = 2;
     while index < args.len() {
         match args[index].as_str() {
             "--host" => {
@@ -132,9 +119,21 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit())
-        .env("CHARIOX_PUBLICATION_PACKAGE", package_path)
         .env("HOST", host)
         .env("PORT", port);
+    match target {
+        ServeTarget::Package(package_path) => {
+            command.env("CHARIOX_PUBLICATION_PACKAGE", package_path);
+        }
+        ServeTarget::Source {
+            session_id,
+            publication_id,
+        } => {
+            command
+                .env("CHARIOX_PUBLICATION_SESSION_ID", session_id)
+                .env("CHARIOX_PUBLICATION_ID", publication_id);
+        }
+    }
     if let Some(value) = hook_id {
         command.env("CHARIOX_PUBLICATION_HOOK_ID", value);
     }
@@ -157,6 +156,52 @@ fn run_serve_command(workspace_root: &Path, args: &[String]) -> Result<ExitCode,
         command.env("CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID", value);
     }
     run_workflow_publication_server(command, &node)
+}
+
+enum ServeTarget {
+    Package(PathBuf),
+    Source {
+        session_id: String,
+        publication_id: String,
+    },
+}
+
+fn parse_serve_target(args: &[String]) -> Result<(ServeTarget, String, usize), String> {
+    if args.first().map(String::as_str) == Some("source") {
+        let session_id = args
+            .get(1)
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .ok_or_else(serve_usage)?;
+        let publication_id = args
+            .get(2)
+            .filter(|value| !value.trim().is_empty())
+            .cloned()
+            .ok_or_else(serve_usage)?;
+        let port = args.get(3).cloned().ok_or_else(serve_usage)?;
+        return Ok((
+            ServeTarget::Source {
+                session_id,
+                publication_id,
+            },
+            port,
+            4,
+        ));
+    }
+    let package_arg = args.first().ok_or_else(serve_usage)?;
+    let port = args.get(1).cloned().ok_or_else(serve_usage)?;
+    let package_path = resolve_user_path(package_arg)?;
+    if !package_path.exists() {
+        return Err(format!(
+            "workflow trigger package `{}` was not found",
+            package_path.display()
+        ));
+    }
+    Ok((ServeTarget::Package(package_path), port, 2))
+}
+
+fn serve_usage() -> String {
+    "usage: chariox serve (<publication-package-or-publication.json> <port> | source <session-id> <publication-id> <port>) [options]".to_string()
 }
 
 #[cfg(unix)]
@@ -197,6 +242,7 @@ fn print_serve_help() {
         "{}",
         [
             "usage: chariox serve <publication-package-or-publication.json> <port> [options]",
+            "       chariox serve source <session-id> <publication-id> <port> [options]",
             "",
             "Options:",
             "  --host <host>              Bind host (default: 127.0.0.1)",
@@ -518,7 +564,7 @@ fn oldest_modified_time(paths: &[PathBuf]) -> Result<SystemTime, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::assess_cli_build_freshness;
+    use super::{assess_cli_build_freshness, parse_serve_target, ServeTarget};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::thread;
@@ -533,6 +579,31 @@ mod tests {
 
         assert!(freshness.needs_build);
         assert!(freshness.reason.contains("missing CLI build output"));
+    }
+
+    #[test]
+    fn serve_source_targets_the_existing_workflow_session() {
+        let args = [
+            "source".to_string(),
+            "session-1".to_string(),
+            "publication-1".to_string(),
+            "43123".to_string(),
+            "--host".to_string(),
+            "127.0.0.1".to_string(),
+        ];
+        let (target, port, option_index) =
+            parse_serve_target(&args).expect("source target should parse");
+        let ServeTarget::Source {
+            session_id,
+            publication_id,
+        } = target
+        else {
+            panic!("source target should not materialize a package");
+        };
+        assert_eq!(session_id, "session-1");
+        assert_eq!(publication_id, "publication-1");
+        assert_eq!(port, "43123");
+        assert_eq!(option_index, 4);
     }
 
     #[test]

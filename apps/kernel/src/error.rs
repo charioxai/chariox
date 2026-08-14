@@ -146,9 +146,9 @@ pub enum DaemonError {
         workspace_id: String,
         worktree_id: String,
         existing_session_id: String,
-        existing_operation: String,
+        existing_operation: Box<String>,
         requested_session_id: String,
-        requested_operation: String,
+        requested_operation: Box<String>,
     },
     #[error("invalid session transition for `{session_id}`: {from} -> {to}")]
     InvalidSessionTransition {

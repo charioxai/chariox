@@ -649,22 +649,35 @@ Workflow endpoint direction:
 - once accepted by the kernel, the workflow should treat the resulting input message the same way regardless of source
 - disconnected subgraphs are allowed; a subgraph is reachable only if some endpoint points into it
 
-Published workflow direction:
+Workflow trigger and deployment direction:
 
-- a published workflow is a durable package plus a materialized publication
-  runtime session, not a live pointer to an editable workspace session
-- a publication package contains `publication.json`, `workflow.snapshot.json`,
-  `requirements.json`, optional generated app assets, and packaged scripts
-- a publication runtime session is kernel-owned, hidden from ordinary session
-  lists, and non-editable through normal workspace commands
-- a hook binds one transport to one workflow endpoint and one workflow queue
-  inside a published workflow runtime
-- multiple hooks MAY feed one published workflow runtime and therefore share
-  the same queue namespace and agents
-- serving a publication MUST validate provider/model bindings, extension
-  requirements, and credential requirements before it accepts traffic
-- if the captured provider/model is unavailable, a local binding may substitute
-  another available provider/model without mutating the exported package
+- HTTP, schedule, and event-notification triggers created on the current kernel
+  remain attached to the editable source workflow and its source session
+- accepting a trigger invocation MUST enqueue it through the workflow endpoint's
+  normal queue path; it MUST NOT create a hidden session, cloned agents, or a
+  separate queue namespace
+- all workflows in one session continue to share the session-level serial
+  execution arbiter, so prompts from different endpoints and triggers cannot run
+  concurrently against shared agents
+- a local HTTP gateway is an ingress process for a source workflow trigger. It
+  resolves the current publication definition from the kernel for each request
+  and invokes the existing source session; starting the gateway does not export
+  or materialize a workflow package
+- multiple triggers MAY feed one workflow and therefore share its agents and
+  configured queue namespace
+- exporting or deploying a workflow is the boundary that captures an immutable
+  package. A publication package contains `publication.json`,
+  `workflow.snapshot.json`, `requirements.json`, optional generated app assets,
+  and packaged scripts
+- a packaged/self-hosted or Chariox-hosted deployment materializes its own
+  kernel-owned session in the destination kernel. That deployed session is
+  independent from the source session because it is a separate execution
+  environment, not because a trigger was created
+- serving either a live source trigger or a deployed package MUST validate
+  provider/model bindings, extension requirements, and credential requirements
+  before it accepts traffic
+- if a packaged provider/model is unavailable, a deployment binding may
+  substitute another available provider/model without mutating the package
 - Cloud publication deployment is a control-plane record plus a runtime backend.
   It is not a new workflow authority and does not replace the kernel-owned
   publication runtime session.
@@ -705,13 +718,15 @@ artifacts, outputs, or traces.
 
 Public deployment URL contract:
 
-- all transports are rooted at `public_base_url`
+- HTTP triggers are rooted at `public_base_url`
 - `GET /` opens the human/browser-compatible viewer or form
-- `GET /<prompt>` invokes `human_http` with an address-bar prompt path
-- `POST /invoke` invokes `api_sse_json`
-- `/.well-known/chariox/publication/ws` invokes `websocket_json`
-- `POST /mcp` invokes the MCP publication endpoint
+- `GET /<prompt>` invokes the workflow with an address-bar prompt path
+- `POST /invoke` invokes the workflow from a form or API request
 - `GET /.well-known/chariox/publication/status` returns publication status
+
+Workflow trigger V1 exposes HTTP GET/POST only. SSE remains an internal HTTP
+progress mechanism and is not a selectable trigger type. Agent tool servers and
+kernel/relay transport channels are independent of the workflow trigger model.
 
 The external contract is the same for `local_runtime` and `hosted_container`.
 The caller should not infer execution location from the URL.
@@ -752,17 +767,10 @@ Publication event direction:
 - trace filtering is part of the publication runtime contract: clients and
   publication gateways must not infer or expose hidden workflow internals
   beyond the policy
-- browser-compatible transports share one publication viewer HTML app. The
-  viewer renders output/status on the left and exposed traces on the right, and
-  selects a small client-side adapter for the configured transport
-- `human_http` can invoke from an address-bar GET path or from the shared viewer
-  form; GET result pages subscribe to publication events by SSE
-- `api_sse_json` streams publication events directly from `POST /invoke`
-- `websocket_json` sends publication events over the WebSocket connection
-- the shared viewer can drive `api_sse_json` with browser `fetch` streaming and
-  can drive `websocket_json` over the publication WebSocket path
-- `mcp` maps publication progress/final output to MCP tool progress and result
-  concepts
+- HTTP triggers share one viewer HTML app. The viewer renders output/status on
+  the left and exposed traces on the right.
+- HTTP can invoke from an address-bar GET path or from the shared viewer form;
+  result pages receive publication progress through the internal SSE stream.
 
 Publication trace exposure policy:
 
@@ -800,22 +808,19 @@ Human HTTP renderable output:
 
 Remote terminal and Cloud invocation:
 
-- remote Chariox terminals must invoke a published workflow through its published
-  transport, not by directly calling the workflow endpoint in the kernel
-- when a local-only published workflow is invoked remotely, the kernel/relay may
-  tunnel the transport request and response between the remote terminal and the
-  local publication server
+- remote Chariox terminals invoke an HTTP trigger through its configured ingress,
+  not by bypassing that trigger and directly calling the workflow endpoint
+- when a local-only HTTP trigger is invoked remotely, the kernel/relay may tunnel
+  the HTTP request and response between the remote terminal and the local server
 - the relay remains transport-only and must not inspect workflow prompts,
   artifacts, outputs, or published transport payloads
-- Cloud publication ingress is the public runtime ingress for deployed
-  publications. It forwards HTTP, SSE, WebSocket, and MCP traffic to the active
-  backend target and must preserve streaming semantics.
+- Cloud publication ingress forwards HTTP and its internal SSE progress stream
+  to the active backend target and must preserve streaming semantics.
 - Scalingo Cloud should not proxy runtime publication streams. It may create,
   list, start, stop, and observe deployment metadata, and the web terminal may
   embed `public_base_url` in the central panel.
-- If the active backend is unavailable, transports return transport-appropriate
-  unavailable responses: human HTTP unavailable page, API SSE structured
-  unavailable event/error, WebSocket close reason, and MCP structured error.
+- If the active backend is unavailable, HTTP returns an unavailable page or a
+  structured invocation error as appropriate to the request.
 - Hosted containers receive scoped deployment/runtime identity only. They must
   not receive a general Chariox Cloud user account token.
 - Publication images and packages must not include provider credentials. Real

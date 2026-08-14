@@ -254,7 +254,7 @@ impl KernelRuntimeState {
                     result: crate::workflow_code::WorkflowCodeRunResult {
                         apply: apply_result,
                         invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
-                            workflow_run,
+                            workflow_run: Box::new(workflow_run),
                             workflow,
                             endpoint,
                         },
@@ -273,7 +273,7 @@ impl KernelRuntimeState {
                     result: crate::workflow_code::WorkflowCodeRunResult {
                         apply: apply_result,
                         invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
-                            queued_prompt,
+                            queued_prompt: Box::new(queued_prompt),
                             workflow,
                             endpoint,
                         },

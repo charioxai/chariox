@@ -11,11 +11,12 @@ import {
   refreshEventConnectionRequest,
   reconnectEventConnectionRequest,
   removeEventConnectionRequest,
+  testEventConnectionRequest,
 } from "./ipc-event-publication-requests.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("event connection lifecycle requests match protocol 253", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 253)
+test("event connection lifecycle requests match protocol 257", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 257)
   assert.deepEqual(listEventConnectionsRequest({ generatorId: "dev.chariox.github" }), {
     ListEventConnections: {
       generator_id: "dev.chariox.github",
@@ -37,6 +38,12 @@ test("event connection lifecycle requests match protocol 253", () => {
   })
   assert.deepEqual(refreshEventConnectionRequest("connection-1"), {
     RefreshEventConnection: { connection_id: "connection-1" },
+  })
+  assert.deepEqual(testEventConnectionRequest("connection-1", "pull_request.opened"), {
+    TestEventConnection: {
+      connection_id: "connection-1",
+      event_type: "pull_request.opened",
+    },
   })
   assert.deepEqual(reconnectEventConnectionRequest("connection-1", "https://example.test"), {
     ReconnectEventConnection: {

@@ -55,11 +55,12 @@ pub use types::{
     SchedulerState, SessionAgentDefaults, SessionCollaborationAgentCounts, SessionConfigState,
     SessionExecutionMode, SessionInvite, SessionMember, SessionStatus, WorkflowArtifactRef,
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
-    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEdgeEndpointSide, WorkflowEndpointDefinition,
-    WorkflowFailureEvent, WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode,
-    WorkflowHandoffPayload, WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition,
-    WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOutputPayload,
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowCompletionSnapshot,
+    WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition, WorkflowEdgeDefinition,
+    WorkflowEdgeEndpointSide, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowFailurePolicy, WorkflowFailurePolicyMode, WorkflowHandoffPayload,
+    WorkflowIntermediateOutput, WorkflowMessage, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowNodeThinkingTrace, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition,
     WorkflowPublicationInvocationEnvelope, WorkflowQueuedPrompt, WorkflowQueuedPromptSource,
     WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunOutputSubmission, WorkflowRunStatus,
@@ -78,12 +79,16 @@ pub use types::{
     DEFAULT_WORKFLOW_WATCHDOG_MAX_WAKEUPS,
 };
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
+pub(crate) use workflow_definition::{
+    WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
+};
 pub use workflow_publication::{
     WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
     WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot,
     WORKFLOW_PUBLICATION_KIND_EVENT_BASED, WORKFLOW_PUBLICATION_KIND_INGRESS,
     WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY, WORKFLOW_PUBLICATION_WORKSPACE_ROOT,
 };
+pub(crate) use workflow_scheduling::{WorkflowQueuedPromptInput, WorkflowScheduleReconfiguration};
 pub(crate) use workspace_links::normalize_workspace_link_repo_root;
 
 pub(crate) fn is_false(value: &bool) -> bool {

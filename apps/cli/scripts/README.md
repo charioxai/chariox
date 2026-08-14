@@ -274,19 +274,11 @@ HTTP invocation path:
 
 ```bash
 pnpm --filter @chariox/cli run publication:drill
-pnpm --filter @chariox/cli run publication:container-drill
 ```
 
-It launches an isolated kernel and gateway, creates a kernel-owned HTTP
-publication, invokes it directly, verifies parser failures return HTTP 400,
-invokes the same publication over WebSocket, restarts the gateway with
-self-signed HTTPS/TLS and invokes it again over HTTPS and WSS, exports it with
-`workflow publication export`, starts the gateway from the exported
-`publication.config.json`, invokes the exported package through
-`chariox-workflow-call`, and validates accepted workflow-run metadata. The
-container variant also builds `docker/publication/Dockerfile`, runs exported
-`human_http` and `api_sse_json` packages in standalone kernel+gateway
-containers, and verifies missing requirements fail before the gateway listens.
+It validates kernel-owned HTTP GET/POST and schedule triggers, publication
+status, workflow-run metadata, trace exposure, and provider behavior through
+the supported gateway contract.
 
 Use this after touching cross-kernel publication calls or the custom parser
 path:
@@ -319,7 +311,7 @@ package plus live-workflow single-source and source-directory exports, then
 imports, validates, applies, and runs each form with fresh workflow ids.
 
 Use this to validate the semantic URL renderer application shape on top of
-workflow publication:
+workflow trigger:
 
 ```bash
 pnpm --filter @chariox/cli run semantic-url-renderer:drill

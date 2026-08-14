@@ -286,27 +286,29 @@ pub struct WorkflowQueuedPrompt {
     workflow_run_id: Option<String>,
 }
 
+pub(crate) struct WorkflowQueuedPromptInput {
+    pub(crate) id: String,
+    pub(crate) queue_id: String,
+    pub(crate) workflow_id: String,
+    pub(crate) endpoint_id: String,
+    pub(crate) prompt: Option<String>,
+    pub(crate) publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
+    pub(crate) source: WorkflowQueuedPromptSource,
+    pub(crate) schedule_id: Option<String>,
+}
+
 impl WorkflowQueuedPrompt {
-    pub fn new(
-        id: impl Into<String>,
-        queue_id: impl Into<String>,
-        workflow_id: impl Into<String>,
-        endpoint_id: impl Into<String>,
-        prompt: Option<String>,
-        publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
-        source: WorkflowQueuedPromptSource,
-        schedule_id: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(input: WorkflowQueuedPromptInput) -> Self {
         let now = unix_epoch_ms();
         Self {
-            id: id.into(),
-            queue_id: queue_id.into(),
-            workflow_id: workflow_id.into(),
-            endpoint_id: endpoint_id.into(),
-            prompt,
-            publication_invocation,
-            source,
-            schedule_id,
+            id: input.id,
+            queue_id: input.queue_id,
+            workflow_id: input.workflow_id,
+            endpoint_id: input.endpoint_id,
+            prompt: input.prompt,
+            publication_invocation: input.publication_invocation,
+            source: input.source,
+            schedule_id: input.schedule_id,
             status: WorkflowQueuedPromptStatus::Queued,
             created_at_ms: now,
             updated_at_ms: now,
@@ -390,6 +392,16 @@ impl WorkflowQueuedPrompt {
         self.status = WorkflowQueuedPromptStatus::Cancelled;
         self.updated_at_ms = unix_epoch_ms();
     }
+}
+
+pub(crate) struct WorkflowScheduleReconfiguration {
+    pub(crate) endpoint_id: String,
+    pub(crate) queue_id: Option<String>,
+    pub(crate) trigger: WorkflowScheduleTrigger,
+    pub(crate) invocation_prompt: String,
+    pub(crate) overlap_policy: WorkflowScheduleOverlapPolicy,
+    pub(crate) max_runs: Option<u64>,
+    pub(crate) enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -639,6 +651,22 @@ impl WorkflowScheduleDefinition {
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub(crate) fn reconfigure(&mut self, replacement: WorkflowScheduleReconfiguration) {
+        let now = unix_epoch_ms();
+        self.endpoint_id = replacement.endpoint_id;
+        self.queue_id = replacement.queue_id;
+        self.trigger = replacement.trigger;
+        self.invocation_prompt = replacement.invocation_prompt;
+        self.overlap_policy = replacement.overlap_policy;
+        self.max_runs = replacement.max_runs;
+        self.enabled = replacement.enabled;
+        self.next_run_at_ms = self
+            .trigger
+            .next_run_after_ms(now)
+            .unwrap_or_else(|_| now.saturating_add(60_000));
+        self.updated_at_ms = now;
     }
 
     pub fn set_next_run_at_ms(&mut self, value: u64) {

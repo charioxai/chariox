@@ -4,7 +4,6 @@ import test from "node:test"
 
 import {
   acceptDeploymentClaim,
-  adoptLegacyDeploymentProject,
   bindDeploymentEnvironmentCredential,
   changeDeploymentEnvironmentLifecycle,
   createDeploymentClaim,
@@ -64,7 +63,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
     if (url.pathname.endsWith("/start") || url.pathname.endsWith("/stop") || url.pathname.endsWith("/restart")) {
       return jsonResponse({ environment: environment() }, 202)
     }
-    if (url.pathname.endsWith("/legacy-adoptions") || (url.pathname === "/deployment-projects" && init?.method === "POST")) {
+    if (url.pathname === "/deployment-projects" && init?.method === "POST") {
       return jsonResponse({ state: projectState() }, 201)
     }
     if (url.pathname === "/deployment-projects") {
@@ -83,7 +82,6 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       defaultRuntimeMode: "hosted_container",
       defaultRegion: "fsn1",
     })
-    await adoptLegacyDeploymentProject(profile, "legacy-1")
     const createdRelease = await createDeploymentRelease(profile, "project-1", packageRoot)
     const promoted = await promoteDeploymentRelease(profile, {
       projectId: "project-1",
@@ -111,7 +109,7 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
     assert.equal(createdRelease.requestId, "request-1")
     assert.equal(promoted.requestId, "request-1")
     assert.equal(rolledBack.requestId, "request-1")
-    assert.equal(calls.length, 10)
+    assert.equal(calls.length, 9)
     assert.ok(calls.every((call) => call.authorization === "Bearer session-token"))
     assert.equal(calls[0]?.url.searchParams.get("accountId"), "account-1")
     assert.equal(calls[1]?.url.pathname, "/deployment-projects/project%2Fone")
@@ -123,27 +121,26 @@ test("deployed workflow API scopes project and lifecycle requests to the linked 
       defaultRuntimeMode: "hosted_container",
       defaultRegion: "fsn1",
     })
-    assert.deepEqual(calls[3]?.body, { accountId: "account-1", deploymentId: "legacy-1" })
-    assert.equal(calls[4]?.url.pathname, "/deployment-projects/project-1/releases")
-    assert.equal(calls[4]?.body?.accountId, "account-1")
-    assert.equal(calls[4]?.body?.packageVersion, 3)
-    assert.equal(calls[4]?.body?.contractVersion, 1)
-    assert.match(String(calls[4]?.body?.packageId), /^sha256:[a-f0-9]{64}$/)
-    assert.match(String(calls[4]?.body?.packageDigest), /^sha256:[a-f0-9]{64}$/)
-    assert.equal(typeof (calls[4]?.body?.artifact as Record<string, unknown>)?.archiveBase64, "string")
-    assert.deepEqual(calls[5]?.body, {
+    assert.equal(calls[3]?.url.pathname, "/deployment-projects/project-1/releases")
+    assert.equal(calls[3]?.body?.accountId, "account-1")
+    assert.equal(calls[3]?.body?.packageVersion, 3)
+    assert.equal(calls[3]?.body?.contractVersion, 1)
+    assert.match(String(calls[3]?.body?.packageId), /^sha256:[a-f0-9]{64}$/)
+    assert.match(String(calls[3]?.body?.packageDigest), /^sha256:[a-f0-9]{64}$/)
+    assert.equal(typeof (calls[3]?.body?.artifact as Record<string, unknown>)?.archiveBase64, "string")
+    assert.deepEqual(calls[4]?.body, {
       accountId: "account-1",
       releaseId: "release-1",
       idempotencyKey: "promote-key",
       configuration: { feature: true },
       limits: { concurrency: 2 },
     })
-    assert.deepEqual(calls[6]?.body, {
+    assert.deepEqual(calls[5]?.body, {
       accountId: "account-1",
       promotionId: "promotion-1",
       idempotencyKey: "rollback-key",
     })
-    assert.deepEqual(calls.slice(7).map((call) => [call.method, call.url.pathname, call.body]), [
+    assert.deepEqual(calls.slice(6).map((call) => [call.method, call.url.pathname, call.body]), [
       ["POST", "/deployment-projects/project-1/environments/environment-1/stop", {
         accountId: "account-1",
         idempotencyKey: "stop-key",
@@ -552,7 +549,6 @@ function projectState() {
       name: "Demo",
       slug: "demo",
       kind: "agent_app",
-      origin: "native",
       defaultEnvironmentSlug: "production",
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",

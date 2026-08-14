@@ -156,5 +156,6 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
 
 mod definition_application;
 mod queues_and_watchdogs;
+mod rebuild;
 mod routed_handoffs;
 mod validation_and_patterns;

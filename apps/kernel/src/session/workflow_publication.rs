@@ -25,6 +25,7 @@ fn default_workflow_publication_kind() -> String {
 pub struct WorkflowEventBinding {
     pub id: String,
     pub publication_id: String,
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
     pub generator_id: String,
     pub generator_version: String,
     pub manifest_digest: String,
@@ -407,13 +408,13 @@ impl WorkflowPublicationDefinition {
     ) -> Result<(), String> {
         let source_revision = self.source_workflow_revision.ok_or_else(|| {
             format!(
-                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                "workflow trigger `{}` is missing its immutable source revision",
                 self.id
             )
         })?;
         let source_digest = self.source_snapshot_digest.as_deref().ok_or_else(|| {
             format!(
-                "workflow publication `{}` predates immutable snapshots; republish it before exporting",
+                "workflow trigger `{}` is missing its immutable source digest",
                 self.id
             )
         })?;
@@ -669,5 +670,38 @@ impl WorkflowPublicationDefinition {
             let overflow = self.runtime_logs.len() - MAX_WORKFLOW_PUBLICATION_RUNTIME_LOGS;
             self.runtime_logs.drain(0..overflow);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_publisher_namespace_restores_as_canonical_workflow_binding() {
+        let binding: WorkflowEventBinding = serde_json::from_value(serde_json::json!({
+            "id": "binding-1",
+            "publication_id": "publication-1",
+            "generator_id": "dev.arroba.github",
+            "generator_version": "1",
+            "manifest_digest": "sha256:test",
+            "connection_id": "connection-1",
+            "connection_scope": "repository",
+            "event_type": "pull_request.opened",
+            "event_type_version": 1,
+            "event_interest_key": "repository:charioxai/chariox:pull_request.opened",
+            "environment_id": "kernel-1",
+            "endpoint_id": "endpoint-1",
+            "revision": 1,
+            "status": "active",
+            "created_at_ms": 1,
+            "updated_at_ms": 1
+        }))
+        .expect("removed publisher namespace should deserialize");
+
+        assert_eq!(binding.generator_id, "dev.chariox.github");
+        assert!(!serde_json::to_string(&binding)
+            .expect("binding should serialize")
+            .contains("dev.arroba"));
     }
 }

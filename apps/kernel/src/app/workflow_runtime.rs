@@ -94,12 +94,12 @@ impl WorkflowProgression {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WorkflowLaunchOutcome {
     Started {
-        workflow_run: WorkflowRun,
+        workflow_run: Box<WorkflowRun>,
         workflow: WorkflowDefinition,
         endpoint: WorkflowEndpointDefinition,
     },
     Enqueued {
-        queued_prompt: WorkflowQueuedPrompt,
+        queued_prompt: Box<WorkflowQueuedPrompt>,
         workflow: WorkflowDefinition,
         endpoint: WorkflowEndpointDefinition,
     },
@@ -142,7 +142,7 @@ impl DaemonApp {
             .has_active_workflow_run()
         {
             return Ok(WorkflowLaunchOutcome::Enqueued {
-                queued_prompt,
+                queued_prompt: Box::new(queued_prompt),
                 workflow,
                 endpoint,
             });
@@ -176,7 +176,7 @@ impl DaemonApp {
                 workflow_run,
                 workflow,
                 endpoint,
-            } => Ok((workflow_run, workflow, endpoint)),
+            } => Ok((*workflow_run, workflow, endpoint)),
             WorkflowLaunchOutcome::Enqueued {
                 workflow, endpoint, ..
             } => Err(DaemonError::WorkflowLaunchRejected {
@@ -256,13 +256,7 @@ impl DaemonApp {
         WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)?;
         let workflow_run = self
             .sessions_mut()
-            .invoke_workflow_endpoint_with_publication_invocation(
-                session_id,
-                workflow.id(),
-                endpoint.id(),
-                queued_prompt.prompt().map(str::to_string),
-                queued_prompt.publication_invocation().cloned(),
-            )?;
+            .invoke_queued_workflow_endpoint(session_id, &queued_prompt)?;
         if let Err(error) =
             WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
         {
@@ -296,7 +290,7 @@ impl DaemonApp {
             );
         }
         Ok(WorkflowLaunchOutcome::Started {
-            workflow_run,
+            workflow_run: Box::new(workflow_run),
             workflow,
             endpoint,
         })

@@ -3,15 +3,27 @@ use serde_json::Value;
 
 pub use chariox_event_protocol::{
     AegsAuthorizationFlow as EventGeneratorAuthorizationFlow,
-    AegsConnectionStatus as EventConnectionStatus, AegsProviderResource as EventGeneratorResource,
+    AegsConnectedResource as EventConnectedResource,
+    AegsConnectionLifecycleState as EventConnectionLifecycleState,
+    AegsConnectionScope as EventConnectionScope, AegsConnectionStatus as EventConnectionStatus,
+    AegsProviderResource as EventGeneratorResource,
     AegsProviderResourcePage as EventGeneratorResourcePage,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventConnection {
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
     pub generator_id: String,
     pub connection_id: String,
     pub status: EventConnectionStatus,
+    #[serde(default)]
+    pub lifecycle_state: EventConnectionLifecycleState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<EventConnectionScope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<EventConnectedResource>,
+    #[serde(default)]
+    pub attached_trigger_count: u64,
     #[serde(default, skip_serializing_if = "is_json_null")]
     pub metadata: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -20,11 +32,24 @@ pub struct EventConnection {
     pub updated_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_validated_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_health_check_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_event_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<String>,
+    #[serde(default)]
+    pub test_event_supported: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventConnectionAuthorization {
     pub authorization_id: String,
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
     pub generator_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,
@@ -83,6 +108,13 @@ pub struct ObserveEventConnectionAuthorizationRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefreshEventConnectionRequest {
     pub connection_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestEventConnectionRequest {
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -21,10 +21,6 @@ import {
 } from "./publication-agent-app.js"
 import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import {
-  installApiSseJsonRoutes,
-  isApiSseJsonPublication,
-} from "./publication-api-sse.js"
-import {
   publicationCallerForRequest,
   publicationInvocationCaller,
 } from "./publication-caller-claims.js"
@@ -35,6 +31,7 @@ import {
   shouldReturnHumanHtml,
 } from "./publication-human-http.js"
 import {
+  assertWorkflowPublicationTransport,
   defaultPublicationConfig,
   loadGatewayPublicationConfig,
   resolveHttpsOptions,
@@ -48,10 +45,6 @@ import {
   parseAndValidateRequest,
   validateInput,
 } from "./publication-parser.js"
-import {
-  installPublicationMcpRoutes,
-  isMcpPublication,
-} from "./publication-mcp.js"
 import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
@@ -65,7 +58,6 @@ import type {
   WorkflowInvocationResult,
   WorkflowPublicationConfig,
 } from "./publication-types.js"
-import { installPublicationWebSocket } from "./publication-websocket.js"
 
 // Keep the publication-only kernel capability in gateway memory so provider
 // readiness subprocesses cannot inherit it.
@@ -90,11 +82,11 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const processLogger = createProcessLogger("workflow-gateway")
   const logger = processLogger.child("gateway.http")
   const publication = config ?? defaultPublicationConfig()
+  assertWorkflowPublicationTransport(publication.transport)
   validateAgentAppConfig(publication.agent_app, { packageRoot: publication.package_root })
   const httpsOptions = resolveHttpsOptions(publication.tls)
   const app = Fastify({ logger: false, ...(httpsOptions ? { https: httpsOptions } : {}) } as never)
   const scheduleOnly = isScheduleOnlyPublication(publication)
-  const webSocketServer = scheduleOnly ? null : installPublicationWebSocket(app, publication, deps)
   installRawBodyParsers(app)
   if (!scheduleOnly) {
     installHumanHttpRoutes(app, publication)
@@ -102,12 +94,6 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   const humanRootHandlesViewer = isHumanRootGetPublication(publication)
   if (!scheduleOnly && !isAgentAppPublication(publication) && !humanRootHandlesViewer) {
     installPublicationViewerRoutes(app, publication)
-  }
-  if (!scheduleOnly && isApiSseJsonPublication(publication)) {
-    installApiSseJsonRoutes(app, publication, deps)
-  }
-  if (!scheduleOnly && isMcpPublication(publication)) {
-    installPublicationMcpRoutes(app, publication, deps)
   }
 
   app.get("/health", async () => {
@@ -150,11 +136,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
     // Schedule-only publications have no ingress route; lifecycle APIs start the scheduler runtime.
   } else if (isAgentAppPublication(publication)) {
     installAgentAppRoutes(app, publication, deps)
-  } else if (
-    !isApiSseJsonPublication(publication)
-    && publication.transport !== "websocket_json"
-    && !isMcpPublication(publication)
-  ) {
+  } else {
     const methods = publication.methods?.length ? publication.methods : ["GET", "POST"]
     for (const method of methods) {
       app.route({
@@ -199,7 +181,6 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
   }
 
   app.addHook("onClose", async () => {
-    webSocketServer?.close()
     logger.info("gateway closed")
   })
 

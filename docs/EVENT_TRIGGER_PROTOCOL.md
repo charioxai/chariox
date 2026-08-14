@@ -1,11 +1,11 @@
-# Event publication protocol
+# Event trigger protocol
 
 Status: implementation contract, version 1.
 
 ## Boundaries
 
-Event-based notification is a workflow publication surface. A workflow endpoint owns
-zero or more event bindings; agents never own subscriptions. AEGS implementations
+Event-based notification is a workflow trigger. A workflow endpoint owns zero or more
+event bindings; agents never own subscriptions. AEGS implementations
 authorize and normalize source events. AEDS stores routes and pending deliveries but
 does not inspect workflow execution state. The kernel owns the durable inbox, queue,
 dispatch policy, and runtime decisions.
@@ -36,7 +36,8 @@ The registry supplies and authenticates those catalog fields separately.
   upstream provider, operator, and verification level.
 - `connection_id` is an AEGS-issued opaque authorization handle for one provider
   account or tenant. Provider credentials remain at the AEGS.
-- `binding_id` is owned by an immutable workflow publication.
+- `binding_id` is owned by a workflow notification trigger. A destination deployment
+  materializes an independent trigger binding from its immutable workflow revision.
 - `event_interest_key` is the SHA-256 digest of generator ID, event type and version,
   connection scope, and canonical filter.
 - `environment_id` identifies one execution environment. A kernel defaults this to
@@ -45,8 +46,8 @@ The registry supplies and authenticates those catalog fields separately.
   upstream fact after AEGS source deduplication.
 
 Only one active route may exist for an
-`(environment_id, event_interest_key)` pair. A conflicting publication is rejected
-with the existing binding and publication IDs. Moving a route is an explicit,
+`(environment_id, event_interest_key)` pair. A conflicting trigger is rejected
+with the existing binding and workflow/trigger identity. Moving a route is an explicit,
 atomic transfer; deploying into a distinct environment creates an independent route.
 
 ## Delivery
@@ -79,7 +80,7 @@ event to an `event_interest_key`.
 The kernel reconciles each configured AEGS through its operator endpoint with a
 separate scoped management capability. `PUT /v1/subscriptions/reconcile` is
 authoritative for one `owner_id` and `generator_id` pair and carries
-publication-owned binding identity, opaque connection handle, provider scope,
+trigger-owned binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.
 An omitted binding becomes inactive only when it is still owned by that owner.
 A higher revision transfers a logical binding to a new owner; equal or older
@@ -102,12 +103,32 @@ canonical `connection_scope` used in an event interest. Both operations are boun
 shared kernel requests used unchanged by web and TUI clients. An AEGS must not return
 provider access tokens, refresh tokens, webhook secrets, or raw credential material.
 
+Management protocol version 3 adds the reusable-connection lifecycle contract:
+
+- `POST /v1/connections/inspect` returns explicit lifecycle state, granted/required
+  scopes, connected resources, health/event timestamps, recovery guidance, and test
+  support;
+- `POST /v1/connections/refresh` reconciles provider credentials/subscriptions and
+  returns a fresh inspection;
+- `POST /v1/connections/test-event` asks the provider adapter to construct an authentic
+  test occurrence and sends it through the normal AEGS-to-AEDS delivery path;
+- existing authorization, connection query, resource paging, reconnect, revoke, and
+  subscription-reconcile endpoints remain the corresponding begin-install,
+  installation-status, resource-discovery, reconnect, disconnect, and reconcile
+  operations.
+
+If an authorization callback is lost, the kernel polls connection query/inspection by
+the stable opaque connection ID. Successful provider authorization is therefore
+recoverable without reinstalling. A provider that cannot inspect health or emit a real
+test occurrence must report that capability as unavailable; it must not fabricate a
+successful health check or bypass AEDS.
+
 ## Lifecycle
 
-- Republish in the same environment preserves binding identity and upstream
-  subscription while atomically updating the endpoint revision.
+- Editing or re-enabling a trigger in the same environment preserves binding identity
+  and its upstream subscription while atomically updating the endpoint revision.
 - Pause deactivates the route without deleting authorization.
-- Publication deletion tombstones its routes and asks the AEGS to reconcile upstream
+- Trigger deletion tombstones its routes and asks the AEGS to reconcile upstream
   subscriptions.
 - Kernel restart reconnects, reasserts route claims, and drains pending delivery.
 - A route move fences the old kernel and resumes from durable receipts.

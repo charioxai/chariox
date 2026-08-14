@@ -238,7 +238,9 @@ impl ProviderResumeState {
             provider.trim().to_ascii_lowercase().as_str(),
             operation.trim(),
         ) {
-            ("codex", "codex_thread_resume") => Some(self.without_provider_session_id(provider)),
+            ("codex", "codex_thread_resume" | "thread/resume") => {
+                Some(self.without_provider_session_id(provider))
+            }
             _ => None,
         }
     }
@@ -891,6 +893,9 @@ mod tests {
             state.replacement_after_provider_resume_failure("codex", "other_operation"),
             None
         );
+        assert!(state
+            .replacement_after_provider_resume_failure("codex", "thread/resume")
+            .is_some_and(|replacement| replacement.codex_thread_id().is_none()));
         assert_eq!(
             state.replacement_after_provider_resume_failure("opencode", "codex_thread_resume"),
             None

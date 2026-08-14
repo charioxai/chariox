@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 chariox-aegs-sdk = { path = "../../packages/aegs-sdk" }
 chariox-event-protocol = { path = "../../packages/event-protocol" }
+chrono = { version = "0.4.45", default-features = false, features = ["clock", "std"] }
 serde_json = "1.0.140"
 tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread"] }
 

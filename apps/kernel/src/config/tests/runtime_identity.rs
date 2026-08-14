@@ -94,6 +94,68 @@ fn runtime_identity_is_stable_per_host_port() {
 }
 
 #[test]
+fn chariox_home_owns_config_identity_state_and_runtime_paths() {
+    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-explicit-home-test-{}",
+        generate_identity_suffix()
+    ));
+    let old_chariox_home = env::var_os("CHARIOX_HOME");
+    let old_home = env::var_os("HOME");
+    let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+    let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+    unsafe {
+        env::set_var("CHARIOX_HOME", &temp_home);
+        env::set_var("HOME", temp_home.join("unrelated-home"));
+        env::set_var("XDG_CONFIG_HOME", temp_home.join("unrelated-config"));
+        env::set_var("XDG_STATE_HOME", temp_home.join("unrelated-state"));
+    }
+
+    let config = DaemonConfig::load_from_env();
+    let durable_state_path = config.durable_state_path();
+
+    unsafe {
+        restore_env_var("CHARIOX_HOME", old_chariox_home);
+        restore_env_var("HOME", old_home);
+        restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+        restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+    }
+    let _ = fs::remove_dir_all(&temp_home);
+
+    assert_eq!(config.user_config_path, temp_home.join("config.toml"));
+    assert_eq!(
+        durable_state_path,
+        temp_home.join("state").join("kernel.db")
+    );
+    assert_eq!(config.session_history_root, temp_home.join("sessions"));
+    assert!(config.local_socket_path.starts_with(temp_home.join("run")));
+}
+
+#[test]
+fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() {
+    let config = toml::from_str::<CharioxUserConfig>(
+        r#"
+            [credential_vault]
+            backend = "arroba_encrypted"
+        "#,
+    )
+    .expect("renamed config should migrate while loading");
+
+    assert_eq!(
+        config.credential_vault.backend,
+        CredentialVaultBackend::CharioxEncrypted
+    );
+    assert_eq!(
+        toml::to_string(&config)
+            .expect("config should serialize")
+            .matches("arroba_encrypted")
+            .count(),
+        0,
+        "the removed backend name must never be written again"
+    );
+}
+
+#[test]
 fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
     let _guard = env_test_guard().lock().expect("env test guard poisoned");
     let temp_home = std::env::temp_dir().join(format!(

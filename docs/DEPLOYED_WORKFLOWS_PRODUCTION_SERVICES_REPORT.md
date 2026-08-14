@@ -376,7 +376,7 @@ provisioning does not.
 
 **Decision criteria:** Select direct Caddy versus a managed edge from measured hostname
 count, certificate issuance/renewal load, abuse controls, WAF/DDoS need, origin shielding,
-HTTP/SSE/WebSocket/MCP compatibility, upload/body limits, global latency, log access,
+HTTP compatibility, upload/body limits, global latency, log access,
 support, and cost. Confirm the edge preserves host and transport semantics and does not
 inspect or store runtime content beyond the approved metadata policy.
 
@@ -629,7 +629,7 @@ do not fall back to development defaults, another tenant's profile, or Cloud pla
   `CHARIOX_CLOUD_RELAY_TOKEN_SECRET`, `CHARIOX_CLOUD_COOKIE_SECRET`,
   `CHARIOX_CLOUD_CSRF_HMAC_KEY`, `CHARIOX_PUBLICATION_PLATFORM_RUNNER_KEYS_JSON`,
   `CHARIOX_PUBLICATION_MACHINE_AUTH_SECRET`,
-  `CHARIOX_PUBLICATION_CALLER_CLAIMS_SECRET`,
+  `CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE`,
   `CHARIOX_DEPLOYMENT_DOMAIN_APPROVAL_TOKEN`, and the package-store access credentials.
 - Runner/platform authentication uses `CHARIOX_PUBLICATION_RUNNER_KEY`; the usage spool can
   use `CHARIOX_PUBLICATION_USAGE_SPOOL_SECRET`.
@@ -642,7 +642,6 @@ do not fall back to development defaults, another tenant's profile, or Cloud pla
 - There is no current KMS, managed-vault, or external-secret-provider env/config surface.
 - Development-only bypasses such as `CHARIOX_CLOUD_DEV_AUTH_SECRET`,
   `CHARIOX_PUBLICATION_ENABLE_DEV_STUB`,
-  `CHARIOX_PUBLICATION_SELF_HOST_DEV_ALLOW_LEGACY_CREDENTIAL_SOURCE_FALLBACK`, and
   `CHARIOX_RELAY_ALLOW_OPEN_ACCESS` must be absent from production.
 
 ## 9. Relay And Compute

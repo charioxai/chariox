@@ -37,7 +37,6 @@ export interface DeploymentProjectSummary {
   readonly kind: DeploymentProjectKind
   readonly ownershipMode?: DeploymentOwnershipMode
   readonly builderAccountId?: string | null
-  readonly origin: string
   readonly defaultEnvironmentSlug: string
   readonly createdAt: string
   readonly updatedAt: string
@@ -141,9 +140,9 @@ export interface DeploymentEnvironmentResult {
 
 export interface DeploymentInvocationUsageItem {
   readonly invocationId: string
-  readonly transport: "http" | "websocket"
+  readonly transport: "http"
   readonly state: "active" | "completed"
-  readonly outcome?: "succeeded" | "failed" | "timed_out" | "client_closed" | "upstream_closed" | "interrupted" | null
+  readonly outcome?: "succeeded" | "failed" | "timed_out" | "client_closed" | "interrupted" | null
   readonly statusCode?: number | null
   readonly errorCode?: string | null
   readonly queuedMs: number

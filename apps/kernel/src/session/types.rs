@@ -23,7 +23,10 @@ pub use super::session_lifecycle::{SchedulerState, SessionExecutionMode, Session
 pub use super::workflow_canvas::{
     WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowCanvasPoint,
 };
-pub use super::workflow_definition::{WorkflowDefinition, WorkflowSchemaDefinition};
+pub use super::workflow_definition::{
+    WorkflowCodeSourceBinding, WorkflowCodeSourceOrigin, WorkflowDefinition,
+    WorkflowSchemaDefinition,
+};
 pub use super::workflow_diagnostics::{
     WorkflowConsole, WorkflowConsoleEntry, WorkflowFailureEvent, WorkflowFailureKind,
     WorkflowFailurePolicy, WorkflowFailurePolicyMode,

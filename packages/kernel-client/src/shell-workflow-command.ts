@@ -333,8 +333,7 @@ export async function executeWorkflowCommand(
       return executeWorkflowEdgeCommand(args, context, deps)
     case "endpoint":
       return executeWorkflowEndpointCommand(args, context, deps)
-    case "publication":
-    case "publish":
+    case "trigger":
       return executeWorkflowPublicationCommand(args, context, deps)
     case "watchdog":
       return executeWorkflowWatchdogCommand(args, context, deps)
@@ -350,7 +349,7 @@ export async function executeWorkflowCommand(
     case "workflow-code":
       return executeWorkflowCodeCommand(args, context, deps)
     default:
-      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|publication|schedule|queue|registry|code" }
+      return { ok: false, message: "usage: workflow list|new|show|alias|delete|run|load|runs|run-show|cancel|resume|node|edge|endpoint|trigger|schedule|queue|registry|code" }
   }
 }
 

@@ -174,6 +174,36 @@ pub struct UpdateWorkflowCodeArtifactRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindWorkflowCodeSourceRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub artifact_name: String,
+    pub origin: crate::session::WorkflowCodeSourceOrigin,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_workflow_revision: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RebuildWorkflowCodeSourceRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub expected_workflow_revision: u64,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateWorkflowCodeSourceFromWorkflowRequest {
+    pub session_id: String,
+    pub workflow_ref: String,
+    pub expected_workflow_revision: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_generated_source_sha256: Option<String>,
+    #[serde(default)]
+    pub confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetWorkflowCodeArtifactRequest {
     pub session_id: String,
     pub name: String,

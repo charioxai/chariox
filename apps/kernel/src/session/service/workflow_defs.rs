@@ -4,6 +4,52 @@ use crate::session::{WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowEd
 mod design_ops;
 
 impl SessionService {
+    pub(crate) fn bind_workflow_code_source(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        expected_workflow_revision: Option<u64>,
+        source: crate::session::WorkflowCodeSourceDescriptor,
+        bindings: crate::workflow_code::WorkflowCodeApplyReport,
+    ) -> Result<WorkflowDefinition, DaemonError> {
+        let workflow_id = self
+            .resolve_workflow_ref(session_id, workflow_ref)?
+            .id()
+            .to_string();
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        if let Some(expected) = expected_workflow_revision {
+            if workflow.revision() != expected {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow_code.bind",
+                    message: format!(
+                        "workflow revision conflict: expected {expected}, current {}",
+                        workflow.revision()
+                    ),
+                });
+            }
+        }
+        workflow.bind_code_source(
+            source.artifact_name,
+            source.language,
+            source.source_sha256,
+            source.origin,
+            bindings,
+        );
+        Ok(workflow.clone())
+    }
+
     pub fn add_workflow_node(
         &mut self,
         session_id: &str,

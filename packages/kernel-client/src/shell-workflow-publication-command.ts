@@ -56,7 +56,7 @@ export async function executeWorkflowPublicationCommand(
   if (action === "show" || action === "get") {
     const publicationRef = rest[0]
     if (!publicationRef) {
-      return { ok: false, message: "usage: workflow publication show <publication-ref>" }
+      return { ok: false, message: "usage: workflow trigger show <publication-ref>" }
     }
     const response = await deps.client.send(getWorkflowPublicationRequest(sessionId, publicationRef))
     const publication = expectVariant<{ publication: WorkflowPublicationDefinition }>(response, "WorkflowPublication").publication
@@ -96,7 +96,7 @@ export async function executeWorkflowPublicationCommand(
     const packageFiles = await writeWorkflowPublicationExportPackage(outputRoot, exported.package_files)
     return {
       ok: true,
-      message: `exported workflow publication ${formatWorkflowPublicationLabel(exported.publication)} package v${exported.package_version} ${exported.package_digest} to ${outputRoot}`,
+      message: `exported workflow trigger ${formatWorkflowPublicationLabel(exported.publication)} package v${exported.package_version} ${exported.package_digest} to ${outputRoot}`,
       data: {
         publication: exported.publication,
         outputRoot,
@@ -118,13 +118,13 @@ export async function executeWorkflowPublicationCommand(
   if (action === "disable" || action === "remove") {
     const publicationRef = rest[0]
     if (!publicationRef) {
-      return { ok: false, message: "usage: workflow publication disable <publication-ref>" }
+      return { ok: false, message: "usage: workflow trigger disable <publication-ref>" }
     }
     const response = await deps.client.send(disableWorkflowPublicationRequest(sessionId, publicationRef))
     const payload = expectVariant<{ publication: WorkflowPublicationDefinition; session: RuntimeSession }>(response, "WorkflowPublicationDisabled")
     return {
       ok: true,
-      message: `disabled workflow publication ${payload.publication.id}`,
+      message: `disabled workflow trigger ${payload.publication.id}`,
       data: payload,
       contextUpdates: { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session) },
     }
@@ -143,7 +143,7 @@ export async function executeWorkflowPublicationCommand(
     ))
     const payload = expectVariant<{ publication: WorkflowPublicationDefinition; session: RuntimeSession }>(response, "WorkflowPublicationCreated")
     return resourceResult(
-      `created workflow publication ${formatWorkflowPublicationLabel(payload.publication)}`,
+      `created workflow trigger ${formatWorkflowPublicationLabel(payload.publication)}`,
       undefined,
       payload.publication.id,
       { sessionId: payload.session.id, agentId: sessionContextAgentId(payload.session), workflowId: payload.publication.workflow_id },
@@ -151,7 +151,7 @@ export async function executeWorkflowPublicationCommand(
     )
   }
 
-  return { ok: false, message: "usage: workflow publication list|create|show|export|config|event|disable" }
+  return { ok: false, message: "usage: workflow trigger list|create|show|export|config|event|disable" }
 }
 
 async function executeWorkflowPublicationConfigCommand(args: string[], context: ShellContext): Promise<ShellCommandResult> {
@@ -161,7 +161,7 @@ async function executeWorkflowPublicationConfigCommand(args: string[], context: 
     : undefined
   if (action === "show" || action === "get") {
     if (!packagePath) {
-      return { ok: false, message: "usage: workflow publication config show <package-dir|publication.json>" }
+      return { ok: false, message: "usage: workflow trigger config show <package-dir|publication.json>" }
     }
     const packageState = await loadWorkflowPublicationBindingsPackage(resolvedPackagePath!)
     return { ok: true, message: formatWorkflowPublicationBindings(packageState), data: packageState }
@@ -171,7 +171,7 @@ async function executeWorkflowPublicationConfigCommand(args: string[], context: 
     if (!packagePath || !agentId || !provider) {
       return {
         ok: false,
-        message: "usage: workflow publication config set <package-dir|publication.json> <agent-id> <provider> [model|-] [effort|-]",
+        message: "usage: workflow trigger config set <package-dir|publication.json> <agent-id> <provider> [model|-] [effort|-]",
       }
     }
     const packageState = await setWorkflowPublicationBinding(resolvedPackagePath!, agentId, {
@@ -181,23 +181,23 @@ async function executeWorkflowPublicationConfigCommand(args: string[], context: 
     })
     return {
       ok: true,
-      message: `updated workflow publication binding for ${agentId} in ${packageState.bindingsPath}`,
+      message: `updated workflow trigger binding for ${agentId} in ${packageState.bindingsPath}`,
       data: packageState,
     }
   }
   if (action === "clear" || action === "reset") {
     const agentId = rest[0]
     if (!packagePath || !agentId) {
-      return { ok: false, message: "usage: workflow publication config clear <package-dir|publication.json> <agent-id>" }
+      return { ok: false, message: "usage: workflow trigger config clear <package-dir|publication.json> <agent-id>" }
     }
     const packageState = await clearWorkflowPublicationBinding(resolvedPackagePath!, agentId)
     return {
       ok: true,
-      message: `cleared workflow publication binding for ${agentId} in ${packageState.bindingsPath}`,
+      message: `cleared workflow trigger binding for ${agentId} in ${packageState.bindingsPath}`,
       data: packageState,
     }
   }
-  return { ok: false, message: "usage: workflow publication config show|set|clear" }
+  return { ok: false, message: "usage: workflow trigger config show|set|clear" }
 }
 
 function parseWorkflowPublicationCreateOptions(
@@ -214,15 +214,15 @@ function parseWorkflowPublicationCreateOptions(
     if (!arg) continue
     if (arg === "--route") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] --route <route>" }
+      if (!value) return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] --route <route>" }
       options.route = value
     } else if (arg === "--queue") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] --queue <queue-ref>" }
+      if (!value) return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] --queue <queue-ref>" }
       options.queueRef = value
     } else if (arg === "--method") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication create ... --method <GET|POST|...>" }
+      if (!value) return { ok: false, message: "usage: workflow trigger create ... --method <GET|POST|...>" }
       methods.push(value.toUpperCase())
     } else if (arg === "--transport-json") {
       const parsed = parseJsonOption(args[++index], "--transport-json")
@@ -242,11 +242,11 @@ function parseWorkflowPublicationCreateOptions(
       options.traceExposure = parsed.value
     } else if (arg === "--mode") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication create ... --mode <sync|async>" }
+      if (!value) return { ok: false, message: "usage: workflow trigger create ... --mode <sync|async>" }
       options.mode = value
     } else if (arg === "--kind") {
       const value = args[++index]
-      if (!value) return { ok: false, message: "usage: workflow publication create ... --kind <ingress|schedule_only|event_based>" }
+      if (!value) return { ok: false, message: "usage: workflow trigger create ... --kind <ingress|schedule_only|event_based>" }
       options.kind = value
     } else if (arg.startsWith("--")) {
       return { ok: false, message: `unknown publication option: ${arg}` }
@@ -261,10 +261,10 @@ function parseWorkflowPublicationCreateOptions(
   const endpointRef = positional.length >= 3 ? positional[1] : positional[0]
   const alias = positional.length >= 3 ? positional[2] : positional[1]
   if (!workflowRef || !endpointRef) {
-    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] [--queue <queue-ref>] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--trace-exposure-json <json>] [--mode async]" }
+    return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] [--queue <queue-ref>] [--route <route>] [--method POST] [--parser-json <json>] [--transport-json <json>] [--input-schema-json <json>] [--trace-exposure-json <json>] [--mode async]" }
   }
   if (positional.length > 3 || (!currentWorkflowId && positional.length < 2)) {
-    return { ok: false, message: "usage: workflow publication create [workflow-ref] <endpoint-ref> [alias] ..." }
+    return { ok: false, message: "usage: workflow trigger create [workflow-ref] <endpoint-ref> [alias] ..." }
   }
   options.alias = alias ?? null
   return { ok: true, workflowRef, endpointRef, options }
@@ -308,7 +308,7 @@ function parseWorkflowPublicationExportOptions(
 }
 
 function workflowPublicationExportUsage(): string {
-  return "usage: workflow publication export <publication-ref> <directory> [--kernel-url <url>] [--agent-app-json <json>] [--agent-app-assets-dir <directory>]"
+  return "usage: workflow trigger export <publication-ref> <directory> [--kernel-url <url>] [--agent-app-json <json>] [--agent-app-assets-dir <directory>]"
 }
 
 function parseJsonOption(

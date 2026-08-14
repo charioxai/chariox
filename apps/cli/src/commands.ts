@@ -336,8 +336,8 @@ export function sharedShellCommandForSlashCommand(input: string): string | null 
   if (
     command === "/workflow code"
     || command.startsWith("/workflow code ")
-    || command === "/workflow publication"
-    || command.startsWith("/workflow publication ")
+    || command === "/workflow trigger"
+    || command.startsWith("/workflow trigger ")
     || command === "/workflow registry"
     || command.startsWith("/workflow registry ")
     || command === "/workflow load"

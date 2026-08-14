@@ -19,6 +19,72 @@ fn default_workflow_max_concurrent() -> u32 {
     super::types::DEFAULT_WORKFLOW_CODE_MAX_CONCURRENT
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkflowCodeSourceOrigin {
+    Authored,
+    Generated,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowCodeSourceDescriptor {
+    pub(crate) artifact_name: String,
+    pub(crate) language: crate::workflow_code::WorkflowCodeLanguage,
+    pub(crate) source_sha256: String,
+    pub(crate) origin: WorkflowCodeSourceOrigin,
+}
+
+pub(crate) struct WorkflowCodeStructureReplacement {
+    pub(crate) alias: Option<String>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) flush_agent_context_before_run: bool,
+    pub(crate) max_concurrent: u32,
+    pub(crate) run_output_schema_ref: Option<String>,
+    pub(crate) schemas: Vec<WorkflowSchemaDefinition>,
+    pub(crate) nodes: Vec<WorkflowNodeDefinition>,
+    pub(crate) edges: Vec<WorkflowEdgeDefinition>,
+    pub(crate) endpoints: Vec<WorkflowEndpointDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowCodeSourceBinding {
+    artifact_name: String,
+    language: crate::workflow_code::WorkflowCodeLanguage,
+    source_sha256: String,
+    origin: WorkflowCodeSourceOrigin,
+    workflow_revision: u64,
+    bindings: crate::workflow_code::WorkflowCodeApplyReport,
+    created_at_ms: u64,
+    updated_at_ms: u64,
+}
+
+impl WorkflowCodeSourceBinding {
+    pub fn artifact_name(&self) -> &str {
+        &self.artifact_name
+    }
+    pub fn language(&self) -> crate::workflow_code::WorkflowCodeLanguage {
+        self.language
+    }
+    pub fn source_sha256(&self) -> &str {
+        &self.source_sha256
+    }
+    pub fn origin(&self) -> WorkflowCodeSourceOrigin {
+        self.origin
+    }
+    pub fn workflow_revision(&self) -> u64 {
+        self.workflow_revision
+    }
+    pub fn bindings(&self) -> &crate::workflow_code::WorkflowCodeApplyReport {
+        &self.bindings
+    }
+    pub fn created_at_ms(&self) -> u64 {
+        self.created_at_ms
+    }
+    pub fn updated_at_ms(&self) -> u64 {
+        self.updated_at_ms
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WorkflowSchemaDefinition {
     id: String,
@@ -88,6 +154,8 @@ pub struct WorkflowDefinition {
     #[serde(default)]
     revision: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    code_source: Option<WorkflowCodeSourceBinding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     canvas_layout: Option<WorkflowCanvasLayout>,
     #[serde(default = "default_workflow_flush_agent_context_before_run")]
     flush_agent_context_before_run: bool,
@@ -111,6 +179,7 @@ impl WorkflowDefinition {
             controlled_by_metaagent_id: None,
             created_at_ms: unix_epoch_ms(),
             revision: 0,
+            code_source: None,
             canvas_layout: None,
             flush_agent_context_before_run: default_workflow_flush_agent_context_before_run(),
             max_concurrent: default_workflow_max_concurrent(),
@@ -161,12 +230,56 @@ impl WorkflowDefinition {
         self.revision
     }
 
+    pub fn code_source(&self) -> Option<&WorkflowCodeSourceBinding> {
+        self.code_source.as_ref()
+    }
+
+    pub(crate) fn bind_code_source(
+        &mut self,
+        artifact_name: String,
+        language: crate::workflow_code::WorkflowCodeLanguage,
+        source_sha256: String,
+        origin: WorkflowCodeSourceOrigin,
+        bindings: crate::workflow_code::WorkflowCodeApplyReport,
+    ) {
+        let now = unix_epoch_ms();
+        let created_at_ms = self
+            .code_source
+            .as_ref()
+            .map_or(now, |binding| binding.created_at_ms);
+        self.bump_revision();
+        self.code_source = Some(WorkflowCodeSourceBinding {
+            artifact_name,
+            language,
+            source_sha256,
+            origin,
+            workflow_revision: self.revision,
+            bindings,
+            created_at_ms,
+            updated_at_ms: now,
+        });
+    }
+
     pub fn canvas_layout(&self) -> Option<&WorkflowCanvasLayout> {
         self.canvas_layout.as_ref()
     }
 
     pub fn bump_revision(&mut self) {
         self.revision = self.revision.saturating_add(1);
+    }
+
+    pub(crate) fn replace_code_structure(&mut self, replacement: WorkflowCodeStructureReplacement) {
+        self.alias = replacement.alias;
+        self.prompt = replacement.prompt;
+        self.flush_agent_context_before_run = replacement.flush_agent_context_before_run;
+        self.max_concurrent = replacement.max_concurrent.max(1);
+        self.run_output_schema_ref = replacement.run_output_schema_ref;
+        self.schemas = replacement.schemas;
+        self.nodes = replacement.nodes;
+        self.edges = replacement.edges;
+        self.endpoints = replacement.endpoints;
+        self.canvas_layout = None;
+        self.bump_revision();
     }
 
     pub fn flush_agent_context_before_run(&self) -> bool {

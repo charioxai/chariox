@@ -10,6 +10,385 @@ use crate::workflow_code::{
 };
 
 impl SessionService {
+    pub(crate) fn rebuild_workflow_code_definition(
+        &mut self,
+        session_id: &str,
+        workflow_ref: &str,
+        expected_workflow_revision: u64,
+        definition: &WorkflowCodeDefinition,
+        source: crate::session::WorkflowCodeSourceDescriptor,
+    ) -> Result<WorkflowCodeApplyReport, DaemonError> {
+        let current = self.resolve_workflow_ref(session_id, workflow_ref)?;
+        if current.revision() != expected_workflow_revision {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.rebuild",
+                message: format!(
+                    "workflow revision conflict: expected {expected_workflow_revision}, current {}",
+                    current.revision()
+                ),
+            });
+        }
+        let binding = current
+            .code_source()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "workflow_code.rebuild",
+                message: "workflow does not have a stored code source".to_string(),
+            })?;
+        if binding.artifact_name() != source.artifact_name {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.rebuild",
+                message: "stored workflow-code artifact does not match the workflow binding"
+                    .to_string(),
+            });
+        }
+        let mut report = binding.bindings().clone();
+        let source_handles = |values: Vec<&str>| {
+            values
+                .into_iter()
+                .map(str::to_string)
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        let mapping_handles = |values: &BTreeMap<String, String>| {
+            values
+                .keys()
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>()
+        };
+        for (kind, source, mapped) in [
+            (
+                "schema",
+                source_handles(
+                    definition
+                        .schemas
+                        .iter()
+                        .map(|value| value.handle.as_str())
+                        .collect(),
+                ),
+                mapping_handles(&report.schema_refs),
+            ),
+            (
+                "node",
+                source_handles(
+                    definition
+                        .nodes
+                        .iter()
+                        .map(|value| value.handle.as_str())
+                        .collect(),
+                ),
+                mapping_handles(&report.node_ids),
+            ),
+            (
+                "edge",
+                source_handles(
+                    definition
+                        .edges
+                        .iter()
+                        .map(|value| value.handle.as_str())
+                        .collect(),
+                ),
+                mapping_handles(&report.edge_ids),
+            ),
+            (
+                "endpoint",
+                source_handles(
+                    definition
+                        .endpoints
+                        .iter()
+                        .map(|value| value.handle.as_str())
+                        .collect(),
+                ),
+                mapping_handles(&report.endpoint_ids),
+            ),
+            (
+                "schedule",
+                source_handles(
+                    definition
+                        .schedules
+                        .iter()
+                        .map(|value| value.handle.as_str())
+                        .collect(),
+                ),
+                mapping_handles(&report.schedule_ids),
+            ),
+        ] {
+            if source != mapped {
+                return Err(DaemonError::LocalTransport {
+                    operation: "workflow_code.rebuild",
+                    message: format!("stored {kind} bindings do not match the source structure"),
+                });
+            }
+        }
+        let required_queue_handles = if definition.queues.is_empty() {
+            std::collections::BTreeSet::from(["default".to_string()])
+        } else {
+            definition
+                .queues
+                .iter()
+                .map(|queue| queue.handle.clone())
+                .collect()
+        };
+        if !required_queue_handles
+            .iter()
+            .all(|handle| report.queue_ids.contains_key(handle))
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.rebuild",
+                message: "stored queue bindings do not match the source structure".to_string(),
+            });
+        }
+        let resolve_schema =
+            |handle: Option<&str>| handle.and_then(|value| report.schema_refs.get(value).cloned());
+        let schemas = definition
+            .schemas
+            .iter()
+            .map(|source| {
+                crate::session::WorkflowSchemaDefinition::new(
+                    report.schema_refs[&source.handle].clone(),
+                    source.alias.clone(),
+                    source.description.clone(),
+                    source.schema.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let nodes = definition
+            .nodes
+            .iter()
+            .map(|source| {
+                let node_id = report.node_ids[&source.handle].clone();
+                let agent_id = report.agent_ids[&source.handle].clone();
+                let previous = current.node(&node_id);
+                let mut node =
+                    crate::session::WorkflowNodeDefinition::new(node_id, agent_id.clone());
+                node.set_owner_user_id(
+                    previous.map_or(DEFAULT_LOCAL_USER_ID, |value| value.owner_user_id()),
+                );
+                node.set_created_by_user_id(
+                    previous.map_or(DEFAULT_LOCAL_USER_ID, |value| value.created_by_user_id()),
+                );
+                node.set_public_label(source.public_label.clone().unwrap_or(agent_id));
+                node.set_instructions(source.instructions.clone());
+                node.set_can_complete_workflow_run(
+                    source.can_complete_workflow_run.unwrap_or(false),
+                );
+                node.set_can_emit_intermediate_run_output(
+                    source.can_emit_intermediate_run_output.unwrap_or(false),
+                );
+                node.set_wait_for_all_inputs(source.wait_for_all_inputs.unwrap_or(false));
+                node.set_intermediate_output_schema_ref(resolve_schema(
+                    source.intermediate_output_schema.as_deref(),
+                ));
+                node.set_max_turns(source.max_turns);
+                node
+            })
+            .collect::<Vec<_>>();
+        let edges = definition
+            .edges
+            .iter()
+            .map(|source| {
+                let mut edge = crate::session::WorkflowEdgeDefinition::new_with_sides(
+                    report.edge_ids[&source.handle].clone(),
+                    report.node_ids[&source.from_node].clone(),
+                    report.node_ids[&source.to_node].clone(),
+                    source.source_side,
+                    source.target_side,
+                    resolve_schema(source.handoff_schema.as_deref()),
+                    source.validation_policy,
+                );
+                if let Some(previous) = current.edges().iter().find(|value| value.id() == edge.id())
+                {
+                    edge.set_created_by_user_id(previous.created_by_user_id());
+                }
+                edge
+            })
+            .collect::<Vec<_>>();
+        let endpoints = definition
+            .endpoints
+            .iter()
+            .map(|source| {
+                let endpoint_id = report.endpoint_ids[&source.handle].clone();
+                let mut endpoint = crate::session::WorkflowEndpointDefinition::new(
+                    endpoint_id.clone(),
+                    source.alias.clone(),
+                    report.node_ids[&source.entry_node].clone(),
+                );
+                if let Some(previous) = current
+                    .endpoints()
+                    .iter()
+                    .find(|value| value.id() == endpoint_id)
+                {
+                    endpoint.set_owner_user_id(previous.owner_user_id());
+                }
+                endpoint
+            })
+            .collect::<Vec<_>>();
+        let workflow_id = current.id().to_string();
+        let desired_queues = if definition.queues.is_empty() {
+            vec![("default".to_string(), "default".to_string(), 0, true)]
+        } else {
+            definition
+                .queues
+                .iter()
+                .map(|queue| {
+                    (
+                        queue.handle.clone(),
+                        queue.alias.clone(),
+                        queue.priority,
+                        queue.enabled,
+                    )
+                })
+                .collect::<Vec<_>>()
+        };
+        let desired_queue_ids = desired_queues
+            .iter()
+            .map(|(handle, _, _, _)| report.queue_ids[handle].clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let session = self.get_session(session_id)?;
+        let removed_queue_ids = session
+            .workflow_prompt_queues_for_workflow(&workflow_id)
+            .into_iter()
+            .map(|queue| queue.id().to_string())
+            .filter(|queue_id| !desired_queue_ids.contains(queue_id))
+            .collect::<Vec<_>>();
+        if session.workflow_queued_prompts().iter().any(|prompt| {
+            removed_queue_ids
+                .iter()
+                .any(|queue_id| queue_id == prompt.queue_id())
+        }) {
+            return Err(DaemonError::LocalTransport {
+                operation: "workflow_code.rebuild",
+                message: "cannot remove a workflow queue while it still contains prompts"
+                    .to_string(),
+            });
+        }
+        let default_max_concurrent = self.workflow_default_max_concurrent;
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        {
+            let workflow = session.workflow_mut(&workflow_id).ok_or_else(|| {
+                DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                }
+            })?;
+            workflow.replace_code_structure(crate::session::WorkflowCodeStructureReplacement {
+                alias: definition.workflow.alias.clone(),
+                prompt: definition.workflow.prompt.clone(),
+                flush_agent_context_before_run: definition
+                    .workflow
+                    .flush_agent_context_before_run
+                    .unwrap_or(true),
+                max_concurrent: definition
+                    .workflow
+                    .max_concurrent
+                    .unwrap_or(default_max_concurrent),
+                run_output_schema_ref: resolve_schema(
+                    definition.workflow.run_output_schema.as_deref(),
+                ),
+                schemas,
+                nodes,
+                edges,
+                endpoints,
+            });
+            let patches = workflow_code_canvas_patches(definition, &report);
+            if !patches.is_empty() {
+                workflow.update_canvas_layout(patches);
+                report.canvas_layout_applied = true;
+            }
+        }
+
+        for queue_id in removed_queue_ids {
+            session.remove_workflow_prompt_queue(&workflow_id, &queue_id);
+        }
+        for (handle, alias, priority, enabled) in desired_queues {
+            let queue_id = report.queue_ids[&handle].clone();
+            if let Some(queue) = session.workflow_prompt_queue_mut(&workflow_id, &queue_id) {
+                queue.set_alias(alias);
+                queue.set_priority(priority);
+                queue.set_enabled(enabled);
+            } else {
+                let mut queue = crate::session::WorkflowPromptQueueDefinition::new(
+                    queue_id,
+                    workflow_id.clone(),
+                    alias,
+                    priority,
+                );
+                queue.set_enabled(enabled);
+                session.add_workflow_prompt_queue(queue);
+            }
+        }
+
+        let desired_schedule_ids = definition
+            .schedules
+            .iter()
+            .map(|schedule| report.schedule_ids[&schedule.handle].clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        let removed_schedule_ids = session
+            .workflow_schedules()
+            .iter()
+            .filter(|schedule| schedule.workflow_id() == workflow_id)
+            .map(|schedule| schedule.id().to_string())
+            .filter(|schedule_id| !desired_schedule_ids.contains(schedule_id))
+            .collect::<Vec<_>>();
+        for schedule_id in removed_schedule_ids {
+            session.remove_workflow_schedule(&schedule_id);
+        }
+        for source in &definition.schedules {
+            let schedule_id = report.schedule_ids[&source.handle].clone();
+            let endpoint_id = report.endpoint_ids[&source.endpoint].clone();
+            let queue_id = source
+                .queue
+                .as_ref()
+                .and_then(|handle| report.queue_ids.get(handle).cloned());
+            if let Some(schedule) = session
+                .workflow_schedules_mut()
+                .iter_mut()
+                .find(|schedule| schedule.id() == schedule_id)
+            {
+                schedule.reconfigure(crate::session::WorkflowScheduleReconfiguration {
+                    endpoint_id,
+                    queue_id,
+                    trigger: source.trigger.clone(),
+                    invocation_prompt: source.invocation_prompt.clone(),
+                    overlap_policy: source.overlap_policy,
+                    max_runs: source.max_runs,
+                    enabled: source.enabled.unwrap_or(true),
+                });
+            } else {
+                let mut schedule = crate::session::WorkflowScheduleDefinition::new_with_trigger(
+                    schedule_id,
+                    workflow_id.clone(),
+                    endpoint_id,
+                    source.trigger.clone(),
+                    source.invocation_prompt.clone(),
+                    source.overlap_policy,
+                    source.max_runs,
+                );
+                schedule.set_queue_id(queue_id);
+                schedule.set_enabled(source.enabled.unwrap_or(true));
+                session.add_workflow_schedule(schedule);
+            }
+        }
+        let workflow =
+            session
+                .workflow_mut(&workflow_id)
+                .ok_or_else(|| DaemonError::WorkflowNotFound {
+                    session_id: session_id.to_string(),
+                    workflow_id: workflow_id.clone(),
+                })?;
+        workflow.bind_code_source(
+            source.artifact_name,
+            source.language,
+            source.source_sha256,
+            source.origin,
+            report.clone(),
+        );
+        Ok(report)
+    }
+
     pub fn apply_workflow_code_definition(
         &mut self,
         session_id: &str,

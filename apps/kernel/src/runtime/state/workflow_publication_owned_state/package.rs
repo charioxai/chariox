@@ -58,22 +58,26 @@ pub(super) fn workflow_publication_package_files(
             workflow_publication_readme(publication, &publication_package, &config),
             false,
         ),
-        package_file(
-            "public/index.html",
-            workflow_publication_index_html(publication),
-            false,
-        ),
-        package_file(
-            "public/app.js",
-            workflow_publication_app_js(&publication_value),
-            false,
-        ),
-        package_file(
-            "public/styles.css",
-            workflow_publication_styles_css(),
-            false,
-        ),
     ];
+    if publication_uses_http_ingress(&publication_value) {
+        files.extend([
+            package_file(
+                "public/index.html",
+                workflow_publication_index_html(publication),
+                false,
+            ),
+            package_file(
+                "public/app.js",
+                workflow_publication_app_js(&publication_value),
+                false,
+            ),
+            package_file(
+                "public/styles.css",
+                workflow_publication_styles_css(),
+                false,
+            ),
+        ]);
+    }
     if agent_app
         .and_then(|value| value.get("enabled"))
         .and_then(|value| value.as_bool())
@@ -144,7 +148,7 @@ fn workflow_publication_package_json(
         "trace_exposure": publication.trace_exposure().cloned().unwrap_or(serde_json::Value::Null),
         "response_mode": "accepted",
     });
-    if hook_transport(publication_value).as_str() != Some("schedule_only") {
+    if publication_uses_http_ingress(publication_value) {
         hook["route"] = serde_json::Value::String(
             string_field(publication_value, "route")
                 .map(str::to_string)
@@ -417,14 +421,14 @@ fn workflow_publication_gateway_config_json(
     publication_value: &serde_json::Value,
     kernel_url: Option<&str>,
 ) -> serde_json::Value {
-    let is_schedule_only = hook_transport(publication_value).as_str() == Some("schedule_only");
+    let uses_http_ingress = publication_uses_http_ingress(publication_value);
     let mut config = serde_json::json!({
         "publication_id": publication.id(),
         "session_id": publication.session_id(),
         "workflow_ref": publication.workflow_id(),
         "endpoint_ref": publication.endpoint_id(),
     });
-    if !is_schedule_only {
+    if uses_http_ingress {
         config["route"] = serde_json::Value::String(
             string_field(publication_value, "route")
                 .map(str::to_string)
@@ -446,7 +450,7 @@ fn workflow_publication_gateway_config_json(
     if let Some(kernel_url) = kernel_url {
         config["kernel_endpoint"] = serde_json::Value::String(kernel_url.to_string());
     }
-    if !is_schedule_only {
+    if uses_http_ingress {
         if let Some(methods) = publication_value
             .get("methods")
             .filter(|value| value.as_array().is_some_and(|values| !values.is_empty()))
@@ -525,6 +529,10 @@ fn workflow_publication_readme(
     publication_package: &serde_json::Value,
     config: &serde_json::Value,
 ) -> String {
+    let uses_http_ingress = publication_package
+        .pointer("/hooks/0/transport")
+        .and_then(serde_json::Value::as_str)
+        == Some("human_http");
     let route = config
         .get("route")
         .and_then(|value| value.as_str())
@@ -534,39 +542,23 @@ fn workflow_publication_readme(
     } else {
         route.to_string()
     };
-    [
-        &format!("# Workflow Publication {}", publication.alias().unwrap_or(publication.id())),
-        "",
-        "This directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.",
-        "",
-        "## Files",
-        "",
-        "- `publication.json`: published workflow package metadata",
-        "- `deployment-contract.json`: immutable release requirements and compatibility contract",
-        "- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents",
-        "- `requirements.json`: required extensions and credential handles",
-        "- `bindings.example.json`: provider/model override template",
-        "- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route",
-        "- `publication.config.json`: gateway config for existing scripts",
-        "- `.env.example`: environment template",
-        "- `run.sh`: launcher for `chariox-workflow-gateway`",
-        "- `public/`: editable browser assets",
-        "",
-        "## Invoke",
-        "",
-        "```bash",
-        "BASE_URL=http://127.0.0.1:3000",
-        &format!("curl -sS \"$BASE_URL{}\"", example_path),
-        "```",
-        "",
-        "## Hooks",
-        "",
-        "```json",
-        &serde_json::to_string_pretty(&publication_package["hooks"]).unwrap_or_else(|_| "[]".to_string()),
-        "```",
-        "",
-    ]
-    .join("\n")
+    let mut readme = format!(
+        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: required extensions and credential handles\n- `bindings.example.json`: provider/model override template\n- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n",
+        publication.alias().unwrap_or(publication.id())
+    );
+    if uses_http_ingress {
+        readme.push_str(&format!(
+            "- `public/`: editable browser assets\n\n## Invoke\n\n```bash\nBASE_URL=http://127.0.0.1:3000\ncurl -sS \"$BASE_URL{}\"\n```\n\n",
+            example_path
+        ));
+    }
+    readme.push_str("## Hooks\n\n```json\n");
+    readme.push_str(
+        &serde_json::to_string_pretty(&publication_package["hooks"])
+            .unwrap_or_else(|_| "[]".to_string()),
+    );
+    readme.push_str("\n```\n");
+    readme
 }
 
 fn workflow_publication_index_html(
@@ -723,14 +715,17 @@ pub(super) fn workflow_publication_package_archive_base64(
 }
 
 fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
-    if publication_value
+    if let Some(kind) = publication_value
         .get("kind")
         .and_then(|value| value.as_str())
-        == Some(crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY)
     {
-        return serde_json::Value::String(
-            crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY.to_string(),
-        );
+        if matches!(
+            kind,
+            crate::session::WORKFLOW_PUBLICATION_KIND_SCHEDULE_ONLY
+                | crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED
+        ) {
+            return serde_json::Value::String(kind.to_string());
+        }
     }
     let Some(transport) = publication_value.get("transport") else {
         return serde_json::Value::String("human_http".to_string());
@@ -744,34 +739,32 @@ fn hook_transport(publication_value: &serde_json::Value) -> serde_json::Value {
     }
 }
 
+fn publication_uses_http_ingress(publication_value: &serde_json::Value) -> bool {
+    matches!(
+        hook_transport(publication_value).as_str(),
+        Some("human_http")
+    )
+}
+
 fn default_publication_route(_publication_value: &serde_json::Value) -> &'static str {
     "/"
 }
 
 fn default_publication_methods(publication_value: &serde_json::Value) -> serde_json::Value {
-    match hook_transport(publication_value).as_str() {
-        Some("api_sse_json" | "mcp") => serde_json::json!(["POST"]),
-        Some("websocket_json") => serde_json::json!([]),
-        _ => serde_json::json!(["GET", "POST"]),
-    }
+    let _ = publication_value;
+    serde_json::json!(["GET", "POST"])
 }
 
 fn default_publication_parser(publication_value: &serde_json::Value) -> Option<serde_json::Value> {
-    match hook_transport(publication_value).as_str() {
-        Some("websocket_json" | "mcp") => None,
-        Some("api_sse_json") => Some(serde_json::json!({"kind": "json"})),
-        _ => {
-            let route = string_field(publication_value, "route")
-                .unwrap_or_else(|| default_publication_route(publication_value));
-            if route == "/" {
-                return Some(serde_json::json!({"kind": "query_params"}));
-            }
-            Some(serde_json::json!({
-                "kind": "path_template",
-                "template": route_prompt_template(route),
-            }))
-        }
+    let route = string_field(publication_value, "route")
+        .unwrap_or_else(|| default_publication_route(publication_value));
+    if route == "/" {
+        return Some(serde_json::json!({"kind": "query_params"}));
     }
+    Some(serde_json::json!({
+        "kind": "path_template",
+        "template": route_prompt_template(route),
+    }))
 }
 
 fn route_prompt_template(route: &str) -> String {
@@ -790,11 +783,8 @@ fn route_prompt_template(route: &str) -> String {
 }
 
 fn default_publication_mode(publication_value: &serde_json::Value) -> &'static str {
-    match hook_transport(publication_value).as_str() {
-        Some("api_sse_json" | "websocket_json") => "async",
-        Some("mcp") => "sync",
-        _ => "async",
-    }
+    let _ = publication_value;
+    "async"
 }
 
 fn string_field<'a>(value: &'a serde_json::Value, field: &str) -> Option<&'a str> {
@@ -846,11 +836,9 @@ mod digest_tests {
     }
 
     #[test]
-    fn publication_package_defaults_every_ingress_transport_to_root() {
-        for transport in ["human_http", "api_sse_json", "websocket_json", "mcp"] {
-            let publication = serde_json::json!({ "transport": { "kind": transport } });
-            assert_eq!(default_publication_route(&publication), "/", "{transport}");
-        }
+    fn publication_package_defaults_http_ingress_to_root() {
+        let publication = serde_json::json!({ "transport": { "kind": "human_http" } });
+        assert_eq!(default_publication_route(&publication), "/");
     }
 
     fn package_file(

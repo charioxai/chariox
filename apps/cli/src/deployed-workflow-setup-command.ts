@@ -91,9 +91,9 @@ export async function executeDeploymentSetupCommand(
     const publication = resolveByIdOrAlias(
       session.workflow_publications ?? [],
       publicationRef,
-      "workflow publication",
+      "workflow trigger",
     )
-    if (!publication.enabled) throw new Error(`workflow publication ${publication.id} is disabled`)
+    if (!publication.enabled) throw new Error(`workflow trigger ${publication.id} is disabled`)
     const publicationDigest = requiredSha256(
       publication.source_snapshot_digest,
       "immutable publication snapshot digest",

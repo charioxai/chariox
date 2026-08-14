@@ -122,9 +122,9 @@ impl WorkspaceCoordinator {
                 workspace_id,
                 worktree_id,
                 existing_session_id: conflict.session_id.clone(),
-                existing_operation: conflict.operation.clone(),
+                existing_operation: Box::new(conflict.operation.clone()),
                 requested_session_id: session_id,
-                requested_operation: operation.to_string(),
+                requested_operation: Box::new(operation.to_string()),
             });
         }
         state.next_claim_number += 1;

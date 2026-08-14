@@ -153,7 +153,7 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
             .iter()
             .cloned()
             .collect::<Vec<_>>(),
-        vec![requested_prompt]
+        vec![*requested_prompt]
     );
 }
 

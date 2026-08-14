@@ -87,14 +87,14 @@
       {
         "id": "notifications-connection-dependencies",
         "label": "connection dependencies",
-        "description": "List workflow publications attached to a connection",
+        "description": "List workflow notification triggers attached to a connection",
         "value": "/notifications connection dependencies ",
         "surfaces": ["session", "waiting_room"]
       },
       {
         "id": "notifications-connection-remove",
         "label": "remove connection",
-        "description": "Preview affected publications, then remove with --confirm",
+        "description": "Preview affected notification triggers, then remove with --confirm",
         "value": "/notifications connection remove ",
         "surfaces": ["session", "waiting_room"]
       }

@@ -140,7 +140,7 @@ test("sharedShellCommandForSlashCommand routes catalog-only kernel commands thro
   assert.equal(sharedShellCommandForSlashCommand("/collab invites"), "session invites")
   assert.equal(sharedShellCommandForSlashCommand("/workflow schedule preview --every 5m"), "workflow schedule preview --every 5m")
   assert.equal(sharedShellCommandForSlashCommand("/workflow code package export demo --out demo.json"), "workflow code package export demo --out demo.json")
-  assert.equal(sharedShellCommandForSlashCommand("/workflow publication show publication-1"), "workflow publication show publication-1")
+  assert.equal(sharedShellCommandForSlashCommand("/workflow trigger show publication-1"), "workflow trigger show publication-1")
   assert.equal(sharedShellCommandForSlashCommand("/workflow registry list"), "workflow registry list")
   assert.equal(sharedShellCommandForSlashCommand("/workflow load demo"), "workflow load demo")
   assert.equal(

@@ -324,6 +324,25 @@ impl ProviderProcessServiceStore {
         self.write().drain_finished_structured_prompt_submit_jobs()
     }
 
+    #[cfg(test)]
+    pub(crate) fn push_finished_structured_prompt_submit_for_test(
+        &self,
+        session_id: String,
+        provider_run_id: String,
+        agent_id: String,
+        prompt_id: String,
+        result: Result<crate::provider::ProviderPromptSubmitAcknowledgement, DaemonError>,
+    ) {
+        self.write()
+            .push_finished_structured_prompt_submit_for_test(
+                session_id,
+                provider_run_id,
+                agent_id,
+                prompt_id,
+                result,
+            );
+    }
+
     pub(crate) fn apply_prompt_submit_acknowledgement(
         &self,
         provider_run_id: &str,

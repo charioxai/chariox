@@ -98,7 +98,9 @@ fn deployment_route(
         .and_then(|value| value.get("path"))
         .and_then(serde_json::Value::as_str)
         .unwrap_or(publication_path);
-    let methods = if app_route.is_some() {
+    let methods = if !super::publication_uses_http_ingress(publication_value) {
+        serde_json::json!([])
+    } else if app_route.is_some() {
         serde_json::json!(["GET"])
     } else {
         publication_value
@@ -138,11 +140,11 @@ fn deployment_route(
             "scope": scope,
             "per_caller_ordering": per_caller_ordering,
         },
-        "streaming": matches!(transport.as_str(), Some("human_http" | "api_sse_json" | "websocket_json")),
+        "streaming": transport.as_str() == Some("human_http"),
         "timeout_ms": timeout_ms.unwrap_or(serde_json::Value::Null),
         "idempotency": "unspecified",
     });
-    if transport.as_str() != Some("schedule_only") {
+    if super::publication_uses_http_ingress(publication_value) {
         route["path"] = serde_json::Value::String(path.to_string());
     }
     route

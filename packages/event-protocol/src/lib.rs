@@ -4,6 +4,7 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 
 pub const EVENT_DELIVERY_PROTOCOL_VERSION: u32 = 2;
+pub const AEGS_MANAGEMENT_PROTOCOL_VERSION: u32 = 3;
 pub const DEFAULT_EVENT_DELIVERY_TTL_SECONDS: u64 = 7 * 24 * 60 * 60;
 pub const MAX_EVENT_PROMPT_BYTES: usize = 1024 * 1024;
 pub const MAX_EVENT_ARTIFACTS: usize = 32;
@@ -274,6 +275,132 @@ pub enum AegsConnectionStatus {
     Revoked,
     Unavailable,
     Error,
+}
+
+/// User-facing lifecycle state for an installed provider connection. This is deliberately
+/// separate from `AegsConnectionStatus`: the latter is the provider record's wire status,
+/// while this state describes the recovery or use action the kernel can present to a user.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AegsConnectionLifecycleState {
+    #[default]
+    NotInstalled,
+    AuthorizationRequired,
+    Connecting,
+    Connected,
+    ConnectedRestricted,
+    Degraded,
+    ReauthorizationRequired,
+    ProviderUnreachable,
+    AegsUnavailable,
+    Unused,
+    Disconnecting,
+    Disconnected,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionScope {
+    pub id: String,
+    pub label: String,
+    pub granted: bool,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectedResource {
+    pub id: String,
+    pub name: String,
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionInspectionRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+}
+
+impl AegsConnectionInspectionRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionInspection {
+    pub generator_id: String,
+    pub connection_id: String,
+    pub lifecycle_state: AegsConnectionLifecycleState,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub scopes: Vec<AegsConnectionScope>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<AegsConnectedResource>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_health_check_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_accepted_event_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub problem_message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recovery_action: Option<String>,
+    #[serde(default)]
+    pub test_event_supported: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionRefreshRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+}
+
+impl AegsConnectionRefreshRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionTestEventRequest {
+    pub generator_id: String,
+    pub owner_id: String,
+    pub connection_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event_type: Option<String>,
+}
+
+impl AegsConnectionTestEventRequest {
+    pub fn validate(&self) -> Result<(), String> {
+        require_connection_identity(&self.generator_id, &self.owner_id, &self.connection_id)?;
+        if self
+            .event_type
+            .as_deref()
+            .is_some_and(|value| value.trim().is_empty() || value.len() > 512)
+        {
+            return Err("event_type must contain between 1 and 512 characters".to_string());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AegsConnectionTestEventResponse {
+    pub occurrence_id: String,
+    pub accepted: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+fn require_connection_identity(
+    generator_id: &str,
+    owner_id: &str,
+    connection_id: &str,
+) -> Result<(), String> {
+    require_opaque_id("generator_id", generator_id)?;
+    require_opaque_id("owner_id", owner_id)?;
+    require_opaque_id("connection_id", connection_id)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -665,5 +792,19 @@ mod tests {
             .validate()
             .unwrap_err()
             .contains("between 1 and 100"));
+
+        let inspection = AegsConnectionInspectionRequest {
+            generator_id: "dev.chariox.github".to_string(),
+            owner_id: "owner-kernel-user".to_string(),
+            connection_id: "connection-1".to_string(),
+        };
+        assert!(inspection.validate().is_ok());
+        let invalid_test = AegsConnectionTestEventRequest {
+            generator_id: inspection.generator_id,
+            owner_id: inspection.owner_id,
+            connection_id: inspection.connection_id,
+            event_type: Some(String::new()),
+        };
+        assert!(invalid_test.validate().unwrap_err().contains("event_type"));
     }
 }

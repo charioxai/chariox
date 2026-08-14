@@ -16,8 +16,9 @@ pub use oauth::{
     OAuthAuthorization, OAuthConfig, OAuthCredential, OAuthDefaults, OAuthTokenProtocol,
 };
 pub use provider::{
-    metadata_matches_filter, AegsProvider, AuthorizationCallback, ControlWebhookResponse,
-    NormalizedEvent, WebhookInput, WebhookRoute,
+    apply_test_filter_constraints, baseline_provider_connection_inspection,
+    metadata_matches_filter, select_test_subscription, AegsProvider, AuthorizationCallback,
+    ControlWebhookResponse, NormalizedEvent, WebhookInput, WebhookRoute,
 };
 pub use publisher::AedsPublisher;
 pub use server::{read_secret, run_from_environment};
@@ -26,7 +27,7 @@ pub use store::{
     ProviderHookRecord, SubscriptionClaim,
 };
 
-pub const AEGS_PROTOCOL_VERSION: u32 = 2;
+pub const AEGS_PROTOCOL_VERSION: u32 = chariox_event_protocol::AEGS_MANAGEMENT_PROTOCOL_VERSION;
 pub const MAX_WEBHOOK_BYTES: usize = 2 * 1024 * 1024;
 
 pub fn now_ms() -> u64 {

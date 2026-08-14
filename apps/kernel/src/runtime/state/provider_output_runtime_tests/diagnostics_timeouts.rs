@@ -254,6 +254,134 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
 }
 
 #[tokio::test]
+async fn structured_submit_resume_failure_clears_agent_and_session_state() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-1",
+            "worktree-1",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-submit-resume-failure",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.5",
+    )
+    .with_agent_id(agent.id());
+    app.agents
+        .set_agent_runtime_profile(
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            Some("default".to_string()),
+            crate::provider::ProviderResumeState::from_codex_thread_id("stale-thread"),
+        )
+        .expect("agent should start with the stale provider session");
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should exist")
+            .provider_resume_state()
+            .codex_thread_id(),
+        Some("stale-thread")
+    );
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-codex-submit-resume-failure",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.set_resume_state(crate::provider::ProviderResumeState::from_codex_thread_id(
+        "stale-thread",
+    ));
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "submit after stale resume\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .owned
+        .provider_store
+        .push_finished_structured_prompt_submit_for_test(
+            session.id().to_string(),
+            run.id().to_string(),
+            agent.id().to_string(),
+            runtime
+                .owned
+                .session_snapshot(session.id())
+                .expect("session snapshot should exist")
+                .active_prompt_for_agent(agent.id())
+                .expect("prompt should be active")
+                .id()
+                .to_string(),
+            Err(crate::error::DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "thread/resume",
+                message: "no rollout found for thread".to_string(),
+            }),
+        );
+    runtime.owned.reap_structured_prompt_jobs();
+
+    let session_state = runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist");
+    assert_eq!(session_state.active_provider_run_id(), None);
+    assert!(session_state.active_prompt_for_agent(agent.id()).is_none());
+    assert_eq!(
+        runtime
+            .owned
+            .agent_store
+            .get_agent(agent.id())
+            .expect("agent should exist")
+            .provider_resume_state()
+            .codex_thread_id(),
+        None
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("provider run should exist")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+}
+
+#[tokio::test]
 async fn first_output_timeout_projects_error_and_closes_prompt() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
