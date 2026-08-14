@@ -335,6 +335,10 @@ impl KernelRuntimeState {
                     .workflow_maybe_start_next_queued_prompt(session.id()),
             );
         }
+        // Workspace claims are process-local, while blocked workflow nodes are durable.  After
+        // a restart the old claim cannot still be held, so retry those nodes explicitly instead
+        // of leaving event-delivery runs parked in `BlockedOnWorkspaceClaim` forever.
+        self.spawn_workflow_prompt_dispatches(self.owned.workflow_retry_blocked_claims());
         summary
     }
 
