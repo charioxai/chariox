@@ -38,6 +38,13 @@ pub(super) fn pump_session_active_prompt_outputs(
             .filter(should_pump_background_provider_run)
             .map(|run| run.id().to_string()),
     );
+    // Keep the final set defensive: every discovery path above must obey the
+    // single-owner rule before any legacy pump is invoked.
+    provider_run_ids.retain(|provider_run_id| {
+        app.providers
+            .get_run(provider_run_id)
+            .is_ok_and(|run| !crate::provider::provider_run_uses_structured_prompt_io(&run))
+    });
     let mut pumped_provider_run_ids = Vec::new();
     for provider_run_id in provider_run_ids {
         let agent_id = app
