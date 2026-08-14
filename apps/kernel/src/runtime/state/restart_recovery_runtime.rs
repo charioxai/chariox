@@ -24,6 +24,7 @@ pub(crate) struct DurableRestartRecoverySummary {
     pub(crate) uncertain_local_prompts_preserved: usize,
     pub(crate) transcript_recovery_pending: usize,
     pub(crate) queued_local_prompts_started: usize,
+    pub(crate) orphaned_workflow_prompts_finalized: usize,
     pub(crate) failed_reconciliations: usize,
 }
 
@@ -82,6 +83,7 @@ impl KernelRuntimeState {
                     "uncertain_local_prompts_preserved": summary.uncertain_local_prompts_preserved,
                     "transcript_recovery_pending": summary.transcript_recovery_pending,
                     "queued_local_prompts_started": summary.queued_local_prompts_started,
+                    "orphaned_workflow_prompts_finalized": summary.orphaned_workflow_prompts_finalized,
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
@@ -197,6 +199,38 @@ impl KernelRuntimeState {
                         continue;
                     }
                 };
+                if prompt.workflow_run_id().is_some()
+                    && self
+                        .owned
+                        .session_store
+                        .read()
+                        .resolve_workflow_run_ref(
+                            session.id(),
+                            prompt.workflow_run_id().expect("checked above"),
+                        )
+                        .is_err()
+                {
+                    match self
+                        .finalize_orphaned_workflow_prompt_after_restart(
+                            session.id(),
+                            agent_id,
+                            &prompt,
+                        )
+                        .await
+                    {
+                        Ok(()) => summary.orphaned_workflow_prompts_finalized += 1,
+                        Err(error) => {
+                            summary.failed_reconciliations += 1;
+                            log_restart_recovery_failure(
+                                session.id(),
+                                agent_id,
+                                prompt.id(),
+                                &error,
+                            );
+                        }
+                    }
+                    continue;
+                }
                 if agent.remote_execution().is_some() {
                     match self
                         .recover_remote_prompt_after_kernel_restart(
@@ -300,6 +334,61 @@ impl KernelRuntimeState {
             );
         }
         summary
+    }
+
+    async fn finalize_orphaned_workflow_prompt_after_restart(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let session_id_owned = session_id.to_string();
+        let agent_id_owned = agent_id.to_string();
+        let prompt_id = prompt.id().to_string();
+        self.with_app_side_effect(move |app| {
+            let cancelled =
+                app.prompt_owner_cancel_active_prompt_only(&session_id_owned, &agent_id_owned)?;
+            crate::logging::warn_with_fields(
+                "durable_state.recovery",
+                "finalized workflow prompt whose run was not durable",
+                serde_json::json!({
+                    "session_id": session_id_owned,
+                    "agent_id": agent_id_owned,
+                    "prompt_id": prompt_id,
+                    "cancelled_prompt_id": cancelled.id(),
+                }),
+            );
+            Ok(())
+        })
+        .await?;
+
+        // The workflow run already exists; only its provider prompt was orphaned.
+        // Recover the next provider prompt directly instead of asking the workflow
+        // queue to create another run.  The latter leaves a Ready node stranded
+        // because the invocation was already claimed before the restart.
+        let queued_prompt_id = self
+            .owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .and_then(|session| {
+                self.owned
+                    .prompt_state_owner
+                    .state_parts(&session, agent_id)
+                    .1
+                    .front()
+                    .map(|prompt| prompt.id().to_string())
+            });
+        if let Some(queued_prompt_id) = queued_prompt_id {
+            if let Some(dispatches) = self.recover_queued_local_prompt_after_restart(
+                session_id,
+                agent_id,
+                &queued_prompt_id,
+            )? {
+                self.spawn_workflow_prompt_dispatches(dispatches);
+            }
+        }
+        Ok(())
     }
 
     #[allow(clippy::result_large_err)]
