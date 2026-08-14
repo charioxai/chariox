@@ -881,7 +881,7 @@ impl RuntimeSession {
         &self.workflow_publication_state.workflow_publications
     }
 
-    pub(crate) fn purge_removed_workflow_publications(&mut self) -> usize {
+    pub(crate) fn purge_unsupported_workflow_publications(&mut self) -> usize {
         let state = self.workflow_publication_state.as_mut();
         let before = state.workflow_publications.len();
         state.workflow_publications.retain(|publication| {

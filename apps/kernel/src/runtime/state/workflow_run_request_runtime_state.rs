@@ -64,10 +64,10 @@ impl KernelRuntimeState {
                         endpoint,
                     } => {
                         if let Some(refreshed) = refreshed_workflow_run {
-                            workflow_run = refreshed;
+                            *workflow_run = refreshed;
                         }
                         Ok(LocalDaemonResponse::WorkflowRunInvoked {
-                            workflow_run,
+                            workflow_run: *workflow_run,
                             workflow,
                             endpoint,
                             session,
@@ -78,7 +78,7 @@ impl KernelRuntimeState {
                         workflow,
                         endpoint,
                     } => Ok(LocalDaemonResponse::WorkflowPromptEnqueued {
-                        queued_prompt,
+                        queued_prompt: *queued_prompt,
                         workflow,
                         endpoint,
                         session,

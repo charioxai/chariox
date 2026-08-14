@@ -17,10 +17,12 @@ fn binds_workflow_code_source_with_revision_conflict_protection() {
             session.id(),
             workflow.id(),
             Some(revision),
-            "workflow-source-session-1-workflow-1".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "sha256".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "workflow-source-session-1-workflow-1".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "sha256".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
             crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
         )
         .expect("source should bind");
@@ -33,10 +35,12 @@ fn binds_workflow_code_source_with_revision_conflict_protection() {
             session.id(),
             workflow.id(),
             Some(revision),
-            "stale-source".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "stale".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "stale-source".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "stale".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
             crate::workflow_code::WorkflowCodeApplyReport::for_workflow(workflow.id()),
         )
         .expect_err("stale revision should conflict");
@@ -107,7 +111,7 @@ fn creates_lists_and_resolves_workflows_by_id_and_alias_prefix() {
 }
 
 #[test]
-fn restore_purges_removed_publication_records() {
+fn restore_purges_unsupported_publication_records() {
     let mut source = SessionService::new(&test_config());
     let session = source
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -164,18 +168,18 @@ fn restore_purges_removed_publication_records() {
         .cloned()
         .expect("supported publication snapshot should serialize");
     for (id, transport) in [
-        ("removed-api-sse", "api_sse_json"),
-        ("removed-websocket", "websocket_json"),
-        ("removed-publication-mcp", "mcp"),
+        ("unsupported-publication-1", "unsupported_transport_1"),
+        ("unsupported-publication-2", "unsupported_transport_2"),
+        ("unsupported-publication-3", "unsupported_transport_3"),
     ] {
-        let mut removed = supported_json.clone();
-        removed["id"] = serde_json::json!(id);
-        removed["alias"] = serde_json::json!(id);
-        removed["transport"] = serde_json::json!({ "kind": transport });
+        let mut unsupported = supported_json.clone();
+        unsupported["id"] = serde_json::json!(id);
+        unsupported["alias"] = serde_json::json!(id);
+        unsupported["transport"] = serde_json::json!({ "kind": transport });
         serialized["workflow_publications"]
             .as_array_mut()
             .expect("publication list should be mutable")
-            .push(removed);
+            .push(unsupported);
         serialized["workflow_publication_snapshots"]
             .as_object_mut()
             .expect("publication snapshots should be mutable")

@@ -184,12 +184,12 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             crate::agent::GridPosition::new(0, 0, 1, 1),
         )],
     };
-    let materialize_request = LocalDaemonRequest::MaterializeWorkflowPublication(
+    let materialize_request = LocalDaemonRequest::MaterializeWorkflowPublication(Box::new(
         crate::local::MaterializeWorkflowPublicationRequest {
             publication_id: "publication-1".to_string(),
             snapshot: snapshot.clone(),
         },
-    );
+    ));
     let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
         "publication-1",
         "session-1",

@@ -4,15 +4,12 @@ use crate::session::{WorkflowCanvasLayout, WorkflowCanvasLayoutPatch, WorkflowEd
 mod design_ops;
 
 impl SessionService {
-    pub fn bind_workflow_code_source(
+    pub(crate) fn bind_workflow_code_source(
         &mut self,
         session_id: &str,
         workflow_ref: &str,
         expected_workflow_revision: Option<u64>,
-        artifact_name: String,
-        language: crate::workflow_code::WorkflowCodeLanguage,
-        source_sha256: String,
-        origin: crate::session::WorkflowCodeSourceOrigin,
+        source: crate::session::WorkflowCodeSourceDescriptor,
         bindings: crate::workflow_code::WorkflowCodeApplyReport,
     ) -> Result<WorkflowDefinition, DaemonError> {
         let workflow_id = self
@@ -43,7 +40,13 @@ impl SessionService {
                 });
             }
         }
-        workflow.bind_code_source(artifact_name, language, source_sha256, origin, bindings);
+        workflow.bind_code_source(
+            source.artifact_name,
+            source.language,
+            source.source_sha256,
+            source.origin,
+            bindings,
+        );
         Ok(workflow.clone())
     }
 

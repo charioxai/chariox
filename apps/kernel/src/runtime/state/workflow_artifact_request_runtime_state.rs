@@ -117,10 +117,12 @@ impl KernelRuntimeState {
                 &request.session_id,
                 &request.workflow_ref,
                 request.expected_workflow_revision,
-                artifact.metadata.name,
-                artifact.metadata.language,
-                artifact.metadata.source_sha256,
-                request.origin,
+                crate::session::WorkflowCodeSourceDescriptor {
+                    artifact_name: artifact.metadata.name,
+                    language: artifact.metadata.language,
+                    source_sha256: artifact.metadata.source_sha256,
+                    origin: request.origin,
+                },
                 bindings,
             )?;
             let session = crate::app::KernelSessionReadService::new(app)
@@ -235,10 +237,12 @@ impl KernelRuntimeState {
                 &request.workflow_ref,
                 request.expected_workflow_revision,
                 &compile.definition,
-                artifact.metadata.name,
-                artifact.metadata.language,
-                artifact.metadata.source_sha256,
-                origin,
+                crate::session::WorkflowCodeSourceDescriptor {
+                    artifact_name: artifact.metadata.name,
+                    language: artifact.metadata.language,
+                    source_sha256: artifact.metadata.source_sha256,
+                    origin,
+                },
             )?;
             let session = crate::app::KernelSessionReadService::new(app)
                 .session_snapshot(&request.session_id)?;
@@ -367,10 +371,12 @@ impl KernelRuntimeState {
                 &request.session_id,
                 workflow.id(),
                 Some(request.expected_workflow_revision),
-                artifact_name,
-                artifact.metadata.language,
-                artifact.metadata.source_sha256,
-                crate::session::WorkflowCodeSourceOrigin::Generated,
+                crate::session::WorkflowCodeSourceDescriptor {
+                    artifact_name,
+                    language: artifact.metadata.language,
+                    source_sha256: artifact.metadata.source_sha256,
+                    origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+                },
                 mappings,
             )?;
             let session = crate::app::KernelSessionReadService::new(app)

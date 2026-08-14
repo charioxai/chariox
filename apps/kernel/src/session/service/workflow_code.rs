@@ -10,16 +10,13 @@ use crate::workflow_code::{
 };
 
 impl SessionService {
-    pub fn rebuild_workflow_code_definition(
+    pub(crate) fn rebuild_workflow_code_definition(
         &mut self,
         session_id: &str,
         workflow_ref: &str,
         expected_workflow_revision: u64,
         definition: &WorkflowCodeDefinition,
-        artifact_name: String,
-        language: crate::workflow_code::WorkflowCodeLanguage,
-        source_sha256: String,
-        origin: crate::session::WorkflowCodeSourceOrigin,
+        source: crate::session::WorkflowCodeSourceDescriptor,
     ) -> Result<WorkflowCodeApplyReport, DaemonError> {
         let current = self.resolve_workflow_ref(session_id, workflow_ref)?;
         if current.revision() != expected_workflow_revision {
@@ -37,7 +34,7 @@ impl SessionService {
                 operation: "workflow_code.rebuild",
                 message: "workflow does not have a stored code source".to_string(),
             })?;
-        if binding.artifact_name() != artifact_name {
+        if binding.artifact_name() != source.artifact_name {
             return Err(DaemonError::LocalTransport {
                 operation: "workflow_code.rebuild",
                 message: "stored workflow-code artifact does not match the workflow binding"
@@ -277,23 +274,25 @@ impl SessionService {
                     workflow_id: workflow_id.clone(),
                 }
             })?;
-            workflow.replace_code_structure(
-                definition.workflow.alias.clone(),
-                definition.workflow.prompt.clone(),
-                definition
+            workflow.replace_code_structure(crate::session::WorkflowCodeStructureReplacement {
+                alias: definition.workflow.alias.clone(),
+                prompt: definition.workflow.prompt.clone(),
+                flush_agent_context_before_run: definition
                     .workflow
                     .flush_agent_context_before_run
                     .unwrap_or(true),
-                definition
+                max_concurrent: definition
                     .workflow
                     .max_concurrent
                     .unwrap_or(default_max_concurrent),
-                resolve_schema(definition.workflow.run_output_schema.as_deref()),
+                run_output_schema_ref: resolve_schema(
+                    definition.workflow.run_output_schema.as_deref(),
+                ),
                 schemas,
                 nodes,
                 edges,
                 endpoints,
-            );
+            });
             let patches = workflow_code_canvas_patches(definition, &report);
             if !patches.is_empty() {
                 workflow.update_canvas_layout(patches);
@@ -349,15 +348,15 @@ impl SessionService {
                 .iter_mut()
                 .find(|schedule| schedule.id() == schedule_id)
             {
-                schedule.reconfigure(
+                schedule.reconfigure(crate::session::WorkflowScheduleReconfiguration {
                     endpoint_id,
                     queue_id,
-                    source.trigger.clone(),
-                    source.invocation_prompt.clone(),
-                    source.overlap_policy,
-                    source.max_runs,
-                    source.enabled.unwrap_or(true),
-                );
+                    trigger: source.trigger.clone(),
+                    invocation_prompt: source.invocation_prompt.clone(),
+                    overlap_policy: source.overlap_policy,
+                    max_runs: source.max_runs,
+                    enabled: source.enabled.unwrap_or(true),
+                });
             } else {
                 let mut schedule = crate::session::WorkflowScheduleDefinition::new_with_trigger(
                     schedule_id,
@@ -381,10 +380,10 @@ impl SessionService {
                     workflow_id: workflow_id.clone(),
                 })?;
         workflow.bind_code_source(
-            artifact_name,
-            language,
-            source_sha256,
-            origin,
+            source.artifact_name,
+            source.language,
+            source.source_sha256,
+            source.origin,
             report.clone(),
         );
         Ok(report)

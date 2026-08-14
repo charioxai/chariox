@@ -92,10 +92,12 @@ impl KernelRuntimeState {
                     &request.session_id,
                     &result.apply.workflow_id,
                     None,
-                    artifact.metadata.name,
-                    artifact.metadata.language,
-                    artifact.metadata.source_sha256,
-                    crate::session::WorkflowCodeSourceOrigin::Authored,
+                    crate::session::WorkflowCodeSourceDescriptor {
+                        artifact_name: artifact.metadata.name,
+                        language: artifact.metadata.language,
+                        source_sha256: artifact.metadata.source_sha256,
+                        origin: crate::session::WorkflowCodeSourceOrigin::Authored,
+                    },
                     result.apply.clone(),
                 )?;
                 let session =
@@ -243,7 +245,7 @@ impl KernelRuntimeState {
                 result: crate::workflow_code::WorkflowCodeRunResult {
                     apply: apply_result,
                     invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
-                        workflow_run,
+                        workflow_run: Box::new(workflow_run),
                         workflow,
                         endpoint,
                     },
@@ -259,7 +261,7 @@ impl KernelRuntimeState {
                 result: crate::workflow_code::WorkflowCodeRunResult {
                     apply: apply_result,
                     invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
-                        queued_prompt,
+                        queued_prompt: Box::new(queued_prompt),
                         workflow,
                         endpoint,
                     },
@@ -362,7 +364,7 @@ impl KernelRuntimeState {
                 result: crate::workflow_code::WorkflowCodeRunResult {
                     apply: apply_result,
                     invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
-                        workflow_run,
+                        workflow_run: Box::new(workflow_run),
                         workflow,
                         endpoint,
                     },
@@ -378,7 +380,7 @@ impl KernelRuntimeState {
                 result: crate::workflow_code::WorkflowCodeRunResult {
                     apply: apply_result,
                     invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
-                        queued_prompt,
+                        queued_prompt: Box::new(queued_prompt),
                         workflow,
                         endpoint,
                     },

@@ -138,7 +138,7 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok((
                 crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
-                    queued_prompt,
+                    queued_prompt: Box::new(queued_prompt),
                     workflow,
                     endpoint,
                 },
@@ -168,7 +168,7 @@ impl KernelRuntimeOwnedState {
         } else {
             Ok((
                 crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued {
-                    queued_prompt,
+                    queued_prompt: Box::new(queued_prompt),
                     workflow,
                     endpoint,
                 },
@@ -230,7 +230,7 @@ impl KernelRuntimeOwnedState {
             .resolve_workflow_run_ref(session_id, workflow_run.id())?;
         Ok((
             crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
-                workflow_run,
+                workflow_run: Box::new(workflow_run),
                 workflow,
                 endpoint,
             },

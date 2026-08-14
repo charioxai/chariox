@@ -228,7 +228,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: crate::workflow_code::WorkflowCodeRunResult {
             apply: apply_result.clone(),
             invocation: crate::workflow_code::WorkflowCodeRunInvocation::Started {
-                workflow_run: crate::session::WorkflowRun::new(
+                workflow_run: Box::new(crate::session::WorkflowRun::new(
                     "workflow-run-1",
                     "workflow-1",
                     "endpoint-1",
@@ -237,7 +237,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
                     None,
                     Vec::new(),
                     Vec::new(),
-                ),
+                )),
                 workflow: run_workflow,
                 endpoint: run_endpoint,
             },
@@ -576,16 +576,18 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
         result: crate::workflow_code::WorkflowCodeRunResult {
             apply: apply_result,
             invocation: crate::workflow_code::WorkflowCodeRunInvocation::Enqueued {
-                queued_prompt: crate::session::WorkflowQueuedPrompt::new(
-                    "queue-1",
-                    "default",
-                    "workflow-1",
-                    "endpoint-1",
-                    Some("Run this registered workflow.".to_string()),
-                    None,
-                    crate::session::WorkflowQueuedPromptSource::Manual,
-                    None,
-                ),
+                queued_prompt: Box::new(crate::session::WorkflowQueuedPrompt::new(
+                    crate::session::WorkflowQueuedPromptInput {
+                        id: "queue-1".to_string(),
+                        queue_id: "default".to_string(),
+                        workflow_id: "workflow-1".to_string(),
+                        endpoint_id: "endpoint-1".to_string(),
+                        prompt: Some("Run this registered workflow.".to_string()),
+                        publication_invocation: None,
+                        source: crate::session::WorkflowQueuedPromptSource::Manual,
+                        schedule_id: None,
+                    },
+                )),
                 workflow: crate::session::WorkflowDefinition::new(
                     "workflow-1",
                     Some("toy".to_string()),

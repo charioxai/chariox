@@ -26,6 +26,26 @@ pub enum WorkflowCodeSourceOrigin {
     Generated,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WorkflowCodeSourceDescriptor {
+    pub(crate) artifact_name: String,
+    pub(crate) language: crate::workflow_code::WorkflowCodeLanguage,
+    pub(crate) source_sha256: String,
+    pub(crate) origin: WorkflowCodeSourceOrigin,
+}
+
+pub(crate) struct WorkflowCodeStructureReplacement {
+    pub(crate) alias: Option<String>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) flush_agent_context_before_run: bool,
+    pub(crate) max_concurrent: u32,
+    pub(crate) run_output_schema_ref: Option<String>,
+    pub(crate) schemas: Vec<WorkflowSchemaDefinition>,
+    pub(crate) nodes: Vec<WorkflowNodeDefinition>,
+    pub(crate) edges: Vec<WorkflowEdgeDefinition>,
+    pub(crate) endpoints: Vec<WorkflowEndpointDefinition>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowCodeSourceBinding {
     artifact_name: String,
@@ -248,27 +268,16 @@ impl WorkflowDefinition {
         self.revision = self.revision.saturating_add(1);
     }
 
-    pub(crate) fn replace_code_structure(
-        &mut self,
-        alias: Option<String>,
-        prompt: Option<String>,
-        flush_agent_context_before_run: bool,
-        max_concurrent: u32,
-        run_output_schema_ref: Option<String>,
-        schemas: Vec<WorkflowSchemaDefinition>,
-        nodes: Vec<WorkflowNodeDefinition>,
-        edges: Vec<WorkflowEdgeDefinition>,
-        endpoints: Vec<WorkflowEndpointDefinition>,
-    ) {
-        self.alias = alias;
-        self.prompt = prompt;
-        self.flush_agent_context_before_run = flush_agent_context_before_run;
-        self.max_concurrent = max_concurrent.max(1);
-        self.run_output_schema_ref = run_output_schema_ref;
-        self.schemas = schemas;
-        self.nodes = nodes;
-        self.edges = edges;
-        self.endpoints = endpoints;
+    pub(crate) fn replace_code_structure(&mut self, replacement: WorkflowCodeStructureReplacement) {
+        self.alias = replacement.alias;
+        self.prompt = replacement.prompt;
+        self.flush_agent_context_before_run = replacement.flush_agent_context_before_run;
+        self.max_concurrent = replacement.max_concurrent.max(1);
+        self.run_output_schema_ref = replacement.run_output_schema_ref;
+        self.schemas = replacement.schemas;
+        self.nodes = replacement.nodes;
+        self.edges = replacement.edges;
+        self.endpoints = replacement.endpoints;
         self.canvas_layout = None;
         self.bump_revision();
     }

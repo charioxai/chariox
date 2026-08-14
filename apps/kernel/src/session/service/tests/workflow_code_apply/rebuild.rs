@@ -31,10 +31,12 @@ fn rebuilds_the_same_workflow_from_bound_source_mappings() {
             session.id(),
             &workflow_id,
             Some(applied_revision),
-            "source-artifact".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "source-sha".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Authored,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "source-artifact".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "source-sha".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Authored,
+            },
             report.clone(),
         )
         .expect("source should bind");
@@ -61,10 +63,12 @@ fn rebuilds_the_same_workflow_from_bound_source_mappings() {
             &workflow_id,
             changed.revision(),
             &definition,
-            "source-artifact".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "source-sha".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Authored,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "source-artifact".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "source-sha".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Authored,
+            },
         )
         .expect("bound source should rebuild in place");
 
@@ -116,10 +120,12 @@ fn rebuild_revision_conflict_does_not_mutate_the_workflow() {
             session.id(),
             &report.workflow_id,
             Some(revision),
-            "source-artifact".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "source-sha".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "source-artifact".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "source-sha".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
             report.clone(),
         )
         .expect("source should bind");
@@ -132,10 +138,12 @@ fn rebuild_revision_conflict_does_not_mutate_the_workflow() {
             &report.workflow_id,
             before.revision() - 1,
             &definition,
-            "source-artifact".to_string(),
-            crate::workflow_code::WorkflowCodeLanguage::JavaScript,
-            "source-sha".to_string(),
-            crate::session::WorkflowCodeSourceOrigin::Generated,
+            crate::session::WorkflowCodeSourceDescriptor {
+                artifact_name: "source-artifact".to_string(),
+                language: crate::workflow_code::WorkflowCodeLanguage::JavaScript,
+                source_sha256: "source-sha".to_string(),
+                origin: crate::session::WorkflowCodeSourceOrigin::Generated,
+            },
         )
         .expect_err("stale rebuild should fail");
     assert!(error.to_string().contains("revision conflict"));

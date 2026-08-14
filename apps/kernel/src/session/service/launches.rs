@@ -381,16 +381,16 @@ impl SessionService {
         let endpoint =
             self.resolve_workflow_endpoint_ref(session_id, workflow.id(), endpoint_id)?;
         self.validate_workflow_runnable(session_id, &workflow, &endpoint)?;
-        let queued = WorkflowQueuedPrompt::new(
-            self.next_workflow_queued_prompt_id(),
+        let queued = WorkflowQueuedPrompt::new(crate::session::WorkflowQueuedPromptInput {
+            id: self.next_workflow_queued_prompt_id(),
             queue_id,
-            workflow.id().to_string(),
-            endpoint.id().to_string(),
+            workflow_id: workflow.id().to_string(),
+            endpoint_id: endpoint.id().to_string(),
             prompt,
             publication_invocation,
             source,
-            watchdog_id,
-        );
+            schedule_id: watchdog_id,
+        });
         let session =
             self.store
                 .get_mut(session_id)

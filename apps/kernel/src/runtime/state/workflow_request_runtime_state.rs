@@ -284,7 +284,7 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
-                let result = owned.workflow_materialize_publication(request, &caller_user_id);
+                let result = owned.workflow_materialize_publication(*request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
                 (result, session)
             }
