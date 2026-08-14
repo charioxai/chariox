@@ -34,6 +34,7 @@ struct AegsServer {
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
+    action_locks: Arc<std::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 pub async fn run_from_environment<F>(provider_factory: F) -> Result<(), Box<dyn std::error::Error>>
@@ -73,6 +74,7 @@ where
         ),
         store,
         provider,
+        action_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
     };
     if server.provider.authorization_configured() {
         spawn_subscription_maintenance(Arc::clone(&server.provider));
@@ -312,6 +314,28 @@ impl AegsServer {
                         "the provider connection is not ready for outbound actions",
                     );
                 }
+                // Serialize each idempotency key across concurrent HTTP retries. The durable
+                // receipt makes retries safe after completion; this lock also prevents two
+                // simultaneous retries from both reaching the provider before that receipt is
+                // written.
+                let action_lock_key = format!(
+                    "{}\u{1f}{}\u{1f}{}",
+                    action.owner_id, action.connection_id, action.idempotency_key
+                );
+                let action_lock = match self.action_locks.lock() {
+                    Ok(mut locks) => locks
+                        .entry(action_lock_key)
+                        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                        .clone(),
+                    Err(_) => {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "action_lock_failed",
+                            "AEGS action lock was poisoned",
+                        )
+                    }
+                };
+                let _action_guard = action_lock.lock().await;
                 match self.store.action_receipt(
                     &action.owner_id,
                     &action.connection_id,

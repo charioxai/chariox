@@ -1441,4 +1441,31 @@ mod tests {
         assert_eq!(ready.owner_id, "owner-a");
         assert_eq!(ready.status, "ready");
     }
+
+    #[test]
+    fn action_receipts_are_durable_and_idempotent() {
+        let store = AegsStore::open(":memory:").unwrap();
+        let response = chariox_event_protocol::AegsProviderActionResponse {
+            action_id: "notification.reply".to_string(),
+            idempotency_key: "reply-1".to_string(),
+            accepted: true,
+            result: serde_json::json!({"message_ts": "123.456"}),
+        };
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, 10)
+            .unwrap();
+        assert_eq!(
+            store
+                .action_receipt("owner-a", "connection-a", "reply-1")
+                .unwrap(),
+            Some(response.clone())
+        );
+        store
+            .record_action_receipt("owner-a", "connection-a", &response, 11)
+            .unwrap();
+        assert!(store
+            .action_receipt("owner-b", "connection-a", "reply-1")
+            .unwrap()
+            .is_none());
+    }
 }
