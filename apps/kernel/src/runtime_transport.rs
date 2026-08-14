@@ -581,10 +581,21 @@ where
         tokio::spawn(scheduler.run(Duration::from_millis(DURABLE_SNAPSHOT_POLL_INTERVAL_MS)))
     });
 
+    // Bind the provider-facing MCP endpoint before allowing durable restart
+    // recovery to launch any provider. Recovery can dispatch immediately after
+    // a kernel restart; starting it before this listener is bound creates a
+    // race where required MCP initialization fails and the provider run is
+    // stranded before its first turn.
+    let mcp_listener = crate::transport::mcp_server::bind_mcp_http_server(&router).await?;
     let mcp_router = Arc::clone(&router);
     let mcp_task = tokio::spawn(async move {
-        let _ = crate::transport::mcp_server::run_mcp_http_server(mcp_router).await;
+        let _ = crate::transport::mcp_server::run_mcp_http_server_on_listener(
+            mcp_router,
+            mcp_listener,
+        )
+        .await;
     });
+    router.runtime_state().spawn_durable_restart_recovery();
 
     loop {
         tokio::select! {
