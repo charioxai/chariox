@@ -39,7 +39,12 @@ impl KernelRuntimeOwnedState {
                 prompt.target_agent_id()
             ),
         );
-        let _ = self.session_snapshot(session_id)?;
+        // The workflow node state is part of the restart contract.  The owned prompt
+        // dispatcher calls this path for both ordinary and recovered prompts, so merely
+        // updating the in-memory session/projection is insufficient: after a restart the
+        // provider prompt can be active while its workflow node is still persisted as Ready.
+        // Persist the Running transition before the provider can call workflow runtime tools.
+        self.persist_workflow_runtime_session(session_id, "workflow_prompt_started")?;
         Ok(())
     }
 

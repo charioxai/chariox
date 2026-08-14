@@ -54,6 +54,102 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
 }
 
 #[test]
+fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workflow-start-persistence-workspace",
+            "workflow-start-persistence-worktree",
+        ))
+        .expect("session should be created");
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("restart-persistence".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("resume after restart".to_string()),
+        )
+        .expect("workflow run should be created");
+    let node_run_id = workflow_run.node_runs()[0].id().to_string();
+    let delivery_token = format!("workflow-ack:{node_run_id}");
+    app.sessions_mut()
+        .prepare_workflow_turn(
+            session.id(),
+            workflow_run.id(),
+            &node_run_id,
+            delivery_token,
+            "resume after restart".to_string(),
+            None,
+            None,
+        )
+        .expect("workflow turn should be prepared");
+    let prompt = crate::session::PromptQueueItem::new(
+        "workflow-start-persistence-prompt",
+        crate::scheduler::runtime::workflow_prompt_source_attachment_id(workflow_run.id()),
+        agent.id(),
+        "resume after restart",
+        crate::session::PromptStatus::Running,
+    )
+    .with_workflow_context(workflow_run.id(), &node_run_id);
+
+    let runtime = runtime_state_from_app(app);
+    runtime
+        .owned
+        .workflow_start_prompt(session.id(), &prompt)
+        .expect("workflow start should persist");
+
+    let latest = runtime
+        .owned
+        .durable_state_store
+        .load_subject_events_by_kind(session.id(), "session.updated", 10)
+        .expect("workflow start event should load")
+        .into_iter()
+        .last()
+        .expect("workflow start should append a session event");
+    assert_eq!(latest.payload["reason"], "workflow_prompt_started");
+    let persisted: crate::session::RuntimeSession =
+        serde_json::from_value(latest.payload["session"].clone())
+            .expect("persisted session should deserialize");
+    let persisted_node = persisted
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should persist")
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == node_run_id)
+        .expect("workflow node run should persist");
+    assert_eq!(
+        persisted_node.status(),
+        crate::session::WorkflowNodeRunStatus::Running
+    );
+    assert_eq!(
+        persisted_node
+            .turn_envelope()
+            .expect("turn envelope should persist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Prepared
+    );
+}
+
+#[test]
 fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instructions() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
