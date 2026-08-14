@@ -240,7 +240,8 @@ fn parse_event_generator_management_targets(
         serde_json::from_str(encoded).map_err(|error| format!("invalid JSON: {error}"))?;
     let mut targets = BTreeMap::new();
     for (raw_generator_id, value) in values {
-        let generator_id = raw_generator_id.trim().to_string();
+        let generator_id =
+            crate::event_connection::canonical_event_generator_id(raw_generator_id.trim());
         if generator_id.is_empty() {
             return Err("generator ID must not be empty".to_string());
         }
@@ -380,6 +381,22 @@ mod tests {
             targets["dev.chariox.github"].url,
             "https://events.example.test/github"
         );
+    }
+
+    #[test]
+    fn event_generator_management_targets_migrate_removed_publisher_namespace() {
+        let targets = parse_event_generator_management_targets(
+            r#"{
+                "dev.arroba.github": {
+                    "url": "https://events.example.test/github",
+                    "token": "remote-token"
+                }
+            }"#,
+        )
+        .expect("renamed target should migrate");
+
+        assert!(targets.contains_key("dev.chariox.github"));
+        assert!(!targets.contains_key("dev.arroba.github"));
     }
 
     #[test]

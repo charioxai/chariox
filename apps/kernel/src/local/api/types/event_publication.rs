@@ -12,6 +12,7 @@ pub use chariox_event_protocol::{
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventConnection {
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
     pub generator_id: String,
     pub connection_id: String,
     pub status: EventConnectionStatus,
@@ -48,6 +49,7 @@ pub struct EventConnection {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventConnectionAuthorization {
     pub authorization_id: String,
+    #[serde(deserialize_with = "crate::event_connection::deserialize_event_generator_id")]
     pub generator_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub connection_id: Option<String>,

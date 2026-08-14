@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::durable_state::DurableKernelStateStore;
 use crate::error::DaemonError;
@@ -13,6 +13,20 @@ const CONNECTION_UPSERTED: &str = "event_connection.upserted";
 const CONNECTION_REMOVED: &str = "event_connection.removed";
 const AUTHORIZATION_UPSERTED: &str = "event_connection.authorization.upserted";
 const AUTHORIZATION_REMOVED: &str = "event_connection.authorization.removed";
+
+pub(crate) fn canonical_event_generator_id(value: &str) -> String {
+    value.trim().strip_prefix("dev.arroba.").map_or_else(
+        || value.trim().to_string(),
+        |suffix| format!("dev.chariox.{suffix}"),
+    )
+}
+
+pub(crate) fn deserialize_event_generator_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(|value| canonical_event_generator_id(&value))
+}
 
 #[derive(Clone)]
 pub(crate) struct EventConnectionRegistry {
@@ -703,6 +717,31 @@ fn status_for_lifecycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn removed_publisher_namespace_canonicalizes_without_rewriting_third_parties() {
+        assert_eq!(
+            canonical_event_generator_id("dev.arroba.github"),
+            "dev.chariox.github"
+        );
+        assert_eq!(
+            canonical_event_generator_id("com.github.github"),
+            "com.github.github"
+        );
+
+        let authorization: crate::local::EventConnectionAuthorization =
+            serde_json::from_value(serde_json::json!({
+                "authorization_id": "authorization-1",
+                "generator_id": "dev.arroba.github",
+                "status": "connected",
+                "created_at_ms": 1
+            }))
+            .expect("removed publisher namespace should deserialize");
+        assert_eq!(authorization.generator_id, "dev.chariox.github");
+        assert!(!serde_json::to_string(&authorization)
+            .expect("authorization should serialize")
+            .contains("dev.arroba"));
+    }
     use chariox_event_protocol::AegsConnectionStatus;
     use serde_json::json;
 
