@@ -43,6 +43,13 @@ impl ExternalObserverRuntimeInputs {
             responsive_targets_only,
         }
     }
+
+    pub(super) fn known_agent_keys(&self) -> BTreeSet<(String, String)> {
+        self.agents
+            .iter()
+            .map(|agent| (agent.session_id().to_string(), agent.id().to_string()))
+            .collect()
+    }
 }
 
 pub(super) fn attached_external_observer_targets_from_inputs(
@@ -167,6 +174,18 @@ pub(super) fn prune_stale_external_provider_session_refs(
         .into_iter()
         .map(|agent| (agent.session_id().to_string(), agent.id().to_string()))
         .collect::<BTreeSet<_>>();
+    prune_stale_external_provider_session_refs_with_known_agents(
+        &known_agents,
+        attached_refs,
+        store,
+    );
+}
+
+pub(super) fn prune_stale_external_provider_session_refs_with_known_agents(
+    known_agents: &BTreeSet<(String, String)>,
+    attached_refs: &BTreeSet<AttachedExternalProviderSessionRef>,
+    store: &crate::app::ExternalProviderSessionIndexStore,
+) {
     let desired_refs = attached_refs
         .iter()
         .map(|attachment| ExternalProviderSessionAttachmentRef {

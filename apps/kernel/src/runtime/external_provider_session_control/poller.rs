@@ -494,11 +494,33 @@ async fn mark_attached_external_provider_sessions_for_runtime(
     store: &crate::app::ExternalProviderSessionIndexStore,
 ) {
     if let Some(runtime_state) = runtime_state {
-        runtime_state
+        let (inputs, session_store, runtime_provider_runs) = runtime_state
             .with_app_side_effect(|app| {
-                mark_attached_external_provider_sessions(app, Some(runtime_state), store);
+                (
+                    ExternalObserverRuntimeInputs::capture(app, false),
+                    app.session_state_store(),
+                    runtime_state.provider_runs_for_external_session_attachment(),
+                )
             })
             .await;
+        let attached_refs = attached_external_provider_session_refs_from_inputs(
+            &inputs,
+            &session_store,
+            runtime_provider_runs,
+        );
+        let known_agents = inputs.known_agent_keys();
+        prune_stale_external_provider_session_refs_with_known_agents(
+            &known_agents,
+            &attached_refs,
+            store,
+        );
+        for attachment in attached_refs {
+            store.mark_attached(
+                &attachment.external_session_id,
+                &attachment.session_id,
+                &attachment.agent_id,
+            );
+        }
         return;
     }
     let app = app
