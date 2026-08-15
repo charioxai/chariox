@@ -47,6 +47,8 @@ const RUNTIME_MCP_SKILL_CONTINUATION: &str =
 const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str =
     include_str!("provider/workflow_direct_json_fallback_instructions.md");
 const RUNTIME_METAAGENT_EVENT: &str = include_str!("provider/metaagent_event_instructions.md");
+const RUNTIME_METAAGENT_TASK_RECOVERY: &str =
+    include_str!("provider/metaagent_task_recovery_instructions.md");
 const WORKFLOW_TURN: &str = include_str!("provider/workflow_turn_instructions.md");
 const WORKFLOW_RUN_COMPLETION: &str =
     include_str!("provider/workflow_run_completion_instructions.md");
@@ -840,6 +842,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK,
         ),
         BundledPromptTemplate::new("runtime/metaagent-event", RUNTIME_METAAGENT_EVENT),
+        BundledPromptTemplate::new(
+            "runtime/metaagent-task-recovery",
+            RUNTIME_METAAGENT_TASK_RECOVERY,
+        ),
         BundledPromptTemplate::new("workflow/turn", WORKFLOW_TURN),
         BundledPromptTemplate::new("workflow/run-completion", WORKFLOW_RUN_COMPLETION),
         BundledPromptTemplate::new(

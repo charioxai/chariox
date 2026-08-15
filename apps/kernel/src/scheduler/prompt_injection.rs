@@ -93,6 +93,14 @@ pub(crate) fn render_metaagent_event_prompt_assembly(
     }
 }
 
+pub(crate) fn render_metaagent_task_recovery_prompt(task_id: &str) -> String {
+    crate::prompt_assembly::render_configured_prompt(
+        "runtime/metaagent-task-recovery",
+        include_str!("../provider/metaagent_task_recovery_instructions.md"),
+        &[("TASK_ID", task_id.trim())],
+    )
+}
+
 pub(crate) fn render_workflow_turn_prompt_from_messages(
     app: &DaemonApp,
     session_id: &str,
