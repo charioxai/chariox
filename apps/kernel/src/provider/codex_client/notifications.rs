@@ -302,12 +302,7 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
             })
         }
         "turn/started" => Some(CodexNotification::TurnStarted {
-            turn_id: params
-                .get("turn")
-                .and_then(|turn| turn.get("id"))
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string(),
+            turn_id: codex_turn_id(&params).unwrap_or_default(),
         }),
         "turn/completed" => parse_turn_completed_notification(&params),
         "codex/event/task_complete" => Some(CodexNotification::TaskComplete {
@@ -348,16 +343,28 @@ pub(super) fn rpc_error_message(message: &JsonRpcMessage) -> Option<String> {
 }
 
 fn optional_codex_turn_id(turn: Option<&Value>) -> Option<String> {
-    turn.and_then(|turn| turn.get("id"))
-        .and_then(Value::as_str)
-        .filter(|turn_id| !turn_id.is_empty())
-        .map(str::to_string)
+    turn.and_then(|turn| {
+        turn.get("id")
+            .or_else(|| turn.get("turnId"))
+            .or_else(|| turn.get("turn_id"))
+    })
+    .and_then(Value::as_str)
+    .filter(|turn_id| !turn_id.is_empty())
+    .map(str::to_string)
+}
+
+fn codex_turn_id(params: &Value) -> Option<String> {
+    optional_codex_turn_id(params.get("turn")).or_else(|| optional_codex_turn_id(Some(params)))
 }
 
 fn parse_turn_completed_notification(params: &Value) -> Option<CodexNotification> {
-    let turn = params.get("turn")?;
+    // The current app-server schema nests lifecycle fields under `turn`, while
+    // older/managed servers emitted the same fields directly in `params`.
+    // Accept both shapes so a terminal notification cannot disappear merely
+    // because the provider was upgraded independently of the kernel.
+    let turn = params.get("turn").unwrap_or(params);
     Some(CodexNotification::TurnCompleted {
-        turn_id: optional_codex_turn_id(Some(turn))?,
+        turn_id: codex_turn_id(params)?,
         status: turn
             .get("status")
             .and_then(Value::as_str)
@@ -367,6 +374,8 @@ fn parse_turn_completed_notification(params: &Value) -> Option<CodexNotification
             .get("error")
             .and_then(|error| error.get("message"))
             .and_then(Value::as_str)
+            .or_else(|| turn.get("errorMessage").and_then(Value::as_str))
+            .or_else(|| turn.get("error_message").and_then(Value::as_str))
             .map(str::to_string),
         items: turn
             .get("items")

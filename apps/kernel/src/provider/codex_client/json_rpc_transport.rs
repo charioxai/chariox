@@ -104,7 +104,16 @@ impl CodexClient {
                 return serde_json::from_value(result)
                     .map_err(|error| self.protocol_error(method, error.to_string()));
             }
-            if let Some(notification) = parse_notification(message.clone()) {
+            let parsed_notification = parse_notification(message.clone());
+            if parsed_notification.is_none()
+                && matches!(
+                    message.method.as_deref(),
+                    Some("turn/started" | "turn/completed")
+                )
+            {
+                log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
+            }
+            if let Some(notification) = parsed_notification {
                 buffered_notifications.push(notification);
             } else if let Some(message_method) = message.method.as_deref() {
                 crate::logging::debug_with_fields(
@@ -153,6 +162,14 @@ impl CodexClient {
                         continue;
                     }
                     let notification = parse_notification(message.clone());
+                    if notification.is_none()
+                        && matches!(
+                            message.method.as_deref(),
+                            Some("turn/started" | "turn/completed")
+                        )
+                    {
+                        log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
+                    }
                     if let Some(notification) = notification {
                         return Ok(Some(notification));
                     }
@@ -261,6 +278,23 @@ impl CodexClient {
             }
         }
     }
+}
+
+fn log_unparsed_turn_lifecycle(provider_run_id: &str, message: &JsonRpcMessage) {
+    crate::logging::warn_with_fields(
+        "daemon.provider.codex",
+        "discarded unrecognized Codex turn lifecycle notification",
+        json!({
+            "provider_run_id": provider_run_id,
+            "method": message.method,
+            "has_id": message.id.is_some(),
+            "param_keys": message
+                .params
+                .as_ref()
+                .and_then(Value::as_object)
+                .map(|params| params.keys().cloned().collect::<Vec<_>>()),
+        }),
+    );
 }
 
 fn codex_read_should_retry(error: &std::io::Error) -> bool {
