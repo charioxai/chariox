@@ -844,10 +844,6 @@ impl AgentService {
         self.store.list()
     }
 
-    pub(crate) fn list_external_provider_import_agents(&self) -> Vec<AgentInstance> {
-        self.store.list_external_provider_imports()
-    }
-
     /// Get focused agent in session
     pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {
         self.store.focused_agent(session_id).cloned()
