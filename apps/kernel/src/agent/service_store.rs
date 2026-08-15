@@ -333,10 +333,6 @@ impl AgentServiceStore {
         self.read().list_agents()
     }
 
-    pub(crate) fn list_external_provider_import_agents(&self) -> Vec<AgentInstance> {
-        self.read().list_external_provider_import_agents()
-    }
-
     pub fn get_focused_agent(&self, session_id: &str) -> Option<AgentInstance> {
         self.read().get_focused_agent(session_id)
     }

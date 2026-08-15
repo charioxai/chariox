@@ -187,17 +187,6 @@ impl AgentStore {
         agents
     }
 
-    pub(crate) fn list_external_provider_imports(&self) -> Vec<AgentInstance> {
-        let mut agents = self
-            .agents
-            .values()
-            .filter(|agent| agent.external_provider_import().is_some())
-            .cloned()
-            .collect::<Vec<_>>();
-        agents.sort_by(|left, right| left.id().cmp(right.id()));
-        agents
-    }
-
     pub fn count_by_session(&self, session_id: &str) -> usize {
         self.session_agent_ids(session_id).map_or(0, Vec::len)
     }
