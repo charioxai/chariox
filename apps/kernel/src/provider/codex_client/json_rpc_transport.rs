@@ -484,8 +484,8 @@ mod tests {
         let address = listener.local_addr().expect("resolve websocket fixture");
         let server = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept websocket fixture");
-            let mut socket = accept(stream).expect("upgrade websocket fixture");
-            socket
+            let mut malformed_socket = accept(stream).expect("upgrade websocket fixture");
+            malformed_socket
                 .send(Message::Text(
                     json!({
                         "jsonrpc": "2.0",
@@ -496,7 +496,11 @@ mod tests {
                     .into(),
                 ))
                 .expect("send malformed turn-start notification");
-            socket
+            // Keep the malformed connection open so the client can deterministically
+            // observe that the malformed frame is skipped and no valid frame follows.
+            let (stream, _) = listener.accept().expect("accept valid websocket fixture");
+            let mut valid_socket = accept(stream).expect("upgrade valid websocket fixture");
+            valid_socket
                 .send(Message::Text(
                     json!({
                         "jsonrpc": "2.0",
@@ -509,24 +513,27 @@ mod tests {
                 .expect("send valid turn-start notification");
         });
         let endpoint = format!("ws://{address}");
-        let (mut socket, _) = connect(&endpoint).expect("connect websocket fixture");
+        let (mut malformed_socket, _) = connect(&endpoint).expect("connect malformed fixture");
         let client = CodexClient::new("provider-run-test", endpoint).expect("create client");
 
         assert_eq!(
             client
-                .read_notification(&mut socket, Duration::from_secs(1))
+                .read_notification(&mut malformed_socket, Duration::from_secs(1))
                 .expect("read malformed notification"),
             None,
         );
+
+        let (mut valid_socket, _) = connect(&client.endpoint).expect("connect valid fixture");
         assert_eq!(
             client
-                .read_notification(&mut socket, Duration::from_secs(1))
+                .read_notification(&mut valid_socket, Duration::from_secs(1))
                 .expect("read valid notification"),
             Some(CodexNotification::TurnStarted {
                 turn_id: "turn-1".to_string(),
             })
         );
-        drop(socket);
+        drop(malformed_socket);
+        drop(valid_socket);
         server.join().expect("join websocket fixture");
     }
 }

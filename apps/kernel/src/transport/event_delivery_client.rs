@@ -32,6 +32,50 @@ struct EventDeliveryConnectionHealth {
 
 static EVENT_DELIVERY_HEALTH: OnceLock<Mutex<EventDeliveryConnectionHealth>> = OnceLock::new();
 
+struct DeliveryAcceptanceRequest {
+    delivery: chariox_event_protocol::EventDeliveryEnvelope,
+    result_tx: mpsc::UnboundedSender<(String, Duration, Result<(), String>)>,
+}
+
+#[derive(Clone)]
+struct DeliveryAcceptanceQueue {
+    sender: mpsc::Sender<DeliveryAcceptanceRequest>,
+}
+
+impl DeliveryAcceptanceQueue {
+    fn new(runtime_state: KernelRuntimeState) -> Self {
+        let (sender, mut receiver) = mpsc::channel::<DeliveryAcceptanceRequest>(32);
+        tokio::spawn(async move {
+            while let Some(request) = receiver.recv().await {
+                let delivery_id = request.delivery.delivery_id.clone();
+                let started_at = Instant::now();
+                let state = runtime_state.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    state.accept_workflow_event_delivery(request.delivery)
+                })
+                .await
+                .map_err(|error| format!("event delivery worker failed: {error}"))
+                .and_then(|result| result.map(|_| ()).map_err(|error| error.to_string()));
+                let _ = request
+                    .result_tx
+                    .send((delivery_id, started_at.elapsed(), result));
+            }
+        });
+        Self { sender }
+    }
+
+    fn try_enqueue(
+        &self,
+        delivery: chariox_event_protocol::EventDeliveryEnvelope,
+        result_tx: mpsc::UnboundedSender<(String, Duration, Result<(), String>)>,
+    ) -> Result<(), mpsc::error::TrySendError<DeliveryAcceptanceRequest>> {
+        self.sender.try_send(DeliveryAcceptanceRequest {
+            delivery,
+            result_tx,
+        })
+    }
+}
+
 pub(crate) fn event_delivery_status(
     runtime_state: &KernelRuntimeState,
     config: &crate::config::DaemonConfig,
@@ -63,6 +107,10 @@ pub(crate) async fn run_event_delivery_connector(
         return;
     };
     let mut retry = Duration::from_secs(1);
+    // This worker is deliberately owned by the connector, not by an individual
+    // WebSocket connection. A reconnect must not create a second acceptance
+    // worker that can race receipt persistence for the same delivery.
+    let delivery_queue = DeliveryAcceptanceQueue::new(runtime_state.clone());
     let mut aegs_reconciliation = tokio::time::interval(Duration::from_secs(30));
     aegs_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -76,7 +124,15 @@ pub(crate) async fn run_event_delivery_connector(
                 serde_json::json!({"error": error}),
             );
         }
-        match connect_once(&runtime_state, &config, &url, shutdown.clone()).await {
+        match connect_once(
+            &runtime_state,
+            &config,
+            &url,
+            shutdown.clone(),
+            &delivery_queue,
+        )
+        .await
+        {
             Ok(()) => retry = Duration::from_secs(1),
             Err(error) => {
                 record_disconnected(Some(error.clone()));
@@ -113,6 +169,7 @@ async fn connect_once(
     config: &EventDeliveryClientConfig,
     url: &str,
     mut shutdown: watch::Receiver<bool>,
+    delivery_queue: &DeliveryAcceptanceQueue,
 ) -> Result<(), String> {
     let mut request = url
         .into_client_request()
@@ -146,27 +203,8 @@ async fn connect_once(
     reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut aegs_reconciliation = tokio::time::interval(Duration::from_secs(30));
     aegs_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
-    // Delivery acceptance performs synchronous durable-state work. Keep it off this
-    // socket task so a slow database write cannot starve AEDS heartbeats and cause
-    // the server to retry an event that is already being accepted.
-    let (delivery_tx, mut delivery_rx) =
-        mpsc::channel::<chariox_event_protocol::EventDeliveryEnvelope>(32);
     let (delivery_result_tx, mut delivery_result_rx) =
         mpsc::unbounded_channel::<(String, Duration, Result<(), String>)>();
-    let delivery_worker_state = runtime_state.clone();
-    tokio::spawn(async move {
-        while let Some(delivery) = delivery_rx.recv().await {
-            let delivery_id = delivery.delivery_id.clone();
-            let started_at = Instant::now();
-            let state = delivery_worker_state.clone();
-            let result =
-                tokio::task::spawn_blocking(move || state.accept_workflow_event_delivery(delivery))
-                    .await
-                    .map_err(|error| format!("event delivery worker failed: {error}"))
-                    .and_then(|result| result.map(|_| ()).map_err(|error| error.to_string()));
-            let _ = delivery_result_tx.send((delivery_id, started_at.elapsed(), result));
-        }
-    });
     let mut pending_delivery_ids = std::collections::BTreeSet::new();
     loop {
         tokio::select! {
@@ -219,7 +257,9 @@ async fn connect_once(
                             );
                             continue;
                         }
-                        if let Err(error) = delivery_tx.try_send(delivery.clone()) {
+                        if let Err(error) = delivery_queue
+                            .try_enqueue(delivery.clone(), delivery_result_tx.clone())
+                        {
                             pending_delivery_ids.remove(&delivery.delivery_id);
                             match error {
                                 tokio::sync::mpsc::error::TrySendError::Closed(_) => {
