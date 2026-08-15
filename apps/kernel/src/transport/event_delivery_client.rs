@@ -459,20 +459,34 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn acceptance_worker_survives_disconnect_without_concurrent_acceptance() {
+    async fn acceptance_worker_serializes_reconnect_retry_and_ack_after_first_acceptance() {
         let calls = Arc::new(AtomicUsize::new(0));
         let active = Arc::new(AtomicUsize::new(0));
         let max_active = Arc::new(AtomicUsize::new(0));
+        let persisted_delivery_count = Arc::new(AtomicUsize::new(0));
+        let accepted_delivery_ids =
+            Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
         let acceptor: DeliveryAcceptor = {
             let calls = calls.clone();
             let active = active.clone();
             let max_active = max_active.clone();
+            let persisted_delivery_count = persisted_delivery_count.clone();
+            let accepted_delivery_ids = accepted_delivery_ids.clone();
             Arc::new(move |delivery| {
                 calls.fetch_add(1, Ordering::SeqCst);
                 let current = active.fetch_add(1, Ordering::SeqCst) + 1;
                 max_active.fetch_max(current, Ordering::SeqCst);
-                if delivery.delivery_id == "first" {
+                if calls.load(Ordering::SeqCst) == 1 {
                     std::thread::sleep(Duration::from_millis(100));
+                }
+                if accepted_delivery_ids
+                    .lock()
+                    .expect("accepted delivery set should not be poisoned")
+                    .insert(delivery.delivery_id)
+                {
+                    // Model the receipt-plus-enqueue transaction that the real
+                    // acceptance function commits before its caller can ACK.
+                    persisted_delivery_count.fetch_add(1, Ordering::SeqCst);
                 }
                 active.fetch_sub(1, Ordering::SeqCst);
                 Ok(())
@@ -491,17 +505,18 @@ mod tests {
 
         let (second_result_tx, mut second_result_rx) = mpsc::unbounded_channel();
         queue
-            .try_enqueue(delivery("second"), second_result_tx)
-            .expect("second delivery should enqueue");
+            .try_enqueue(delivery("first"), second_result_tx)
+            .expect("reconnect retry should enqueue");
         let (delivery_id, _, result) =
             tokio::time::timeout(Duration::from_secs(2), second_result_rx.recv())
                 .await
                 .expect("second delivery should complete")
                 .expect("acceptance result should be sent");
 
-        assert_eq!(delivery_id, "second");
+        assert_eq!(delivery_id, "first");
         assert!(result.is_ok());
         assert_eq!(calls.load(Ordering::SeqCst), 2);
         assert_eq!(max_active.load(Ordering::SeqCst), 1);
+        assert_eq!(persisted_delivery_count.load(Ordering::SeqCst), 1);
     }
 }
