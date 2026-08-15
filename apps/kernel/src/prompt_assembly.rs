@@ -1724,6 +1724,76 @@ mod tests {
     }
 
     #[test]
+    fn every_editable_prompt_is_consumed_by_kernel_loader_and_reset_all_restores_defaults() {
+        let root = temp_prompt_root("settings-all-prompts");
+        let registry = PromptTemplateRegistry::new(root);
+        let initial = registry.list_settings().expect("catalog should load");
+        assert!(!initial.is_empty(), "the prompt catalog must not be empty");
+
+        for setting in &initial {
+            if !setting.editable {
+                continue;
+            }
+            let updated = registry
+                .update_setting_if_version(
+                    &setting.id,
+                    &format!(
+                        "{}\n\n<!-- kernel-prompt-settings-test -->",
+                        setting.default
+                    ),
+                    setting.revision,
+                    &setting.current_sha256,
+                )
+                .unwrap_or_else(|error| panic!("failed to edit {}: {error}", setting.id));
+            assert_eq!(
+                updated.source, "user_override",
+                "{} should be overridden",
+                setting.id
+            );
+            let loaded = registry.read_required(&setting.id).unwrap_or_else(|error| {
+                panic!("kernel loader could not read {}: {error}", setting.id)
+            });
+            assert!(
+                loaded.body.contains("kernel-prompt-settings-test"),
+                "kernel loader did not consume edited template {}",
+                setting.id
+            );
+        }
+
+        let edited = registry
+            .list_settings()
+            .expect("edited catalog should load");
+        let expected = edited
+            .iter()
+            .map(|setting| {
+                (
+                    setting.id.clone(),
+                    crate::local::PromptSettingVersion {
+                        revision: setting.revision,
+                        sha256: setting.current_sha256.clone(),
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let reset = registry
+            .reset_all_settings_if_versions(&expected)
+            .expect("reset-all should restore every catalog entry");
+        assert_eq!(reset.len(), edited.len());
+        for setting in registry.list_settings().expect("reset catalog should load") {
+            assert_eq!(
+                setting.current, setting.default,
+                "{} did not reset",
+                setting.id
+            );
+            assert_eq!(
+                setting.source, "bundled",
+                "{} remained overridden",
+                setting.id
+            );
+        }
+    }
+
+    #[test]
     fn prompt_settings_catalog_does_not_rewrite_unchanged_defaults_state() {
         let root = temp_prompt_root("settings-catalog-no-rewrite");
         let registry = PromptTemplateRegistry::new(root.clone());

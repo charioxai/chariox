@@ -80,6 +80,7 @@ import {
   handleNotificationSlashCommand,
   type NotificationCommandHandlerDeps,
 } from "./notification-command-handler.js"
+import { handlePromptSettingsSlashCommand } from "./prompt-settings-command-handler.js"
 import type {
   LocalGitWorktreeOptions,
 } from "./command-worktree-placement.js"
@@ -359,6 +360,12 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     await handleNotificationSlashCommand(deps, command)
   }
 
+  const handleSettingsCommand = async (
+    command: Extract<ParsedSlashCommand, { kind: "settings" }>,
+  ): Promise<void> => {
+    await handlePromptSettingsSlashCommand(deps, command)
+  }
+
   const handleLoopCommand = async (
     command: Extract<ParsedSlashCommand, { kind: "loop" }>,
   ): Promise<void> => {
@@ -430,6 +437,7 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
     handleWorktreeCommand,
     handleWorkflowCommand,
     handleNotificationsCommand,
+    handleSettingsCommand,
     handleLoopCommand,
     handleGoalCommand,
     handleWaitCommand,

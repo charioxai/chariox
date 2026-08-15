@@ -20,6 +20,18 @@ resettable but cannot be edited. Markdown is validated for non-empty content, ba
 delimiters, preservation of every variable required by the bundled contract, and a 64 KiB limit before
 it is persisted.
 
+The TUI exposes the same kernel-owned reset path through the shared shell namespace:
+
+```text
+/settings prompts list
+/settings prompts reset <template-id> --confirm
+/settings prompts reset-all --confirm
+```
+
+The command first reads the catalog and sends the current revision/hash as an optimistic concurrency
+check. It cannot silently overwrite an edit made by another client, and reset-all includes every catalog
+entry (including protected entries, which are resettable but not editable).
+
 ## Context minimization
 
 Workflow instructions and event context are assembled by the scheduler's prompt-injection service. Event
