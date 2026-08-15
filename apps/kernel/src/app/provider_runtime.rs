@@ -48,6 +48,9 @@ impl DaemonApp {
         // returns to the caller.
         if leased {
             self.mark_leased_provider_run(run.id());
+            #[cfg(test)]
+            self.provider_run_projection_store()
+                .notify_leased_provider_run_pre_spawn(run.id());
         }
         if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
             if let Ok(previous_run) = self.providers.get_run(previous_active_run_id) {

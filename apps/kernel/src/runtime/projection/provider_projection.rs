@@ -28,6 +28,10 @@ impl ProviderRunProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider_run_id.to_string());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn notify_leased_provider_run_pre_spawn(&self, provider_run_id: &str) {
         #[cfg(test)]
         if let Some(probe) = self
             .leased_provider_run_probe
