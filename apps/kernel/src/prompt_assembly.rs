@@ -213,8 +213,15 @@ impl PromptTemplateRegistry {
                 .iter()
                 .map(|provider| (*provider).to_string())
                 .collect(),
+            source: if sha256_hex(&current) == sha256_hex(&default) {
+                "bundled".to_string()
+            } else {
+                "user_override".to_string()
+            },
             current_sha256: sha256_hex(&current),
             default_sha256: sha256_hex(&default),
+            current_bytes: current.len(),
+            default_bytes: default.len(),
             revision: prompt_revision(&current),
             variables: prompt_variables(&current),
             current,
@@ -373,10 +380,13 @@ pub struct PromptSettingRecord {
     pub scope: String,
     pub audience: String,
     pub provider_applicability: Vec<String>,
+    pub source: String,
     pub current: String,
     pub default: String,
     pub current_sha256: String,
     pub default_sha256: String,
+    pub current_bytes: usize,
+    pub default_bytes: usize,
     pub revision: u64,
     pub variables: Vec<String>,
     pub editable: bool,
@@ -1412,7 +1422,9 @@ mod tests {
             .find(|setting| setting.id == "workflow/turn")
             .expect("workflow prompt should be catalogued");
         assert!(workflow.editable);
+        assert_eq!(workflow.source, "bundled");
         assert!(workflow.current_sha256.len() == 64);
+        assert_eq!(workflow.current_bytes, workflow.current.len());
         assert!(!workflow.default.is_empty());
 
         let updated = registry
@@ -1420,6 +1432,8 @@ mod tests {
             .expect("editable prompt should update");
         assert_eq!(updated.current, "Hello {{NAME}}");
         assert_eq!(updated.variables, vec!["NAME"]);
+        assert_eq!(updated.source, "user_override");
+        assert_eq!(updated.current_bytes, updated.current.len());
         assert_ne!(updated.current_sha256, updated.default_sha256);
 
         let reset = registry
