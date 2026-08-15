@@ -146,11 +146,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_skills: Option<Vec<crate::transport::relay_peer::RequiredRemoteSkill>>,
         remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     ) -> Result<PreparedLeasedPromptSubmission, DaemonError> {
-        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-            leased_agent.active_event_reply_enabled = workflow_context
-                .as_ref()
-                .is_some_and(|context| context.event_reply_enabled);
-        }
         let leased_agent = self
             .app
             .leased_agents
@@ -448,9 +443,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(provider_run_id) = provider_run_id {
             self.app.leased_workflow_turns.remove(&provider_run_id);
         }
-        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-            leased_agent.active_event_reply_enabled = false;
-        }
         Ok(completion)
     }
 
@@ -474,9 +466,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
-        if let Some(leased_agent) = self.app.leased_agents.get_mut(leased_agent_id) {
-            leased_agent.active_event_reply_enabled = false;
-        }
         Ok(cancellation)
     }
 
@@ -512,9 +501,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             Some(provider_run_id),
         )?;
         self.app.leased_workflow_turns.remove(provider_run_id);
-        if let Some(leased_agent) = self.app.leased_agents.get_mut(&binding.leased_agent_id) {
-            leased_agent.active_event_reply_enabled = false;
-        }
         Ok(Some(completion))
     }
 }

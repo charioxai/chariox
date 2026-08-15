@@ -81,17 +81,19 @@ impl KernelRuntimeState {
         specs.extend(
             crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
         );
-        let leased_event_reply_enabled = self
+        let leased_provider_run = self
             .try_with_app_side_effect(|app| {
                 let provider_run_ids = provider_runs
                     .iter()
                     .map(|run| run.id().to_string())
                     .collect::<Vec<_>>();
-                crate::app::RemoteLeaseRuntime::new(app)
-                    .event_reply_enabled_for_provider_runs(&provider_run_ids)
+                let runtime = crate::app::RemoteLeaseRuntime::new(app);
+                provider_run_ids
+                    .iter()
+                    .any(|provider_run_id| runtime.is_leased_provider_run(provider_run_id))
             })
             .unwrap_or(false);
-        if leased_event_reply_enabled
+        if leased_provider_run
             || provider_runs
                 .iter()
                 .any(|run| self.session_has_enabled_event_reply_binding(run.session_id()))
