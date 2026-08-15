@@ -43,7 +43,9 @@ export async function executePromptSettingsCommand(
   args: string[],
   client: ShellKernelClient,
 ): Promise<ShellCommandResult> {
-  const [action = "list", id, ...flags] = args
+  const [action = "list", ...rest] = args
+  const id = action === "reset" ? rest[0] : undefined
+  const flags = action === "reset" ? rest.slice(1) : rest
   const confirmed = flags.includes("--confirm")
   if (action === "list") {
     const settings = listed(await client.send(listPromptSettingsRequest()))
