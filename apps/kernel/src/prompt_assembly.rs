@@ -179,7 +179,7 @@ pub(crate) struct PromptTemplateRegistry {
     root: PathBuf,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct BundledPromptDefaultsState {
     version: String,
     template_sha256: BTreeMap<String, String>,
@@ -207,7 +207,7 @@ impl PromptTemplateRegistry {
         self.materialize_bundled_defaults()?;
         bundled_templates()
             .into_iter()
-            .map(|template| self.read_setting(template.id))
+            .map(|template| self.read_setting_materialized(template.id))
             .collect()
     }
 
@@ -215,11 +215,18 @@ impl PromptTemplateRegistry {
         &self,
         template_id: &str,
     ) -> Result<PromptSettingRecord, DaemonError> {
+        self.materialize_bundled_defaults()?;
+        self.read_setting_materialized(template_id)
+    }
+
+    fn read_setting_materialized(
+        &self,
+        template_id: &str,
+    ) -> Result<PromptSettingRecord, DaemonError> {
         let template = bundled_templates()
             .into_iter()
             .find(|template| template.id == template_id)
             .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
-        self.materialize_bundled_defaults()?;
         let path = self.path_for(template.id);
         let current = fs::read_to_string(&path)
             .map_err(|error| prompt_io_error("read", &path, error))?
@@ -372,7 +379,9 @@ impl PromptTemplateRegistry {
                 message: error.to_string(),
             }
         })?;
-        atomic_write(&state_path, &state_body)?;
+        if previous_state.as_ref() != Some(&state) {
+            atomic_write(&state_path, &state_body)?;
+        }
         Ok(())
     }
 
@@ -1641,6 +1650,29 @@ mod tests {
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
         assert!(registry.root.starts_with(root));
+    }
+
+    #[test]
+    fn prompt_settings_catalog_does_not_rewrite_unchanged_defaults_state() {
+        let root = temp_prompt_root("settings-catalog-no-rewrite");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry.list_settings().expect("first catalog should load");
+        let state_path = root.join(PROMPT_DEFAULTS_STATE_FILE);
+        let before = fs::metadata(&state_path)
+            .expect("defaults state should exist")
+            .modified()
+            .expect("defaults state should have a modification time");
+        registry
+            .list_settings()
+            .expect("second catalog should load");
+        let after = fs::metadata(&state_path)
+            .expect("defaults state should still exist")
+            .modified()
+            .expect("defaults state should still have a modification time");
+        assert_eq!(
+            before, after,
+            "unchanged catalog must not rewrite defaults state"
+        );
     }
 
     #[test]
