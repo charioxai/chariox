@@ -21,6 +21,7 @@ use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::metaagent_event_control::execute_metaagent_event_request;
 use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
+use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
@@ -296,6 +297,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }
+            request @ (LocalDaemonRequest::ListPromptSettings(_)
+            | LocalDaemonRequest::GetPromptSetting(_)
+            | LocalDaemonRequest::UpdatePromptSetting(_)
+            | LocalDaemonRequest::PreviewPromptSetting(_)
+            | LocalDaemonRequest::ResetPromptSetting(_)
+            | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
+                execute_prompt_settings_request(request).await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {
                 execute_kernel_lifecycle_request(

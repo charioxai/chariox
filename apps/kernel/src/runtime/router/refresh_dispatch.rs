@@ -7,6 +7,7 @@ use crate::runtime::command::{KernelCommand, KernelCommandPriority};
 use crate::runtime::history_executor::execute_history_request;
 use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
+use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
 use crate::runtime::provider_process_control::execute_provider_process_request;
 use crate::runtime::relay_config_control::execute_relay_config_request;
 use crate::runtime::remote_machine_registry::execute_remote_machine_registry_request;
@@ -75,6 +76,14 @@ impl CommandRouter {
                     request,
                 )
                 .await
+            }
+            request @ (LocalDaemonRequest::ListPromptSettings(_)
+            | LocalDaemonRequest::GetPromptSetting(_)
+            | LocalDaemonRequest::UpdatePromptSetting(_)
+            | LocalDaemonRequest::PreviewPromptSetting(_)
+            | LocalDaemonRequest::ResetPromptSetting(_)
+            | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
+                execute_prompt_settings_request(request).await
             }
             request @ (LocalDaemonRequest::ListSlices(_)
             | LocalDaemonRequest::CreateSlice(_)
