@@ -38,6 +38,8 @@ const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
 const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
     include_str!("provider/workspace_live_sync_tracked_instructions.md");
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
+const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
+    include_str!("provider/agent_message_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
@@ -627,6 +629,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
             | "runtime/workspace-live-sync-tracked"
             | "runtime/slice"
             | "runtime/metaagent-delegation"
+            | "runtime/agent-message-context"
     );
     PromptSettingMetadata {
         title,
@@ -894,6 +897,10 @@ pub(crate) fn bundled_metaagent_event_template() -> &'static str {
     RUNTIME_METAAGENT_EVENT
 }
 
+pub(crate) fn bundled_agent_message_context_template() -> &'static str {
+    RUNTIME_AGENT_MESSAGE_CONTEXT
+}
+
 fn current_kernel_is_slice() -> bool {
     std::env::var("CHARIOX_MACHINE_ID")
         .ok()
@@ -912,6 +919,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED,
         ),
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
+        BundledPromptTemplate::new(
+            "runtime/agent-message-context",
+            RUNTIME_AGENT_MESSAGE_CONTEXT,
+        ),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
