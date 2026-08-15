@@ -4,23 +4,70 @@ pub(super) fn attached_external_observer_targets(
     app: &DaemonApp,
     responsive_targets_only: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
-    let cursor_store = app.attached_provider_transcript_cursor_store();
+    let inputs = ExternalObserverRuntimeInputs::capture(app, responsive_targets_only);
     let session_store = app.session_state_store();
+    attached_external_observer_targets_from_inputs(&inputs, &session_store)
+}
+
+#[derive(Clone)]
+pub(super) struct ExternalObserverRuntimeInputs {
+    cursor_store: AttachedProviderTranscriptCursorStore,
+    agents: Vec<AgentInstance>,
+    runs: Vec<RuntimeProviderRun>,
+    live_attachment_sessions: BTreeSet<String>,
+    responsive_targets_only: bool,
+}
+
+impl ExternalObserverRuntimeInputs {
+    pub(super) fn capture(app: &DaemonApp, responsive_targets_only: bool) -> Self {
+        let agents = app.agents().list_agents();
+        let runs = app.providers().list_runs();
+        let mut candidate_session_ids = agents
+            .iter()
+            .map(|agent| agent.session_id().to_string())
+            .collect::<BTreeSet<_>>();
+        candidate_session_ids.extend(runs.iter().map(|run| run.session_id().to_string()));
+        let live_attachment_sessions = candidate_session_ids
+            .into_iter()
+            .filter(|session_id| {
+                !app.attachments
+                    .list_session_attachment_ids(session_id)
+                    .is_empty()
+            })
+            .collect();
+        Self {
+            cursor_store: app.attached_provider_transcript_cursor_store(),
+            agents,
+            runs,
+            live_attachment_sessions,
+            responsive_targets_only,
+        }
+    }
+}
+
+pub(super) fn attached_external_observer_targets_from_inputs(
+    inputs: &ExternalObserverRuntimeInputs,
+    session_store: &crate::session::SessionStateStore,
+) -> Vec<AttachedExternalObserverTarget> {
+    let cursor_store = &inputs.cursor_store;
     let mut targets = BTreeMap::<String, AttachedExternalObserverTarget>::new();
-    let agents = if responsive_targets_only {
-        app.agents().list_external_provider_import_agents()
-    } else {
-        app.agents().list_agents()
-    };
-    for agent in agents {
+    for agent in &inputs.agents {
+        if inputs.responsive_targets_only && agent.external_provider_import().is_none() {
+            continue;
+        }
         let session_id = agent.session_id();
         if !session_store.has_session(session_id) || agent.remote_execution().is_some() {
             continue;
         }
-        let latest_run = app
-            .providers()
-            .get_latest_run_for_agent(session_id, agent.id());
-        if !session_has_live_attachment(app, session_id)
+        let latest_run = inputs
+            .runs
+            .iter()
+            .filter(|run| {
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent.id())
+            })
+            .max_by_key(|run| (run.last_activity_at_ms(), run.started_at_ms()))
+            .cloned();
+        if !inputs.live_attachment_sessions.contains(session_id)
             && !latest_run.as_ref().is_some_and(provider_run_is_running)
         {
             continue;
@@ -37,7 +84,7 @@ pub(super) fn attached_external_observer_targets(
             targets.insert(attached_observer_target_key(&target), target);
         }
         for target in attached_external_observer_targets_from_resume_state(
-            &cursor_store,
+            cursor_store,
             session_id,
             agent.id(),
             provider_run_id.clone(),
@@ -49,20 +96,22 @@ pub(super) fn attached_external_observer_targets(
                 .or_insert(target);
         }
     }
-    for run in app.providers().list_runs() {
+    for run in &inputs.runs {
         let Some(agent_id) = run.agent_instance_id() else {
             continue;
         };
-        let Ok(agent) = app.agents().get_agent(agent_id) else {
+        let Some(agent) = inputs.agents.iter().find(|agent| agent.id() == agent_id) else {
             continue;
         };
         if !session_store.has_session(run.session_id()) || agent.remote_execution().is_some() {
             continue;
         }
-        if !session_has_live_attachment(app, run.session_id()) && !provider_run_is_running(&run) {
+        if !inputs.live_attachment_sessions.contains(run.session_id())
+            && !provider_run_is_running(run)
+        {
             continue;
         }
-        for target in attached_external_observer_targets_from_provider_run(&cursor_store, &run) {
+        for target in attached_external_observer_targets_from_provider_run(cursor_store, run) {
             targets
                 .entry(attached_observer_target_key(&target))
                 .or_insert(target);
@@ -192,6 +241,71 @@ pub(super) fn attached_external_provider_session_refs(
                 push_provider_run_attachment(&mut attached, &run);
             }
         }
+    }
+    attached
+}
+
+pub(super) fn attached_external_provider_session_refs_from_inputs(
+    inputs: &ExternalObserverRuntimeInputs,
+    session_store: &crate::session::SessionStateStore,
+    runtime_provider_runs: impl IntoIterator<Item = RuntimeProviderRun>,
+) -> BTreeSet<AttachedExternalProviderSessionRef> {
+    let mut attached = BTreeSet::new();
+    for agent in &inputs.agents {
+        let session_id = agent.session_id();
+        if !session_store.has_session(session_id) || agent.remote_execution().is_some() {
+            continue;
+        }
+        let latest_run = inputs
+            .runs
+            .iter()
+            .filter(|run| {
+                run.session_id() == session_id && run.agent_instance_id() == Some(agent.id())
+            })
+            .max_by_key(|run| (run.last_activity_at_ms(), run.started_at_ms()));
+        if !inputs.live_attachment_sessions.contains(session_id)
+            && !latest_run.is_some_and(provider_run_is_running)
+        {
+            continue;
+        }
+        if let Some(import) = agent.external_provider_import() {
+            attached.insert(AttachedExternalProviderSessionRef {
+                external_session_id: import.external_provider_session_id.clone(),
+                session_id: session_id.to_string(),
+                agent_id: agent.id().to_string(),
+            });
+        }
+        push_resume_state_attachments(
+            &mut attached,
+            agent.provider_resume_state(),
+            session_id,
+            agent.id(),
+        );
+    }
+    let all_runs = inputs
+        .runs
+        .iter()
+        .cloned()
+        .chain(runtime_provider_runs)
+        .collect::<Vec<_>>();
+    for run in &all_runs {
+        let Some(agent_id) = run.agent_instance_id() else {
+            continue;
+        };
+        if inputs
+            .agents
+            .iter()
+            .find(|agent| agent.id() == agent_id)
+            .is_some_and(|agent| agent.remote_execution().is_some())
+        {
+            continue;
+        }
+        if !inputs.live_attachment_sessions.contains(run.session_id())
+            && !provider_run_is_running(run)
+        {
+            continue;
+        }
+        push_provider_run_attachment(&mut attached, run);
     }
     attached
 }

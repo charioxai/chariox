@@ -7,8 +7,8 @@ use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey, DaemonApp,
-    ExternalProviderSessionAttachmentRef,
+    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
+    AttachedProviderTranscriptCursorStore, DaemonApp, ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
