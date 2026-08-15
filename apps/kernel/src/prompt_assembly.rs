@@ -243,7 +243,7 @@ impl PromptTemplateRegistry {
                 template_id,
             ));
         }
-        validate_prompt_markdown(body)?;
+        validate_prompt_markdown(template_id, &current.default, body)?;
         let path = self.path_for(template_id);
         fs::write(&path, body.trim()).map_err(|error| prompt_io_error("write", &path, error))?;
         self.read_setting(template_id)
@@ -471,7 +471,11 @@ fn prompt_revision(body: &str) -> u64 {
     u64::from_be_bytes(digest[..8].try_into().unwrap_or_default())
 }
 
-fn validate_prompt_markdown(body: &str) -> Result<(), DaemonError> {
+fn validate_prompt_markdown(
+    template_id: &str,
+    bundled_default: &str,
+    body: &str,
+) -> Result<(), DaemonError> {
     let trimmed = body.trim();
     if trimmed.is_empty() {
         return Err(prompt_settings_error(
@@ -485,13 +489,42 @@ fn validate_prompt_markdown(body: &str) -> Result<(), DaemonError> {
             "body",
         ));
     }
-    if trimmed.matches("{{").count() != trimmed.matches("}}").count() {
+    let mut remainder = trimmed;
+    while let Some(start) = remainder.find("{{") {
+        if remainder[start + 2..].find("}}").is_none() {
+            return Err(prompt_settings_error(
+                "prompt variables must have balanced delimiters",
+                template_id,
+            ));
+        }
+        let end = remainder[start + 2..]
+            .find("}}")
+            .expect("checked variable delimiter");
+        remainder = &remainder[start + 2 + end + 2..];
+    }
+    let variables = prompt_variables(trimmed);
+    if let Some(required) = prompt_variables(bundled_default)
+        .into_iter()
+        .find(|required| !variables.iter().any(|variable| variable == required))
+    {
         return Err(prompt_settings_error(
-            "prompt variables must have balanced delimiters",
-            "body",
+            &format!("prompt must preserve required variable `{{{{{required}}}}}`"),
+            template_id,
         ));
     }
     Ok(())
+}
+
+pub(crate) fn render_configured_prompt(
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> String {
+    let body = PromptTemplateRegistry::from_env()
+        .read_setting(template_id)
+        .map(|setting| setting.current)
+        .unwrap_or_else(|_| bundled_default.to_string());
+    render_bundled_prompt(&body, substitutions)
 }
 
 fn prompt_settings_error(message: &str, setting_id: &str) -> DaemonError {
@@ -659,10 +692,7 @@ pub(crate) fn bundled_workflow_missing_output_correction_template() -> &'static 
     WORKFLOW_MISSING_OUTPUT_CORRECTION
 }
 
-pub(crate) fn render_bundled_prompt(
-    template: &'static str,
-    replacements: &[(&str, &str)],
-) -> String {
+pub(crate) fn render_bundled_prompt(template: &str, replacements: &[(&str, &str)]) -> String {
     replacements
         .iter()
         .fold(template.to_string(), |body, (key, value)| {
@@ -1427,11 +1457,17 @@ mod tests {
         assert_eq!(workflow.current_bytes, workflow.current.len());
         assert!(!workflow.default.is_empty());
 
+        let default = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
         let updated = registry
-            .update_setting("workflow/turn", "Hello {{NAME}}")
+            .update_setting(
+                "workflow/turn",
+                &format!("{}\nHello {{{{NAME}}}}", default.default),
+            )
             .expect("editable prompt should update");
-        assert_eq!(updated.current, "Hello {{NAME}}");
-        assert_eq!(updated.variables, vec!["NAME"]);
+        assert!(updated.current.contains("Hello {{NAME}}"));
+        assert!(updated.variables.iter().any(|variable| variable == "NAME"));
         assert_eq!(updated.source, "user_override");
         assert_eq!(updated.current_bytes, updated.current.len());
         assert_ne!(updated.current_sha256, updated.default_sha256);
@@ -1441,6 +1477,44 @@ mod tests {
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
         assert!(registry.root().starts_with(root));
+    }
+
+    #[test]
+    fn prompt_settings_reject_missing_required_variables() {
+        let root = temp_prompt_root("required-variables");
+        let registry = PromptTemplateRegistry::new(root);
+        let error = registry
+            .update_setting("workflow/turn", "custom instructions")
+            .expect_err("contract variables must be preserved");
+        assert!(error.to_string().contains("required variable"));
+    }
+
+    #[test]
+    fn configured_correction_prompt_uses_user_override() {
+        let _guard = env_lock::lock();
+        let home = temp_prompt_root("configured-correction");
+        let root = home.join("prompts");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("workflow").join("run-output-correction.md"),
+            "OVERRIDE {{ATTEMPT}} {{MAX_ATTEMPTS}} {{ERROR}}",
+        )
+        .expect("correction override should write");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let rendered = render_configured_prompt(
+            "workflow/run-output-correction",
+            bundled_workflow_run_output_correction_template(),
+            &[("ATTEMPT", "1"), ("MAX_ATTEMPTS", "3"), ("ERROR", "bad")],
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        assert_eq!(rendered, "OVERRIDE 1 3 bad");
     }
 
     #[test]

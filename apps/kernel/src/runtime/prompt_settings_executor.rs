@@ -56,24 +56,42 @@ pub(crate) async fn execute_prompt_settings_request(
 }
 
 fn ensure_prompt_settings_authorized(command: &KernelCommand) -> Result<(), DaemonError> {
+    let configured_admins = std::env::var("CHARIOX_PROMPT_SETTINGS_ADMIN_USER_IDS")
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .map(str::trim)
+                .filter(|id| !id.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    ensure_prompt_settings_authorized_with_admins(command, &configured_admins)
+}
+
+fn ensure_prompt_settings_authorized_with_admins(
+    command: &KernelCommand,
+    configured_admins: &[String],
+) -> Result<(), DaemonError> {
     let trusted_local = matches!(
         command.source,
         KernelCommandSource::LocalCli
             | KernelCommandSource::LocalIpc
             | KernelCommandSource::DaemonBackground
     ) && matches!(command.caller.caller_kind, KernelCallerKind::LocalClient);
-    if trusted_local
-        || command
-            .caller
-            .user_id
-            .as_deref()
-            .is_some_and(|id| !id.trim().is_empty())
-    {
+    let authenticated_admin = command
+        .caller
+        .user_id
+        .as_deref()
+        .is_some_and(|id| configured_admins.iter().any(|admin| admin == id));
+    if trusted_local || authenticated_admin {
         return Ok(());
     }
     Err(DaemonError::LocalTransport {
         operation: "prompt settings authorization",
-        message: "prompt settings require an authenticated kernel caller".to_string(),
+        message: "prompt settings require a local caller or configured kernel administrator"
+            .to_string(),
     })
 }
 
@@ -119,6 +137,21 @@ mod tests {
 
         let mut caller = KernelCaller::for_source(&source);
         caller.user_id = Some("user-1".to_string());
-        assert!(ensure_prompt_settings_authorized(&command(source, caller)).is_ok());
+        assert!(ensure_prompt_settings_authorized_with_admins(
+            &command(source, caller.clone()),
+            &["user-1".to_string()],
+        )
+        .is_ok());
+        assert!(ensure_prompt_settings_authorized_with_admins(
+            &command(
+                KernelCommandSource::RelayClient,
+                KernelCaller {
+                    user_id: Some("user-2".to_string()),
+                    ..caller
+                },
+            ),
+            &["user-1".to_string()],
+        )
+        .is_err());
     }
 }

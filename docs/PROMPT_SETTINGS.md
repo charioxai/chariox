@@ -13,9 +13,12 @@ The local daemon protocol (version 259) provides:
 - `PreviewPromptSetting` for bounded variable substitution without mutation;
 - `UpdatePromptSetting`, `ResetPromptSetting`, and `ResetAllPromptSettings` for mutations.
 
-Local CLI/IPC callers are trusted. Relay callers must carry an authenticated user identity. Protected
-runtime/security templates are catalogued and resettable but cannot be edited. Markdown is validated for
-non-empty content, balanced `{{VARIABLE}}` delimiters, and a 64 KiB limit before it is persisted.
+Local CLI/IPC callers are trusted. Remote callers must be authenticated and listed in the kernel's
+`CHARIOX_PROMPT_SETTINGS_ADMIN_USER_IDS` comma-separated administrator allow-list; an identity alone is
+not permission to mutate global instructions. Protected runtime/security templates are catalogued and
+resettable but cannot be edited. Markdown is validated for non-empty content, balanced `{{VARIABLE}}`
+delimiters, preservation of every variable required by the bundled contract, and a 64 KiB limit before
+it is persisted.
 
 ## Context minimization
 

@@ -9,6 +9,7 @@ mod core;
 mod credential_enrollment;
 mod event_publication;
 mod native_spawn_slice;
+mod prompt_settings;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;

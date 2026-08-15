@@ -762,7 +762,8 @@ impl SessionService {
             .unwrap_or("");
         format!(
             "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_bundled_prompt(
+            crate::prompt_assembly::render_configured_prompt(
+                "workflow/run-output-correction",
                 crate::prompt_assembly::bundled_workflow_run_output_correction_template(),
                 &[
                     ("ATTEMPT", &failure.attempt.to_string()),
@@ -794,7 +795,8 @@ impl SessionService {
             .unwrap_or("");
         format!(
             "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_bundled_prompt(
+            crate::prompt_assembly::render_configured_prompt(
+                "workflow/handoff-correction",
                 crate::prompt_assembly::bundled_workflow_handoff_correction_template(),
                 &[
                     ("EDGE_ID", &failure.edge_id),
@@ -820,7 +822,8 @@ impl SessionService {
             .unwrap_or("");
         format!(
             "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_bundled_prompt(
+            crate::prompt_assembly::render_configured_prompt(
+                "workflow/missing-output-correction",
                 crate::prompt_assembly::bundled_workflow_missing_output_correction_template(),
                 &[
                     ("ATTEMPT", &failure.attempt.to_string()),
