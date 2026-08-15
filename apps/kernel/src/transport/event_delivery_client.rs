@@ -519,4 +519,172 @@ mod tests {
         assert_eq!(max_active.load(Ordering::SeqCst), 1);
         assert_eq!(persisted_delivery_count.load(Ordering::SeqCst), 1);
     }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn connector_reconnects_and_acks_only_after_serialized_acceptance() {
+        let runtime_state = runtime_state_from_app(
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .expect("test daemon should bootstrap"),
+        );
+        let started = Arc::new(AtomicUsize::new(0));
+        let persisted = Arc::new(AtomicUsize::new(0));
+        let seen = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let acceptor: DeliveryAcceptor = {
+            let started = started.clone();
+            let persisted = persisted.clone();
+            let seen = seen.clone();
+            Arc::new(move |delivery| {
+                if started.fetch_add(1, Ordering::SeqCst) == 0 {
+                    std::thread::sleep(Duration::from_millis(150));
+                }
+                if seen
+                    .lock()
+                    .expect("delivery set should not be poisoned")
+                    .insert(delivery.delivery_id)
+                {
+                    persisted.fetch_add(1, Ordering::SeqCst);
+                }
+                Ok(())
+            })
+        };
+        let delivery_queue = DeliveryAcceptanceQueue::with_acceptor(acceptor);
+        let delivery = delivery("reconnect");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind AEDS fixture");
+        let address = listener.local_addr().expect("resolve AEDS fixture");
+        let server_delivery = delivery.clone();
+        let server = tokio::spawn(async move {
+            for connection_index in 0..2 {
+                let (stream, _) = listener.accept().await.expect("accept kernel connection");
+                let mut socket = tokio_tungstenite::accept_async(stream)
+                    .await
+                    .expect("upgrade AEDS fixture connection");
+                socket
+                    .next()
+                    .await
+                    .expect("kernel should send hello")
+                    .expect("hello should be readable");
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(&AedsToKernelMessage::HelloAccepted {
+                            protocol_version: EVENT_DELIVERY_PROTOCOL_VERSION,
+                            heartbeat_interval_ms: 15_000,
+                        })
+                        .expect("encode hello acceptance")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send hello acceptance");
+                socket
+                    .send(Message::Text(
+                        serde_json::to_string(&AedsToKernelMessage::Delivery {
+                            delivery: server_delivery.clone(),
+                        })
+                        .expect("encode delivery")
+                        .into(),
+                    ))
+                    .await
+                    .expect("send delivery");
+                if connection_index == 0 {
+                    // Simulate the AEDS socket dying while acceptance is still blocked.
+                    drop(socket);
+                    continue;
+                }
+                loop {
+                    let message = socket
+                        .next()
+                        .await
+                        .expect("kernel should acknowledge retry")
+                        .expect("ack should be readable");
+                    let text = message.to_text().expect("ack should be text");
+                    if matches!(
+                        serde_json::from_str::<KernelToAedsMessage>(text)
+                            .expect("decode kernel message"),
+                        KernelToAedsMessage::Ack { .. }
+                    ) {
+                        break;
+                    }
+                }
+            }
+        });
+        let config = EventDeliveryClientConfig {
+            url: Some(format!("ws://{address}")),
+            token: None,
+            kernel_id: "kernel-test".to_string(),
+            environment_id: "environment-test".to_string(),
+            generator_management_targets: BTreeMap::new(),
+        };
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let first_result = connect_once(
+            &runtime_state,
+            &config,
+            config.url.as_deref().expect("fixture URL"),
+            shutdown_rx.clone(),
+            &delivery_queue,
+        )
+        .await;
+        assert!(first_result.is_err(), "first socket should disconnect");
+        while started.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        let second_result = connect_once(
+            &runtime_state,
+            &config,
+            config.url.as_deref().expect("fixture URL"),
+            shutdown_rx,
+            &delivery_queue,
+        )
+        .await;
+        assert!(second_result.is_err(), "fixture closes after the ACK");
+        server.await.expect("join AEDS fixture");
+        assert_eq!(persisted.load(Ordering::SeqCst), 1);
+        assert_eq!(started.load(Ordering::SeqCst), 2);
+    }
+
+    fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(tokio::sync::Mutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
 }
