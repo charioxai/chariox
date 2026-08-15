@@ -14,12 +14,15 @@ use super::{
     ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, ProviderRunTerminalDiagnosticIssue,
 };
 
+#[cfg(test)]
+type LeasedProviderRunProbe = Arc<dyn Fn(&str) + Send + Sync + 'static>;
+
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunProjectionStore {
     runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
     leased_provider_run_ids: Arc<StdMutex<HashSet<String>>>,
     #[cfg(test)]
-    leased_provider_run_probe: Arc<StdMutex<Option<Arc<dyn Fn(&str) + Send + Sync + 'static>>>>,
+    leased_provider_run_probe: Arc<StdMutex<Option<LeasedProviderRunProbe>>>,
 }
 
 impl ProviderRunProjectionStore {
