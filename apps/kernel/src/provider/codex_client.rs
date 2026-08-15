@@ -944,6 +944,15 @@ mod tests {
         });
         assert_eq!(v2_completed_without_id, None);
 
+        let v2_started_without_id = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/started".to_string()),
+            params: Some(json!({"threadId": "thread-1"})),
+            result: None,
+            error: None,
+        });
+        assert_eq!(v2_started_without_id, None);
+
         let legacy_completed = parse_notification(JsonRpcMessage {
             id: None,
             method: Some("turn/completed".to_string()),

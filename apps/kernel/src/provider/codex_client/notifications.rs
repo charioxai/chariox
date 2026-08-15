@@ -302,7 +302,7 @@ pub(super) fn parse_notification(message: JsonRpcMessage) -> Option<CodexNotific
             })
         }
         "turn/started" => Some(CodexNotification::TurnStarted {
-            turn_id: codex_turn_id(&params).unwrap_or_default(),
+            turn_id: codex_turn_id(&params)?,
         }),
         "turn/completed" => parse_turn_completed_notification(&params),
         "codex/event/task_complete" => Some(CodexNotification::TaskComplete {
