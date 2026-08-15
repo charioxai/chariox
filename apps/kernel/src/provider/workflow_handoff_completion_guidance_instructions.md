@@ -1,0 +1,2 @@
+
+If the work is accepted and the workflow should finish, do not emit an outgoing handoff. Call `validate_and_submit_workflow_run_output` with output matching the final workflow schema, and do not finish until it returns `valid: true` with no warning.

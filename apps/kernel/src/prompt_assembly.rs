@@ -58,6 +58,8 @@ const WORKFLOW_RUN_OUTPUT_CORRECTION: &str =
     include_str!("provider/workflow_run_output_correction_instructions.md");
 const WORKFLOW_HANDOFF_CORRECTION: &str =
     include_str!("provider/workflow_handoff_correction_instructions.md");
+const WORKFLOW_HANDOFF_COMPLETION_GUIDANCE: &str =
+    include_str!("provider/workflow_handoff_completion_guidance_instructions.md");
 const WORKFLOW_MISSING_OUTPUT_CORRECTION: &str =
     include_str!("provider/workflow_missing_output_correction_instructions.md");
 const WORKFLOW_CONTROL_MAILBOX: &str =
@@ -511,6 +513,11 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         "workflow/handoff-correction" => {
             ("Workflow handoff correction", "workflow", "workflow-agent")
         }
+        "workflow/handoff-completion-guidance" => (
+            "Workflow handoff completion guidance",
+            "workflow",
+            "workflow-agent",
+        ),
         "workflow/missing-output-correction" => (
             "Workflow missing-output correction",
             "workflow",
@@ -822,6 +829,10 @@ pub(crate) fn bundled_workflow_handoff_correction_template() -> &'static str {
     WORKFLOW_HANDOFF_CORRECTION
 }
 
+pub(crate) fn bundled_workflow_handoff_completion_guidance_template() -> &'static str {
+    WORKFLOW_HANDOFF_COMPLETION_GUIDANCE
+}
+
 pub(crate) fn bundled_workflow_missing_output_correction_template() -> &'static str {
     WORKFLOW_MISSING_OUTPUT_CORRECTION
 }
@@ -883,6 +894,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             WORKFLOW_RUN_OUTPUT_CORRECTION,
         ),
         BundledPromptTemplate::new("workflow/handoff-correction", WORKFLOW_HANDOFF_CORRECTION),
+        BundledPromptTemplate::new(
+            "workflow/handoff-completion-guidance",
+            WORKFLOW_HANDOFF_COMPLETION_GUIDANCE,
+        ),
         BundledPromptTemplate::new(
             "workflow/missing-output-correction",
             WORKFLOW_MISSING_OUTPUT_CORRECTION,

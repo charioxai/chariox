@@ -790,9 +790,13 @@ impl SessionService {
             .node(context.source_node_run.node_id())
             .filter(|node| node.can_complete_workflow_run())
             .map(|_| {
-                " If the work is accepted and the workflow should finish, do not emit an outgoing handoff. Call `validate_and_submit_workflow_run_output` with output matching the final workflow schema, and do not finish until it returns `valid: true` with no warning."
+                crate::prompt_assembly::render_configured_prompt(
+                    "workflow/handoff-completion-guidance",
+                    crate::prompt_assembly::bundled_workflow_handoff_completion_guidance_template(),
+                    &[],
+                )
             })
-            .unwrap_or("");
+            .unwrap_or_default();
         format!(
             "{invocation_prompt}\n\n{}",
             crate::prompt_assembly::render_configured_prompt(
@@ -803,7 +807,7 @@ impl SessionService {
                     ("ATTEMPT", &failure.attempt.to_string()),
                     ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
                     ("ERROR", &failure.message),
-                    ("COMPLETION_GUIDANCE", completion_guidance),
+                    ("COMPLETION_GUIDANCE", &completion_guidance),
                 ],
             )
         )
