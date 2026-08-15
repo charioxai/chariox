@@ -42,3 +42,44 @@ the runtime dispatcher revalidates the binding and invocation before any provide
 Do not place credentials, raw provider catalogs, installation metadata, or unbounded event payloads in a
 prompt. Add a new Markdown template only when the text is an agent-directed instruction; protocol errors,
 operator notices, and UI copy remain code-owned.
+
+## Adding a prompt
+
+Add one default Markdown file under `apps/kernel/src/provider/`, give it a stable namespaced ID in
+`bundled_templates()`, and register its scope, audience, provider applicability, and editability in
+`prompt_setting_metadata()`. Use `{{VARIABLE}}` only for bounded values supplied by the prompt-injection
+service. Add a focused assembly test that proves the template is loaded through the registry, and include
+the entry in the catalog acceptance test. Never duplicate the same agent-directed prose in a provider
+adapter or client.
+
+## Override scope and deployment
+
+Overrides are kernel-local user settings stored below `$CHARIOX_HOME/prompts`; they are not Cloud-owned
+and are never copied into provider credentials or the relay. A workflow run uses the override from the
+kernel that executes it. Exporting or deploying a workflow does not implicitly transfer a user's prompt
+overrides: the destination kernel loads its bundled defaults until its administrator explicitly applies
+the desired settings there. This keeps deployment reproducible and prevents a local instruction edit
+from silently changing a hosted runtime. The prompt manifest records template IDs and hashes so replay,
+restart, and diagnostics can identify the exact source used for a run.
+
+Protected entries carry `protected=true`, remain visible for inspection, and can be reset individually or
+globally, but cannot be edited because they contain security/protocol invariants. Their enforcement still
+lives in code; editing explanatory Markdown never changes authorization or dispatch policy.
+
+## Provider limitations
+
+The kernel remains the only prompt assembly authority. Codex and OpenCode receive hidden Chariox context
+through their provider-native bridges; Claude native TUI uses the `UserPromptSubmit` hook bridge. If a
+provider bridge is unavailable, Chariox fails closed or runs without hidden context according to the
+provider contract; it must not inject hidden instructions as visible terminal text.
+
+## Troubleshooting
+
+- **Catalog unavailable:** connect the Settings page to a kernel with local-daemon protocol 261 or newer,
+  then use **Sync catalog**. A disconnected page shows the bundled catalog read-only.
+- **Save conflict:** another administrator changed the prompt. Sync, compare the revision/hash and save
+  again; the client never overwrites a newer revision silently.
+- **Validation failure:** check that Markdown is non-empty, no larger than 64 KiB, has balanced variables,
+  and preserves every variable required by the bundled default.
+- **Unexpected prompt content:** inspect the run's prompt manifest and compare the current/default hashes;
+  reset the affected entry or reset all entries from the Settings page or TUI.
