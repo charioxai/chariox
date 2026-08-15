@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
+#[cfg(test)]
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use chariox_event_protocol::{
@@ -34,8 +36,12 @@ static EVENT_DELIVERY_HEALTH: OnceLock<Mutex<EventDeliveryConnectionHealth>> = O
 
 struct DeliveryAcceptanceRequest {
     delivery: chariox_event_protocol::EventDeliveryEnvelope,
-    result_tx: mpsc::UnboundedSender<(String, Duration, Result<(), String>)>,
+    result_tx: mpsc::UnboundedSender<DeliveryAcceptanceResult>,
 }
+
+type DeliveryAcceptanceResult = (String, Duration, Result<(), String>);
+type DeliveryAcceptor =
+    Arc<dyn Fn(chariox_event_protocol::EventDeliveryEnvelope) -> Result<(), String> + Send + Sync>;
 
 #[derive(Clone)]
 struct DeliveryAcceptanceQueue {
@@ -44,18 +50,25 @@ struct DeliveryAcceptanceQueue {
 
 impl DeliveryAcceptanceQueue {
     fn new(runtime_state: KernelRuntimeState) -> Self {
+        Self::with_acceptor(Arc::new(move |delivery| {
+            runtime_state
+                .accept_workflow_event_delivery(delivery)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        }))
+    }
+
+    fn with_acceptor(acceptor: DeliveryAcceptor) -> Self {
         let (sender, mut receiver) = mpsc::channel::<DeliveryAcceptanceRequest>(32);
         tokio::spawn(async move {
             while let Some(request) = receiver.recv().await {
                 let delivery_id = request.delivery.delivery_id.clone();
                 let started_at = Instant::now();
-                let state = runtime_state.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    state.accept_workflow_event_delivery(request.delivery)
-                })
-                .await
-                .map_err(|error| format!("event delivery worker failed: {error}"))
-                .and_then(|result| result.map(|_| ()).map_err(|error| error.to_string()));
+                let acceptor = acceptor.clone();
+                let result = tokio::task::spawn_blocking(move || acceptor(request.delivery))
+                    .await
+                    .map_err(|error| format!("event delivery worker failed: {error}"))
+                    .and_then(|result| result);
                 let _ = request
                     .result_tx
                     .send((delivery_id, started_at.elapsed(), result));
@@ -67,7 +80,7 @@ impl DeliveryAcceptanceQueue {
     fn try_enqueue(
         &self,
         delivery: chariox_event_protocol::EventDeliveryEnvelope,
-        result_tx: mpsc::UnboundedSender<(String, Duration, Result<(), String>)>,
+        result_tx: mpsc::UnboundedSender<DeliveryAcceptanceResult>,
     ) -> Result<(), mpsc::error::TrySendError<DeliveryAcceptanceRequest>> {
         self.sender.try_send(DeliveryAcceptanceRequest {
             delivery,
@@ -423,4 +436,72 @@ where
     sink.send(Message::Text(encoded.into()))
         .await
         .map_err(|error| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn delivery(delivery_id: &str) -> chariox_event_protocol::EventDeliveryEnvelope {
+        chariox_event_protocol::EventDeliveryEnvelope {
+            delivery_id: delivery_id.to_string(),
+            binding_id: "binding-1".to_string(),
+            event_type: "test.event".to_string(),
+            event_type_version: 1,
+            occurrence_id: format!("occurrence-{delivery_id}"),
+            occurred_at: "2026-08-15T00:00:00Z".to_string(),
+            prompt: "test".to_string(),
+            artifacts: Vec::new(),
+            metadata: serde_json::Value::Null,
+            reply_context: None,
+            expires_at_ms: u64::MAX,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn acceptance_worker_survives_disconnect_without_concurrent_acceptance() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let active = Arc::new(AtomicUsize::new(0));
+        let max_active = Arc::new(AtomicUsize::new(0));
+        let acceptor: DeliveryAcceptor = {
+            let calls = calls.clone();
+            let active = active.clone();
+            let max_active = max_active.clone();
+            Arc::new(move |delivery| {
+                calls.fetch_add(1, Ordering::SeqCst);
+                let current = active.fetch_add(1, Ordering::SeqCst) + 1;
+                max_active.fetch_max(current, Ordering::SeqCst);
+                if delivery.delivery_id == "first" {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                active.fetch_sub(1, Ordering::SeqCst);
+                Ok(())
+            })
+        };
+        let queue = DeliveryAcceptanceQueue::with_acceptor(acceptor);
+
+        let (first_result_tx, first_result_rx) = mpsc::unbounded_channel();
+        queue
+            .try_enqueue(delivery("first"), first_result_tx)
+            .expect("first delivery should enqueue");
+        drop(first_result_rx);
+        while calls.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+
+        let (second_result_tx, mut second_result_rx) = mpsc::unbounded_channel();
+        queue
+            .try_enqueue(delivery("second"), second_result_tx)
+            .expect("second delivery should enqueue");
+        let (delivery_id, _, result) =
+            tokio::time::timeout(Duration::from_secs(2), second_result_rx.recv())
+                .await
+                .expect("second delivery should complete")
+                .expect("acceptance result should be sent");
+
+        assert_eq!(delivery_id, "second");
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(max_active.load(Ordering::SeqCst), 1);
+    }
 }
