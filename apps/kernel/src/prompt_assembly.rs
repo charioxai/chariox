@@ -542,15 +542,12 @@ fn validate_prompt_markdown(
     }
     let mut remainder = trimmed;
     while let Some(start) = remainder.find("{{") {
-        if remainder[start + 2..].find("}}").is_none() {
+        let Some(end) = remainder[start + 2..].find("}}") else {
             return Err(prompt_settings_error(
                 "prompt variables must have balanced delimiters",
                 template_id,
             ));
-        }
-        let end = remainder[start + 2..]
-            .find("}}")
-            .expect("checked variable delimiter");
+        };
         remainder = &remainder[start + 2 + end + 2..];
     }
     let variables = prompt_variables(trimmed);
@@ -1586,7 +1583,7 @@ mod tests {
                 writer_registry
                     .update_setting(
                         "workflow/run-output-correction",
-                        &format!("{}\nmarker-{index}", default),
+                        &format!("{default}\nmarker-{index}"),
                     )
                     .expect("atomic prompt update should succeed");
             }
