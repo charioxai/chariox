@@ -58,12 +58,22 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
         serde_json::json!({"GetPromptSetting": {"id": "workflow/turn"}})
     );
     assert_eq!(
-        encoded[2]["UpdatePromptSetting"]["markdown"],
-        "Use {{DELIVERY_TOKEN}}"
+        encoded[2],
+        serde_json::json!({
+            "UpdatePromptSetting": {
+                "id": "workflow/turn",
+                "markdown": "Use {{DELIVERY_TOKEN}}"
+            }
+        })
     );
     assert_eq!(
-        encoded[3]["PreviewPromptSetting"]["variables"]["DELIVERY_TOKEN"],
-        "token"
+        encoded[3],
+        serde_json::json!({
+            "PreviewPromptSetting": {
+                "id": "workflow/turn",
+                "variables": {"DELIVERY_TOKEN": "token"}
+            }
+        })
     );
     assert_eq!(
         encoded[4],
@@ -94,11 +104,44 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
         .into_iter()
         .map(|response| serde_json::to_value(response).expect("prompt settings response encodes"))
         .collect::<Vec<_>>();
-    assert!(encoded[0]["PromptSettingsListed"]["settings"][0]["current"].is_string());
+    let expected_setting = serde_json::json!({
+        "id": "workflow/turn",
+        "title": "Workflow turn contract",
+        "scope": "workflow",
+        "audience": "workflow-agent",
+        "provider_applicability": ["codex"],
+        "source": "bundled",
+        "current": "Use {{DELIVERY_TOKEN}}",
+        "default": "Use {{DELIVERY_TOKEN}}",
+        "current_sha256": "current",
+        "default_sha256": "default",
+        "current_bytes": 24,
+        "default_bytes": 24,
+        "revision": 1,
+        "variables": ["DELIVERY_TOKEN"],
+        "editable": true,
+        "protected": false
+    });
     assert_eq!(
-        encoded[1]["PromptSetting"]["setting"]["id"],
-        "workflow/turn"
+        encoded[0],
+        serde_json::json!({"PromptSettingsListed": {"settings": [expected_setting.clone()]}})
     );
-    assert_eq!(encoded[2]["PromptSettingPreview"]["markdown"], "Use token");
-    assert!(encoded[3]["PromptSettingsReset"]["settings"].is_array());
+    assert_eq!(
+        encoded[1],
+        serde_json::json!({"PromptSetting": {"setting": expected_setting}})
+    );
+    assert_eq!(
+        encoded[2],
+        serde_json::json!({
+            "PromptSettingPreview": {
+                "id": "workflow/turn",
+                "markdown": "Use token",
+                "variables": {"DELIVERY_TOKEN": "token"}
+            }
+        })
+    );
+    assert_eq!(
+        encoded[3],
+        serde_json::json!({"PromptSettingsReset": {"settings": [setting()]}})
+    );
 }

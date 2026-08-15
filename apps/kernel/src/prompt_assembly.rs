@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 use std::fs;
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -245,7 +248,11 @@ impl PromptTemplateRegistry {
         }
         validate_prompt_markdown(template_id, &current.default, body)?;
         let path = self.path_for(template_id);
-        fs::write(&path, body.trim()).map_err(|error| prompt_io_error("write", &path, error))?;
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        atomic_write(&path, body.trim())?;
+        drop(_guard);
         self.read_setting(template_id)
     }
 
@@ -259,22 +266,31 @@ impl PromptTemplateRegistry {
             .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
         self.materialize_bundled_defaults()?;
         let path = self.path_for(template_id);
-        fs::write(&path, template.body.trim())
-            .map_err(|error| prompt_io_error("write", &path, error))?;
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        atomic_write(&path, template.body.trim())?;
+        drop(_guard);
         self.read_setting(template_id)
     }
 
     pub(crate) fn reset_all_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
         self.materialize_bundled_defaults()?;
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         for template in bundled_templates() {
             let path = self.path_for(template.id);
-            fs::write(&path, template.body.trim())
-                .map_err(|error| prompt_io_error("write", &path, error))?;
+            atomic_write(&path, template.body.trim())?;
         }
+        drop(_guard);
         self.list_settings()
     }
 
     pub(crate) fn materialize_bundled_defaults(&self) -> Result<(), DaemonError> {
+        let _guard = prompt_registry_write_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let state_path = self.root.join(PROMPT_DEFAULTS_STATE_FILE);
         let previous_state = fs::read_to_string(&state_path)
             .ok()
@@ -305,8 +321,7 @@ impl PromptTemplateRegistry {
                     .is_some_and(|(previous, existing)| previous == existing)
                 || is_known_legacy_default;
             if should_materialize && existing_body.as_deref() != Some(bundled_body) {
-                fs::write(&path, bundled_body)
-                    .map_err(|error| prompt_io_error("write", &path, error))?;
+                atomic_write(&path, bundled_body)?;
             }
         }
         fs::create_dir_all(&self.root)
@@ -322,8 +337,7 @@ impl PromptTemplateRegistry {
                 message: error.to_string(),
             }
         })?;
-        fs::write(&state_path, state_body)
-            .map_err(|error| prompt_io_error("write", &state_path, error))?;
+        atomic_write(&state_path, &state_body)?;
         Ok(())
     }
 
@@ -365,6 +379,43 @@ fn known_legacy_bundled_default(template_id: &str, hash: &str) -> bool {
         "runtime/slice" => LEGACY_SLICE_HASHES.contains(&hash),
         _ => false,
     }
+}
+
+fn prompt_registry_write_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn atomic_write(path: &Path, body: &str) -> Result<(), DaemonError> {
+    let Some(parent) = path.parent() else {
+        return Err(prompt_settings_error(
+            "prompt path has no parent",
+            &path.display().to_string(),
+        ));
+    };
+    fs::create_dir_all(parent).map_err(|error| prompt_io_error("create", parent, error))?;
+    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("prompt"),
+        std::process::id(),
+        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed),
+    ));
+    let result = (|| {
+        let mut file = fs::File::create(&temp_path)
+            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
+        file.write_all(body.as_bytes())
+            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
+        file.sync_all()
+            .map_err(|error| prompt_io_error("sync", &temp_path, error))?;
+        fs::rename(&temp_path, path).map_err(|error| prompt_io_error("rename", path, error))
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1515,6 +1566,39 @@ mod tests {
             None => std::env::remove_var("CHARIOX_HOME"),
         }
         assert_eq!(rendered, "OVERRIDE 1 3 bad");
+    }
+
+    #[test]
+    fn prompt_registry_concurrent_reads_never_observe_partial_updates() {
+        let root = temp_prompt_root("atomic-updates");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let default = registry
+            .read_setting("workflow/run-output-correction")
+            .expect("correction prompt should read")
+            .default;
+        let writer_registry = registry.clone();
+        let reader_registry = registry.clone();
+        let writer = std::thread::spawn(move || {
+            for index in 0..40 {
+                writer_registry
+                    .update_setting(
+                        "workflow/run-output-correction",
+                        &format!("{}\nmarker-{index}", default),
+                    )
+                    .expect("atomic prompt update should succeed");
+            }
+        });
+        for _ in 0..200 {
+            let setting = reader_registry
+                .read_setting("workflow/run-output-correction")
+                .expect("concurrent prompt read should succeed");
+            assert!(!setting.current.is_empty());
+            assert!(setting.current.contains("{{ERROR}}"));
+        }
+        writer.join().expect("writer should finish");
     }
 
     #[test]
