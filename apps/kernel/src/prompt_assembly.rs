@@ -69,6 +69,16 @@ const WORKFLOW_OUTPUT_CONTRACT: &str =
 const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
 const WORKFLOW_NODE_DEFAULT_INSTRUCTIONS: &str =
     include_str!("provider/workflow_node_default_instructions.md");
+const WORKFLOW_HANDOFF_VALIDATION_PASSED: &str =
+    include_str!("provider/workflow_handoff_validation_passed_instructions.md");
+const WORKFLOW_HANDOFF_VALIDATION_FAILED: &str =
+    include_str!("provider/workflow_handoff_validation_failed_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID: &str =
+    include_str!("provider/workflow_output_submission_final_valid_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID: &str =
+    include_str!("provider/workflow_output_submission_final_invalid_instructions.md");
+const WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE: &str =
+    include_str!("provider/workflow_output_submission_intermediate_instructions.md");
 const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
@@ -495,6 +505,31 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
             "workflow",
             "workflow-agent",
         ),
+        "workflow/handoff-validation-passed" => (
+            "Workflow handoff validation passed",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/handoff-validation-failed" => (
+            "Workflow handoff validation failed",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-final-valid" => (
+            "Workflow final output submitted",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-final-invalid" => (
+            "Workflow final output rejected",
+            "workflow",
+            "workflow-agent",
+        ),
+        "workflow/output-submission-intermediate" => (
+            "Workflow intermediate output submitted",
+            "workflow",
+            "workflow-agent",
+        ),
         id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
@@ -828,6 +863,26 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new(
             "workflow/node-default-instructions",
             WORKFLOW_NODE_DEFAULT_INSTRUCTIONS,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/handoff-validation-passed",
+            WORKFLOW_HANDOFF_VALIDATION_PASSED,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/handoff-validation-failed",
+            WORKFLOW_HANDOFF_VALIDATION_FAILED,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-final-valid",
+            WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-final-invalid",
+            WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID,
+        ),
+        BundledPromptTemplate::new(
+            "workflow/output-submission-intermediate",
+            WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE,
         ),
         BundledPromptTemplate::new(
             "utility/workspace-commit-message",
