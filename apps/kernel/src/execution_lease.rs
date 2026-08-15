@@ -74,6 +74,11 @@ pub struct LeasedAgent {
     pub active_home_prompt_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_home_prompt_started_at_ms: Option<u64>,
+    /// Whether the currently admitted home turn may use the event reply tool.
+    /// Set before a worker provider is launched so its first `tools/list` is
+    /// deterministic; the home dispatcher remains the authorization authority.
+    #[serde(default)]
+    pub active_event_reply_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub applied_home_steer_ids: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -146,6 +151,7 @@ impl LeasedAgent {
             projected_provider_run: None,
             active_home_prompt_id: None,
             active_home_prompt_started_at_ms: None,
+            active_event_reply_enabled: false,
             applied_home_steer_ids: Vec::new(),
             replayable_completion: None,
             created_at_ms: unix_epoch_ms(),

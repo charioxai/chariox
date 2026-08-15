@@ -17,6 +17,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 .leased_workflow_turns
                 .get(provider_run_id)
                 .is_some_and(|binding| binding.context.event_reply_enabled)
+                || self.app.leased_agents.values().any(|leased_agent| {
+                    leased_agent.active_event_reply_enabled
+                        && self
+                            .app
+                            .providers
+                            .get_run_for_agent(
+                                &leased_agent.backing_session_id,
+                                &leased_agent.backing_agent_id,
+                            )
+                            .is_some_and(|run| run.id() == provider_run_id)
+                })
         })
     }
 
