@@ -236,6 +236,9 @@ async fn connect_once(
     reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut aegs_reconciliation = tokio::time::interval(Duration::from_secs(30));
     aegs_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut kernel_heartbeat = tokio::time::interval(Duration::from_secs(5));
+    kernel_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut aeds_ready = false;
     let (delivery_result_tx, mut delivery_result_rx) =
         mpsc::unbounded_channel::<(String, Duration, Result<(), String>)>();
     let mut pending_delivery_ids = std::collections::BTreeSet::new();
@@ -254,10 +257,19 @@ async fn connect_once(
                 let message: AedsToKernelMessage =
                     serde_json::from_str(text).map_err(|error| format!("invalid AEDS message: {error}"))?;
                 match message {
-                    AedsToKernelMessage::HelloAccepted { protocol_version, .. } => {
+                    AedsToKernelMessage::HelloAccepted { protocol_version, heartbeat_interval_ms } => {
                         if protocol_version != EVENT_DELIVERY_PROTOCOL_VERSION {
                             return Err(format!("AEDS negotiated unsupported protocol {protocol_version}"));
                         }
+                        let server_interval = Duration::from_millis(heartbeat_interval_ms.max(1_000));
+                        let client_interval = (server_interval / 3).clamp(
+                            Duration::from_secs(1),
+                            Duration::from_secs(10),
+                        );
+                        kernel_heartbeat = tokio::time::interval(client_interval);
+                        kernel_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        kernel_heartbeat.reset();
+                        aeds_ready = true;
                         crate::logging::info_with_fields(
                             "daemon.event_delivery",
                             "AEDS connection established",
@@ -380,6 +392,11 @@ async fn connect_once(
                         serde_json::json!({"error": error}),
                     );
                 }
+            }
+            _ = kernel_heartbeat.tick(), if aeds_ready => {
+                send(&mut sink, &KernelToAedsMessage::Heartbeat {
+                    at_ms: crate::session::unix_epoch_ms(),
+                }).await?;
             }
         }
     }
@@ -695,6 +712,79 @@ mod tests {
         connector.await.expect("join connector");
         server.await.expect("join AEDS fixture");
         assert_eq!(persisted.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn connector_sends_proactive_heartbeat_after_handshake() {
+        let runtime_state = runtime_state_from_app(
+            crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+                .expect("test daemon should bootstrap"),
+        );
+        let delivery_queue = DeliveryAcceptanceQueue::with_acceptor(Arc::new(|_| Ok(())));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind AEDS fixture");
+        let address = listener.local_addr().expect("resolve AEDS fixture");
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept kernel connection");
+            let mut socket = tokio_tungstenite::accept_async(stream)
+                .await
+                .expect("upgrade AEDS fixture connection");
+            let hello = socket
+                .next()
+                .await
+                .expect("kernel should send hello")
+                .expect("hello should be readable");
+            assert!(matches!(
+                serde_json::from_str::<KernelToAedsMessage>(
+                    hello.to_text().expect("hello should be text")
+                )
+                .expect("decode hello"),
+                KernelToAedsMessage::Hello { .. }
+            ));
+            socket
+                .send(Message::Text(
+                    serde_json::to_string(&AedsToKernelMessage::HelloAccepted {
+                        protocol_version: EVENT_DELIVERY_PROTOCOL_VERSION,
+                        heartbeat_interval_ms: 3_000,
+                    })
+                    .expect("encode hello acceptance")
+                    .into(),
+                ))
+                .await
+                .expect("send hello acceptance");
+            loop {
+                let message = tokio::time::timeout(Duration::from_secs(3), socket.next())
+                    .await
+                    .expect("kernel should send a heartbeat")
+                    .expect("kernel should keep the connection open")
+                    .expect("heartbeat should be readable");
+                let message = serde_json::from_str::<KernelToAedsMessage>(
+                    message.to_text().expect("heartbeat should be text"),
+                )
+                .expect("decode heartbeat");
+                if matches!(message, KernelToAedsMessage::Heartbeat { .. }) {
+                    return;
+                }
+            }
+        });
+        let config = EventDeliveryClientConfig {
+            url: Some(format!("ws://{address}")),
+            token: None,
+            kernel_id: "kernel-heartbeat-test".to_string(),
+            environment_id: "environment-heartbeat-test".to_string(),
+            generator_management_targets: BTreeMap::new(),
+        };
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let connector = tokio::spawn(run_event_delivery_connector_with_queue(
+            runtime_state,
+            config,
+            shutdown_rx,
+            delivery_queue,
+        ));
+        server.await.expect("heartbeat fixture should complete");
+        shutdown_tx.send(true).expect("stop connector");
+        connector.await.expect("join connector");
     }
 
     fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
