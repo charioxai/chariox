@@ -74,11 +74,17 @@ pub fn drain_codex_events(
             })
             .is_none();
     }
-    let authoritative_backfill_due = drained_to_quiet
-        && state.active_turn_id.is_some()
-        && state
-            .last_authoritative_backfill_at
-            .is_none_or(|last| last.elapsed() >= CODEX_AUTHORITATIVE_BACKFILL_INTERVAL);
+    // A provider can finish a turn while the socket still has unrelated
+    // notifications queued (for example token/telemetry updates).  The
+    // authoritative turns/list reconciliation must not wait for a perfectly
+    // quiet drain, otherwise a terminal provider turn can leave the kernel's
+    // prompt Running forever.  `backfill_completed_turn` still requires the
+    // matching turn id to be terminal and to contain final output/error
+    // evidence, so polling here cannot settle a stale turn.
+    let authoritative_backfill_due = codex_authoritative_backfill_due(
+        state.active_turn_id.is_some(),
+        state.last_authoritative_backfill_at,
+    );
     if codex_turn_should_backfill(
         run.endpoint_mode(),
         state.active_turn_id.is_some(),
@@ -138,4 +144,13 @@ pub(super) fn codex_turn_should_backfill(
                     .has_quiet_terminal_assistant_evidence(CODEX_MANAGED_BACKFILL_QUIET_GRACE)
                     || turn_tracker
                         .has_quiet_completed_tool_activity(CODEX_MANAGED_BACKFILL_QUIET_GRACE))))
+}
+
+pub(super) fn codex_authoritative_backfill_due(
+    has_active_turn: bool,
+    last_backfill_at: Option<std::time::Instant>,
+) -> bool {
+    has_active_turn
+        && last_backfill_at
+            .is_none_or(|last| last.elapsed() >= CODEX_AUTHORITATIVE_BACKFILL_INTERVAL)
 }
