@@ -227,7 +227,16 @@ pub fn apply_test_filter_constraints(metadata: &mut Value, filter: &Value) {
         return;
     };
     for (path, expected) in filter {
-        set_dotted_value(metadata, path, expected.clone());
+        // A real provider event carries one scalar resource identifier. For an
+        // any-of binding, use a deterministic representative candidate so the
+        // synthetic event has the same shape as production while still
+        // traversing the ordinary filter matcher. An empty any-of filter must
+        // remain non-matching rather than fabricating a resource.
+        let materialized = expected
+            .as_array()
+            .map(|values| values.first().cloned().unwrap_or(Value::Null))
+            .unwrap_or_else(|| expected.clone());
+        set_dotted_value(metadata, path, materialized);
     }
 }
 
@@ -264,9 +273,21 @@ pub fn metadata_matches_filter(metadata: &Value, filter: &Value) -> bool {
         return filter.is_null();
     };
     filter.iter().all(|(key, expected)| {
-        dotted_value(metadata, key)
-            .is_some_and(|actual| actual == expected || array_contains(actual, expected))
+        dotted_value(metadata, key).is_some_and(|actual| filter_value_matches(actual, expected))
     })
+}
+
+/// Match either a scalar filter value or an explicit any-of array. Provider
+/// filters use arrays for one binding that intentionally selects several
+/// resources (for example, several Slack channels), while preserving the
+/// existing scalar and metadata-array behavior.
+fn filter_value_matches(actual: &Value, expected: &Value) -> bool {
+    if let Some(expected_values) = expected.as_array() {
+        return expected_values
+            .iter()
+            .any(|candidate| filter_value_matches(actual, candidate));
+    }
+    actual == expected || array_contains(actual, expected)
 }
 
 fn dotted_value<'a>(value: &'a Value, path: &str) -> Option<&'a Value> {
@@ -301,6 +322,14 @@ mod tests {
             &metadata,
             &serde_json::json!({"repository.owner": "other"})
         ));
+        assert!(metadata_matches_filter(
+            &serde_json::json!({"event": {"channel": "C123"}}),
+            &serde_json::json!({"event.channel": ["C999", "C123"]})
+        ));
+        assert!(!metadata_matches_filter(
+            &serde_json::json!({"event": {"channel": "C123"}}),
+            &serde_json::json!({"event.channel": ["C999", "C456"]})
+        ));
     }
 
     #[test]
@@ -312,5 +341,27 @@ mod tests {
         );
         assert_eq!(metadata["repository"]["name"], "chariox");
         assert_eq!(metadata["repository"]["owner"]["login"], "charioxai");
+    }
+
+    #[test]
+    fn test_filter_constraints_materialize_one_scalar_any_of_candidate() {
+        let mut metadata = serde_json::json!({});
+        apply_test_filter_constraints(
+            &mut metadata,
+            &serde_json::json!({"event.channel": ["C123", "C456"]}),
+        );
+        assert_eq!(metadata["event"]["channel"], "C123");
+        assert!(metadata_matches_filter(
+            &metadata,
+            &serde_json::json!({"event.channel": ["C123", "C456"]})
+        ));
+
+        let mut empty = serde_json::json!({});
+        apply_test_filter_constraints(&mut empty, &serde_json::json!({"event.channel": []}));
+        assert_eq!(empty["event"]["channel"], Value::Null);
+        assert!(!metadata_matches_filter(
+            &empty,
+            &serde_json::json!({"event.channel": []})
+        ));
     }
 }
