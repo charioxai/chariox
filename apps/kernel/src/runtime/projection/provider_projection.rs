@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -17,9 +17,24 @@ use super::{
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunProjectionStore {
     runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
+    leased_provider_run_ids: Arc<StdMutex<HashSet<String>>>,
 }
 
 impl ProviderRunProjectionStore {
+    pub(crate) fn mark_leased_provider_run(&self, provider_run_id: &str) {
+        self.leased_provider_run_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(provider_run_id.to_string());
+    }
+
+    pub(crate) fn is_leased_provider_run(&self, provider_run_id: &str) -> bool {
+        self.leased_provider_run_ids
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .contains(provider_run_id)
+    }
+
     pub(crate) fn get(&self, provider_run_id: &str) -> Option<RuntimeProviderRun> {
         self.runs
             .lock()

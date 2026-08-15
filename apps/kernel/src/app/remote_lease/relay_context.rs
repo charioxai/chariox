@@ -8,18 +8,6 @@ use crate::transport::relay_peer::{
 use super::RemoteLeaseRuntime;
 
 impl<'a> RemoteLeaseRuntime<'a> {
-    pub(crate) fn is_leased_provider_run(&self, provider_run_id: &str) -> bool {
-        self.app.leased_agents.values().any(|leased_agent| {
-            self.app
-                .providers
-                .get_run_for_agent(
-                    &leased_agent.backing_session_id,
-                    &leased_agent.backing_agent_id,
-                )
-                .is_some_and(|run| run.id() == provider_run_id)
-        })
-    }
-
     pub(crate) fn native_interaction_context_for_backing_agent(
         &mut self,
         backing_session_id: &str,

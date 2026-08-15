@@ -224,6 +224,18 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
             "leased provider {discovery} discovery should expose reply_to_event"
         );
     }
+    let _app_guard = app
+        .try_lock()
+        .expect("the app mutex should be available for the contention check");
+    let contended_specs = router
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&leased_token);
+    assert!(
+        contended_specs.iter().any(|spec| {
+            spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+        }),
+        "provider discovery must retain reply_to_event while the app mutex is contended"
+    );
     let ordinary_specs = router
         .runtime_state
         .runtime_tool_specs_for_auth_token(&ordinary_token);
