@@ -109,11 +109,7 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
-        if !force
-            && (active_prompt.status() == crate::session::PromptStatus::Dispatching
-                || active_prompt.durable_delivery_phase()
-                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching))
-        {
+        if !force && active_prompt.delivery_pending() {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
                 STRUCTURED_PROMPT_SETTLE_QUIET_FOR,

@@ -483,11 +483,10 @@ impl<'a> ProviderOutputPumpContext<'a> {
                         .ok()
                         .flatten()
                 });
-            if active_prompt.as_ref().is_some_and(|prompt| {
-                prompt.status() == crate::session::PromptStatus::Dispatching
-                    || prompt.durable_delivery_phase()
-                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
-            }) {
+            if active_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.delivery_pending())
+            {
                 self.pending_structured_output_records
                     .schedule_after_empty_poll(
                         provider_run_id.to_string(),
@@ -609,11 +608,9 @@ impl<'a> ProviderOutputPumpContext<'a> {
                         .flatten()
                 });
             let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
-                prompt.status() == crate::session::PromptStatus::Dispatching
-                    || prompt.durable_delivery_phase()
-                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
-            });
+            let active_prompt_is_dispatching = active_prompt
+                .as_ref()
+                .is_some_and(|prompt| prompt.delivery_pending());
             if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
                 crate::logging::debug_with_fields(
                     "daemon.provider",

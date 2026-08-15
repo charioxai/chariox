@@ -233,6 +233,27 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         promoted.durable_delivery_phase(),
         Some(crate::session::DurablePromptDeliveryPhase::Accepted)
     );
+    runtime
+        .owned
+        .prompt_state_owner
+        .mark_active_prompt_running(&current_session, agent.id())
+        .expect(
+            "promoted prompt should be representable as running before provider acknowledgement",
+        );
+    let (active_prompt, queued_prompts) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&current_session, agent.id());
+    runtime
+        .owned
+        .mirror_prompt_owner_agent_state(session.id(), agent.id(), active_prompt, queued_prompts)
+        .expect("running prompt state should persist");
+    let promoted = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&current_session, agent.id())
+        .expect("promoted workflow prompt should remain active");
+    assert_eq!(promoted.status(), crate::session::PromptStatus::Running);
     let promoted_prompt_id = promoted.id().to_string();
 
     runtime
