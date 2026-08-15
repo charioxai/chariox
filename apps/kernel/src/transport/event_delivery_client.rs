@@ -43,6 +43,12 @@ type DeliveryAcceptanceResult = (String, Duration, Result<(), String>);
 type DeliveryAcceptor =
     Arc<dyn Fn(chariox_event_protocol::EventDeliveryEnvelope) -> Result<(), String> + Send + Sync>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeliveryQueueError {
+    Closed,
+    Full,
+}
+
 #[derive(Clone)]
 struct DeliveryAcceptanceQueue {
     sender: mpsc::Sender<DeliveryAcceptanceRequest>,
@@ -81,11 +87,16 @@ impl DeliveryAcceptanceQueue {
         &self,
         delivery: chariox_event_protocol::EventDeliveryEnvelope,
         result_tx: mpsc::UnboundedSender<DeliveryAcceptanceResult>,
-    ) -> Result<(), mpsc::error::TrySendError<DeliveryAcceptanceRequest>> {
-        self.sender.try_send(DeliveryAcceptanceRequest {
-            delivery,
-            result_tx,
-        })
+    ) -> Result<(), DeliveryQueueError> {
+        self.sender
+            .try_send(DeliveryAcceptanceRequest {
+                delivery,
+                result_tx,
+            })
+            .map_err(|error| match error {
+                mpsc::error::TrySendError::Closed(_) => DeliveryQueueError::Closed,
+                mpsc::error::TrySendError::Full(_) => DeliveryQueueError::Full,
+            })
     }
 }
 
@@ -284,10 +295,10 @@ async fn connect_once(
                         {
                             pending_delivery_ids.remove(&delivery.delivery_id);
                             match error {
-                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                DeliveryQueueError::Closed => {
                                     return Err("event delivery worker stopped".to_string());
                                 }
-                                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                DeliveryQueueError::Full => {
                                     crate::logging::warn_with_fields(
                                         "daemon.event_delivery",
                                         "event delivery acceptance queue is full; leaving delivery unacknowledged",
