@@ -83,7 +83,7 @@ impl CommandRouter {
             | LocalDaemonRequest::PreviewPromptSetting(_)
             | LocalDaemonRequest::ResetPromptSetting(_)
             | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
-                execute_prompt_settings_request(request).await
+                execute_prompt_settings_request(&command, request).await
             }
             request @ (LocalDaemonRequest::ListSlices(_)
             | LocalDaemonRequest::CreateSlice(_)

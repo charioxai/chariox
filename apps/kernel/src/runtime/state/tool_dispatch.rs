@@ -78,8 +78,32 @@ impl KernelRuntimeState {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
         }
-        specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
+        specs.extend(
+            crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
+        );
+        if provider_runs
+            .iter()
+            .any(|run| self.session_has_enabled_event_reply_binding(run.session_id()))
+        {
+            specs.push(crate::transport::runtime_tools::workflow_reply_to_event_tool_spec());
+        }
         specs
+    }
+
+    fn session_has_enabled_event_reply_binding(&self, session_id: &str) -> bool {
+        self.owned
+            .session_store
+            .get_session(session_id)
+            .ok()
+            .is_some_and(|session| {
+                session.workflow_event_bindings().iter().any(|binding| {
+                    binding.active()
+                        && binding
+                            .reply_mode
+                            .as_deref()
+                            .is_some_and(|mode| mode != "disabled")
+                })
+            })
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
