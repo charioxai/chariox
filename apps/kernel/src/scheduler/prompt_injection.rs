@@ -3,8 +3,8 @@ use crate::error::DaemonError;
 use crate::prompt_assembly::{
     assembled_prompt_component, bundled_metaagent_event_template,
     bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
-    bundled_workflow_turn_template, prompt_component, unescape_prompt_component_delimiters,
-    PromptManifest, PromptTemplate, PromptTemplateRegistry,
+    bundled_workflow_turn_template, prompt_component, render_bundled_prompt,
+    unescape_prompt_component_delimiters, PromptManifest, PromptTemplate, PromptTemplateRegistry,
 };
 use crate::session::{
     WorkflowDefinition, WorkflowEdgeDefinition, WorkflowHandoffValidationPolicy, WorkflowMessage,
@@ -233,12 +233,12 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
         .control_mailbox
         .as_deref()
         .map(|content| {
-            prompt_component(
-                CONTROL_MAILBOX_TAG,
-                &format!(
-                    "{content}\nTreat the control mailbox as authoritative runtime feedback for this node. Fix every listed issue in this turn before you finalize the workflow output."
-                ),
-            )
+            let template = load_prompt_registry_template(
+                "workflow/control-mailbox",
+                include_str!("../provider/workflow_control_mailbox_instructions.md"),
+            );
+            let body = render_bundled_prompt(&template.body, &[("CONTENT", content)]);
+            prompt_component(CONTROL_MAILBOX_TAG, &body)
         })
         .map(|component| format!("{component}\n\n"))
         .unwrap_or_default();
@@ -257,18 +257,18 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     let outgoing_edge_contracts_block = if context.outgoing_edge_contracts.trim().is_empty() {
         String::new()
     } else {
+        let template = load_prompt_registry_template(
+            "workflow/edge-contracts",
+            include_str!("../provider/workflow_edge_contracts_instructions.md"),
+        );
+        let contracts = strip_legacy_prompt_heading(
+            &context.outgoing_edge_contracts,
+            "Outgoing edge contracts:",
+        );
+        let body = render_bundled_prompt(&template.body, &[("CONTRACTS", &contracts)]);
         format!(
             "{}\n\n",
-            prompt_component(
-                OUTGOING_EDGE_CONTRACTS_TAG,
-                &format!(
-                    "{}\nAll schema refs needed for this turn are listed above. Do not search the workspace for workflow metadata unless the workflow-level prompt explicitly asks you to.",
-                    strip_legacy_prompt_heading(
-                        &context.outgoing_edge_contracts,
-                        "Outgoing edge contracts:",
-                    )
-                ),
-            )
+            prompt_component(OUTGOING_EDGE_CONTRACTS_TAG, &body)
         )
     };
     let visible_user_prompt = [
@@ -377,7 +377,21 @@ fn workflow_node_instructions(
         })
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "No node-specific instructions were configured.".to_string())
+        .unwrap_or_else(|| {
+            load_prompt_registry_template(
+                "workflow/node-default-instructions",
+                include_str!("../provider/workflow_node_default_instructions.md"),
+            )
+            .body
+        })
+}
+
+pub(crate) fn workflow_node_default_instructions() -> String {
+    load_prompt_registry_template(
+        "workflow/node-default-instructions",
+        include_str!("../provider/workflow_node_default_instructions.md"),
+    )
+    .body
 }
 
 fn render_workflow_system_prompt(
@@ -489,24 +503,42 @@ pub(crate) fn workflow_run_output_contract_block(workflow: &WorkflowDefinition) 
     let schema_ref = workflow.run_output_schema_ref()?;
     let schema = workflow.schema(schema_ref)?;
     let schema_json = serde_json::to_string(schema.schema()).ok()?;
-    Some(format!(
-        "Final workflow run output contract:\n- workflow_run_output_schema_ref: {schema_ref}\n- workflow_run_output_schema: {schema_json}\nPass only the JSON value matching this schema as the `workflow_output_json` string. Do not wrap that value in the turn-level `summary`/`output` envelope.\n\n"
+    let template = load_prompt_registry_template(
+        "workflow/output-contract",
+        include_str!("../provider/workflow_output_contract_instructions.md"),
+    );
+    Some(render_bundled_prompt(
+        &template.body,
+        &[("SCHEMA_REF", schema_ref), ("SCHEMA_JSON", &schema_json)],
     ))
 }
 
 fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> String {
-    let mut block = format!(
-        "This is turn {} for this node in the current workflow run.\n",
-        context.turn_index
+    let template = load_prompt_registry_template(
+        "workflow/node-turn-context",
+        include_str!("../provider/workflow_node_turn_context_instructions.md"),
     );
-    if let Some(max_turns) = context.max_turns {
-        block.push_str(&format!("- node max turns: {max_turns}\n"));
-    }
-    if context.wait_for_all_inputs {
-        block.push_str("- this node starts only after every incoming edge has an input for the same source iteration\n");
-    }
-    block.push('\n');
-    block
+    render_bundled_prompt(
+        &template.body,
+        &[
+            ("TURN_INDEX", &context.turn_index.to_string()),
+            (
+                "MAX_TURNS_LINE",
+                &context
+                    .max_turns
+                    .map(|max_turns| format!("- node max turns: {max_turns}\n"))
+                    .unwrap_or_default(),
+            ),
+            (
+                "WAIT_FOR_ALL_INPUTS_LINE",
+                if context.wait_for_all_inputs {
+                    "- this node starts only after every incoming edge has an input for the same source iteration\n"
+                } else {
+                    ""
+                },
+            ),
+        ],
+    )
 }
 
 fn load_workflow_run_completion_prompt_template(
@@ -563,9 +595,16 @@ fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> O
     if context.turn_index != max_turns {
         return None;
     }
-    Some(format!(
-        "This is the last allowed turn for this node in the current workflow run.\n- node turn index: {turn_index}\n- node max turns: {max_turns}\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output in this turn. In that case, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`. Instead, call the Chariox runtime MCP tool `validate_and_submit_workflow_run_output` and do not finalize the turn until it returns `valid: true` with no warning.\n\n",
-        turn_index = context.turn_index
+    let template = load_prompt_registry_template(
+        "workflow/last-turn",
+        include_str!("../provider/workflow_last_turn_instructions.md"),
+    );
+    Some(render_bundled_prompt(
+        &template.body,
+        &[
+            ("TURN_INDEX", &context.turn_index.to_string()),
+            ("MAX_TURNS", &max_turns.to_string()),
+        ],
     ))
 }
 

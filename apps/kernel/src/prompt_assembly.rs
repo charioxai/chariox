@@ -58,6 +58,17 @@ const WORKFLOW_HANDOFF_CORRECTION: &str =
     include_str!("provider/workflow_handoff_correction_instructions.md");
 const WORKFLOW_MISSING_OUTPUT_CORRECTION: &str =
     include_str!("provider/workflow_missing_output_correction_instructions.md");
+const WORKFLOW_CONTROL_MAILBOX: &str =
+    include_str!("provider/workflow_control_mailbox_instructions.md");
+const WORKFLOW_EDGE_CONTRACTS: &str =
+    include_str!("provider/workflow_edge_contracts_instructions.md");
+const WORKFLOW_NODE_TURN_CONTEXT: &str =
+    include_str!("provider/workflow_node_turn_context_instructions.md");
+const WORKFLOW_OUTPUT_CONTRACT: &str =
+    include_str!("provider/workflow_output_contract_instructions.md");
+const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
+const WORKFLOW_NODE_DEFAULT_INSTRUCTIONS: &str =
+    include_str!("provider/workflow_node_default_instructions.md");
 const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
     include_str!("provider/workspace_commit_message_instructions.md");
 const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
@@ -472,6 +483,18 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
             "workflow",
             "workflow-agent",
         ),
+        "workflow/control-mailbox" => ("Workflow control mailbox", "workflow", "workflow-agent"),
+        "workflow/edge-contracts" => ("Workflow edge contracts", "workflow", "workflow-agent"),
+        "workflow/node-turn-context" => {
+            ("Workflow node turn context", "workflow", "workflow-agent")
+        }
+        "workflow/output-contract" => ("Workflow output contract", "workflow", "workflow-agent"),
+        "workflow/last-turn" => ("Workflow last-turn guidance", "workflow", "workflow-agent"),
+        "workflow/node-default-instructions" => (
+            "Workflow node default instructions",
+            "workflow",
+            "workflow-agent",
+        ),
         id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
@@ -796,6 +819,15 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new(
             "workflow/missing-output-correction",
             WORKFLOW_MISSING_OUTPUT_CORRECTION,
+        ),
+        BundledPromptTemplate::new("workflow/control-mailbox", WORKFLOW_CONTROL_MAILBOX),
+        BundledPromptTemplate::new("workflow/edge-contracts", WORKFLOW_EDGE_CONTRACTS),
+        BundledPromptTemplate::new("workflow/node-turn-context", WORKFLOW_NODE_TURN_CONTEXT),
+        BundledPromptTemplate::new("workflow/output-contract", WORKFLOW_OUTPUT_CONTRACT),
+        BundledPromptTemplate::new("workflow/last-turn", WORKFLOW_LAST_TURN),
+        BundledPromptTemplate::new(
+            "workflow/node-default-instructions",
+            WORKFLOW_NODE_DEFAULT_INSTRUCTIONS,
         ),
         BundledPromptTemplate::new(
             "utility/workspace-commit-message",
