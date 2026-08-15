@@ -227,7 +227,16 @@ pub fn apply_test_filter_constraints(metadata: &mut Value, filter: &Value) {
         return;
     };
     for (path, expected) in filter {
-        set_dotted_value(metadata, path, expected.clone());
+        // A real provider event carries one scalar resource identifier. For an
+        // any-of binding, use a deterministic representative candidate so the
+        // synthetic event has the same shape as production while still
+        // traversing the ordinary filter matcher. An empty any-of filter must
+        // remain non-matching rather than fabricating a resource.
+        let materialized = expected
+            .as_array()
+            .map(|values| values.first().cloned().unwrap_or(Value::Null))
+            .unwrap_or_else(|| expected.clone());
+        set_dotted_value(metadata, path, materialized);
     }
 }
 
@@ -332,5 +341,27 @@ mod tests {
         );
         assert_eq!(metadata["repository"]["name"], "chariox");
         assert_eq!(metadata["repository"]["owner"]["login"], "charioxai");
+    }
+
+    #[test]
+    fn test_filter_constraints_materialize_one_scalar_any_of_candidate() {
+        let mut metadata = serde_json::json!({});
+        apply_test_filter_constraints(
+            &mut metadata,
+            &serde_json::json!({"event.channel": ["C123", "C456"]}),
+        );
+        assert_eq!(metadata["event"]["channel"], "C123");
+        assert!(metadata_matches_filter(
+            &metadata,
+            &serde_json::json!({"event.channel": ["C123", "C456"]})
+        ));
+
+        let mut empty = serde_json::json!({});
+        apply_test_filter_constraints(&mut empty, &serde_json::json!({"event.channel": []}));
+        assert_eq!(empty["event"]["channel"], Value::Null);
+        assert!(!metadata_matches_filter(
+            &empty,
+            &serde_json::json!({"event.channel": []})
+        ));
     }
 }
