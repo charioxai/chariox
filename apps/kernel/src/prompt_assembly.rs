@@ -69,6 +69,8 @@ const WORKFLOW_NODE_TURN_CONTEXT: &str =
 const WORKFLOW_OUTPUT_CONTRACT: &str =
     include_str!("provider/workflow_output_contract_instructions.md");
 const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
+const WORKFLOW_SCHEDULE_CONTINUATION: &str =
+    include_str!("provider/workflow_schedule_continuation_instructions.md");
 const WORKFLOW_NODE_DEFAULT_INSTRUCTIONS: &str =
     include_str!("provider/workflow_node_default_instructions.md");
 const WORKFLOW_HANDOFF_VALIDATION_PASSED: &str =
@@ -512,6 +514,11 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         }
         "workflow/output-contract" => ("Workflow output contract", "workflow", "workflow-agent"),
         "workflow/last-turn" => ("Workflow last-turn guidance", "workflow", "workflow-agent"),
+        "workflow/schedule-continuation" => (
+            "Workflow schedule continuation",
+            "workflow",
+            "workflow-agent",
+        ),
         "workflow/node-default-instructions" => (
             "Workflow node default instructions",
             "workflow",
@@ -876,6 +883,10 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new("workflow/node-turn-context", WORKFLOW_NODE_TURN_CONTEXT),
         BundledPromptTemplate::new("workflow/output-contract", WORKFLOW_OUTPUT_CONTRACT),
         BundledPromptTemplate::new("workflow/last-turn", WORKFLOW_LAST_TURN),
+        BundledPromptTemplate::new(
+            "workflow/schedule-continuation",
+            WORKFLOW_SCHEDULE_CONTINUATION,
+        ),
         BundledPromptTemplate::new(
             "workflow/node-default-instructions",
             WORKFLOW_NODE_DEFAULT_INSTRUCTIONS,

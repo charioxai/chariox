@@ -146,6 +146,7 @@ pub(crate) fn render_workflow_turn_prompt(
     .map(|assembly| workflow_assembly_legacy_prompt(&assembly, false))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn render_workflow_turn_prompt_assembly(
     app: &DaemonApp,
     session_id: &str,
@@ -231,6 +232,7 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     context: WorkflowPromptInjectionContext,
 ) -> WorkflowTurnPromptAssembly {
     let mut manifest = PromptManifest::current();
+    let prompt_loader = PromptTemplateLoader::from_env();
     let reference_line = context
         .instruction_ref
         .as_deref()
@@ -241,10 +243,11 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
         .control_mailbox
         .as_deref()
         .map(|content| {
-            let template = load_prompt_registry_template(
+            let template = prompt_loader.load(
                 "workflow/control-mailbox",
                 include_str!("../provider/workflow_control_mailbox_instructions.md"),
             );
+            manifest.push_body(template.id.clone(), &template.body);
             let body = render_bundled_prompt(&template.body, &[("CONTENT", content)]);
             prompt_component(CONTROL_MAILBOX_TAG, &body)
         })
@@ -265,10 +268,11 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     let outgoing_edge_contracts_block = if context.outgoing_edge_contracts.trim().is_empty() {
         String::new()
     } else {
-        let template = load_prompt_registry_template(
+        let template = prompt_loader.load(
             "workflow/edge-contracts",
             include_str!("../provider/workflow_edge_contracts_instructions.md"),
         );
+        manifest.push_body(template.id.clone(), &template.body);
         let contracts = strip_legacy_prompt_heading(
             &context.outgoing_edge_contracts,
             "Outgoing edge contracts:",
@@ -296,19 +300,20 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     let system_prompt = assembled_prompt_component(
         WORKFLOW_RUNTIME_INSTRUCTIONS_TAG,
         &render_workflow_system_prompt(
-            context.base_directory.as_ref(),
             &mut manifest,
             &context.delivery_token,
             "",
             &outgoing_edge_contracts_block,
             &reference_line,
             &control_line,
+            &prompt_loader,
         ),
     );
     let system_node_prompt = render_workflow_node_system_prompt(
         context.base_directory.as_ref(),
         &context.node_turn,
         &mut manifest,
+        &prompt_loader,
     );
     if let Some(workflow_ref) = context.workflow_ref.as_deref() {
         manifest.push_body(
@@ -403,15 +408,15 @@ pub(crate) fn workflow_node_default_instructions() -> String {
 }
 
 fn render_workflow_system_prompt(
-    base_directory: Option<&PathBuf>,
     manifest: &mut PromptManifest,
     delivery_token: &str,
     payload_block: &str,
     edge_contract_block: &str,
     reference_line: &str,
     control_line: &str,
+    prompt_loader: &PromptTemplateLoader,
 ) -> String {
-    let template = load_workflow_system_prompt_template(base_directory);
+    let template = load_workflow_system_prompt_template(prompt_loader);
     manifest.push_body(template.id.clone(), &template.body);
     template
         .body
@@ -422,17 +427,18 @@ fn render_workflow_system_prompt(
         .replace("{{CONTROL_MAILBOX_BLOCK}}", control_line)
 }
 
-fn load_workflow_system_prompt_template(base_directory: Option<&PathBuf>) -> PromptTemplate {
-    let _ = base_directory;
-    load_prompt_registry_template("workflow/turn", bundled_workflow_turn_template())
+fn load_workflow_system_prompt_template(prompt_loader: &PromptTemplateLoader) -> PromptTemplate {
+    prompt_loader.load("workflow/turn", bundled_workflow_turn_template())
 }
 
 fn render_workflow_node_system_prompt(
     base_directory: Option<&PathBuf>,
     context: &Option<WorkflowNodeTurnPromptContext>,
     manifest: &mut PromptManifest,
+    prompt_loader: &PromptTemplateLoader,
 ) -> String {
-    let fragments = workflow_node_prompt_fragments(base_directory, context, manifest);
+    let fragments =
+        workflow_node_prompt_fragments(base_directory, context, manifest, prompt_loader);
     if fragments.is_empty() {
         return String::new();
     }
@@ -473,13 +479,39 @@ fn workflow_node_prompt_fragments(
     base_directory: Option<&PathBuf>,
     context: &Option<WorkflowNodeTurnPromptContext>,
     manifest: &mut PromptManifest,
+    prompt_loader: &PromptTemplateLoader,
 ) -> Vec<String> {
     let mut fragments = Vec::new();
     if let Some(context) = context {
-        fragments.push(workflow_node_turn_index_block(context));
+        let node_turn_template = prompt_loader.load(
+            "workflow/node-turn-context",
+            include_str!("../provider/workflow_node_turn_context_instructions.md"),
+        );
+        manifest.push_body(node_turn_template.id.clone(), &node_turn_template.body);
+        fragments.push(render_bundled_prompt(
+            &node_turn_template.body,
+            &[
+                ("TURN_INDEX", &context.turn_index.to_string()),
+                (
+                    "MAX_TURNS_LINE",
+                    &context
+                        .max_turns
+                        .map(|max_turns| format!("- node max turns: {max_turns}\n"))
+                        .unwrap_or_default(),
+                ),
+                (
+                    "WAIT_FOR_ALL_INPUTS_LINE",
+                    if context.wait_for_all_inputs {
+                        "- this node starts only after every incoming edge has an input for the same source iteration\n"
+                    } else {
+                        ""
+                    },
+                ),
+            ],
+        ));
         if context.can_emit_intermediate_output {
             if let Some(fragment) =
-                load_workflow_run_intermediate_output_prompt_template(base_directory)
+                load_workflow_run_intermediate_output_prompt_template(base_directory, prompt_loader)
             {
                 manifest.push_body(fragment.id.clone(), &fragment.body);
                 fragments.push(strip_legacy_prompt_heading(
@@ -489,7 +521,9 @@ fn workflow_node_prompt_fragments(
             }
         }
         if context.can_complete_workflow_run {
-            if let Some(fragment) = load_workflow_run_completion_prompt_template(base_directory) {
+            if let Some(fragment) =
+                load_workflow_run_completion_prompt_template(base_directory, prompt_loader)
+            {
                 manifest.push_body(fragment.id.clone(), &fragment.body);
                 fragments.push(strip_legacy_prompt_heading(
                     &fragment.body,
@@ -497,10 +531,15 @@ fn workflow_node_prompt_fragments(
                 ));
             }
             if let Some(contract) = context.run_output_contract.as_deref() {
+                let template = prompt_loader.load(
+                    "workflow/output-contract",
+                    include_str!("../provider/workflow_output_contract_instructions.md"),
+                );
+                manifest.push_body(template.id, &template.body);
                 fragments.push(contract.to_string());
             }
         }
-        if let Some(fragment) = workflow_last_turn_notice_block(context) {
+        if let Some(fragment) = workflow_last_turn_notice_block(context, prompt_loader, manifest) {
             fragments.push(fragment);
         }
     }
@@ -521,39 +560,12 @@ pub(crate) fn workflow_run_output_contract_block(workflow: &WorkflowDefinition) 
     ))
 }
 
-fn workflow_node_turn_index_block(context: &WorkflowNodeTurnPromptContext) -> String {
-    let template = load_prompt_registry_template(
-        "workflow/node-turn-context",
-        include_str!("../provider/workflow_node_turn_context_instructions.md"),
-    );
-    render_bundled_prompt(
-        &template.body,
-        &[
-            ("TURN_INDEX", &context.turn_index.to_string()),
-            (
-                "MAX_TURNS_LINE",
-                &context
-                    .max_turns
-                    .map(|max_turns| format!("- node max turns: {max_turns}\n"))
-                    .unwrap_or_default(),
-            ),
-            (
-                "WAIT_FOR_ALL_INPUTS_LINE",
-                if context.wait_for_all_inputs {
-                    "- this node starts only after every incoming edge has an input for the same source iteration\n"
-                } else {
-                    ""
-                },
-            ),
-        ],
-    )
-}
-
 fn load_workflow_run_completion_prompt_template(
     base_directory: Option<&PathBuf>,
+    prompt_loader: &PromptTemplateLoader,
 ) -> Option<PromptTemplate> {
     let _ = base_directory;
-    Some(load_prompt_registry_template(
+    Some(prompt_loader.load(
         "workflow/run-completion",
         bundled_workflow_run_completion_template(),
     ))
@@ -561,9 +573,10 @@ fn load_workflow_run_completion_prompt_template(
 
 fn load_workflow_run_intermediate_output_prompt_template(
     base_directory: Option<&PathBuf>,
+    prompt_loader: &PromptTemplateLoader,
 ) -> Option<PromptTemplate> {
     let _ = base_directory;
-    Some(load_prompt_registry_template(
+    Some(prompt_loader.load(
         "workflow/run-intermediate-output",
         bundled_workflow_run_intermediate_output_template(),
     ))
@@ -573,40 +586,56 @@ fn load_prompt_registry_template(
     template_id: &str,
     bundled_default: &'static str,
 ) -> PromptTemplate {
-    let registry = PromptTemplateRegistry::from_env();
-    if let Err(error) = registry.materialize_bundled_defaults() {
-        tracing::debug!(
-            ?error,
-            template_id,
-            "Failed to materialize prompt registry defaults"
-        );
-        return PromptTemplate {
-            id: template_id.to_string(),
-            body: bundled_default.trim().to_string(),
-        };
-    }
-    registry.read_required(template_id).unwrap_or_else(|error| {
-        tracing::debug!(
-            ?error,
-            template_id,
-            "Failed to read prompt registry template"
-        );
-        PromptTemplate {
-            id: template_id.to_string(),
-            body: bundled_default.trim().to_string(),
-        }
-    })
+    PromptTemplateLoader::from_env().load(template_id, bundled_default)
 }
 
-fn workflow_last_turn_notice_block(context: &WorkflowNodeTurnPromptContext) -> Option<String> {
+struct PromptTemplateLoader {
+    registry: PromptTemplateRegistry,
+}
+
+impl PromptTemplateLoader {
+    fn from_env() -> Self {
+        let registry = PromptTemplateRegistry::from_env();
+        if let Err(error) = registry.materialize_bundled_defaults() {
+            tracing::debug!(
+                ?error,
+                "Failed to materialize prompt registry defaults for workflow prompt assembly"
+            );
+        }
+        Self { registry }
+    }
+
+    fn load(&self, template_id: &str, bundled_default: &'static str) -> PromptTemplate {
+        self.registry
+            .read_required(template_id)
+            .unwrap_or_else(|error| {
+                tracing::debug!(
+                    ?error,
+                    template_id,
+                    "Failed to read prompt registry template"
+                );
+                PromptTemplate {
+                    id: template_id.to_string(),
+                    body: bundled_default.trim().to_string(),
+                }
+            })
+    }
+}
+
+fn workflow_last_turn_notice_block(
+    context: &WorkflowNodeTurnPromptContext,
+    prompt_loader: &PromptTemplateLoader,
+    manifest: &mut PromptManifest,
+) -> Option<String> {
     let max_turns = context.max_turns?;
     if context.turn_index != max_turns {
         return None;
     }
-    let template = load_prompt_registry_template(
+    let template = prompt_loader.load(
         "workflow/last-turn",
         include_str!("../provider/workflow_last_turn_instructions.md"),
     );
+    manifest.push_body(template.id.clone(), &template.body);
     Some(render_bundled_prompt(
         &template.body,
         &[
