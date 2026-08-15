@@ -790,10 +790,13 @@ impl SessionService {
             .node(context.source_node_run.node_id())
             .filter(|node| node.can_complete_workflow_run())
             .map(|_| {
-                crate::prompt_assembly::render_configured_prompt(
-                    "workflow/handoff-completion-guidance",
-                    crate::prompt_assembly::bundled_workflow_handoff_completion_guidance_template(),
-                    &[],
+                format!(
+                    "\n\n{}",
+                    crate::prompt_assembly::render_configured_prompt(
+                        "workflow/handoff-completion-guidance",
+                        crate::prompt_assembly::bundled_workflow_handoff_completion_guidance_template(),
+                        &[],
+                    )
                 )
             })
             .unwrap_or_default();
