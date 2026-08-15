@@ -1813,6 +1813,25 @@ mod tests {
     }
 
     #[test]
+    fn workflow_completion_guidance_keeps_a_separator_after_materialization() {
+        let root = temp_prompt_root("workflow-completion-guidance-separator");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let handoff = registry
+            .read_setting("workflow/handoff-correction")
+            .expect("handoff prompt should read");
+        let guidance = registry
+            .read_setting("workflow/handoff-completion-guidance")
+            .expect("guidance should read");
+        let replacement = format!("\n\n{}", guidance.current);
+        let rendered =
+            render_bundled_prompt(&handoff.current, &[("COMPLETION_GUIDANCE", &replacement)]);
+        assert!(rendered.contains("no warning.\n\nIf the work is accepted"));
+    }
+
+    #[test]
     fn configured_correction_prompt_uses_user_override() {
         let _guard = env_lock::lock();
         let home = temp_prompt_root("configured-correction");
