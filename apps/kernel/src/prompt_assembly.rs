@@ -300,9 +300,11 @@ impl PromptTemplateRegistry {
         self.read_setting(template_id)
     }
 
-    pub(crate) fn reset_setting(
+    pub(crate) fn reset_setting_if_version(
         &self,
         template_id: &str,
+        expected_revision: u64,
+        expected_sha256: &str,
     ) -> Result<PromptSettingRecord, DaemonError> {
         let template = bundled_templates()
             .into_iter()
@@ -313,17 +315,60 @@ impl PromptTemplateRegistry {
         let _guard = prompt_registry_write_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let persisted =
+            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+        let persisted_body = persisted.trim();
+        let current_revision = prompt_revision(persisted_body);
+        let current_sha256 = sha256_hex(persisted_body);
+        if current_revision != expected_revision || current_sha256 != expected_sha256 {
+            return Err(DaemonError::PromptSettingConflict {
+                id: template_id.to_string(),
+                expected_revision,
+                current_revision,
+            });
+        }
         atomic_write(&path, template.body.trim())?;
         drop(_guard);
         self.read_setting(template_id)
     }
 
-    pub(crate) fn reset_all_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
+    pub(crate) fn reset_all_settings_if_versions(
+        &self,
+        expected: &BTreeMap<String, crate::local::PromptSettingVersion>,
+    ) -> Result<Vec<PromptSettingRecord>, DaemonError> {
         self.materialize_bundled_defaults()?;
         let _guard = prompt_registry_write_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        for template in bundled_templates() {
+        let templates = bundled_templates();
+        if expected.len() != templates.len() {
+            return Err(prompt_settings_error(
+                "reset-all requires the complete prompt catalog version map",
+                "expected",
+            ));
+        }
+        for template in &templates {
+            let path = self.path_for(template.id);
+            let Some(version) = expected.get(template.id) else {
+                return Err(prompt_settings_error(
+                    "reset-all version map is missing a prompt setting",
+                    template.id,
+                ));
+            };
+            let persisted =
+                fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+            let persisted_body = persisted.trim();
+            let current_revision = prompt_revision(persisted_body);
+            let current_sha256 = sha256_hex(persisted_body);
+            if current_revision != version.revision || current_sha256 != version.sha256 {
+                return Err(DaemonError::PromptSettingConflict {
+                    id: template.id.to_string(),
+                    expected_revision: version.revision,
+                    current_revision,
+                });
+            }
+        }
+        for template in templates {
             let path = self.path_for(template.id);
             atomic_write(&path, template.body.trim())?;
         }
@@ -1661,7 +1706,7 @@ mod tests {
         assert_ne!(updated.current_sha256, updated.default_sha256);
 
         let reset = registry
-            .reset_setting("workflow/turn")
+            .reset_setting_if_version("workflow/turn", updated.revision, &updated.current_sha256)
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
         assert!(registry.root.starts_with(root));
@@ -1739,6 +1784,32 @@ mod tests {
             .expect("workflow prompt should remain readable")
             .current
             .contains("first"));
+    }
+
+    #[test]
+    fn prompt_settings_reject_stale_resets() {
+        let root = temp_prompt_root("reset-version-conflict");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("prompt should read");
+        registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &format!("{}\nnewer", current.default),
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect("newer writer should update");
+        let error = registry
+            .reset_setting_if_version("workflow/turn", current.revision, &current.current_sha256)
+            .expect_err("stale reset must not overwrite a newer prompt");
+        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
+        assert!(registry
+            .read_setting("workflow/turn")
+            .expect("prompt should remain readable")
+            .current
+            .contains("newer"));
     }
 
     #[test]
@@ -1824,7 +1895,7 @@ mod tests {
             .expect_err("protected prompts must not be editable");
         assert!(error.to_string().contains("protected prompt setting"));
         let setting = registry
-            .reset_setting("runtime/base")
+            .reset_setting_if_version("runtime/base", current.revision, &current.current_sha256)
             .expect("protected prompt should reset");
         assert!(setting.protected);
     }

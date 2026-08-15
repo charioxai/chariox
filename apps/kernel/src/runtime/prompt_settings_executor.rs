@@ -49,16 +49,24 @@ pub(crate) async fn execute_prompt_settings_request(
                 variables,
             })
         }
-        LocalDaemonRequest::ResetPromptSetting(ResetPromptSettingRequest { id }) => {
+        LocalDaemonRequest::ResetPromptSetting(ResetPromptSettingRequest {
+            id,
+            expected_revision,
+            expected_sha256,
+        }) => {
             ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSetting {
-                setting: registry.reset_setting(&id)?,
+                setting: registry.reset_setting_if_version(
+                    &id,
+                    expected_revision,
+                    &expected_sha256,
+                )?,
             })
         }
-        LocalDaemonRequest::ResetAllPromptSettings(ResetAllPromptSettingsRequest) => {
+        LocalDaemonRequest::ResetAllPromptSettings(ResetAllPromptSettingsRequest { expected }) => {
             ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSettingsReset {
-                settings: registry.reset_all_settings()?,
+                settings: registry.reset_all_settings_if_versions(&expected)?,
             })
         }
         _ => Err(DaemonError::LocalTransport {

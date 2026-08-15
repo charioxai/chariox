@@ -26,7 +26,17 @@ pub struct PreviewPromptSettingRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ResetPromptSettingRequest {
     pub id: String,
+    pub expected_revision: u64,
+    pub expected_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ResetAllPromptSettingsRequest;
+pub struct PromptSettingVersion {
+    pub revision: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResetAllPromptSettingsRequest {
+    pub expected: BTreeMap<String, PromptSettingVersion>,
+}

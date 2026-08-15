@@ -1,7 +1,8 @@
 use super::*;
 use crate::local::{
     GetPromptSettingRequest, ListPromptSettingsRequest, PreviewPromptSettingRequest,
-    ResetAllPromptSettingsRequest, ResetPromptSettingRequest, UpdatePromptSettingRequest,
+    PromptSettingVersion, ResetAllPromptSettingsRequest, ResetPromptSettingRequest,
+    UpdatePromptSettingRequest,
 };
 
 fn setting() -> crate::prompt_assembly::PromptSettingRecord {
@@ -27,7 +28,7 @@ fn setting() -> crate::prompt_assembly::PromptSettingRecord {
 
 #[test]
 fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
     let requests = vec![
         LocalDaemonRequest::ListPromptSettings(ListPromptSettingsRequest),
         LocalDaemonRequest::GetPromptSetting(GetPromptSettingRequest {
@@ -47,8 +48,20 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
         }),
         LocalDaemonRequest::ResetPromptSetting(ResetPromptSettingRequest {
             id: "workflow/turn".to_string(),
+            expected_revision: 7,
+            expected_sha256: "abc".to_string(),
         }),
-        LocalDaemonRequest::ResetAllPromptSettings(ResetAllPromptSettingsRequest),
+        LocalDaemonRequest::ResetAllPromptSettings(ResetAllPromptSettingsRequest {
+            expected: [(
+                "workflow/turn".to_string(),
+                PromptSettingVersion {
+                    revision: 7,
+                    sha256: "abc".to_string(),
+                },
+            )]
+            .into_iter()
+            .collect(),
+        }),
     ];
     let encoded = requests
         .iter()
@@ -81,11 +94,11 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
     );
     assert_eq!(
         encoded[4],
-        serde_json::json!({"ResetPromptSetting": {"id": "workflow/turn"}})
+        serde_json::json!({"ResetPromptSetting": {"id": "workflow/turn", "expected_revision": 7, "expected_sha256": "abc"}})
     );
     assert_eq!(
         encoded[5],
-        serde_json::json!({"ResetAllPromptSettings": null})
+        serde_json::json!({"ResetAllPromptSettings": {"expected": {"workflow/turn": {"revision": 7, "sha256": "abc"}}}})
     );
 
     let responses = vec![
