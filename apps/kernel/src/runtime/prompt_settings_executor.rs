@@ -12,7 +12,7 @@ pub(crate) async fn execute_prompt_settings_request(
     command: &KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    ensure_prompt_settings_authorized(command)?;
+    ensure_prompt_settings_read_authorized(command)?;
     let registry = PromptTemplateRegistry::from_env();
     match request {
         LocalDaemonRequest::ListPromptSettings(ListPromptSettingsRequest) => {
@@ -26,6 +26,7 @@ pub(crate) async fn execute_prompt_settings_request(
             })
         }
         LocalDaemonRequest::UpdatePromptSetting(UpdatePromptSettingRequest { id, markdown }) => {
+            ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSetting {
                 setting: registry.update_setting(&id, &markdown)?,
             })
@@ -39,11 +40,13 @@ pub(crate) async fn execute_prompt_settings_request(
             })
         }
         LocalDaemonRequest::ResetPromptSetting(ResetPromptSettingRequest { id }) => {
+            ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSetting {
                 setting: registry.reset_setting(&id)?,
             })
         }
         LocalDaemonRequest::ResetAllPromptSettings(ResetAllPromptSettingsRequest) => {
+            ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSettingsReset {
                 settings: registry.reset_all_settings()?,
             })
@@ -55,7 +58,7 @@ pub(crate) async fn execute_prompt_settings_request(
     }
 }
 
-fn ensure_prompt_settings_authorized(command: &KernelCommand) -> Result<(), DaemonError> {
+fn configured_prompt_settings_admins() -> Vec<String> {
     let configured_admins = std::env::var("CHARIOX_PROMPT_SETTINGS_ADMIN_USER_IDS")
         .ok()
         .map(|value| {
@@ -67,10 +70,37 @@ fn ensure_prompt_settings_authorized(command: &KernelCommand) -> Result<(), Daem
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    ensure_prompt_settings_authorized_with_admins(command, &configured_admins)
+    configured_admins
 }
 
-fn ensure_prompt_settings_authorized_with_admins(
+fn ensure_prompt_settings_read_authorized(command: &KernelCommand) -> Result<(), DaemonError> {
+    let trusted_local = matches!(
+        command.source,
+        KernelCommandSource::LocalCli
+            | KernelCommandSource::LocalIpc
+            | KernelCommandSource::DaemonBackground
+    ) && matches!(command.caller.caller_kind, KernelCallerKind::LocalClient);
+    if trusted_local
+        || command
+            .caller
+            .user_id
+            .as_deref()
+            .is_some_and(|id| !id.trim().is_empty())
+    {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "prompt settings authorization",
+        message: "prompt settings require an authenticated kernel caller".to_string(),
+    })
+}
+
+fn ensure_prompt_settings_mutation_authorized(command: &KernelCommand) -> Result<(), DaemonError> {
+    let configured_admins = configured_prompt_settings_admins();
+    ensure_prompt_settings_mutation_authorized_with_admins(command, &configured_admins)
+}
+
+fn ensure_prompt_settings_mutation_authorized_with_admins(
     command: &KernelCommand,
     configured_admins: &[String],
 ) -> Result<(), DaemonError> {
@@ -126,23 +156,28 @@ mod tests {
             KernelCommandSource::LocalCli,
             KernelCaller::for_source(&KernelCommandSource::LocalCli),
         );
-        assert!(ensure_prompt_settings_authorized(&command).is_ok());
+        assert!(ensure_prompt_settings_read_authorized(&command).is_ok());
+        assert!(ensure_prompt_settings_mutation_authorized_with_admins(&command, &[]).is_ok());
     }
 
     #[test]
     fn remote_prompt_settings_access_requires_user_identity() {
         let source = KernelCommandSource::RelayClient;
         let anonymous = command(source.clone(), KernelCaller::for_source(&source));
-        assert!(ensure_prompt_settings_authorized(&anonymous).is_err());
+        assert!(ensure_prompt_settings_read_authorized(&anonymous).is_err());
 
         let mut caller = KernelCaller::for_source(&source);
         caller.user_id = Some("user-1".to_string());
-        assert!(ensure_prompt_settings_authorized_with_admins(
+        assert!(
+            ensure_prompt_settings_read_authorized(&command(source.clone(), caller.clone()))
+                .is_ok()
+        );
+        assert!(ensure_prompt_settings_mutation_authorized_with_admins(
             &command(source, caller.clone()),
             &["user-1".to_string()],
         )
         .is_ok());
-        assert!(ensure_prompt_settings_authorized_with_admins(
+        assert!(ensure_prompt_settings_mutation_authorized_with_admins(
             &command(
                 KernelCommandSource::RelayClient,
                 KernelCaller {
