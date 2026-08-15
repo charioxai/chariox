@@ -37,6 +37,18 @@ mod workspace_live_sync_remote_dispatch;
 use workspace_live_sync_managed_fanout::*;
 
 impl KernelRuntimeState {
+    #[cfg(test)]
+    pub(crate) fn runtime_mcp_auth_token_for_provider_run(
+        &self,
+        provider_run_id: &str,
+    ) -> Option<String> {
+        self.owned
+            .provider_store
+            .get_run(provider_run_id)
+            .ok()
+            .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
+    }
+
     pub(crate) fn runtime_tool_specs_for_auth_token(
         &self,
         auth_token: &str,

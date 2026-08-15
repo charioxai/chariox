@@ -138,31 +138,39 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
 
 #[tokio::test]
 async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_discovery() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;
-    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
-    let lease = crate::app::RemoteLeaseRuntime::new(&mut app)
-        .create_execution_lease(
-            "home-kernel-tools",
-            "home-session-tools",
-            "home-agent-tools",
-            false,
-            "home-user-tools",
-        )
-        .expect("execution lease should create");
-    let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app)
-        .create_leased_agent(
-            &lease.id,
-            "managed-dev-stub",
-            Some("default".to_string()),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        )
-        .expect("leased agent should create");
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(config).expect("daemon should boot"),
+    ));
+    let leased_agent = {
+        let mut app_guard = app.try_lock().expect("app should be available");
+        let lease = crate::app::RemoteLeaseRuntime::new(&mut app_guard)
+            .create_execution_lease(
+                "home-kernel-tools",
+                "home-session-tools",
+                "home-agent-tools",
+                false,
+                "home-user-tools",
+            )
+            .expect("execution lease should create");
+        let leased_agent = crate::app::RemoteLeaseRuntime::new(&mut app_guard)
+            .create_leased_agent(
+                &lease.id,
+                "managed-dev-stub",
+                Some("default".to_string()),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+            )
+            .expect("leased agent should create");
+        leased_agent
+    };
     let workflow_context = crate::execution_lease::RemoteWorkflowTurnContext {
         home_kernel_id: "home-kernel-tools".to_string(),
         home_session_id: "home-session-tools".to_string(),
@@ -171,59 +179,107 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         workflow_node_run_id: "workflow-node-tools".to_string(),
         delivery_token: "delivery-token-tools".to_string(),
     };
-    let (provider_run_id, outcome) = crate::app::RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt_with_workflow_context(
-            &leased_agent.id,
-            "event-triggered leased prompt",
-            Vec::new(),
-            Some(workflow_context),
-            None,
-            Vec::new(),
-            None,
-            crate::extension::RemoteExtensionManifest::default(),
-        )
-        .expect("leased workflow prompt should submit");
-    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
-    let leased_token = app
-        .providers()
-        .get_run(&provider_run_id)
-        .expect("leased provider run should exist")
-        .runtime_mcp_auth_token()
-        .expect("leased provider run should expose runtime MCP auth")
-        .to_string();
-
-    let (ordinary_session, ordinary_agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(CreateSessionRequest::new(
-            "ordinary-workflow-tools",
-            "ordinary-workflow-tools",
-        ))
-        .expect("ordinary session should create");
-    let ordinary_run = launch_test_provider(
-        &mut app,
-        ordinary_session.id(),
-        ordinary_agent.id(),
-        "dev-stub",
-        "dev-stub",
-        "ordinary-tools-model",
-    );
-    let ordinary_token = ordinary_run
-        .runtime_mcp_auth_token()
-        .expect("ordinary provider run should expose runtime MCP auth")
-        .to_string();
-
-    let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
-    for discovery in ["fresh", "reused"] {
-        let specs = router
-            .runtime_state
-            .runtime_tool_specs_for_auth_token(&leased_token);
-        assert!(
-            specs.iter().any(|spec| {
-                spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
-            }),
-            "leased provider {discovery} discovery should expose reply_to_event"
+    let fresh_discovery_saw_reply = Arc::new(AtomicBool::new(false));
+    let probe_state = router.runtime_state.clone();
+    let probe_flag = Arc::clone(&fresh_discovery_saw_reply);
+    let provider_run_projection = app
+        .try_lock()
+        .expect("app should be available")
+        .provider_run_projection_store();
+    provider_run_projection.install_leased_provider_run_probe(move |provider_run_id| {
+        if let Some(auth_token) =
+            probe_state.runtime_mcp_auth_token_for_provider_run(provider_run_id)
+        {
+            if probe_state
+                .runtime_tool_specs_for_auth_token(&auth_token)
+                .iter()
+                .any(|spec| {
+                    spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+                })
+            {
+                probe_flag.store(true, Ordering::SeqCst);
+            }
+        }
+    });
+    let (provider_run_id, outcome) = {
+        let mut app_guard = app.try_lock().expect("app should be available");
+        crate::app::RemoteLeaseRuntime::new(&mut app_guard)
+            .submit_leased_prompt_with_workflow_context(
+                &leased_agent.id,
+                "event-triggered leased prompt",
+                Vec::new(),
+                Some(workflow_context),
+                None,
+                Vec::new(),
+                None,
+                crate::extension::RemoteExtensionManifest::default(),
+            )
+            .expect("leased workflow prompt should submit")
+    };
+    assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    assert!(
+        fresh_discovery_saw_reply.load(Ordering::SeqCst),
+        "fresh provider discovery must expose reply_to_event before launch returns"
+    );
+    let leased_token = {
+        let app_guard = app.try_lock().expect("app should be available");
+        app_guard
+            .providers()
+            .get_run(&provider_run_id)
+            .expect("leased provider run should exist")
+            .runtime_mcp_auth_token()
+            .expect("leased provider run should expose runtime MCP auth")
+            .to_string()
+    };
+
+    let (ordinary_token, reused_provider_run_id) = {
+        let mut app_guard = app.try_lock().expect("app should be available");
+        let (ordinary_session, ordinary_agent) =
+            crate::app::KernelSessionService::new(&mut app_guard)
+                .create_session(CreateSessionRequest::new(
+                    "ordinary-workflow-tools",
+                    "ordinary-workflow-tools",
+                ))
+                .expect("ordinary session should create");
+        let ordinary_run = launch_test_provider(
+            &mut app_guard,
+            ordinary_session.id(),
+            ordinary_agent.id(),
+            "dev-stub",
+            "dev-stub",
+            "ordinary-tools-model",
         );
-    }
+        let ordinary_token = ordinary_run
+            .runtime_mcp_auth_token()
+            .expect("ordinary provider run should expose runtime MCP auth")
+            .to_string();
+        let (reused_provider_run_id, reused_outcome) =
+            crate::app::RemoteLeaseRuntime::new(&mut app_guard)
+                .submit_leased_prompt_with_workflow_context(
+                    &leased_agent.id,
+                    "second event-triggered leased prompt",
+                    Vec::new(),
+                    None,
+                    None,
+                    Vec::new(),
+                    None,
+                    crate::extension::RemoteExtensionManifest::default(),
+                )
+                .expect("reused leased workflow prompt should submit");
+        assert!(matches!(
+            reused_outcome,
+            PromptSubmissionOutcome::Started { .. } | PromptSubmissionOutcome::Queued { .. }
+        ));
+        (ordinary_token, reused_provider_run_id)
+    };
+    assert_eq!(provider_run_id, reused_provider_run_id);
+    let specs = router
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&leased_token);
+    assert!(specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+    }));
     let _app_guard = app
         .try_lock()
         .expect("the app mutex should be available for the contention check");

@@ -18,6 +18,8 @@ use super::{
 pub(crate) struct ProviderRunProjectionStore {
     runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
     leased_provider_run_ids: Arc<StdMutex<HashSet<String>>>,
+    #[cfg(test)]
+    leased_provider_run_probe: Arc<StdMutex<Option<Arc<dyn Fn(&str) + Send + Sync + 'static>>>>,
 }
 
 impl ProviderRunProjectionStore {
@@ -26,6 +28,26 @@ impl ProviderRunProjectionStore {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(provider_run_id.to_string());
+        #[cfg(test)]
+        if let Some(probe) = self
+            .leased_provider_run_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+        {
+            probe(provider_run_id);
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn install_leased_provider_run_probe(
+        &self,
+        probe: impl Fn(&str) + Send + Sync + 'static,
+    ) {
+        *self
+            .leased_provider_run_probe
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(probe));
     }
 
     pub(crate) fn is_leased_provider_run(&self, provider_run_id: &str) -> bool {
