@@ -205,6 +205,19 @@ impl KernelRuntimeOwnedState {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
+        let event_reply_enabled = self
+            .session_store
+            .read()
+            .get_session(session_id)?
+            .workflow_event_bindings()
+            .iter()
+            .any(|binding| {
+                binding.active()
+                    && binding
+                        .reply_mode
+                        .as_deref()
+                        .is_some_and(|mode| mode != "disabled")
+            });
         Ok(crate::execution_lease::RemoteWorkflowTurnContext {
             home_kernel_id: self.config_projection.snapshot().daemon_id,
             home_session_id: session_id.to_string(),
@@ -212,6 +225,7 @@ impl KernelRuntimeOwnedState {
             workflow_run_id: workflow_run.id().to_string(),
             workflow_node_run_id: workflow_node_run_id.to_string(),
             delivery_token,
+            event_reply_enabled,
         })
     }
 

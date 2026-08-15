@@ -98,6 +98,12 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
+    /// Whether the home workflow turn has an enabled event reply binding.
+    /// This is decided by the home kernel and carried across the lease so a
+    /// worker can project the scoped reply tool without reconstructing home
+    /// session state.
+    #[serde(default)]
+    pub event_reply_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

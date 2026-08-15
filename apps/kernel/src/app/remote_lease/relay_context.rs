@@ -8,6 +8,18 @@ use crate::transport::relay_peer::{
 use super::RemoteLeaseRuntime;
 
 impl<'a> RemoteLeaseRuntime<'a> {
+    pub(crate) fn event_reply_enabled_for_provider_runs(
+        &self,
+        provider_run_ids: &[String],
+    ) -> bool {
+        provider_run_ids.iter().any(|provider_run_id| {
+            self.app
+                .leased_workflow_turns
+                .get(provider_run_id)
+                .is_some_and(|binding| binding.context.event_reply_enabled)
+        })
+    }
+
     pub(crate) fn native_interaction_context_for_backing_agent(
         &mut self,
         backing_session_id: &str,
@@ -174,5 +186,40 @@ impl<'a> RemoteLeaseRuntime<'a> {
             worker_kernel_id: Some(lease.worker_kernel_id.clone()),
             worker_machine_id: Some(lease.machine_id.clone()),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::execution_lease::{LeasedWorkflowTurnBinding, RemoteWorkflowTurnContext};
+
+    #[test]
+    fn leased_event_reply_capability_is_projected_from_home_turn_context() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.accept_remote_leases = true;
+        let mut app = crate::app::DaemonApp::bootstrap(config).expect("daemon should boot");
+        let context = RemoteWorkflowTurnContext {
+            home_kernel_id: "home".to_string(),
+            home_session_id: "session".to_string(),
+            home_agent_id: "agent".to_string(),
+            workflow_run_id: "run".to_string(),
+            workflow_node_run_id: "node".to_string(),
+            delivery_token: "delivery".to_string(),
+            event_reply_enabled: true,
+        };
+        app.leased_workflow_turns.insert(
+            "worker-run".to_string(),
+            LeasedWorkflowTurnBinding {
+                leased_agent_id: "leased-agent".to_string(),
+                provider_run_id: "worker-run".to_string(),
+                context,
+            },
+        );
+
+        assert!(RemoteLeaseRuntime::new(&mut app)
+            .event_reply_enabled_for_provider_runs(&["worker-run".to_string()]));
+        assert!(!RemoteLeaseRuntime::new(&mut app)
+            .event_reply_enabled_for_provider_runs(&["other-run".to_string()]));
     }
 }
