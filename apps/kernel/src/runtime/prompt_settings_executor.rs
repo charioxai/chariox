@@ -25,10 +25,20 @@ pub(crate) async fn execute_prompt_settings_request(
                 setting: registry.read_setting(&id)?,
             })
         }
-        LocalDaemonRequest::UpdatePromptSetting(UpdatePromptSettingRequest { id, markdown }) => {
+        LocalDaemonRequest::UpdatePromptSetting(UpdatePromptSettingRequest {
+            id,
+            markdown,
+            expected_revision,
+            expected_sha256,
+        }) => {
             ensure_prompt_settings_mutation_authorized(command)?;
             Ok(LocalDaemonResponse::PromptSetting {
-                setting: registry.update_setting(&id, &markdown)?,
+                setting: registry.update_setting_if_version(
+                    &id,
+                    &markdown,
+                    expected_revision,
+                    &expected_sha256,
+                )?,
             })
         }
         LocalDaemonRequest::PreviewPromptSetting(PreviewPromptSettingRequest { id, variables }) => {

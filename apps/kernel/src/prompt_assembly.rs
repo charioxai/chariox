@@ -201,10 +201,6 @@ impl PromptTemplateRegistry {
         Self { root }
     }
 
-    pub(crate) fn root(&self) -> &Path {
-        &self.root
-    }
-
     pub(crate) fn list_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
         self.materialize_bundled_defaults()?;
         bundled_templates()
@@ -257,10 +253,12 @@ impl PromptTemplateRegistry {
         })
     }
 
-    pub(crate) fn update_setting(
+    pub(crate) fn update_setting_if_version(
         &self,
         template_id: &str,
         body: &str,
+        expected_revision: u64,
+        expected_sha256: &str,
     ) -> Result<PromptSettingRecord, DaemonError> {
         let current = self.read_setting(template_id)?;
         if current.protected {
@@ -274,6 +272,18 @@ impl PromptTemplateRegistry {
         let _guard = prompt_registry_write_lock()
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let persisted =
+            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
+        let persisted_body = persisted.trim();
+        let current_revision = prompt_revision(persisted_body);
+        let current_sha256 = sha256_hex(persisted_body);
+        if current_revision != expected_revision || current_sha256 != expected_sha256 {
+            return Err(DaemonError::PromptSettingConflict {
+                id: template_id.to_string(),
+                expected_revision,
+                current_revision,
+            });
+        }
         atomic_write(&path, body.trim())?;
         drop(_guard);
         self.read_setting(template_id)
@@ -1602,9 +1612,11 @@ mod tests {
             .read_setting("workflow/turn")
             .expect("workflow prompt should read");
         let updated = registry
-            .update_setting(
+            .update_setting_if_version(
                 "workflow/turn",
                 &format!("{}\nHello {{{{NAME}}}}", default.default),
+                default.revision,
+                &default.current_sha256,
             )
             .expect("editable prompt should update");
         assert!(updated.current.contains("Hello {{NAME}}"));
@@ -1617,17 +1629,58 @@ mod tests {
             .reset_setting("workflow/turn")
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
-        assert!(registry.root().starts_with(root));
+        assert!(registry.root.starts_with(root));
     }
 
     #[test]
     fn prompt_settings_reject_missing_required_variables() {
         let root = temp_prompt_root("required-variables");
         let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
         let error = registry
-            .update_setting("workflow/turn", "custom instructions")
+            .update_setting_if_version(
+                "workflow/turn",
+                "custom instructions",
+                current.revision,
+                &current.current_sha256,
+            )
             .expect_err("contract variables must be preserved");
         assert!(error.to_string().contains("required variable"));
+    }
+
+    #[test]
+    fn prompt_settings_reject_stale_versioned_updates() {
+        let root = temp_prompt_root("version-conflict");
+        let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read");
+        let first_body = format!("{}\nfirst", current.default);
+        registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &first_body,
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect("first writer should update");
+        let stale_body = format!("{}\nstale", current.default);
+        let error = registry
+            .update_setting_if_version(
+                "workflow/turn",
+                &stale_body,
+                current.revision,
+                &current.current_sha256,
+            )
+            .expect_err("stale writer must not overwrite a newer prompt");
+        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
+        assert!(registry
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should remain readable")
+            .current
+            .contains("first"));
     }
 
     #[test]
@@ -1673,10 +1726,15 @@ mod tests {
         let reader_registry = registry.clone();
         let writer = std::thread::spawn(move || {
             for index in 0..40 {
+                let current = writer_registry
+                    .read_setting("workflow/run-output-correction")
+                    .expect("prompt should read");
                 writer_registry
-                    .update_setting(
+                    .update_setting_if_version(
                         "workflow/run-output-correction",
                         &format!("{default}\nmarker-{index}"),
+                        current.revision,
+                        &current.current_sha256,
                     )
                     .expect("atomic prompt update should succeed");
             }
@@ -1695,8 +1753,16 @@ mod tests {
     fn protected_prompt_settings_are_read_only_but_resettable() {
         let root = temp_prompt_root("settings-protected");
         let registry = PromptTemplateRegistry::new(root);
+        let current = registry
+            .read_setting("runtime/base")
+            .expect("protected prompt should read");
         let error = registry
-            .update_setting("runtime/base", "unsafe override")
+            .update_setting_if_version(
+                "runtime/base",
+                "unsafe override",
+                current.revision,
+                &current.current_sha256,
+            )
             .expect_err("protected prompts must not be editable");
         assert!(error.to_string().contains("protected prompt setting"));
         let setting = registry

@@ -27,7 +27,7 @@ fn setting() -> crate::prompt_assembly::PromptSettingRecord {
 
 #[test]
 fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 259);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
     let requests = vec![
         LocalDaemonRequest::ListPromptSettings(ListPromptSettingsRequest),
         LocalDaemonRequest::GetPromptSetting(GetPromptSettingRequest {
@@ -36,6 +36,8 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
         LocalDaemonRequest::UpdatePromptSetting(UpdatePromptSettingRequest {
             id: "workflow/turn".to_string(),
             markdown: "Use {{DELIVERY_TOKEN}}".to_string(),
+            expected_revision: 7,
+            expected_sha256: "abc".to_string(),
         }),
         LocalDaemonRequest::PreviewPromptSetting(PreviewPromptSettingRequest {
             id: "workflow/turn".to_string(),
@@ -62,7 +64,9 @@ fn local_daemon_protocol_prompt_settings_shapes_are_versioned() {
         serde_json::json!({
             "UpdatePromptSetting": {
                 "id": "workflow/turn",
-                "markdown": "Use {{DELIVERY_TOKEN}}"
+                "markdown": "Use {{DELIVERY_TOKEN}}",
+                "expected_revision": 7,
+                "expected_sha256": "abc"
             }
         })
     );

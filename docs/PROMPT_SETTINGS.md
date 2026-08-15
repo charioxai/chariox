@@ -7,7 +7,7 @@ same registry during replay and restart.
 
 ## Local API
 
-The local daemon protocol (version 259) provides:
+The local daemon protocol (version 260) provides:
 
 - `ListPromptSettings` and `GetPromptSetting` for catalog/read access;
 - `PreviewPromptSetting` for bounded variable substitution without mutation;
