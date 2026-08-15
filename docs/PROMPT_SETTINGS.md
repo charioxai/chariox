@@ -75,11 +75,15 @@ provider contract; it must not inject hidden instructions as visible terminal te
 
 ## Troubleshooting
 
-- **Catalog unavailable:** connect the Settings page to a kernel with local-daemon protocol 261 or newer,
-  then use **Sync catalog**. A disconnected page shows the bundled catalog read-only.
-- **Save conflict:** another administrator changed the prompt. Sync, compare the revision/hash and save
-  again; the client never overwrites a newer revision silently.
+- **Catalog unavailable:** connect a protocol client to a kernel with local-daemon protocol 261 or newer
+  and call `ListPromptSettings`. The TUI and raw local-daemon clients always retain the bundled catalog
+  as their offline source. The Chariox Cloud Settings page is shipped by the matching `chariox-cloud`
+  release and uses the same protocol; deploy the two releases together when using its Sync catalog action.
+- **Save conflict:** another administrator changed the prompt. Re-list the catalog, compare the revision/hash
+  and save again; the kernel never overwrites a newer revision silently. Cloud surfaces this as a conflict
+  and the TUI reports the failed optimistic-concurrency request.
 - **Validation failure:** check that Markdown is non-empty, no larger than 64 KiB, has balanced variables,
   and preserves every variable required by the bundled default.
 - **Unexpected prompt content:** inspect the run's prompt manifest and compare the current/default hashes;
-  reset the affected entry or reset all entries from the Settings page or TUI.
+  reset the affected entry or reset all entries with the local-daemon API or TUI. The Cloud Settings page
+  exposes the same reset operations when connected to the kernel.
