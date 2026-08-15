@@ -106,3 +106,53 @@ fn provider_run_requires_background_pump(
             .is_some()
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::should_pump_background_provider_run;
+    use crate::provider::{
+        AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
+    };
+
+    fn structured_run(adapter_key: &str, provider: &str) -> RuntimeProviderRun {
+        let request = LaunchProviderRequest::new(
+            "session-background-pump-test",
+            adapter_key,
+            provider,
+            "default",
+            "test-model",
+        );
+        let mut run = RuntimeProviderRun::new(
+            format!("provider-run-background-{adapter_key}-{provider}"),
+            &request,
+            ProviderLaunchResult {
+                endpoint_mode: AgentEndpointMode::Managed,
+                process_label: provider.to_string(),
+                pty_target: None,
+                pty_program: None,
+                pty_args: Vec::new(),
+                pty_env: std::collections::BTreeMap::new(),
+                pty_env_remove: Vec::new(),
+                working_directory: None,
+                structured_endpoint: Some("ws://structured-test".to_string()),
+            },
+        );
+        run.mark_running();
+        run
+    }
+
+    #[test]
+    fn legacy_background_pump_excludes_every_structured_provider() {
+        for (adapter_key, provider) in [
+            ("codex", "codex"),
+            ("opencode", "opencode"),
+            ("claude", "claude"),
+            ("dev-stub", "slow-structured"),
+        ] {
+            assert!(
+                !should_pump_background_provider_run(&structured_run(adapter_key, provider)),
+                "{adapter_key}/{provider} must be owned by the runtime structured pump",
+            );
+        }
+    }
+}

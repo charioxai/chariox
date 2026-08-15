@@ -104,21 +104,32 @@ impl CodexClient {
                 return serde_json::from_value(result)
                     .map_err(|error| self.protocol_error(method, error.to_string()));
             }
-            if let Some(notification) = parse_notification(message.clone()) {
+            let parsed_notification = parse_notification(message.clone());
+            if parsed_notification.is_none()
+                && matches!(
+                    message.method.as_deref(),
+                    Some("turn/started" | "turn/completed")
+                )
+            {
+                log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
+            }
+            if let Some(notification) = parsed_notification {
                 buffered_notifications.push(notification);
-            } else if let Some(message_method) = message.method.as_deref() {
-                crate::logging::debug_with_fields(
-                    "daemon.provider.codex",
-                    "ignored codex message while awaiting response",
-                    json!({
-                        "provider_run_id": self.provider_run_id,
-                        "awaiting_method": method,
-                        "message_method": message_method,
-                        "has_id": message.id.is_some(),
-                        "params": message.params,
-                        "error": message.error,
-                    }),
-                );
+            } else if !is_turn_lifecycle_method(message.method.as_deref()) {
+                if let Some(message_method) = message.method.as_deref() {
+                    crate::logging::debug_with_fields(
+                        "daemon.provider.codex",
+                        "ignored codex message while awaiting response",
+                        json!({
+                            "provider_run_id": self.provider_run_id,
+                            "awaiting_method": method,
+                            "message_method": message_method,
+                            "has_id": message.id.is_some(),
+                            "params": message.params,
+                            "error": message.error,
+                        }),
+                    );
+                }
             }
         }
     }
@@ -153,21 +164,31 @@ impl CodexClient {
                         continue;
                     }
                     let notification = parse_notification(message.clone());
+                    if notification.is_none()
+                        && matches!(
+                            message.method.as_deref(),
+                            Some("turn/started" | "turn/completed")
+                        )
+                    {
+                        log_unparsed_turn_lifecycle(&self.provider_run_id, &message);
+                    }
                     if let Some(notification) = notification {
                         return Ok(Some(notification));
                     }
-                    if let Some(method) = message.method.as_deref() {
-                        crate::logging::debug_with_fields(
-                            "daemon.provider.codex",
-                            "ignored codex notification",
-                            json!({
-                                "provider_run_id": self.provider_run_id,
-                                "method": method,
-                                "has_id": message.id.is_some(),
-                                "params": message.params,
-                                "error": message.error,
-                            }),
-                        );
+                    if !is_turn_lifecycle_method(message.method.as_deref()) {
+                        if let Some(method) = message.method.as_deref() {
+                            crate::logging::debug_with_fields(
+                                "daemon.provider.codex",
+                                "ignored codex notification",
+                                json!({
+                                    "provider_run_id": self.provider_run_id,
+                                    "method": method,
+                                    "has_id": message.id.is_some(),
+                                    "params": message.params,
+                                    "error": message.error,
+                                }),
+                            );
+                        }
                     }
                     continue;
                 }
@@ -261,6 +282,27 @@ impl CodexClient {
             }
         }
     }
+}
+
+fn is_turn_lifecycle_method(method: Option<&str>) -> bool {
+    matches!(method, Some("turn/started" | "turn/completed"))
+}
+
+fn log_unparsed_turn_lifecycle(provider_run_id: &str, message: &JsonRpcMessage) {
+    crate::logging::warn_with_fields(
+        "daemon.provider.codex",
+        "discarded unrecognized Codex turn lifecycle notification",
+        json!({
+            "provider_run_id": provider_run_id,
+            "method": message.method,
+            "has_id": message.id.is_some(),
+            "param_keys": message
+                .params
+                .as_ref()
+                .and_then(Value::as_object)
+                .map(|params| params.keys().cloned().collect::<Vec<_>>()),
+        }),
+    );
 }
 
 fn codex_read_should_retry(error: &std::io::Error) -> bool {
@@ -433,6 +475,65 @@ mod tests {
             }]
         );
         drop(socket);
+        server.join().expect("join websocket fixture");
+    }
+
+    #[test]
+    fn malformed_turn_started_is_skipped_without_returning_an_empty_turn_id() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind websocket fixture");
+        let address = listener.local_addr().expect("resolve websocket fixture");
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept websocket fixture");
+            let mut malformed_socket = accept(stream).expect("upgrade websocket fixture");
+            malformed_socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {"threadId": "thread-1"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send malformed turn-start notification");
+            // Keep the malformed connection open so the client can deterministically
+            // observe that the malformed frame is skipped and no valid frame follows.
+            let (stream, _) = listener.accept().expect("accept valid websocket fixture");
+            let mut valid_socket = accept(stream).expect("upgrade valid websocket fixture");
+            valid_socket
+                .send(Message::Text(
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "turn/started",
+                        "params": {"turnId": "turn-1"}
+                    })
+                    .to_string()
+                    .into(),
+                ))
+                .expect("send valid turn-start notification");
+        });
+        let endpoint = format!("ws://{address}");
+        let (mut malformed_socket, _) = connect(&endpoint).expect("connect malformed fixture");
+        let client = CodexClient::new("provider-run-test", endpoint).expect("create client");
+
+        assert_eq!(
+            client
+                .read_notification(&mut malformed_socket, Duration::from_secs(1))
+                .expect("read malformed notification"),
+            None,
+        );
+
+        let (mut valid_socket, _) = connect(&client.endpoint).expect("connect valid fixture");
+        assert_eq!(
+            client
+                .read_notification(&mut valid_socket, Duration::from_secs(1))
+                .expect("read valid notification"),
+            Some(CodexNotification::TurnStarted {
+                turn_id: "turn-1".to_string(),
+            })
+        );
+        drop(malformed_socket);
+        drop(valid_socket);
         server.join().expect("join websocket fixture");
     }
 }

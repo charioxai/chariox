@@ -944,6 +944,63 @@ mod tests {
         });
         assert_eq!(v2_completed_without_id, None);
 
+        let v2_started_without_id = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/started".to_string()),
+            params: Some(json!({"threadId": "thread-1"})),
+            result: None,
+            error: None,
+        });
+        assert_eq!(v2_started_without_id, None);
+
+        let legacy_completed = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/completed".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-legacy-1",
+                "status": "completed",
+                "error_message": null,
+                "items": [{
+                    "type": "agentMessage",
+                    "id": "message-legacy-1",
+                    "text": "done"
+                }]
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            legacy_completed,
+            Some(CodexNotification::TurnCompleted {
+                turn_id: "turn-legacy-1".to_string(),
+                status: "completed".to_string(),
+                error_message: None,
+                items: vec![json!({
+                    "type": "agentMessage",
+                    "id": "message-legacy-1",
+                    "text": "done"
+                })],
+            })
+        );
+
+        let legacy_started = parse_notification(JsonRpcMessage {
+            id: None,
+            method: Some("turn/started".to_string()),
+            params: Some(json!({
+                "threadId": "thread-1",
+                "turnId": "turn-legacy-1"
+            })),
+            result: None,
+            error: None,
+        });
+        assert_eq!(
+            legacy_started,
+            Some(CodexNotification::TurnStarted {
+                turn_id: "turn-legacy-1".to_string(),
+            })
+        );
+
         let raw_task_complete = parse_notification(JsonRpcMessage {
             id: None,
             method: Some("codex/event/task_complete".to_string()),
