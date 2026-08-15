@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::sync::{Mutex, OnceLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chariox_event_protocol::{
     AedsToKernelMessage, KernelToAedsMessage, EVENT_DELIVERY_PROTOCOL_VERSION,
 };
 use futures_util::{SinkExt, StreamExt};
-use tokio::sync::watch;
+use tokio::sync::{mpsc, watch};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::Message;
@@ -146,6 +146,28 @@ async fn connect_once(
     reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut aegs_reconciliation = tokio::time::interval(Duration::from_secs(30));
     aegs_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Delivery acceptance performs synchronous durable-state work. Keep it off this
+    // socket task so a slow database write cannot starve AEDS heartbeats and cause
+    // the server to retry an event that is already being accepted.
+    let (delivery_tx, mut delivery_rx) =
+        mpsc::channel::<chariox_event_protocol::EventDeliveryEnvelope>(32);
+    let (delivery_result_tx, mut delivery_result_rx) =
+        mpsc::unbounded_channel::<(String, Duration, Result<(), String>)>();
+    let delivery_worker_state = runtime_state.clone();
+    tokio::spawn(async move {
+        while let Some(delivery) = delivery_rx.recv().await {
+            let delivery_id = delivery.delivery_id.clone();
+            let started_at = Instant::now();
+            let state = delivery_worker_state.clone();
+            let result =
+                tokio::task::spawn_blocking(move || state.accept_workflow_event_delivery(delivery))
+                    .await
+                    .map_err(|error| format!("event delivery worker failed: {error}"))
+                    .and_then(|result| result.map(|_| ()).map_err(|error| error.to_string()));
+            let _ = delivery_result_tx.send((delivery_id, started_at.elapsed(), result));
+        }
+    });
+    let mut pending_delivery_ids = std::collections::BTreeSet::new();
     loop {
         tokio::select! {
             _ = shutdown.changed() => return Ok(()),
@@ -189,22 +211,29 @@ async fn connect_once(
                         }
                     }
                     AedsToKernelMessage::Delivery { delivery } => {
-                        match runtime_state.accept_workflow_event_delivery(delivery.clone()) {
-                            Ok(_) => {
-                                send(&mut sink, &KernelToAedsMessage::Ack {
-                                    delivery_id: delivery.delivery_id,
-                                }).await?;
-                            }
-                            Err(error) => {
-                                crate::logging::warn_with_fields(
-                                    "daemon.event_delivery",
-                                    "AEDS delivery was not acknowledged",
-                                    serde_json::json!({
-                                        "delivery_id": delivery.delivery_id,
-                                        "binding_id": delivery.binding_id,
-                                        "error": error.to_string(),
-                                    }),
-                                );
+                        if !pending_delivery_ids.insert(delivery.delivery_id.clone()) {
+                            crate::logging::debug_with_fields(
+                                "daemon.event_delivery",
+                                "ignoring duplicate in-flight AEDS delivery",
+                                serde_json::json!({"delivery_id": delivery.delivery_id}),
+                            );
+                            continue;
+                        }
+                        if let Err(error) = delivery_tx.try_send(delivery.clone()) {
+                            pending_delivery_ids.remove(&delivery.delivery_id);
+                            match error {
+                                tokio::sync::mpsc::error::TrySendError::Closed(_) => {
+                                    return Err("event delivery worker stopped".to_string());
+                                }
+                                tokio::sync::mpsc::error::TrySendError::Full(_) => {
+                                    crate::logging::warn_with_fields(
+                                        "daemon.event_delivery",
+                                        "event delivery acceptance queue is full; leaving delivery unacknowledged",
+                                        serde_json::json!({
+                                            "delivery_id": delivery.delivery_id,
+                                        }),
+                                    );
+                                }
                             }
                         }
                     }
@@ -219,6 +248,35 @@ async fn connect_once(
                             "daemon.event_delivery",
                             "retryable AEDS error",
                             serde_json::json!({"code": code, "message": message}),
+                        );
+                    }
+                }
+            }
+            Some((delivery_id, elapsed, result)) = delivery_result_rx.recv() => {
+                pending_delivery_ids.remove(&delivery_id);
+                match result {
+                    Ok(_) => {
+                        crate::logging::info_with_fields(
+                            "daemon.event_delivery",
+                            "event delivery durably accepted",
+                            serde_json::json!({
+                                "delivery_id": delivery_id,
+                                "acceptance_ms": elapsed.as_millis(),
+                            }),
+                        );
+                        send(&mut sink, &KernelToAedsMessage::Ack {
+                            delivery_id,
+                        }).await?;
+                    }
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "AEDS delivery was not acknowledged",
+                            serde_json::json!({
+                                "delivery_id": delivery_id,
+                                "error": error,
+                                "acceptance_ms": elapsed.as_millis(),
+                            }),
                         );
                     }
                 }
