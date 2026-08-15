@@ -16,7 +16,15 @@ pub(crate) use super::provider_processes::ProviderProcessTracker;
 impl DaemonApp {
     pub(crate) fn start_provider_launch(
         &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<StartedProviderLaunch, DaemonError> {
+        self.start_provider_launch_with_lease(request, false)
+    }
+
+    fn start_provider_launch_with_lease(
+        &mut self,
         mut request: LaunchProviderRequest,
+        leased: bool,
     ) -> Result<StartedProviderLaunch, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         crate::logging::info_with_fields(
@@ -35,6 +43,12 @@ impl DaemonApp {
             .list_session_attachment_ids(&request_session_id);
         let started = ProviderRunActivationState::start_provider_run_for_session(self, request)?;
         let run = started.run.clone();
+        // Publish lease identity before spawning the provider process. The provider's
+        // first MCP tools/list can happen during PTY startup, before launch_provider
+        // returns to the caller.
+        if leased {
+            self.mark_leased_provider_run(run.id());
+        }
         if let Some(previous_active_run_id) = started.previous_active_run_id.as_deref() {
             if let Ok(previous_run) = self.providers.get_run(previous_active_run_id) {
                 self.update_provider_run_projection(previous_run);
@@ -320,14 +334,36 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.launch_provider_with_lease(request, false)
+    }
+
+    pub(crate) fn launch_leased_provider(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.launch_provider_with_lease(request, true)
+    }
+
+    fn launch_provider_with_lease(
+        &mut self,
+        request: LaunchProviderRequest,
+        leased: bool,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
         let prepared =
             self.prepare_app_provider_launch_request(request.clone(), "launch provider run")?;
         if let Some(run) =
             ProviderRunActivationState::reusable_native_tui_run_for_launch(self, &prepared)?
         {
+            if leased {
+                self.mark_leased_provider_run(run.id());
+            }
             return Ok(run);
         }
-        let started = self.start_provider_launch(request)?;
+        let started = if leased {
+            self.start_provider_launch_with_lease(request, true)?
+        } else {
+            self.start_provider_launch(request)?
+        };
         let binding = match ProviderProcessService::initialize_runtime_binding(&started.run) {
             Ok(binding) => binding,
             Err(error) => {

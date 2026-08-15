@@ -74,8 +74,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let provider_run_id = match &prepared.provider_run {
             PreparedLeasedProviderRun::Ready(provider_run_id) => provider_run_id.clone(),
             PreparedLeasedProviderRun::LaunchRequired(request) => {
-                let run = self.app.launch_provider(request.clone())?;
-                self.app.mark_leased_provider_run(run.id());
+                let run = self.app.launch_leased_provider(request.clone())?;
                 run.id().to_string()
             }
         };

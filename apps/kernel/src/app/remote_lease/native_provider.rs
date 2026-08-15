@@ -108,9 +108,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 request = request.with_resume_state(resume_state);
             }
         }
-        let run = self.app.launch_provider(request)?;
-        self.app.mark_leased_provider_run(run.id());
-        Ok(run)
+        self.app.launch_leased_provider(request)
     }
 
     pub(crate) fn send_leased_native_provider_input(
