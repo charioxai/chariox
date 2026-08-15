@@ -113,7 +113,17 @@ pub(crate) fn event_delivery_status(
 pub(crate) async fn run_event_delivery_connector(
     runtime_state: KernelRuntimeState,
     config: EventDeliveryClientConfig,
+    shutdown: watch::Receiver<bool>,
+) {
+    let delivery_queue = DeliveryAcceptanceQueue::new(runtime_state.clone());
+    run_event_delivery_connector_with_queue(runtime_state, config, shutdown, delivery_queue).await;
+}
+
+async fn run_event_delivery_connector_with_queue(
+    runtime_state: KernelRuntimeState,
+    config: EventDeliveryClientConfig,
     mut shutdown: watch::Receiver<bool>,
+    delivery_queue: DeliveryAcceptanceQueue,
 ) {
     let Some(url) = config.url.clone() else {
         let _ = shutdown.changed().await;
@@ -123,7 +133,6 @@ pub(crate) async fn run_event_delivery_connector(
     // This worker is deliberately owned by the connector, not by an individual
     // WebSocket connection. A reconnect must not create a second acceptance
     // worker that can race receipt persistence for the same delivery.
-    let delivery_queue = DeliveryAcceptanceQueue::new(runtime_state.clone());
     let mut aegs_reconciliation = tokio::time::interval(Duration::from_secs(30));
     aegs_reconciliation.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     loop {
@@ -526,16 +535,33 @@ mod tests {
             crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
                 .expect("test daemon should bootstrap"),
         );
-        let started = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+        let release = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
         let persisted = Arc::new(AtomicUsize::new(0));
         let seen = Arc::new(std::sync::Mutex::new(std::collections::BTreeSet::new()));
+        let second_delivery_sent = Arc::new(tokio::sync::Notify::new());
+        let early_ack_checked = Arc::new(tokio::sync::Notify::new());
+        let early_ack = Arc::new(AtomicUsize::new(0));
+        let ack_received = Arc::new(tokio::sync::Notify::new());
         let acceptor: DeliveryAcceptor = {
             let started = started.clone();
+            let release = release.clone();
             let persisted = persisted.clone();
             let seen = seen.clone();
             Arc::new(move |delivery| {
-                if started.fetch_add(1, Ordering::SeqCst) == 0 {
-                    std::thread::sleep(Duration::from_millis(150));
+                {
+                    let (lock, cv) = &*started;
+                    *lock.lock().expect("started lock should not be poisoned") = true;
+                    cv.notify_all();
+                }
+                {
+                    let (lock, cv) = &*release;
+                    let mut released = lock.lock().expect("release lock should not be poisoned");
+                    while !*released {
+                        released = cv
+                            .wait(released)
+                            .expect("release wait should not be poisoned");
+                    }
                 }
                 if seen
                     .lock()
@@ -554,6 +580,10 @@ mod tests {
             .expect("bind AEDS fixture");
         let address = listener.local_addr().expect("resolve AEDS fixture");
         let server_delivery = delivery.clone();
+        let server_second_delivery_sent = second_delivery_sent.clone();
+        let server_early_ack_checked = early_ack_checked.clone();
+        let server_early_ack = early_ack.clone();
+        let server_ack_received = ack_received.clone();
         let server = tokio::spawn(async move {
             for connection_index in 0..2 {
                 let (stream, _) = listener.accept().await.expect("accept kernel connection");
@@ -591,6 +621,14 @@ mod tests {
                     drop(socket);
                     continue;
                 }
+                server_second_delivery_sent.notify_one();
+                if tokio::time::timeout(Duration::from_millis(200), socket.next())
+                    .await
+                    .is_ok()
+                {
+                    server_early_ack.fetch_add(1, Ordering::SeqCst);
+                }
+                server_early_ack_checked.notify_one();
                 loop {
                     let message = socket
                         .next()
@@ -603,6 +641,7 @@ mod tests {
                             .expect("decode kernel message"),
                         KernelToAedsMessage::Ack { .. }
                     ) {
+                        server_ack_received.notify_one();
                         break;
                     }
                 }
@@ -615,31 +654,36 @@ mod tests {
             environment_id: "environment-test".to_string(),
             generator_management_targets: BTreeMap::new(),
         };
-        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
-        let first_result = connect_once(
-            &runtime_state,
-            &config,
-            config.url.as_deref().expect("fixture URL"),
-            shutdown_rx.clone(),
-            &delivery_queue,
-        )
-        .await;
-        assert!(first_result.is_err(), "first socket should disconnect");
-        while started.load(Ordering::SeqCst) == 0 {
-            tokio::time::sleep(Duration::from_millis(5)).await;
-        }
-        let second_result = connect_once(
-            &runtime_state,
-            &config,
-            config.url.as_deref().expect("fixture URL"),
+        let (shutdown_tx, shutdown_rx) = watch::channel(false);
+        let connector = tokio::spawn(run_event_delivery_connector_with_queue(
+            runtime_state,
+            config,
             shutdown_rx,
-            &delivery_queue,
-        )
-        .await;
-        assert!(second_result.is_err(), "fixture closes after the ACK");
+            delivery_queue,
+        ));
+        second_delivery_sent.notified().await;
+        {
+            let (lock, cv) = &*started;
+            let mut has_started = lock.lock().expect("started lock should not be poisoned");
+            while !*has_started {
+                has_started = cv
+                    .wait(has_started)
+                    .expect("started wait should not be poisoned");
+            }
+        }
+        early_ack_checked.notified().await;
+        assert_eq!(early_ack.load(Ordering::SeqCst), 0);
+        {
+            let (lock, cv) = &*release;
+            *lock.lock().expect("release lock should not be poisoned") = true;
+            cv.notify_all();
+        }
+        ack_received.notified().await;
+        assert_eq!(persisted.load(Ordering::SeqCst), 1);
+        shutdown_tx.send(true).expect("stop connector");
+        connector.await.expect("join connector");
         server.await.expect("join AEDS fixture");
         assert_eq!(persisted.load(Ordering::SeqCst), 1);
-        assert_eq!(started.load(Ordering::SeqCst), 2);
     }
 
     fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
