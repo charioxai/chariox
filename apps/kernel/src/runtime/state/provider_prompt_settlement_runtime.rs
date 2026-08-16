@@ -331,13 +331,26 @@ impl KernelRuntimeState {
         // work instead of leaving the queue parked behind the ended run.
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
-        let next_queued_prompt = if provider_run_was_running {
+        let next_queued_prompt_candidate = if provider_run_was_running {
             owned
                 .prompt_state_owner
                 .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
         } else {
             None
         };
+        // An ordinary provider has already discovered the reduced MCP surface.
+        // Do not promote a workflow prompt onto it: complete the current turn
+        // first, then the app-level queue path will replace the provider with a
+        // workflow-scoped run before dispatching the queued prompt.
+        let defer_workflow_prompt_for_provider_switch =
+            next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
+                crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    prompt.source_attachment_id(),
+                ) && !provider_run.workflow_tools_enabled()
+            });
+        let next_queued_prompt = (!defer_workflow_prompt_for_provider_switch)
+            .then_some(next_queued_prompt_candidate)
+            .flatten();
         let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
             owned.complete_local_prompt_with_queued_advance_if_matches(
                 session_id,
@@ -454,6 +467,31 @@ impl KernelRuntimeState {
                 .await
             {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        }
+        if defer_workflow_prompt_for_provider_switch {
+            let session_id_for_queue = session_id.to_string();
+            let agent_id_for_queue = agent_id.clone();
+            match self
+                .with_app_side_effect(move |app| {
+                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
+                })
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(error) => {
+                    self.owned.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        self.owned
+                            .attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Queued workflow prompt remained pending during provider capability switch: {error}"
+                        ),
+                    );
+                }
             }
         }
         if completion.completion.started_next.is_none() && !provider_run_was_running {
