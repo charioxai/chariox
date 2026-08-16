@@ -19,16 +19,36 @@ impl<'a> KernelAgentService<'a> {
                 return Ok(None);
             };
             let target_agent_id = peeked.target_agent_id().to_string();
-            let is_workflow_prompt = crate::app::workflow_runtime::is_workflow_prompt_source(
+            let source_is_workflow = crate::app::workflow_runtime::is_workflow_prompt_source(
                 peeked.source_attachment_id(),
             );
+            let leased_event_reply_enabled = if source_is_workflow {
+                None
+            } else {
+                crate::app::RemoteLeaseRuntime::new(self.app)
+                    .leased_workflow_event_reply_enabled_for_backing_prompt(
+                        session_id,
+                        &target_agent_id,
+                        peeked.id(),
+                    )
+            };
+            let is_workflow_prompt = source_is_workflow || leased_event_reply_enabled.is_some();
             let provider_run_id = match if is_workflow_prompt {
-                crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
-                    self.app,
-                    session_id,
-                    &target_agent_id,
-                    &peeked,
-                )
+                if let Some(event_reply_enabled) = leased_event_reply_enabled {
+                    crate::app::workflow_runtime::ensure_workflow_provider_run_with_event_reply_from_runtime(
+                        self.app,
+                        session_id,
+                        &target_agent_id,
+                        event_reply_enabled,
+                    )
+                } else {
+                    crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
+                        self.app,
+                        session_id,
+                        &target_agent_id,
+                        &peeked,
+                    )
+                }
             } else {
                 self.app
                     .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
@@ -53,15 +73,36 @@ impl<'a> KernelAgentService<'a> {
             if self.app.providers.get_run(&provider_run_id)?.state() == ProviderRunState::Starting {
                 return Ok(None);
             }
-            let (_session, next_candidate) = self.activate_next_queued_prompt_for_mirror(
+            let (_session, next_candidate) = match self.activate_next_queued_prompt_for_mirror(
                 session_id,
                 &target_agent_id,
                 expected_next,
-            )?;
+            ) {
+                Ok(activated) => activated,
+                Err(error) => {
+                    // A replacement workflow provider can synchronously finish its launch
+                    // path, which itself attempts to advance this same queue. Reuse the
+                    // prompt that the re-entrant path already activated instead of trying
+                    // to activate it twice.
+                    if let Some(active) = self
+                        .app
+                        .prompt_owner_active_prompt_for_agent(session_id, &target_agent_id)?
+                    {
+                        if active.id() == peeked.id() {
+                            return Ok(Some(active));
+                        }
+                    }
+                    return Err(error);
+                }
+            };
             let Some(next) = next_candidate else {
                 flow_control::clear_prompt_activity(self.app, &provider_run_id);
                 continue;
             };
+            if is_workflow_prompt {
+                crate::app::RemoteLeaseRuntime::new(self.app)
+                    .activate_leased_workflow_prompt(next.id(), &provider_run_id);
+            }
             let source_attachment_id = self
                 .app
                 .promoted_prompt_source_attachment_id(session_id, next.source_attachment_id())?;

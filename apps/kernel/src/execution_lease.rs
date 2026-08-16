@@ -111,6 +111,9 @@ pub struct LeasedWorkflowTurnBinding {
     /// Home/backing prompt that owns this context. Multiple queued prompts may
     /// share one provider run, so the provider run is not a sufficient key.
     pub home_prompt_id: String,
+    /// Prompt id in the worker/session queue. This is the stable promotion key
+    /// even though the queue item is not marked with a workflow source.
+    pub backing_prompt_id: String,
     pub context: RemoteWorkflowTurnContext,
 }
 

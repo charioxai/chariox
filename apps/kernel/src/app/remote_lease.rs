@@ -331,6 +331,55 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(agent)
     }
 
+    pub(crate) fn leased_workflow_event_reply_enabled_for_backing_prompt(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        backing_prompt_id: &str,
+    ) -> Option<bool> {
+        self.app
+            .leased_workflow_turns
+            .values()
+            .find(|binding| {
+                binding.backing_prompt_id == backing_prompt_id
+                    && self
+                        .app
+                        .leased_agents
+                        .get(&binding.leased_agent_id)
+                        .is_some_and(|agent| {
+                            agent.backing_session_id == session_id
+                                && agent.backing_agent_id == agent_id
+                        })
+            })
+            .map(|binding| binding.context.event_reply_enabled)
+    }
+
+    pub(crate) fn activate_leased_workflow_prompt(
+        &mut self,
+        backing_prompt_id: &str,
+        provider_run_id: &str,
+    ) {
+        let Some(binding) = self
+            .app
+            .leased_workflow_turns
+            .get(backing_prompt_id)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(agent) = self.app.leased_agents.get_mut(&binding.leased_agent_id) {
+            if agent.active_home_prompt_id.as_deref() != Some(binding.home_prompt_id.as_str()) {
+                agent.applied_home_steer_ids.clear();
+                agent.replayable_completion = None;
+            }
+            agent.active_home_prompt_id = Some(binding.home_prompt_id.clone());
+            agent.active_home_prompt_started_at_ms = Some(crate::session::unix_epoch_ms());
+        }
+        if let Some(binding) = self.app.leased_workflow_turns.get_mut(backing_prompt_id) {
+            binding.provider_run_id = provider_run_id.to_string();
+        }
+    }
+
     pub(crate) fn update_leased_agent_config(
         &mut self,
         leased_agent_id: &str,

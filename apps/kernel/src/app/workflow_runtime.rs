@@ -390,6 +390,20 @@ pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
 ) -> Result<String, DaemonError> {
     let event_reply_enabled =
         workflow_event_reply_enabled_for_prompt_from_runtime(app, session_id, prompt)?;
+    ensure_workflow_provider_run_with_event_reply_from_runtime(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+    )
+}
+
+pub(crate) fn ensure_workflow_provider_run_with_event_reply_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    event_reply_enabled: bool,
+) -> Result<String, DaemonError> {
     WorkflowProgression::ensure_provider_run(app, session_id, agent_id, event_reply_enabled)
 }
 
