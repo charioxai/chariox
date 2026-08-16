@@ -532,7 +532,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     agent.applied_home_steer_ids.clear();
                 }
             }
-            self.app.leased_workflow_turns.remove(provider_run_id);
+            self.app
+                .leased_workflow_turns
+                .retain(|_, binding| binding.provider_run_id != provider_run_id);
         }
         if replay_settled_completion
             && completions.is_empty()

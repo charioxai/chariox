@@ -157,6 +157,9 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    /// Workflow bindings are keyed by backing/home prompt, not provider run.
+    /// A provider run can have one active turn plus queued turns, each with a
+    /// different workflow context and capability snapshot.
     leased_workflow_turns: BTreeMap<String, LeasedWorkflowTurnBinding>,
     remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore,
     completed_git_turn_snapshots: crate::git_observer::CompletedGitTurnSnapshotStore,

@@ -73,7 +73,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
     ) -> Option<RemoteWorkflowTurnContext> {
         self.app
             .leased_workflow_turns
-            .get(provider_run_id)
+            .values()
+            .find(|binding| {
+                binding.provider_run_id == provider_run_id
+                    && self
+                        .app
+                        .leased_agents
+                        .get(&binding.leased_agent_id)
+                        .and_then(|agent| agent.active_home_prompt_id.as_deref())
+                        == Some(binding.home_prompt_id.as_str())
+            })
             .map(|binding| binding.context.clone())
     }
 

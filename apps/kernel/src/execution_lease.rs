@@ -108,6 +108,9 @@ pub struct RemoteWorkflowTurnContext {
 pub struct LeasedWorkflowTurnBinding {
     pub leased_agent_id: String,
     pub provider_run_id: String,
+    /// Home/backing prompt that owns this context. Multiple queued prompts may
+    /// share one provider run, so the provider run is not a sufficient key.
+    pub home_prompt_id: String,
     pub context: RemoteWorkflowTurnContext,
 }
 

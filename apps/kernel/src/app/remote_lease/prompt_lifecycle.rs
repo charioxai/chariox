@@ -269,7 +269,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     agent.applied_home_steer_ids.clear();
                     agent.replayable_completion = None;
                 }
-                agent.active_home_prompt_id = home_prompt_id;
+                agent.active_home_prompt_id = home_prompt_id.clone();
                 agent.active_home_prompt_started_at_ms = Some(accepted_prompt.created_at_ms());
             }
         }
@@ -279,11 +279,15 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if let Some(context) = workflow_context {
+            let binding_prompt_id = home_prompt_id
+                .clone()
+                .unwrap_or_else(|| accepted_prompt.id().to_string());
             self.app.leased_workflow_turns.insert(
-                provider_run_id.clone(),
+                binding_prompt_id.clone(),
                 LeasedWorkflowTurnBinding {
                     leased_agent_id: leased_agent.id.clone(),
                     provider_run_id: provider_run_id.clone(),
+                    home_prompt_id: binding_prompt_id,
                     context,
                 },
             );
@@ -446,7 +450,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             provider_run_id.as_deref(),
         )?;
         if let Some(provider_run_id) = provider_run_id {
-            self.app.leased_workflow_turns.remove(&provider_run_id);
+            self.app.leased_workflow_turns.retain(|_, binding| {
+                binding.provider_run_id != provider_run_id
+                    || binding.leased_agent_id != leased_agent_id
+            });
         }
         Ok(completion)
     }
@@ -478,7 +485,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         provider_run_id: &str,
     ) -> Result<Option<crate::session::PromptCompletion>, DaemonError> {
-        let Some(binding) = self.app.leased_workflow_turns.get(provider_run_id).cloned() else {
+        let Some(binding) = self
+            .app
+            .leased_workflow_turns
+            .values()
+            .find(|binding| {
+                binding.provider_run_id == provider_run_id
+                    && self
+                        .app
+                        .leased_agents
+                        .get(&binding.leased_agent_id)
+                        .and_then(|agent| agent.active_home_prompt_id.as_deref())
+                        == Some(binding.home_prompt_id.as_str())
+            })
+            .cloned()
+        else {
             return Ok(None);
         };
         let leased_agent = self
@@ -497,7 +518,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )?
             .is_none()
         {
-            self.app.leased_workflow_turns.remove(provider_run_id);
+            self.app
+                .leased_workflow_turns
+                .remove(&binding.home_prompt_id);
             return Ok(None);
         }
         let completion = self.app.complete_active_prompt(
@@ -505,7 +528,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
             Some(provider_run_id),
         )?;
-        self.app.leased_workflow_turns.remove(provider_run_id);
+        self.app
+            .leased_workflow_turns
+            .remove(&binding.home_prompt_id);
         Ok(Some(completion))
     }
 }
