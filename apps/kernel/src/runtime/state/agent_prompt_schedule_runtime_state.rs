@@ -118,6 +118,13 @@ impl KernelRuntimeState {
             .owned
             .ensure_agent_prompt_schedule_attachment(&dispatch.session_id)?;
         let prompt_id = self.owned.session_store.reserve_prompt_id();
+        let (scheduled_context, scheduled_manifest_entry) =
+            crate::prompt_assembly::render_configured_prompt_with_manifest(
+                "runtime/scheduled-prompt",
+                crate::prompt_assembly::bundled_prompt_template("runtime/scheduled-prompt")
+                    .expect("scheduled prompt context must be registered"),
+                &[("SCHEDULE_ID", &dispatch.schedule_id)],
+            );
         let prompt = crate::session::PromptQueueItem::new(
             prompt_id,
             source_attachment_id,
@@ -125,11 +132,9 @@ impl KernelRuntimeState {
             &dispatch.prompt,
             crate::session::PromptStatus::Queued,
         )
-        .with_hidden_system_context(crate::prompt_assembly::render_configured_prompt(
-            "runtime/scheduled-prompt",
-            crate::prompt_assembly::bundled_prompt_template("runtime/scheduled-prompt")
-                .expect("scheduled prompt context must be registered"),
-            &[("SCHEDULE_ID", &dispatch.schedule_id)],
+        .with_hidden_system_context(crate::prompt_assembly::attach_prompt_manifest_entry(
+            scheduled_context,
+            &scheduled_manifest_entry,
         ));
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
