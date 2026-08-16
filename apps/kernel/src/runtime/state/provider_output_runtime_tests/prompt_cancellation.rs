@@ -29,7 +29,10 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
         .expect("requester should attach");
     let workflow = app
         .sessions_mut()
-        .create_workflow(session.id(), Some("workflow-cancellation-promotion".to_string()))
+        .create_workflow(
+            session.id(),
+            Some("workflow-cancellation-promotion".to_string()),
+        )
         .expect("workflow should be created");
     let node = app
         .sessions_mut()
@@ -69,7 +72,8 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
         },
     );
     provider_run.mark_running();
-    app.providers_mut().insert_run_for_test(provider_run.clone());
+    app.providers_mut()
+        .insert_run_for_test(provider_run.clone());
     app.sessions
         .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
         .expect("active provider run should be set");

@@ -295,6 +295,9 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
     let ordinary_specs = router
         .runtime_state
         .runtime_tool_specs_for_auth_token(&ordinary_token);
+    assert!(!ordinary_specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL }));
     assert!(!ordinary_specs.iter().any(|spec| {
         spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
     }));

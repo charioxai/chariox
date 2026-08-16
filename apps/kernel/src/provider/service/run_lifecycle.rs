@@ -446,6 +446,15 @@ impl ProviderProcessService {
         Ok(run.clone())
     }
 
+    pub(super) fn enable_workflow_tools(
+        &mut self,
+        run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let run = self.get_run_mut(run_id)?;
+        run.enable_workflow_tools();
+        Ok(run.clone())
+    }
+
     fn adapter_for(
         &self,
         adapter_key: &str,

@@ -383,10 +383,28 @@ impl DaemonApp {
 
     pub(crate) fn launch_provider_detached(
         &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.launch_provider_detached_with_options(request, false)
+    }
+
+    pub(crate) fn launch_workflow_provider_detached(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.launch_provider_detached_with_options(request, true)
+    }
+
+    fn launch_provider_detached_with_options(
+        &mut self,
         mut request: LaunchProviderRequest,
+        workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
-        let run = self.providers.launch_run_detached(request)?;
+        let mut run = self.providers.launch_run_detached(request)?;
+        if workflow_tools_enabled {
+            run = self.providers.enable_workflow_tools(run.id())?;
+        }
         self.update_provider_run_projection(run.clone());
         if run.endpoint_mode() == AgentEndpointMode::Managed {
             if let Err(error) = self.pty.spawn_for_run(&run) {

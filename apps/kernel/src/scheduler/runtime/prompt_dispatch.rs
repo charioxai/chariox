@@ -201,14 +201,14 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                 if let Some(worktree_id) = agent.worktree_id() {
                     request = request.with_working_directory(PathBuf::from(worktree_id));
                 }
-                let provider_run = app.launch_provider_detached(request)?;
+                let provider_run = app.launch_workflow_provider_detached(request)?;
                 app.sessions_mut()
                     .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
-                return Ok(provider_run.id().to_string());
+                return enable_workflow_tools(app, provider_run.id());
             }
             app.sessions_mut()
                 .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
-            Ok(provider_run_id)
+            enable_workflow_tools(app, &provider_run_id)
         }
         Err(DaemonError::NoActiveProviderRun { .. }) => {
             let agent = app.agents().get_agent(agent_id)?;
@@ -226,11 +226,20 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
             if let Some(worktree_id) = agent.worktree_id() {
                 request = request.with_working_directory(PathBuf::from(worktree_id));
             }
-            let provider_run = app.launch_provider_detached(request)?;
+            let provider_run = app.launch_workflow_provider_detached(request)?;
             app.sessions_mut()
                 .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
-            Ok(provider_run.id().to_string())
+            enable_workflow_tools(app, provider_run.id())
         }
         Err(error) => Err(error),
     }
+}
+
+fn enable_workflow_tools(
+    app: &mut DaemonApp,
+    provider_run_id: &str,
+) -> Result<String, DaemonError> {
+    let run = app.providers().enable_workflow_tools(provider_run_id)?;
+    app.update_provider_run_projection(run);
+    Ok(provider_run_id.to_string())
 }

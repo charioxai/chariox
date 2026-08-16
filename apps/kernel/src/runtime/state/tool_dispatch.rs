@@ -90,9 +90,6 @@ impl KernelRuntimeState {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
         }
-        specs.extend(
-            crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
-        );
         // MCP discovery runs independently of the app mutex.  Leased-run identity is
         // projected into the lock-free provider projection when the lease launches or
         // reuses a backing run, so contention cannot silently hide lease-only tools.
@@ -101,30 +98,15 @@ impl KernelRuntimeState {
                 .provider_run_projection
                 .is_leased_provider_run(run.id())
         });
-        if leased_provider_run
-            || provider_runs
-                .iter()
-                .any(|run| self.session_has_enabled_event_reply_binding(run.session_id()))
-        {
+        let workflow_tools_enabled =
+            leased_provider_run || provider_runs.iter().any(|run| run.workflow_tools_enabled());
+        if workflow_tools_enabled {
+            specs.extend(
+                crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
+            );
             specs.push(crate::transport::runtime_tools::workflow_reply_to_event_tool_spec());
         }
         specs
-    }
-
-    fn session_has_enabled_event_reply_binding(&self, session_id: &str) -> bool {
-        self.owned
-            .session_store
-            .get_session(session_id)
-            .ok()
-            .is_some_and(|session| {
-                session.workflow_event_bindings().iter().any(|binding| {
-                    binding.active()
-                        && binding
-                            .reply_mode
-                            .as_deref()
-                            .is_some_and(|mode| mode != "disabled")
-                })
-            })
     }
 
     pub(crate) async fn dispatch_authenticated_runtime_tool_call(
