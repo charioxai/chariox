@@ -573,6 +573,77 @@ fn kernel_restart_reconciliation_stops_created_workflow_without_durable_prompt()
 }
 
 #[test]
+fn kernel_restart_reconciliation_repairs_dispatched_workflow_prompt_projection() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow =
+        WorkflowDefinition::new("workflow-dispatch-repair", Some("repair".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    let mut workflow_run = WorkflowRun::new(
+        "run-dispatch-repair",
+        "workflow-dispatch-repair",
+        endpoint.id(),
+        node.id(),
+        Some("repair prompt".to_string()),
+        None,
+        vec![WorkflowNodeRun::new(
+            "node-run-dispatch-repair",
+            node.id(),
+            "agent-1",
+            1,
+            WorkflowNodeRunStatus::Ready,
+        )],
+        Vec::new(),
+    );
+    workflow_run
+        .node_run_mut("node-run-dispatch-repair")
+        .expect("node run should exist")
+        .set_turn_envelope(Some(crate::session::WorkflowTurnEnvelope::new(
+            "workflow-ack:node-run-dispatch-repair",
+            "repair prompt".to_string(),
+            None,
+            None,
+        )));
+    session.create_workflow_run(workflow_run);
+    session.activate_prompt(
+        crate::session::PromptQueueItem::new(
+            "prompt-dispatch-repair",
+            "attachment-1",
+            "agent-1",
+            "repair prompt",
+            crate::session::PromptStatus::Dispatching,
+        )
+        .with_workflow_context("run-dispatch-repair", "node-run-dispatch-repair"),
+    );
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+
+    assert_eq!(reconciliation.repaired_workflow_prompt_count, 1);
+    let run = session
+        .workflow_run("run-dispatch-repair")
+        .expect("workflow run should remain inspectable");
+    assert_eq!(run.status(), WorkflowRunStatus::Running);
+    assert_eq!(run.active_node_run_id(), Some("node-run-dispatch-repair"));
+    let node_run = run.node_runs().first().expect("node run should exist");
+    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Running);
+    assert_eq!(
+        node_run
+            .turn_envelope()
+            .expect("turn envelope should exist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Dispatched
+    );
+}
+
+#[test]
 fn prompt_queue_starts_then_queues_then_advances() {
     let mut service = SessionService::new(&test_config());
     let created = service

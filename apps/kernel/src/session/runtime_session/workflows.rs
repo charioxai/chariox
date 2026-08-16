@@ -184,6 +184,58 @@ impl RuntimeSession {
             })
             .count();
 
+        // A previous kernel could have admitted a workflow prompt and persisted the
+        // provider-side prompt as Dispatching before persisting the workflow node's
+        // Running/Dispatched transition.  That state is not orphaned: the active
+        // provider prompt is the durable proof that this node owns the session lane.
+        // Repair the workflow projection before queue arbitration runs, otherwise
+        // `has_active_workflow_run` sees a Created run and every later event remains
+        // queued indefinitely.
+        let active_workflow_prompts = self
+            .prompt_runtime
+            .prompt_states()
+            .values()
+            .filter_map(|state| state.active_prompt().cloned())
+            .filter(|prompt| {
+                matches!(
+                    prompt.status(),
+                    crate::session::PromptStatus::Dispatching
+                        | crate::session::PromptStatus::Running
+                )
+            })
+            .filter_map(|prompt| {
+                Some((
+                    prompt.workflow_run_id()?.to_string(),
+                    prompt.workflow_node_run_id()?.to_string(),
+                ))
+            })
+            .collect::<Vec<_>>();
+        for (workflow_run_id, workflow_node_run_id) in active_workflow_prompts {
+            let Some(workflow_run) = self.workflow_run_mut(&workflow_run_id) else {
+                continue;
+            };
+            let workflow_projection_needs_repair = workflow_run.status()
+                != WorkflowRunStatus::Running
+                || workflow_run.active_node_run_id() != Some(workflow_node_run_id.as_str());
+            let Some(node_run) = workflow_run.node_run_mut(&workflow_node_run_id) else {
+                continue;
+            };
+            let repaired = node_run.status() != WorkflowNodeRunStatus::Running
+                || workflow_projection_needs_repair;
+            if !repaired {
+                continue;
+            }
+            if let Some(envelope) = node_run.turn_envelope_mut() {
+                if envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared {
+                    envelope.mark_dispatched();
+                }
+            }
+            node_run.set_status(WorkflowNodeRunStatus::Running);
+            workflow_run.set_active_node_run(workflow_node_run_id);
+            workflow_run.set_status(WorkflowRunStatus::Running);
+            reconciliation.repaired_workflow_prompt_count += 1;
+        }
+
         let durable_workflow_prompt_targets = self
             .prompt_runtime
             .prompt_states()
