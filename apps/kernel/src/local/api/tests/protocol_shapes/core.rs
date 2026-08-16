@@ -723,3 +723,51 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
         "f6e7e181738b182da73d2156f9f876698b70f464d03f1becd6e62d4dc21e3196"
     );
 }
+
+#[test]
+fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 262);
+
+    let mut agent = crate::agent::AgentInstance::new(
+        "agent-remote",
+        "agent-ref-remote",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        execution_lease_id: "lease-1".to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        active_worker_provider_run_id: Some("worker-run-1".to_string()),
+        relay_url: Some("wss://relay.example.test".to_string()),
+        relay_token: Some("token".to_string()),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    }));
+    let mut agent_value = serde_json::to_value(agent).expect("remote agent snapshot should encode");
+    agent_value["created_at_ms"] = serde_json::json!(1_000);
+    agent_value["last_activity_at_ms"] = serde_json::json!(1_000);
+    let response = LocalDaemonResponse::AgentMovedToRemote {
+        agent: serde_json::from_value(agent_value).expect("remote agent snapshot should decode"),
+    };
+    let snapshot = serde_json::json!(response);
+    assert_eq!(
+        snapshot.pointer("/AgentMovedToRemote/agent/remote_execution/relay_peer_protocol_version"),
+        Some(&serde_json::json!(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        ))
+    );
+    let serialized = serde_json::to_string(&snapshot).expect("remote agent snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "7cbca2b4014de6c3300aa865f2a490c622e4e776de0c0fea3915fb554a827515"
+    );
+}
