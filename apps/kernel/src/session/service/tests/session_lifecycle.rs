@@ -893,6 +893,79 @@ fn removing_workflow_purges_only_its_queues_and_queued_prompts() {
 }
 
 #[test]
+fn replacing_publication_runtime_workflows_purges_old_queue_ownership_immediately() {
+    let mut service = SessionService::new(&test_config());
+    let runtime_session = service
+        .create_session(
+            CreateSessionRequest::new("publication-workspace", "publication-worktree")
+                .with_hidden(true),
+        )
+        .expect("publication runtime session should be created");
+    let mut old_workflow = WorkflowDefinition::new("workflow-old", Some("old".to_string()));
+    let old_node = old_workflow.add_node(WorkflowNodeDefinition::new("old-node", "agent-old"));
+    let old_endpoint = old_workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "old-endpoint",
+        Some("entry".to_string()),
+        old_node.id(),
+    ));
+    let old_queue = crate::session::WorkflowPromptQueueDefinition::new(
+        "workflow-old:notifications",
+        old_workflow.id(),
+        "notifications",
+        0,
+    );
+    {
+        let session = service
+            .get_session_mut_for_operation(runtime_session.id(), "test publication replacement")
+            .expect("runtime session should be mutable");
+        session.create_workflow(old_workflow.clone());
+        session.add_workflow_prompt_queue(old_queue.clone());
+        session.enqueue_workflow_prompt(crate::session::WorkflowQueuedPrompt::new(
+            crate::session::WorkflowQueuedPromptInput {
+                id: "queued-old-publication".to_string(),
+                queue_id: old_queue.id().to_string(),
+                workflow_id: old_workflow.id().to_string(),
+                endpoint_id: old_endpoint.id().to_string(),
+                prompt: Some("must not appear in replacement".to_string()),
+                publication_invocation: None,
+                source: crate::session::WorkflowQueuedPromptSource::Event,
+                schedule_id: None,
+            },
+        ));
+    }
+
+    let mut new_workflow = WorkflowDefinition::new("workflow-new", Some("new".to_string()));
+    let new_node = new_workflow.add_node(WorkflowNodeDefinition::new("new-node", "agent-new"));
+    new_workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "new-endpoint",
+        Some("entry".to_string()),
+        new_node.id(),
+    ));
+    let replaced = service
+        .replace_publication_runtime_workflows(
+            runtime_session.id(),
+            vec![new_workflow.clone()],
+            vec![crate::session::WorkflowPromptQueueDefinition::default_queue(new_workflow.id())],
+            Vec::new(),
+        )
+        .expect("publication runtime replacement should succeed");
+
+    assert_eq!(
+        replaced
+            .workflow_queued_prompts()
+            .iter()
+            .map(|prompt| prompt.id())
+            .collect::<Vec<_>>(),
+        Vec::<&str>::new()
+    );
+    assert!(replaced.workflow("workflow-old").is_none());
+    assert!(replaced
+        .workflow_prompt_queues()
+        .iter()
+        .all(|queue| { queue.workflow_id() == "workflow-new" }));
+}
+
+#[test]
 fn restart_reconciliation_drops_queued_prompt_with_missing_workflow_ownership() {
     let mut service = SessionService::new(&test_config());
     let mut session = service

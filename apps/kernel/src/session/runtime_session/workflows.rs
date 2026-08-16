@@ -173,6 +173,11 @@ impl RuntimeSession {
         for workflow_id in workflow_ids {
             self.ensure_default_workflow_prompt_queue(&workflow_id);
         }
+        // Materializing a publication replaces the runtime-owned workflow graph.
+        // Drop queue records that point at the previous graph immediately. Waiting
+        // for restart reconciliation leaves them visible in the session-wide queue
+        // inventory and makes them look like they belong to the replacement workflow.
+        self.reconcile_workflow_queue_ownership();
     }
 
     pub fn remove_workflow(&mut self, workflow_id: &str) -> Option<WorkflowDefinition> {
