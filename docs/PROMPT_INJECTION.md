@@ -64,6 +64,11 @@ omitting a description is an optimization and never an authorization boundary.
 5. Add a catalog/render/reset/replay test and update the prompt settings UI
    catalog fallback only if the new entry is visible before a kernel connects.
 
+The disconnected browser catalog is a read-only projection of this same
+catalog, not an independent inventory. When a new entry is added, the Cloud
+fallback must add the same stable ID and a matching focused test; otherwise a
+browser without a compatible kernel would silently show an incomplete list.
+
 The browser Settings workspace and TUI `/settings prompts` commands call the
 authenticated kernel API for list, update, preview, reset-one, and reset-all.
 Cloud never owns prompt content or provider credentials.
