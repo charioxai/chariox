@@ -311,21 +311,11 @@ impl RuntimeSession {
             {
                 continue;
             }
-            // A non-terminal workflow run with an active node must have a durable provider
-            // prompt (or a durable dispatching queue record) that owns the session lane. If
-            // neither exists, the provider turn was lost between snapshots (for example after
-            // an acknowledged provider turn exited before recording completion). Leaving the
-            // run Running/Waiting makes `has_active_session_task` block every later queue head.
-            let orphaned_non_terminal_run = matches!(
-                workflow_run.status(),
-                WorkflowRunStatus::Created
-                    | WorkflowRunStatus::Running
-                    | WorkflowRunStatus::Waiting
-                    | WorkflowRunStatus::Completing
-            );
-            if !orphaned_non_terminal_run {
-                continue;
-            }
+            // A non-terminal workflow run must have a durable provider prompt (or a durable
+            // dispatching queue record) that owns the session lane. If neither exists, the
+            // provider turn was lost between snapshots (for example after an acknowledged
+            // provider turn exited before recording completion). Leaving the run Running/Waiting
+            // makes `has_active_session_task` block every later queue head.
             // Workspace claims are process-local and are retried by the runtime recovery pass;
             // do not classify a blocked node as orphaned before that pass gets a chance to
             // reacquire its claim and dispatch the prepared prompt.
