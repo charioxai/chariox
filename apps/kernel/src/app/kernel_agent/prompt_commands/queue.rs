@@ -23,10 +23,11 @@ impl<'a> KernelAgentService<'a> {
                 peeked.source_attachment_id(),
             );
             let provider_run_id = match if is_workflow_prompt {
-                crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+                crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
                     self.app,
                     session_id,
                     &target_agent_id,
+                    &peeked,
                 )
             } else {
                 self.app

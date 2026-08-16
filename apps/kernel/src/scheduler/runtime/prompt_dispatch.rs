@@ -131,10 +131,11 @@ pub(super) fn dispatch_workflow_prompt(
     let mut last_retryable_error = None;
     for attempt in 0..3 {
         let provider_run_id =
-            crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+            crate::app::workflow_runtime::ensure_workflow_provider_run_for_prompt_from_runtime(
                 app,
                 session_id,
                 target_agent_id,
+                prompt,
             )?;
         match dispatch(app, &provider_run_id) {
             Ok(()) => {
@@ -164,6 +165,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,
     agent_id: &str,
+    event_reply_enabled: bool,
 ) -> Result<String, DaemonError> {
     match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
         Ok(provider_run_id) => {
@@ -172,7 +174,9 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                     session_id: session_id.to_string(),
                 });
             };
-            if run.workflow_tools_enabled() {
+            if run.workflow_tools_enabled()
+                && run.workflow_event_reply_enabled() == event_reply_enabled
+            {
                 app.sessions_mut()
                     .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
                 return Ok(provider_run_id);
@@ -186,12 +190,14 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
             {
                 return Ok(provider_run_id);
             }
-            let request = workflow_provider_request(app, session_id, agent_id)?;
+            let request =
+                workflow_provider_request(app, session_id, agent_id, event_reply_enabled)?;
             let provider_run = app.start_workflow_provider_launch(request)?;
             Ok(provider_run.id().to_string())
         }
         Err(DaemonError::NoActiveProviderRun { .. }) => {
-            let request = workflow_provider_request(app, session_id, agent_id)?;
+            let request =
+                workflow_provider_request(app, session_id, agent_id, event_reply_enabled)?;
             let provider_run = app.start_workflow_provider_launch(request)?;
             Ok(provider_run.id().to_string())
         }
@@ -203,6 +209,7 @@ fn workflow_provider_request(
     app: &DaemonApp,
     session_id: &str,
     agent_id: &str,
+    event_reply_enabled: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
     let agent = app.agents().get_agent(agent_id)?;
     let provider = crate::provider::provider_id_for_launch(agent.provider());
@@ -216,6 +223,7 @@ fn workflow_provider_request(
         agent.provider_account_profile(),
         agent.model().unwrap_or("default"),
     )
+    .with_workflow_event_reply(event_reply_enabled)
     .with_agent_id(agent.id().to_string())
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)

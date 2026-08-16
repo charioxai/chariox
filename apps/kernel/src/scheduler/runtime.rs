@@ -564,7 +564,21 @@ pub fn ensure_workflow_provider_run_for_agent(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    prompt_dispatch::ensure_workflow_provider_run_for_agent(app, session_id, agent_id)
+    ensure_workflow_provider_run_for_agent_with_event_reply(app, session_id, agent_id, false)
+}
+
+pub fn ensure_workflow_provider_run_for_agent_with_event_reply(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    event_reply_enabled: bool,
+) -> Result<String, DaemonError> {
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+    )
 }
 
 pub fn read_workflow_console(
