@@ -294,49 +294,85 @@ impl RuntimeSession {
             })
             .filter_map(|queued_prompt| queued_prompt.workflow_run_id().map(str::to_string))
             .collect::<BTreeSet<_>>();
-        let mut orphaned_prepared_workflow_run_ids = Vec::new();
+        let mut orphaned_workflow_run_ids = Vec::new();
         for workflow_run in &mut self.workflow_runs {
-            let Some(active_node_run_id) = workflow_run.active_node_run_id().map(str::to_string)
-            else {
+            if !matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Created
+                    | WorkflowRunStatus::Running
+                    | WorkflowRunStatus::Waiting
+            ) {
                 continue;
-            };
+            }
             if durable_workflow_prompt_targets
-                .contains(&(workflow_run.id().to_string(), active_node_run_id.clone()))
+                .iter()
+                .any(|(run_id, _)| run_id == workflow_run.id())
                 || durable_workflow_run_targets.contains(workflow_run.id())
             {
                 continue;
             }
-            let orphaned_created_run = workflow_run.status() == WorkflowRunStatus::Created;
-            let Some(node_run) = workflow_run.node_run_mut(&active_node_run_id) else {
-                continue;
-            };
-            let orphaned_prepared_turn = node_run.status() == WorkflowNodeRunStatus::Ready
-                && node_run.turn_envelope().is_some_and(|envelope| {
-                    envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared
-                });
-            if !orphaned_prepared_turn && !orphaned_created_run {
+            // A non-terminal workflow run with an active node must have a durable provider
+            // prompt (or a durable dispatching queue record) that owns the session lane. If
+            // neither exists, the provider turn was lost between snapshots (for example after
+            // an acknowledged provider turn exited before recording completion). Leaving the
+            // run Running/Waiting makes `has_active_session_task` block every later queue head.
+            let orphaned_non_terminal_run = matches!(
+                workflow_run.status(),
+                WorkflowRunStatus::Created
+                    | WorkflowRunStatus::Running
+                    | WorkflowRunStatus::Waiting
+                    | WorkflowRunStatus::Completing
+            );
+            if !orphaned_non_terminal_run {
                 continue;
             }
-            node_run.set_status(WorkflowNodeRunStatus::Stopped);
-            if let Some(envelope) = node_run.turn_envelope_mut() {
-                envelope.mark_cancelled();
+            // Workspace claims are process-local and are retried by the runtime recovery pass;
+            // do not classify a blocked node as orphaned before that pass gets a chance to
+            // reacquire its claim and dispatch the prepared prompt.
+            if workflow_run
+                .node_runs()
+                .iter()
+                .any(|node| node.status() == WorkflowNodeRunStatus::BlockedOnWorkspaceClaim)
+            {
+                continue;
+            }
+            let orphaned_node_run_id = workflow_run
+                .active_node_run_id()
+                .map(str::to_string)
+                .or_else(|| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node| {
+                            !matches!(
+                                node.status(),
+                                WorkflowNodeRunStatus::Completed
+                                    | WorkflowNodeRunStatus::Failed
+                                    | WorkflowNodeRunStatus::Stopped
+                            )
+                        })
+                        .map(|node| node.id().to_string())
+                });
+            if let Some(node_run_id) = orphaned_node_run_id.as_deref() {
+                if let Some(node_run) = workflow_run.node_run_mut(node_run_id) {
+                    node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                    if let Some(envelope) = node_run.turn_envelope_mut() {
+                        envelope.mark_cancelled();
+                    }
+                }
             }
             workflow_run.clear_active_node_run();
             workflow_run.add_failure_event(WorkflowFailureEvent::new(
                 WorkflowFailureKind::RunStopped,
-                active_node_run_id,
+                orphaned_node_run_id.unwrap_or_else(|| workflow_run.id().to_string()),
                 Vec::new(),
-                if orphaned_created_run {
-                    "created workflow run had no durable active or queued prompt after kernel restart"
-                } else {
-                    "prepared workflow turn had no durable active or queued prompt after kernel restart"
-                },
+                "non-terminal workflow run had no durable active or queued prompt after kernel restart",
             ));
             workflow_run.set_status(WorkflowRunStatus::Stopped);
-            orphaned_prepared_workflow_run_ids.push(workflow_run.id().to_string());
+            orphaned_workflow_run_ids.push(workflow_run.id().to_string());
             reconciliation.stopped_workflow_run_count += 1;
         }
-        for workflow_run_id in orphaned_prepared_workflow_run_ids {
+        for workflow_run_id in orphaned_workflow_run_ids {
             self.prompt_runtime.remove_queued_prompts_by_workflow_run(
                 &workflow_run_id,
                 self.focused_agent_id.as_deref(),
