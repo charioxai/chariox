@@ -101,11 +101,35 @@ impl KernelRuntimeOwnedState {
         format!("workflow-node:{session_id}:{workflow_run_id}:{workflow_node_run_id}")
     }
 
+    /// Promote a workflow prompt that was already admitted to the provider queue.
+    ///
+    /// Queue promotion can happen outside the normal workflow launch path (for
+    /// example after a provider cancellation). Keep the workflow run transition
+    /// coupled to that promotion so a Ready node cannot strand the session with
+    /// a provider prompt that is already Dispatching.
+    pub(super) fn workflow_mark_prompt_started(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(());
+        };
+        self.session_store.write().mark_workflow_turn_dispatched(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        self.workflow_start_prompt(session_id, prompt)
+    }
+
     pub(super) fn workflow_submit_prepared_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
-        workflow_run_id: &str,
-        workflow_node_run_id: &str,
+        _workflow_run_id: &str,
+        _workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let prepared = normalize_workflow_prepared_prompt(prepared);
         let mut dispatches = WorkflowPromptDispatches::default();
@@ -127,12 +151,7 @@ impl KernelRuntimeOwnedState {
         };
         dispatches.mark_workflow_prompt_admitted();
         if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome {
-            let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                &prepared.session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            );
-            let _ = self.workflow_start_prompt(&prepared.session_id, prompt);
+            self.workflow_mark_prompt_started(&prepared.session_id, prompt)?;
         }
         if let Some(dispatch) = submission.dispatch.take() {
             dispatches.local.push(dispatch);

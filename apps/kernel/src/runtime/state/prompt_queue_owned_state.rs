@@ -372,17 +372,7 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
-        if let (Some(workflow_run_id), Some(workflow_node_run_id)) = (
-            started_next.workflow_run_id(),
-            started_next.workflow_node_run_id(),
-        ) {
-            let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            )?;
-            let _ = self.workflow_start_prompt(session_id, &started_next)?;
-        }
+        self.workflow_mark_prompt_started(session_id, &started_next)?;
         let _ = self.session_snapshot(session_id)?;
         Ok(Some(crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
