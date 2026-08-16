@@ -14,6 +14,8 @@ use crate::session::PromptAttachment;
 
 const PROMPT_REGISTRY_VERSION: &str = "2";
 const PROMPT_DEFAULTS_STATE_FILE: &str = ".bundled-defaults.json";
+const PROMPT_MANIFEST_MARKER_PREFIX: &str = "<!-- chariox-prompt-manifest-entry:";
+const PROMPT_MANIFEST_MARKER_SUFFIX: &str = " -->";
 const LEGACY_WORKFLOW_TURN_HASHES: &[&str] = &[
     "ac2ffb8b8e5542bfbeda71eb61a89938215dbf2d5b2027545256d81f19c3b87e",
     "c5867472e1017d69c9426244ea9da5f5a1b03e86054fc3c6416442e55f518e4b",
@@ -42,6 +44,8 @@ const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
     include_str!("provider/agent_message_context_instructions.md");
 const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_SCHEDULED_PROMPT: &str =
+    include_str!("provider/runtime_scheduled_prompt_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
 const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
@@ -626,6 +630,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
+        "runtime/scheduled-prompt" => ("Scheduled prompt context", "runtime", "provider-agent"),
         id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
         id if id.starts_with("runtime/") => {
             ("Runtime provider guidance", "runtime", "provider-agent")
@@ -731,6 +736,82 @@ pub(crate) fn render_configured_prompt(
     render_bundled_prompt(&body, substitutions)
 }
 
+pub(crate) fn render_configured_prompt_with_manifest(
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> (String, PromptManifestEntry) {
+    render_configured_prompt_with_manifest_from_registry(
+        &PromptTemplateRegistry::from_env(),
+        template_id,
+        bundled_default,
+        substitutions,
+    )
+}
+
+fn render_configured_prompt_with_manifest_from_registry(
+    registry: &PromptTemplateRegistry,
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> (String, PromptManifestEntry) {
+    let body = registry
+        .read_setting(template_id)
+        .map(|setting| setting.current)
+        .unwrap_or_else(|_| bundled_default.to_string());
+    let rendered = render_bundled_prompt(&body, substitutions);
+    (
+        rendered,
+        PromptManifestEntry {
+            template_id: template_id.to_string(),
+            sha256: sha256_hex(&body),
+        },
+    )
+}
+
+pub(crate) fn attach_prompt_manifest_entry(
+    context: impl Into<String>,
+    entry: &PromptManifestEntry,
+) -> String {
+    let marker = serde_json::to_string(entry).expect("prompt manifest entry must serialize");
+    format!(
+        "{PROMPT_MANIFEST_MARKER_PREFIX}{marker}{PROMPT_MANIFEST_MARKER_SUFFIX}\n{}",
+        context.into()
+    )
+}
+
+fn extract_prompt_manifest_entries(context: &str) -> (Option<&str>, Vec<PromptManifestEntry>) {
+    let mut entries = Vec::new();
+    let mut body = context;
+    loop {
+        let Some(line_end) = body.find('\n') else {
+            break;
+        };
+        let line = &body[..line_end];
+        let Some(payload) = line
+            .strip_prefix(PROMPT_MANIFEST_MARKER_PREFIX)
+            .and_then(|value| value.strip_suffix(PROMPT_MANIFEST_MARKER_SUFFIX))
+        else {
+            break;
+        };
+        if let Ok(entry) = serde_json::from_str::<PromptManifestEntry>(payload) {
+            entries.push(entry);
+            body = &body[line_end + 1..];
+        } else {
+            break;
+        }
+    }
+    (Some(body), entries)
+}
+
+pub(crate) fn strip_prompt_manifest_entries(context: &str) -> String {
+    extract_prompt_manifest_entries(context)
+        .0
+        .unwrap_or(context)
+        .trim()
+        .to_string()
+}
+
 fn prompt_settings_error(message: &str, setting_id: &str) -> DaemonError {
     DaemonError::ProviderProtocol {
         provider_run_id: "prompt-settings".to_string(),
@@ -789,6 +870,10 @@ impl PromptAssemblyService {
                 &mut manifest,
             )?;
         }
+        let (additional_hidden_context, additional_manifest_entries) = additional_hidden_context
+            .map(extract_prompt_manifest_entries)
+            .unwrap_or_default();
+        manifest.entries.extend(additional_manifest_entries);
         if let Some(additional_hidden_context) = additional_hidden_context
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -956,6 +1041,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         ),
         BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new("runtime/scheduled-prompt", RUNTIME_SCHEDULED_PROMPT),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
         BundledPromptTemplate::new(
@@ -1390,7 +1476,7 @@ mod tests {
         registry
             .materialize_bundled_defaults()
             .expect("defaults should materialize");
-        let service = PromptAssemblyService::new(registry);
+        let service = PromptAssemblyService::new(registry.clone());
 
         let envelope = service
             .assemble_provider_turn(
@@ -1419,6 +1505,53 @@ mod tests {
         assert!(envelope
             .hidden_system_context
             .contains("<native-permission-instructions>"));
+    }
+
+    #[test]
+    fn scheduled_context_manifest_survives_provider_assembly() {
+        let root = temp_prompt_root("scheduled-manifest");
+        let registry = PromptTemplateRegistry::new(root);
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        let service = PromptAssemblyService::new(registry.clone());
+        let (context, entry) = render_configured_prompt_with_manifest_from_registry(
+            &registry,
+            "runtime/scheduled-prompt",
+            bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled template should be bundled"),
+            &[("SCHEDULE_ID", "schedule-test")],
+        );
+        let envelope = service
+            .assemble_provider_turn(
+                &test_run(false),
+                "scheduled prompt",
+                Some(&attach_prompt_manifest_entry(context, &entry)),
+                Vec::new(),
+                PromptAssemblyMode::NormalProviderTurn,
+            )
+            .expect("envelope should assemble");
+
+        assert!(envelope.manifest.entries.contains(&entry));
+        assert!(envelope
+            .hidden_system_context
+            .contains("<chariox-scheduled-prompt schedule_id=\"schedule-test\">"));
+        assert!(!envelope
+            .hidden_system_context
+            .contains(PROMPT_MANIFEST_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn native_hook_context_strips_internal_manifest_marker_but_keeps_schedule() {
+        let entry = PromptManifestEntry {
+            template_id: "runtime/scheduled-prompt".to_string(),
+            sha256: "abc".to_string(),
+        };
+        let context = attach_prompt_manifest_entry("Run the scheduled task.", &entry);
+        assert_eq!(
+            strip_prompt_manifest_entries(&context),
+            "Run the scheduled task."
+        );
     }
 
     #[test]
@@ -2020,6 +2153,35 @@ mod tests {
             None => std::env::remove_var("CHARIOX_HOME"),
         }
         assert_eq!(rendered, "OVERRIDE 1 3 bad");
+    }
+
+    #[test]
+    fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        let _guard = env_lock::lock();
+        let home = temp_prompt_root("configured-scheduled-prompt");
+        let root = home.join("prompts");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("scheduled-prompt.md"),
+            "<scheduled>{{SCHEDULE_ID}}</scheduled>",
+        )
+        .expect("scheduled prompt override should write");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let rendered = render_configured_prompt(
+            "runtime/scheduled-prompt",
+            bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled prompt should be registered"),
+            &[("SCHEDULE_ID", "schedule-7")],
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        assert_eq!(rendered, "<scheduled>schedule-7</scheduled>");
     }
 
     #[test]

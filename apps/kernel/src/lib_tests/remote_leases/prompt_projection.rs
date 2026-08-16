@@ -48,8 +48,13 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .into_iter()
         .all(|session| session.id() != leased_agent.backing_session_id));
 
+    let scheduled_context = "<!-- chariox-prompt-manifest-entry:{\"template_id\":\"runtime/scheduled-prompt\",\"sha256\":\"scheduled-hash\"} -->\n<chariox-scheduled-prompt schedule_id=\"schedule-remote\">";
     let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
-        .submit_leased_prompt(&leased_agent.id, "remote leased prompt\n", Vec::new())
+        .submit_leased_prompt_with_hidden_context(
+            &leased_agent.id,
+            "remote leased prompt\n",
+            scheduled_context,
+        )
         .expect("leased prompt should submit");
     match outcome {
         PromptSubmissionOutcome::Started { .. } => {}
@@ -66,6 +71,16 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         provider_run.agent_instance_id(),
         Some(leased_agent.backing_agent_id.as_str())
     );
+    let backing_active = app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("backing prompt should be active")
+        .expect("backing prompt should exist");
+    assert!(backing_active
+        .hidden_system_context()
+        .contains("<chariox-scheduled-prompt schedule_id=\"schedule-remote\">"));
 
     let completion = RemoteLeaseRuntime::new(&mut app)
         .complete_leased_prompt(&leased_agent.id)
@@ -381,6 +396,7 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
         .prepare_leased_prompt_submission(
             &leased_agent.id,
             "queued while provider starts\n",
+            "",
             Vec::new(),
             None,
             None,

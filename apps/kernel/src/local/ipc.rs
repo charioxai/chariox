@@ -339,7 +339,13 @@ fn serialize_request(request: &LocalDaemonRequest) -> Result<Vec<u8>, DaemonErro
 }
 
 fn encode_envelope(envelope: IpcResponseEnvelope) -> Result<Vec<u8>, DaemonError> {
-    serde_json::to_vec(&envelope).map_err(|error| DaemonError::LocalTransport {
+    let mut value =
+        serde_json::to_value(envelope).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize local response",
+            message: error.to_string(),
+        })?;
+    crate::local::redact_client_response_value(&mut value);
+    serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize local response",
         message: error.to_string(),
     })

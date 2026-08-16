@@ -5,6 +5,7 @@ use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
+use serde_json::Value;
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 use crate::attachment::ClientCapabilityLevel;
@@ -33,6 +34,47 @@ fn local_ipc_test_guard() -> MutexGuard<'static, ()> {
     LOCAL_IPC_TEST_LOCK
         .lock()
         .unwrap_or_else(|poison| poison.into_inner())
+}
+
+#[test]
+fn local_ipc_response_redacts_remote_relay_credentials() {
+    let mut agent = crate::agent::AgentInstance::new(
+        "agent-remote",
+        "agent-ref-remote",
+        "session-1",
+        None,
+        "codex",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_remote_execution(Some(crate::agent::RemoteAgentBinding {
+        worker_kernel_id: "worker-kernel".to_string(),
+        worker_machine_id: "worker-machine".to_string(),
+        execution_lease_id: "lease-1".to_string(),
+        leased_agent_id: "leased-agent-1".to_string(),
+        active_worker_provider_run_id: None,
+        relay_url: Some("wss://relay.example.test".to_string()),
+        relay_token: Some("secret-token".to_string()),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    }));
+    let bytes = super::encode_envelope(super::IpcResponseEnvelope {
+        response: Some(LocalDaemonResponse::AgentMovedToRemote { agent }),
+        error: None,
+    })
+    .expect("local response should encode");
+    let value: Value = serde_json::from_slice(&bytes).expect("encoded response should decode");
+    assert_eq!(
+        value.pointer("/response/AgentMovedToRemote/agent/remote_execution/relay_token"),
+        None
+    );
+    assert_eq!(
+        value.pointer("/response/AgentMovedToRemote/agent/remote_execution/relay_url"),
+        Some(&serde_json::json!("wss://relay.example.test"))
+    );
 }
 
 fn run_local_ipc_async_test<F, Fut>(name: &str, worker_threads: usize, test: F)

@@ -38,3 +38,25 @@ mod tests;
 mod types;
 
 pub use types::*;
+
+/// Redacts kernel-owned relay credentials before a response crosses any client boundary.
+pub(crate) fn redact_client_response_value(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            if let Some(serde_json::Value::Object(remote_execution)) =
+                object.get_mut("remote_execution")
+            {
+                remote_execution.remove("relay_token");
+            }
+            for child in object.values_mut() {
+                redact_client_response_value(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                redact_client_response_value(child);
+            }
+        }
+        _ => {}
+    }
+}

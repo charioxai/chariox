@@ -205,6 +205,9 @@ fn attached_remote_agent_resume_state_is_not_observed_from_home_provider_files()
                 active_worker_provider_run_id: Some("worker-provider-run".to_string()),
                 relay_url: Some("ws://127.0.0.1:47000".to_string()),
                 relay_token: Some("test-token".to_string()),
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             },
         )
         .expect("agent should bind to worker");

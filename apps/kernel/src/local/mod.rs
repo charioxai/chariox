@@ -6,6 +6,7 @@ pub(crate) mod provider_requests;
 #[cfg(test)]
 pub(crate) mod test_support;
 
+pub(crate) use api::redact_client_response_value;
 pub use api::{
     deployment_credential_enrollment_interaction_id,
     deployment_credential_enrollment_service_subject,

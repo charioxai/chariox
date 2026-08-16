@@ -196,6 +196,15 @@ impl<'a> KernelAgentService<'a> {
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
         let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
+        let remote_execution =
+            agent
+                .remote_execution()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "submit remote prepared prompt",
+                    message: format!("agent `{}` lost its remote binding", dispatch.agent_id),
+                })?;
+        self.app
+            .ensure_remote_agent_binding_protocol(remote_execution)?;
         let (required_mcps, required_skills, remote_extension_manifest) =
             self.app.remote_prompt_capabilities_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
@@ -209,6 +218,7 @@ impl<'a> KernelAgentService<'a> {
                 RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: dispatch.leased_agent_id.clone(),
                     prompt: dispatch.prompt.clone(),
+                    hidden_system_context: dispatch.hidden_system_context.clone(),
                     attachments,
                     workflow_context: dispatch.workflow_context.clone(),
                     git_context: Some(remote_git_turn_context(&dispatch)),
@@ -461,6 +471,15 @@ impl<'a> KernelAgentService<'a> {
                 }
             }
             let agent = self.app.agents().get_agent(agent_id)?;
+            let remote_execution =
+                agent
+                    .remote_execution()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "advance remote queued prompt",
+                        message: format!("agent `{agent_id}` lost its remote binding"),
+                    })?;
+            self.app
+                .ensure_remote_agent_binding_protocol(remote_execution)?;
             let (required_mcps, required_skills, remote_extension_manifest) =
                 self.app.remote_prompt_capabilities_for_agent(&agent)?;
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();
@@ -474,6 +493,7 @@ impl<'a> KernelAgentService<'a> {
                     RelayPeerRequest::SubmitLeasedPrompt {
                         leased_agent_id: leased_agent_id.to_string(),
                         prompt: peeked.prompt().to_string(),
+                        hidden_system_context: peeked.hidden_system_context().to_string(),
                         attachments: self
                             .app
                             .serialize_remote_prompt_attachments(peeked.attachments())?,
@@ -579,6 +599,9 @@ mod tests {
             active_worker_provider_run_id: Some("worker-run-old".to_string()),
             relay_url: None,
             relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         };
 
         assert_eq!(

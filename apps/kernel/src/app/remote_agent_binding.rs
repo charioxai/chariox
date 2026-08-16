@@ -383,6 +383,7 @@ impl DaemonApp {
                 relay_token: relay_override
                     .as_ref()
                     .and_then(|config| config.relay_token.clone()),
+                relay_peer_protocol_version: Some(relay_peer_protocol_version),
             },
         ) {
             Ok(bound) => bound,
@@ -791,6 +792,24 @@ impl DaemonApp {
         config
     }
 
+    pub(crate) fn ensure_remote_agent_binding_protocol(
+        &self,
+        remote_execution: &RemoteAgentBinding,
+    ) -> Result<(), DaemonError> {
+        if remote_execution.relay_peer_protocol_compatible() {
+            return Ok(());
+        }
+        Err(DaemonError::LocalTransport {
+            operation: "dispatch remote agent prompt",
+            message: format!(
+                "remote worker `{}` has an incompatible or legacy relay peer protocol {:?}; rebind the remote agent before dispatch (current protocol {})",
+                remote_execution.worker_kernel_id,
+                remote_execution.relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        })
+    }
+
     fn remember_remote_worker_public_key(
         &self,
         relay_config: &DaemonConfig,
@@ -870,6 +889,32 @@ mod tests {
         RuntimeProviderRun,
     };
     use crate::session::CreateSessionRequest;
+    use crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION;
+
+    #[test]
+    fn restored_legacy_binding_is_rejected_until_rebound() {
+        let legacy = RemoteAgentBinding {
+            worker_kernel_id: "worker-kernel".to_string(),
+            worker_machine_id: "worker-machine".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: None,
+            relay_token: None,
+            relay_peer_protocol_version: None,
+        };
+        assert!(!legacy.relay_peer_protocol_compatible());
+        let current = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION),
+            ..legacy
+        };
+        assert!(current.relay_peer_protocol_compatible());
+        let newer = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION + 1),
+            ..current
+        };
+        assert!(newer.relay_peer_protocol_compatible());
+    }
 
     fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
@@ -936,6 +981,9 @@ mod tests {
                     active_worker_provider_run_id: Some("worker-provider-run-1".to_string()),
                     relay_url: None,
                     relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
                 },
             )
             .expect("agent should bind to worker");
@@ -1224,6 +1272,9 @@ mod tests {
             active_worker_provider_run_id: None,
             relay_url: Some("wss://relay.example.test".to_string()),
             relay_token: Some("short-lived-token".to_string()),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         });
 
         assert_eq!(
@@ -1249,6 +1300,9 @@ mod tests {
             active_worker_provider_run_id: None,
             relay_url: Some("ws://127.0.0.1:54909".to_string()),
             relay_token: Some("binding-token".to_string()),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         });
 
         assert_eq!(

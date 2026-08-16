@@ -336,6 +336,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         prompt: &str,
+        hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
@@ -345,6 +346,7 @@ impl KernelRuntimeState {
     ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
         let leased_agent_id = leased_agent_id.to_string();
         let prompt = prompt.to_string();
+        let hidden_system_context = hidden_system_context.to_string();
         let replay_leased_agent_id = leased_agent_id.clone();
         let replay_git_context = git_context.clone();
         if let Some(replayed) = self
@@ -363,6 +365,7 @@ impl KernelRuntimeState {
                 RemoteLeaseRuntime::new(app).prepare_leased_prompt_submission(
                     &leased_agent_id,
                     &prompt,
+                    &hidden_system_context,
                     attachments,
                     workflow_context,
                     git_context,

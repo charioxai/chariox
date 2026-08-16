@@ -302,6 +302,7 @@ pub(crate) struct KernelRemotePromptDispatch {
     pub(crate) relay_token: Option<String>,
     pub(crate) source_attachment_id: String,
     pub(crate) prompt: String,
+    pub(crate) hidden_system_context: String,
     pub(crate) attachments: Vec<PromptAttachment>,
     pub(crate) workspace_live_sync_mode: Option<crate::config::WorkspaceLiveSyncMode>,
     pub(crate) prompt_origin: PromptOrigin,

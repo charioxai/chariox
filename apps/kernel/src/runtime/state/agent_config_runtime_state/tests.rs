@@ -157,6 +157,9 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
                 active_worker_provider_run_id: Some("worker-run-old".to_string()),
                 relay_url: None,
                 relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             },
         )
         .expect("agent should bind to remote execution");

@@ -776,7 +776,12 @@ fn kernel_error(code: &str, error: &DaemonError, retryable: bool) -> KernelTrans
 }
 
 pub(crate) fn serialize_frame(frame: &KernelOutgoingFrame) -> Result<String, DaemonError> {
-    serde_json::to_string(frame).map_err(|error| DaemonError::LocalTransport {
+    let mut value = serde_json::to_value(frame).map_err(|error| DaemonError::LocalTransport {
+        operation: "serialize kernel websocket frame",
+        message: error.to_string(),
+    })?;
+    crate::local::redact_client_response_value(&mut value);
+    serde_json::to_string(&value).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize kernel websocket frame",
         message: error.to_string(),
     })

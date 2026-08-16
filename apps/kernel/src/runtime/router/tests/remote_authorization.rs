@@ -98,6 +98,9 @@ fn home_extension_script_router(
                 active_worker_provider_run_id: Some("provider-run-1".to_string()),
                 relay_url: None,
                 relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             },
         )
         .expect("agent should be remote-backed");
@@ -171,6 +174,9 @@ fn remote_home_invocation_router_with_active_prompt(
                 active_worker_provider_run_id: None,
                 relay_url: None,
                 relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             },
         )
         .expect("agent should be remote-backed");

@@ -59,6 +59,7 @@ impl KernelRuntimeOwnedState {
             relay_token: remote_execution.relay_token,
             source_attachment_id: started.source_attachment_id().to_string(),
             prompt: started.prompt().to_string(),
+            hidden_system_context: started.hidden_system_context().to_string(),
             attachments: started.attachments().to_vec(),
             workspace_live_sync_mode: Some(
                 crate::provider::provider_workspace_live_sync_mode_for_session(
@@ -164,6 +165,7 @@ impl KernelRuntimeOwnedState {
                     relay_token: remote_execution.relay_token,
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
+                    hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: prompt.attachments().to_vec(),
                     workspace_live_sync_mode: Some(
                         crate::provider::provider_workspace_live_sync_mode_for_session(
@@ -502,6 +504,9 @@ mod tests {
                     active_worker_provider_run_id: Some("worker-run-1".to_string()),
                     relay_url: None,
                     relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
                 },
             )
             .expect("agent should bind to remote execution");
@@ -621,6 +626,9 @@ mod tests {
                     active_worker_provider_run_id: None,
                     relay_url: None,
                     relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
                 },
             )
             .expect("agent should bind to remote execution");
@@ -798,6 +806,9 @@ mod tests {
                     active_worker_provider_run_id: None,
                     relay_url: None,
                     relay_token: None,
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
                 },
             )
             .expect("agent should bind to remote execution");

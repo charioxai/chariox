@@ -38,6 +38,7 @@ pub(super) fn dispatch_workflow_prompt(
 ) -> Result<(), DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+        app.ensure_remote_agent_binding_protocol(&remote_execution)?;
         app.mark_active_prompt_delivery(
             session_id,
             target_agent_id,
@@ -67,6 +68,7 @@ pub(super) fn dispatch_workflow_prompt(
                 RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     prompt: prompt.prompt().to_string(),
+                    hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
                     workflow_context: Some(workflow_context),
                     git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
