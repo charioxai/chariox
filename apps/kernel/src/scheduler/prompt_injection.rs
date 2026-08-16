@@ -1,7 +1,7 @@
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::prompt_assembly::{
-    assembled_prompt_component, bundled_metaagent_event_template,
+    assembled_prompt_component, bundled_metaagent_event_template, bundled_prompt_template,
     bundled_workflow_run_completion_template, bundled_workflow_run_intermediate_output_template,
     bundled_workflow_turn_template, prompt_component, render_bundled_prompt,
     unescape_prompt_component_delimiters, PromptManifest, PromptTemplate, PromptTemplateRegistry,
@@ -96,7 +96,8 @@ pub(crate) fn render_metaagent_event_prompt_assembly(
 pub(crate) fn render_metaagent_task_recovery_prompt(task_id: &str) -> String {
     crate::prompt_assembly::render_configured_prompt(
         "runtime/metaagent-task-recovery",
-        include_str!("../provider/metaagent_task_recovery_instructions.md"),
+        bundled_prompt_template("runtime/metaagent-task-recovery")
+            .expect("metaagent recovery prompt must be registered"),
         &[("TASK_ID", task_id.trim())],
     )
 }
@@ -245,7 +246,8 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
         .map(|content| {
             let template = prompt_loader.load(
                 "workflow/control-mailbox",
-                include_str!("../provider/workflow_control_mailbox_instructions.md"),
+                bundled_prompt_template("workflow/control-mailbox")
+                    .expect("workflow control mailbox prompt must be registered"),
             );
             manifest.push_body(template.id.clone(), &template.body);
             let body = render_bundled_prompt(&template.body, &[("CONTENT", content)]);
@@ -270,7 +272,8 @@ pub(crate) fn build_workflow_turn_prompt_assembly(
     } else {
         let template = prompt_loader.load(
             "workflow/edge-contracts",
-            include_str!("../provider/workflow_edge_contracts_instructions.md"),
+            bundled_prompt_template("workflow/edge-contracts")
+                .expect("workflow edge contracts prompt must be registered"),
         );
         manifest.push_body(template.id.clone(), &template.body);
         let contracts = strip_legacy_prompt_heading(
@@ -393,7 +396,8 @@ fn workflow_node_instructions(
         .unwrap_or_else(|| {
             load_prompt_registry_template(
                 "workflow/node-default-instructions",
-                include_str!("../provider/workflow_node_default_instructions.md"),
+                bundled_prompt_template("workflow/node-default-instructions")
+                    .expect("workflow node default prompt must be registered"),
             )
             .body
         })
@@ -402,7 +406,8 @@ fn workflow_node_instructions(
 pub(crate) fn workflow_node_default_instructions() -> String {
     load_prompt_registry_template(
         "workflow/node-default-instructions",
-        include_str!("../provider/workflow_node_default_instructions.md"),
+        bundled_prompt_template("workflow/node-default-instructions")
+            .expect("workflow node default prompt must be registered"),
     )
     .body
 }
@@ -485,7 +490,8 @@ fn workflow_node_prompt_fragments(
     if let Some(context) = context {
         let node_turn_template = prompt_loader.load(
             "workflow/node-turn-context",
-            include_str!("../provider/workflow_node_turn_context_instructions.md"),
+            bundled_prompt_template("workflow/node-turn-context")
+                .expect("workflow node turn prompt must be registered"),
         );
         manifest.push_body(node_turn_template.id.clone(), &node_turn_template.body);
         fragments.push(render_bundled_prompt(
@@ -533,7 +539,8 @@ fn workflow_node_prompt_fragments(
             if let Some(contract) = context.run_output_contract.as_deref() {
                 let template = prompt_loader.load(
                     "workflow/output-contract",
-                    include_str!("../provider/workflow_output_contract_instructions.md"),
+                    bundled_prompt_template("workflow/output-contract")
+                        .expect("workflow output contract prompt must be registered"),
                 );
                 manifest.push_body(template.id, &template.body);
                 fragments.push(contract.to_string());
@@ -552,7 +559,8 @@ pub(crate) fn workflow_run_output_contract_block(workflow: &WorkflowDefinition) 
     let schema_json = serde_json::to_string(schema.schema()).ok()?;
     let template = load_prompt_registry_template(
         "workflow/output-contract",
-        include_str!("../provider/workflow_output_contract_instructions.md"),
+        bundled_prompt_template("workflow/output-contract")
+            .expect("workflow output contract prompt must be registered"),
     );
     Some(render_bundled_prompt(
         &template.body,
@@ -633,7 +641,8 @@ fn workflow_last_turn_notice_block(
     }
     let template = prompt_loader.load(
         "workflow/last-turn",
-        include_str!("../provider/workflow_last_turn_instructions.md"),
+        bundled_prompt_template("workflow/last-turn")
+            .expect("workflow last-turn prompt must be registered"),
     );
     manifest.push_body(template.id.clone(), &template.body);
     Some(render_bundled_prompt(

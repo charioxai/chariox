@@ -54,7 +54,8 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         event_reply_enabled: bool,
     ) -> Result<String, DaemonError> {
-        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
+        let existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
+        if let Some(run) = existing_run.as_ref() {
             if run.workflow_tools_enabled()
                 && run.workflow_event_reply_enabled() == event_reply_enabled
             {
@@ -96,8 +97,11 @@ impl KernelRuntimeOwnedState {
         .with_agent_id(agent.id().to_string())
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string));
-        if let Some(worktree_id) = agent.worktree_id() {
-            request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
+        if let Some(working_directory) = existing_run
+            .and_then(|run| run.working_directory().cloned())
+            .or_else(|| agent.worktree_id().map(std::path::PathBuf::from))
+        {
+            request = request.with_working_directory(working_directory);
         }
         request = self.prepare_provider_launch_request(
             request,

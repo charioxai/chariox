@@ -44,13 +44,15 @@ impl KernelRuntimeOwnedState {
                 "next_action": if warning.is_none() {
                     crate::prompt_assembly::render_configured_prompt(
                         "workflow/handoff-validation-passed",
-                        include_str!("../../provider/workflow_handoff_validation_passed_instructions.md"),
+                        crate::prompt_assembly::bundled_prompt_template("workflow/handoff-validation-passed")
+                            .expect("workflow handoff validation prompt must be registered"),
                         &[],
                     )
                 } else {
                     crate::prompt_assembly::render_configured_prompt(
                         "workflow/handoff-validation-failed",
-                        include_str!("../../provider/workflow_handoff_validation_failed_instructions.md"),
+                        crate::prompt_assembly::bundled_prompt_template("workflow/handoff-validation-failed")
+                            .expect("workflow handoff validation prompt must be registered"),
                         &[],
                     )
                 },
@@ -407,17 +409,26 @@ fn workflow_output_submission_next_action(is_final: bool, valid: bool) -> String
     match (is_final, valid) {
         (true, true) => crate::prompt_assembly::render_configured_prompt(
             "workflow/output-submission-final-valid",
-            include_str!("../../provider/workflow_output_submission_final_valid_instructions.md"),
+            crate::prompt_assembly::bundled_prompt_template(
+                "workflow/output-submission-final-valid",
+            )
+            .expect("workflow final-valid prompt must be registered"),
             &[],
         ),
         (true, false) => crate::prompt_assembly::render_configured_prompt(
             "workflow/output-submission-final-invalid",
-            include_str!("../../provider/workflow_output_submission_final_invalid_instructions.md"),
+            crate::prompt_assembly::bundled_prompt_template(
+                "workflow/output-submission-final-invalid",
+            )
+            .expect("workflow final-invalid prompt must be registered"),
             &[],
         ),
         (false, _) => crate::prompt_assembly::render_configured_prompt(
             "workflow/output-submission-intermediate",
-            include_str!("../../provider/workflow_output_submission_intermediate_instructions.md"),
+            crate::prompt_assembly::bundled_prompt_template(
+                "workflow/output-submission-intermediate",
+            )
+            .expect("workflow intermediate-output prompt must be registered"),
             &[],
         ),
     }

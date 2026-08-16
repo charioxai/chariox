@@ -228,8 +228,13 @@ fn workflow_provider_request(
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)
     .with_permission_level(effective_config.permission_level);
-    if let Some(worktree_id) = agent.worktree_id() {
-        request = request.with_working_directory(PathBuf::from(worktree_id));
+    if let Some(working_directory) = app
+        .providers()
+        .get_run_for_agent(session_id, agent_id)
+        .and_then(|run| run.working_directory().cloned())
+        .or_else(|| agent.worktree_id().map(PathBuf::from))
+    {
+        request = request.with_working_directory(working_directory);
     }
     Ok(request)
 }

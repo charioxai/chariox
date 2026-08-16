@@ -910,6 +910,18 @@ pub(crate) fn bundled_skill_context_template() -> &'static str {
     RUNTIME_SKILL_CONTEXT
 }
 
+/// Return the immutable Markdown fallback for a catalog id.
+///
+/// Prompt injection callers should obtain bundled text through this boundary
+/// rather than reaching into `src/provider` themselves. User overrides still
+/// flow through `render_configured_prompt`/`PromptTemplateRegistry`.
+pub(crate) fn bundled_prompt_template(template_id: &str) -> Option<&'static str> {
+    bundled_templates()
+        .into_iter()
+        .find(|template| template.id == template_id)
+        .map(|template| template.body)
+}
+
 fn current_kernel_is_slice() -> bool {
     std::env::var("CHARIOX_MACHINE_ID")
         .ok()
@@ -1760,6 +1772,18 @@ mod tests {
                 templates.iter().any(|template| template.body == body),
                 "provider prompt {:?} is not registered in bundled_templates",
                 file.file_name()
+            );
+        }
+    }
+
+    #[test]
+    fn every_catalog_entry_has_a_central_bundled_lookup() {
+        for template in bundled_templates() {
+            assert_eq!(
+                bundled_prompt_template(template.id),
+                Some(template.body),
+                "catalog entry `{}` must resolve through the central lookup",
+                template.id
             );
         }
     }
