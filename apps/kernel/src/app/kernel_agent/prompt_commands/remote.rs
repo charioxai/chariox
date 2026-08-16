@@ -471,6 +471,15 @@ impl<'a> KernelAgentService<'a> {
                 }
             }
             let agent = self.app.agents().get_agent(agent_id)?;
+            let remote_execution =
+                agent
+                    .remote_execution()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "advance remote queued prompt",
+                        message: format!("agent `{agent_id}` lost its remote binding"),
+                    })?;
+            self.app
+                .ensure_remote_agent_binding_protocol(remote_execution)?;
             let (required_mcps, required_skills, remote_extension_manifest) =
                 self.app.remote_prompt_capabilities_for_agent(&agent)?;
             let home_prompt_id = self.app.sessions_mut().reserve_prompt_id();

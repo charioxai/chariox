@@ -909,6 +909,11 @@ mod tests {
             ..legacy
         };
         assert!(current.relay_peer_protocol_compatible());
+        let newer = RemoteAgentBinding {
+            relay_peer_protocol_version: Some(RELAY_PEER_PROTOCOL_VERSION + 1),
+            ..current
+        };
+        assert!(newer.relay_peer_protocol_compatible());
     }
 
     fn cloud_relay_profile(relay_url: &str) -> PersistedCloudRelayProfile {

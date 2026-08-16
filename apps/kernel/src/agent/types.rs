@@ -24,8 +24,9 @@ pub struct RemoteAgentBinding {
 
 impl RemoteAgentBinding {
     pub(crate) fn relay_peer_protocol_compatible(&self) -> bool {
-        self.relay_peer_protocol_version
-            == Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
+        self.relay_peer_protocol_version.is_some_and(|version| {
+            version >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION
+        })
     }
 }
 
