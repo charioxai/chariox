@@ -233,8 +233,7 @@ impl KernelRuntimeOwnedState {
                 crate::session::PromptSubmissionOutcome::Started { prompt }
                 | crate::session::PromptSubmissionOutcome::Queued { prompt } => prompt,
             };
-            dispatch.prompt =
-                join_workflow_prompt_context(prompt.hidden_system_context(), prompt.prompt());
+            dispatch.prompt = prompt.prompt().to_string();
             if dispatch.workflow_context.is_none() {
                 dispatch.workflow_context = Some(self.remote_workflow_turn_context_for_prompt(
                     &prepared.session_id,

@@ -168,7 +168,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
     let submit = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
         prompt: "edit a file".to_string(),
-        hidden_system_context: String::new(),
+        hidden_system_context: "scheduled hidden context".to_string(),
         attachments: Vec::new(),
         workflow_context: None,
         git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {
@@ -224,13 +224,17 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
         snapshot.pointer("/1/required_skills/0/name"),
         Some(&serde_json::json!("review"))
     );
+    assert_eq!(
+        snapshot.pointer("/1/hidden_system_context"),
+        Some(&serde_json::json!("scheduled hidden context"))
+    );
 }
 
 #[test]
 fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        14
+        15
     );
 
     let launch_request =
@@ -311,7 +315,7 @@ fn relay_peer_leased_runtime_projection_provider_run_shape_is_versioned() {
 fn relay_peer_provider_terminal_resize_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        14
+        15
     );
 
     let request = RelayPeerRequest::ResizeLeasedProviderTerminal {
@@ -350,7 +354,7 @@ fn relay_peer_provider_terminal_resize_shape_is_versioned() {
 fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        14
+        15
     );
     let request = RelayPeerRequest::UpdateLeasedAgentProfile {
         leased_agent_id: "leased-agent-1".to_string(),
@@ -374,7 +378,7 @@ fn relay_peer_leased_agent_profile_update_shape_is_versioned() {
 fn relay_peer_queued_prompt_steer_shape_is_versioned() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        14
+        15
     );
 
     let request = RelayPeerRequest::SteerLeasedPrompt {
