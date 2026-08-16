@@ -106,6 +106,7 @@ impl DaemonApp {
                     .collect::<Vec<_>>(),
                 "terminated_provider_run_ids": terminated_run_ids,
                 "cleared_active_provider_run": reconciliation.cleared_active_provider_run,
+                "removed_orphaned_workflow_prompt_count": reconciliation.removed_orphaned_workflow_prompt_count,
                 "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                 "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
             }),

@@ -791,6 +791,7 @@ impl DaemonApp {
                     "recoverable_prompt_count": reconciliation.recoverable_prompt_count,
                     "recoverable_workflow_run_count": reconciliation.recoverable_workflow_run_count,
                     "repaired_workflow_prompt_count": reconciliation.repaired_workflow_prompt_count,
+                    "removed_orphaned_workflow_prompt_count": reconciliation.removed_orphaned_workflow_prompt_count,
                     "interrupted_prompt_count": reconciliation.interrupted_prompt_count,
                     "stopped_workflow_run_count": reconciliation.stopped_workflow_run_count,
                 }),

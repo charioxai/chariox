@@ -893,6 +893,39 @@ fn removing_workflow_purges_only_its_queues_and_queued_prompts() {
 }
 
 #[test]
+fn restart_reconciliation_drops_queued_prompt_with_missing_workflow_ownership() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow = WorkflowDefinition::new("workflow-owned", Some("owned".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    session.enqueue_workflow_prompt(crate::session::WorkflowQueuedPrompt::new(
+        crate::session::WorkflowQueuedPromptInput {
+            id: "queued-missing-owner".to_string(),
+            queue_id: "workflow-owned:removed-queue".to_string(),
+            workflow_id: "workflow-owned".to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            prompt: Some("stale queue record".to_string()),
+            publication_invocation: None,
+            source: crate::session::WorkflowQueuedPromptSource::Event,
+            schedule_id: None,
+        },
+    ));
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+
+    assert_eq!(reconciliation.removed_orphaned_workflow_prompt_count, 1);
+    assert!(session.workflow_queued_prompts().is_empty());
+}
+
+#[test]
 fn kernel_restart_reconciliation_repairs_dispatched_workflow_prompt_projection() {
     let mut service = SessionService::new(&test_config());
     let mut session = service

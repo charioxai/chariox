@@ -114,6 +114,48 @@ impl RuntimeSession {
         workflow
     }
 
+    /// Drop queued workflow records that cannot be dispatched anymore because their
+    /// workflow, endpoint, or queue was removed by an older runtime.
+    pub fn reconcile_workflow_queue_ownership(&mut self) -> usize {
+        let valid_workflows = self
+            .workflows
+            .iter()
+            .map(|workflow| workflow.id().to_string())
+            .collect::<BTreeSet<_>>();
+        let valid_endpoints = self
+            .workflows
+            .iter()
+            .flat_map(|workflow| {
+                workflow
+                    .endpoints()
+                    .iter()
+                    .map(move |endpoint| (workflow.id().to_string(), endpoint.id().to_string()))
+            })
+            .collect::<BTreeSet<_>>();
+        let valid_queues = self
+            .workflow_prompt_queues
+            .iter()
+            .flat_map(|queue| {
+                [queue.id(), queue.alias()]
+                    .into_iter()
+                    .map(move |queue_ref| (queue.workflow_id().to_string(), queue_ref.to_string()))
+            })
+            .collect::<BTreeSet<_>>();
+        let before = self.workflow_queued_prompts.len();
+        self.workflow_queued_prompts.retain(|prompt| {
+            valid_workflows.contains(prompt.workflow_id())
+                && valid_endpoints.contains(&(
+                    prompt.workflow_id().to_string(),
+                    prompt.endpoint_id().to_string(),
+                ))
+                && valid_queues.contains(&(
+                    prompt.workflow_id().to_string(),
+                    prompt.queue_id().to_string(),
+                ))
+        });
+        before.saturating_sub(self.workflow_queued_prompts.len())
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &mut self,
         workflows: Vec<WorkflowDefinition>,
@@ -275,6 +317,8 @@ impl RuntimeSession {
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
         let mut reconciliation = KernelRestartReconciliation::default();
+        reconciliation.removed_orphaned_workflow_prompt_count =
+            self.reconcile_workflow_queue_ownership();
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }
