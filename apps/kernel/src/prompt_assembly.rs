@@ -660,7 +660,11 @@ fn prompt_variables(body: &str) -> Vec<String> {
 
 fn prompt_revision(body: &str) -> u64 {
     let digest = Sha256::digest(body.as_bytes());
-    u64::from_be_bytes(digest[..8].try_into().unwrap_or_default())
+    // Prompt revisions cross the browser/kernel JSON boundary and are represented
+    // as JavaScript numbers by the web client. Keep the content-derived revision
+    // within Number.MAX_SAFE_INTEGER so optimistic concurrency checks do not lose
+    // precision in transit.
+    u64::from_be_bytes(digest[..8].try_into().unwrap_or_default()) & ((1 << 53) - 1)
 }
 
 fn validate_prompt_markdown(
@@ -1721,6 +1725,11 @@ mod tests {
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
         assert!(registry.root.starts_with(root));
+    }
+
+    #[test]
+    fn prompt_revisions_fit_the_browser_safe_integer_range() {
+        assert!(prompt_revision("browser-safe") <= 9_007_199_254_740_991);
     }
 
     #[test]
