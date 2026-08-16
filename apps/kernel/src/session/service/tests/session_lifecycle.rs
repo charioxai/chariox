@@ -573,7 +573,7 @@ fn kernel_restart_reconciliation_stops_created_workflow_without_durable_prompt()
 }
 
 #[test]
-fn kernel_restart_reconciliation_stops_running_workflow_without_durable_prompt() {
+fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_prompt() {
     let mut service = SessionService::new(&test_config());
     let mut session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
