@@ -351,6 +351,17 @@ impl KernelRuntimeState {
         let next_queued_prompt = (!defer_workflow_prompt_for_provider_switch)
             .then_some(next_queued_prompt_candidate)
             .flatten();
+        // Removing the active prompt is not the end of workflow settlement: the
+        // path below still performs asynchronous post-provider work before it
+        // records the workflow completion. Mark the run first so live orphan
+        // reconciliation cannot stop a real run during that gap.
+        let settling_workflow_run_id = active_prompt.workflow_run_id().map(str::to_string);
+        if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+            owned
+                .session_store
+                .write()
+                .mark_workflow_run_settling(session_id, workflow_run_id)?;
+        }
         let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
             owned.complete_local_prompt_with_queued_advance_if_matches(
                 session_id,
@@ -358,16 +369,34 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 next_queued_prompt,
                 Some(active_prompt.id()),
-            )?
+            )
         } else {
             owned.complete_local_prompt_without_advance_if_matches(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
                 Some(active_prompt.id()),
-            )?
+            )
+        };
+        let completion = match completion {
+            Ok(completion) => completion,
+            Err(error) => {
+                if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                    owned
+                        .session_store
+                        .write()
+                        .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                }
+                return Err(error);
+            }
         };
         let Some(completion) = completion else {
+            if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                owned
+                    .session_store
+                    .write()
+                    .clear_workflow_run_settling(session_id, workflow_run_id)?;
+            }
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "ignored stale provider settlement after active prompt changed",
@@ -399,11 +428,18 @@ impl KernelRuntimeState {
             }),
         );
         if completion.completion.completed.workflow_run_id().is_some() {
-            let mut dispatches = owned.workflow_complete_prompt(
+            let workflow_completion = owned.workflow_complete_prompt(
                 session_id,
                 &completion.completion.completed,
                 Some(provider_run_id),
-            )?;
+            );
+            if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                owned
+                    .session_store
+                    .write()
+                    .clear_workflow_run_settling(session_id, workflow_run_id)?;
+            }
+            let mut dispatches = workflow_completion?;
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
             }
@@ -468,6 +504,11 @@ impl KernelRuntimeState {
             {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
             }
+        } else if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+            owned
+                .session_store
+                .write()
+                .clear_workflow_run_settling(session_id, workflow_run_id)?;
         }
         if defer_workflow_prompt_for_provider_switch {
             let session_id_for_queue = session_id.to_string();

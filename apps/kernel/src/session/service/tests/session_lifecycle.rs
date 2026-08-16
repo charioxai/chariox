@@ -782,6 +782,22 @@ fn live_reconciliation_stops_orphaned_running_workflow_before_queue_advancement(
     ));
 
     assert!(session.has_active_session_task());
+    // Provider settlement removes the active prompt before its asynchronous
+    // post-processing completes. Live reconciliation must leave that run
+    // alone during the transition, otherwise it can release a real queue head.
+    assert!(session.mark_workflow_run_settling("run-live-orphan"));
+    assert_eq!(
+        session.reconcile_live_orphaned_workflow_runs(u64::MAX, 5_000),
+        0
+    );
+    assert_eq!(
+        session
+            .workflow_run("run-live-orphan")
+            .expect("settling run should remain inspectable")
+            .status(),
+        WorkflowRunStatus::Running
+    );
+    session.clear_workflow_run_settling("run-live-orphan");
     let reconciled = session.reconcile_live_orphaned_workflow_runs(u64::MAX, 5_000);
 
     assert_eq!(reconciled, 1);

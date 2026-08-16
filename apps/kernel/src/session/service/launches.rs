@@ -324,6 +324,35 @@ impl SessionService {
         Ok(session.has_active_workflow_run())
     }
 
+    pub fn mark_workflow_run_settling(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.mark_workflow_run_settling(workflow_run_id))
+    }
+
+    pub fn clear_workflow_run_settling(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<(), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.clear_workflow_run_settling(workflow_run_id);
+        Ok(())
+    }
+
     pub fn reconcile_live_orphaned_workflow_runs(
         &mut self,
         session_id: &str,

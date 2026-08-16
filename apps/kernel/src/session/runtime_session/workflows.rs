@@ -29,12 +29,14 @@ impl RuntimeSession {
             })
             .collect::<BTreeSet<_>>();
         let mut orphaned_workflow_run_ids = Vec::new();
+        let settling_workflow_run_ids = self.settling_workflow_run_ids.clone();
 
         for workflow_run in &mut self.workflow_runs {
             if workflow_run.status() != WorkflowRunStatus::Running
                 || durable_workflow_prompt_targets
                     .iter()
                     .any(|(run_id, _)| run_id == workflow_run.id())
+                || settling_workflow_run_ids.contains(workflow_run.id())
             {
                 continue;
             }
@@ -318,6 +320,30 @@ impl RuntimeSession {
                     | WorkflowRunStatus::Paused
             )
         })
+    }
+
+    /// Mark the workflow run before removing its active provider prompt. The
+    /// provider settlement path performs asynchronous post-processing after
+    /// that removal (for example git observation); live orphan reconciliation
+    /// must not mistake that short gap for a lost workflow.
+    pub fn mark_workflow_run_settling(&mut self, workflow_run_id: &str) -> bool {
+        if !self
+            .workflow_runs
+            .iter()
+            .any(|workflow_run| workflow_run.id() == workflow_run_id)
+        {
+            return false;
+        }
+        self.settling_workflow_run_ids
+            .insert(workflow_run_id.to_string())
+    }
+
+    pub fn clear_workflow_run_settling(&mut self, workflow_run_id: &str) {
+        self.settling_workflow_run_ids.remove(workflow_run_id);
+    }
+
+    pub fn is_workflow_run_settling(&self, workflow_run_id: &str) -> bool {
+        self.settling_workflow_run_ids.contains(workflow_run_id)
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
