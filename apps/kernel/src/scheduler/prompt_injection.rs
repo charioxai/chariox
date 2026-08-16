@@ -494,25 +494,38 @@ fn workflow_node_prompt_fragments(
                 .expect("workflow node turn prompt must be registered"),
         );
         manifest.push_body(node_turn_template.id.clone(), &node_turn_template.body);
+        let max_turns_line = context
+            .max_turns
+            .map(|max_turns| {
+                let template = prompt_loader.load(
+                    "workflow/node-max-turns",
+                    bundled_prompt_template("workflow/node-max-turns")
+                        .expect("workflow node max-turns prompt must be registered"),
+                );
+                manifest.push_body(template.id.clone(), &template.body);
+                format!(
+                    "{}\n",
+                    render_bundled_prompt(&template.body, &[("MAX_TURNS", &max_turns.to_string())],)
+                )
+            })
+            .unwrap_or_default();
+        let wait_for_all_inputs_line = if context.wait_for_all_inputs {
+            let template = prompt_loader.load(
+                "workflow/wait-for-all-inputs",
+                bundled_prompt_template("workflow/wait-for-all-inputs")
+                    .expect("workflow wait-for-all-inputs prompt must be registered"),
+            );
+            manifest.push_body(template.id.clone(), &template.body);
+            format!("{}\n", template.body.trim())
+        } else {
+            String::new()
+        };
         fragments.push(render_bundled_prompt(
             &node_turn_template.body,
             &[
                 ("TURN_INDEX", &context.turn_index.to_string()),
-                (
-                    "MAX_TURNS_LINE",
-                    &context
-                        .max_turns
-                        .map(|max_turns| format!("- node max turns: {max_turns}\n"))
-                        .unwrap_or_default(),
-                ),
-                (
-                    "WAIT_FOR_ALL_INPUTS_LINE",
-                    if context.wait_for_all_inputs {
-                        "- this node starts only after every incoming edge has an input for the same source iteration\n"
-                    } else {
-                        ""
-                    },
-                ),
+                ("MAX_TURNS_LINE", &max_turns_line),
+                ("WAIT_FOR_ALL_INPUTS_LINE", &wait_for_all_inputs_line),
             ],
         ));
         if context.can_emit_intermediate_output {

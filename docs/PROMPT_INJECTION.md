@@ -23,6 +23,10 @@ The prompt manifest records every template body used by a provider turn. The
 manifest is part of the durable/replay-visible prompt envelope, so a replay can
 identify the exact template revisions without re-reading mutable UI state.
 
+Conditional workflow-node guidance is catalogued too: `workflow/node-max-turns`
+renders the configured turn limit, while `workflow/wait-for-all-inputs` is added
+only for nodes that wait for every incoming edge in the current iteration.
+
 ## Context policy
 
 The always-on workflow contract is deliberately small. Workflow/node
