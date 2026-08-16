@@ -279,15 +279,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
             }
         }
         if let Some(context) = workflow_context {
-            let binding_prompt_id = home_prompt_id
+            let binding_home_prompt_id = home_prompt_id
                 .clone()
                 .unwrap_or_else(|| accepted_prompt.id().to_string());
+            // The home kernel may allocate the same prompt id independently
+            // for multiple leases.  The worker prompt id is allocated by this
+            // kernel and is therefore the identity of this binding.  Keeping
+            // the home id in the value preserves the context without allowing
+            // one lease to overwrite another lease's queued turn.
+            let binding_key = accepted_prompt.id().to_string();
             self.app.leased_workflow_turns.insert(
-                binding_prompt_id.clone(),
+                binding_key,
                 LeasedWorkflowTurnBinding {
                     leased_agent_id: leased_agent.id.clone(),
                     provider_run_id: provider_run_id.clone(),
-                    home_prompt_id: binding_prompt_id,
+                    home_prompt_id: binding_home_prompt_id,
                     backing_prompt_id: accepted_prompt.id().to_string(),
                     context,
                 },
@@ -452,20 +458,20 @@ impl<'a> RemoteLeaseRuntime<'a> {
             provider_run_id.as_deref(),
         )?;
         if let Some(active_home_prompt_id) = active_home_prompt_id {
-            if self
+            let binding_key = self
                 .app
                 .leased_workflow_turns
-                .get(&active_home_prompt_id)
-                .is_some_and(|binding| {
+                .iter()
+                .find(|(_, binding)| {
                     binding.leased_agent_id == leased_agent_id
+                        && binding.home_prompt_id == active_home_prompt_id
                         && provider_run_id.as_deref().is_some_and(|provider_run_id| {
                             binding.provider_run_id == provider_run_id
                         })
                 })
-            {
-                self.app
-                    .leased_workflow_turns
-                    .remove(&active_home_prompt_id);
+                .map(|(key, _)| key.clone());
+            if let Some(binding_key) = binding_key {
+                self.app.leased_workflow_turns.remove(&binding_key);
             }
         }
         Ok(completion)
@@ -531,9 +537,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             )?
             .is_none()
         {
-            self.app
-                .leased_workflow_turns
-                .remove(&binding.home_prompt_id);
+            self.app.leased_workflow_turns.remove(&binding_key);
             return Ok(None);
         }
         let completion = self.app.complete_active_prompt(

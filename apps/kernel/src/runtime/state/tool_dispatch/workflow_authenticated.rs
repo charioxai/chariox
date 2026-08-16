@@ -8,6 +8,45 @@ impl KernelRuntimeState {
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let owned = &self.owned;
+        let provider_run_allows_event_reply = provider_runs
+            .iter()
+            .any(|run| run.workflow_event_reply_enabled());
+        // Tool discovery is advisory. A provider can retain a tool name from
+        // an earlier snapshot, and an event binding can be edited while that
+        // provider turn is still running. Enforce the capability snapshot at
+        // dispatch time before the live binding/reply handler is consulted.
+        let leased_reply_context = if canonical_tool_name
+            == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
+            && !provider_run_allows_event_reply
+        {
+            let provider_run_ids = provider_runs
+                .iter()
+                .map(|run| run.id().to_string())
+                .collect::<Vec<_>>();
+            self.with_app_side_effect(|app| {
+                let runtime = crate::app::RemoteLeaseRuntime::new(app);
+                provider_run_ids.iter().find_map(|provider_run_id| {
+                    runtime.leased_workflow_turn_context_for_provider_run(provider_run_id)
+                })
+            })
+            .await
+        } else {
+            None
+        };
+        if canonical_tool_name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
+            && !event_reply_dispatch_snapshot_allows(
+                provider_run_allows_event_reply,
+                leased_reply_context
+                    .as_ref()
+                    .map(|context| context.event_reply_enabled),
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_workflow_runtime_tool_call",
+                message: "reply_to_event is not enabled for the active workflow provider run"
+                    .to_string(),
+            });
+        }
         let requested_delivery_token = match canonical_tool_name {
             crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
                 serde_json::from_value::<crate::transport::runtime_tools::AckWorkflowTurnArgs>(
@@ -89,7 +128,7 @@ impl KernelRuntimeState {
                         })
                     })
                     .await;
-                let Some(context) = leased_workflow_context else {
+                let Some(context) = leased_reply_context.or(leased_workflow_context) else {
                     return Err(local_error);
                 };
                 let response = self
@@ -145,5 +184,25 @@ impl KernelRuntimeState {
                 }
             }
         }
+    }
+}
+
+fn event_reply_dispatch_snapshot_allows(
+    owned_provider_run_enabled: bool,
+    leased_binding_enabled: Option<bool>,
+) -> bool {
+    owned_provider_run_enabled || leased_binding_enabled == Some(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::event_reply_dispatch_snapshot_allows;
+
+    #[test]
+    fn event_reply_dispatch_requires_the_provider_or_lease_snapshot() {
+        assert!(event_reply_dispatch_snapshot_allows(true, None));
+        assert!(event_reply_dispatch_snapshot_allows(false, Some(true)));
+        assert!(!event_reply_dispatch_snapshot_allows(false, Some(false)));
+        assert!(!event_reply_dispatch_snapshot_allows(false, None));
     }
 }
