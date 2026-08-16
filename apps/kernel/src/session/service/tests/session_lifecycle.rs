@@ -808,6 +808,91 @@ fn live_reconciliation_stops_orphaned_running_workflow_before_queue_advancement(
 }
 
 #[test]
+fn removing_workflow_purges_only_its_queues_and_queued_prompts() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut removed_workflow =
+        WorkflowDefinition::new("workflow-removed", Some("removed".to_string()));
+    let removed_node = removed_workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let removed_endpoint = removed_workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        removed_node.id(),
+    ));
+    let mut retained_workflow =
+        WorkflowDefinition::new("workflow-retained", Some("retained".to_string()));
+    let retained_node =
+        retained_workflow.add_node(WorkflowNodeDefinition::new("node-2", "agent-2"));
+    let retained_endpoint = retained_workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-2",
+        Some("entry".to_string()),
+        retained_node.id(),
+    ));
+    session.create_workflow(removed_workflow);
+    session.create_workflow(retained_workflow);
+    session.add_workflow_prompt_queue(crate::session::WorkflowPromptQueueDefinition::new(
+        "queue-removed",
+        "workflow-removed",
+        "notifications",
+        0,
+    ));
+    session.add_workflow_prompt_queue(crate::session::WorkflowPromptQueueDefinition::new(
+        "queue-retained",
+        "workflow-retained",
+        "notifications",
+        0,
+    ));
+    session.enqueue_workflow_prompt(crate::session::WorkflowQueuedPrompt::new(
+        crate::session::WorkflowQueuedPromptInput {
+            id: "queued-removed".to_string(),
+            queue_id: "queue-removed".to_string(),
+            workflow_id: "workflow-removed".to_string(),
+            endpoint_id: removed_endpoint.id().to_string(),
+            prompt: Some("remove me".to_string()),
+            publication_invocation: None,
+            source: crate::session::WorkflowQueuedPromptSource::Event,
+            schedule_id: None,
+        },
+    ));
+    session.enqueue_workflow_prompt(crate::session::WorkflowQueuedPrompt::new(
+        crate::session::WorkflowQueuedPromptInput {
+            id: "queued-retained".to_string(),
+            queue_id: "queue-retained".to_string(),
+            workflow_id: "workflow-retained".to_string(),
+            endpoint_id: retained_endpoint.id().to_string(),
+            prompt: Some("keep me".to_string()),
+            publication_invocation: None,
+            source: crate::session::WorkflowQueuedPromptSource::Event,
+            schedule_id: None,
+        },
+    ));
+
+    session
+        .remove_workflow("workflow-removed")
+        .expect("removed workflow should exist");
+
+    assert!(session.workflow("workflow-removed").is_none());
+    assert!(session
+        .workflow_prompt_queues()
+        .iter()
+        .all(|queue| queue.workflow_id() != "workflow-removed"));
+    assert_eq!(
+        session
+            .workflow_queued_prompts()
+            .iter()
+            .map(|prompt| prompt.id())
+            .collect::<Vec<_>>(),
+        vec!["queued-retained"]
+    );
+    assert!(session
+        .workflow_prompt_queues()
+        .iter()
+        .any(|queue| queue.workflow_id() == "workflow-retained"));
+}
+
+#[test]
 fn kernel_restart_reconciliation_repairs_dispatched_workflow_prompt_projection() {
     let mut service = SessionService::new(&test_config());
     let mut session = service

@@ -138,7 +138,16 @@ impl RuntimeSession {
             .workflows
             .iter()
             .position(|workflow| workflow.id() == workflow_id)?;
-        Some(self.workflows.remove(index))
+        let removed = self.workflows.remove(index);
+        self.workflow_prompt_queues
+            .retain(|queue| queue.workflow_id() != workflow_id);
+        self.workflow_queued_prompts
+            .retain(|prompt| prompt.workflow_id() != workflow_id);
+        self.workflow_schedules
+            .retain(|schedule| schedule.workflow_id() != workflow_id);
+        self.workflow_consoles
+            .retain(|console| console.workflow_id() != workflow_id);
+        Some(removed)
     }
 
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
