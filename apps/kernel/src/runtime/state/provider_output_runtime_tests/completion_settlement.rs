@@ -311,8 +311,23 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     );
     runtime
         .owned
-        .workflow_start_prompt(session.id(), &promoted)
-        .expect("guarded workflow prompt should proceed to provider dispatch");
+        .workflow_mark_prompt_started(session.id(), &promoted)
+        .expect("promoted workflow prompt should enter workflow dispatch");
+    let dispatched_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("dispatched session should exist");
+    assert_eq!(
+        dispatched_session
+            .workflow_run(workflow_run.id())
+            .expect("workflow run should exist")
+            .node_runs()[0]
+            .turn_envelope()
+            .expect("workflow turn envelope should exist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Dispatched
+    );
     runtime
         .owned
         .mark_active_prompt_delivery(

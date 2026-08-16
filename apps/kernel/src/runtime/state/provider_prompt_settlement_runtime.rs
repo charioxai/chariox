@@ -394,6 +394,16 @@ impl KernelRuntimeState {
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
             }
+            if let Some(started_next) = completion.completion.started_next.as_ref() {
+                if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    started_next.source_attachment_id(),
+                ) {
+                    // Mark the envelope as dispatched before the provider can observe
+                    // the promoted prompt. This keeps workflow acknowledgement aligned
+                    // with the normal completion-promotion path.
+                    owned.workflow_mark_prompt_started(session_id, started_next)?;
+                }
+            }
             let reuses_provider_run = dispatches
                 .local
                 .iter()
@@ -427,13 +437,6 @@ impl KernelRuntimeState {
                 }
             }
             self.spawn_workflow_prompt_dispatches(dispatches);
-        }
-        if let Some(started_next) = completion.completion.started_next.as_ref() {
-            if crate::scheduler::runtime::is_workflow_prompt_attachment(
-                started_next.source_attachment_id(),
-            ) {
-                owned.workflow_start_prompt(session_id, started_next)?;
-            }
         }
         if completion.released_claim && completion.completion.completed.workflow_run_id().is_none()
         {
