@@ -297,11 +297,15 @@ async fn dispatch_relay_client_request(
     let command_id = command.command_id.clone();
     let result = router.dispatch(command, request).await;
     let outgoing = match result {
-        Ok(response) => KernelOutgoingFrame::Response {
-            request_id: command_id.clone(),
-            response: Box::new(Some(serde_json::to_value(response).unwrap_or(Value::Null))),
-            error: None,
-        },
+        Ok(response) => {
+            let mut response = serde_json::to_value(response).unwrap_or(Value::Null);
+            crate::local::redact_client_response_value(&mut response);
+            KernelOutgoingFrame::Response {
+                request_id: command_id.clone(),
+                response: Box::new(Some(response)),
+                error: None,
+            }
+        }
         Err(error) => KernelOutgoingFrame::Response {
             request_id: command_id.clone(),
             response: Box::new(None),
@@ -339,6 +343,8 @@ fn cached_relay_dispatch_outcome(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::{AgentInstance, GridPosition, RemoteAgentBinding};
+    use crate::local::LocalDaemonResponse;
 
     fn caller_identity(
         subject_kind: RelaySubjectKind,
@@ -416,5 +422,57 @@ mod tests {
             &encrypted_request("per-request-client-public-key"),
         )
         .is_ok());
+    }
+
+    #[test]
+    fn relay_client_response_projection_redacts_remote_relay_token() {
+        let mut agent = AgentInstance::new(
+            "agent-1",
+            "agent-ref-1",
+            "session-1",
+            Some("reviewer".to_string()),
+            "codex",
+            Some("gpt-5.6-sol".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition {
+                row: 0,
+                col: 0,
+                row_span: 1,
+                col_span: 1,
+            },
+        );
+        agent.set_remote_execution(Some(RemoteAgentBinding {
+            worker_kernel_id: "worker-1".to_string(),
+            worker_machine_id: "machine-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+            leased_agent_id: "agent-1".to_string(),
+            active_worker_provider_run_id: None,
+            relay_url: Some("wss://relay.example".to_string()),
+            relay_token: Some("secret-token".to_string()),
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        }));
+
+        let mut response = serde_json::to_value(LocalDaemonResponse::AgentMovedToRemote { agent })
+            .expect("response should serialize");
+        crate::local::redact_client_response_value(&mut response);
+
+        assert!(response
+            .pointer("/AgentMovedToRemote/agent/remote_execution/relay_token")
+            .is_none());
+        assert_eq!(
+            response
+                .pointer("/AgentMovedToRemote/agent/remote_execution/relay_url")
+                .and_then(serde_json::Value::as_str),
+            Some("wss://relay.example")
+        );
+        assert_eq!(
+            response
+                .pointer("/AgentMovedToRemote/agent/remote_execution/relay_peer_protocol_version")
+                .and_then(serde_json::Value::as_u64),
+            Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION as u64)
+        );
     }
 }
