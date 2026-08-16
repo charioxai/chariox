@@ -168,6 +168,7 @@ fn relay_peer_remote_workspace_live_sync_mode_projection_shape_is_versioned() {
     let submit = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: "leased-agent-1".to_string(),
         prompt: "edit a file".to_string(),
+        hidden_system_context: String::new(),
         attachments: Vec::new(),
         workflow_context: None,
         git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {

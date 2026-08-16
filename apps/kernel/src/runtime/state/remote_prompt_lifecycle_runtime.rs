@@ -278,6 +278,7 @@ impl KernelRuntimeState {
                             RelayPeerRequest::SubmitLeasedPrompt {
                                 leased_agent_id: remote_execution.leased_agent_id.clone(),
                                 prompt: remote_prompt,
+                                hidden_system_context: started_next.hidden_system_context().to_string(),
                                 attachments,
                                 workflow_context,
                                 git_context: Some(remote_git_turn_context_for_prompt(

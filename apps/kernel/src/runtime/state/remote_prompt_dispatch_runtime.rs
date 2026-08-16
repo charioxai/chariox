@@ -553,6 +553,7 @@ impl KernelRuntimeState {
             relay_token: remote_execution.relay_token.clone(),
             source_attachment_id: active_prompt.source_attachment_id().to_string(),
             prompt: active_prompt.prompt().to_string(),
+            hidden_system_context: active_prompt.hidden_system_context().to_string(),
             attachments: active_prompt.attachments().to_vec(),
             workspace_live_sync_mode: Some(
                 crate::provider::provider_workspace_live_sync_mode_for_session(

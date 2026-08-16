@@ -67,6 +67,7 @@ pub(super) fn dispatch_workflow_prompt(
                 RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: remote_execution.leased_agent_id,
                     prompt: prompt.prompt().to_string(),
+                    hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: app.serialize_remote_prompt_attachments(prompt.attachments())?,
                     workflow_context: Some(workflow_context),
                     git_context: Some(crate::transport::relay_peer::RemoteGitTurnContext {

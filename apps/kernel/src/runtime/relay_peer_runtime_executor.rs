@@ -228,6 +228,7 @@ pub(crate) async fn submit_relay_leased_prompt(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     prompt: &str,
+    hidden_system_context: &str,
     attachments: Vec<RelayPromptAttachment>,
     workflow_context: Option<RemoteWorkflowTurnContext>,
     git_context: Option<RemoteGitTurnContext>,
@@ -239,6 +240,7 @@ pub(crate) async fn submit_relay_leased_prompt(
         .submit_relay_leased_prompt(
             leased_agent_id,
             prompt,
+            hidden_system_context,
             attachments,
             workflow_context,
             git_context,

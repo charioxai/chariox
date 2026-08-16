@@ -64,6 +64,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let prepared = self.prepare_leased_prompt_submission(
             leased_agent_id,
             prompt,
+            "",
             attachments,
             workflow_context,
             git_context,
@@ -77,6 +78,35 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 let run = self.app.launch_leased_provider(request.clone())?;
                 run.id().to_string()
             }
+        };
+        self.finish_prepared_leased_prompt_submission(prepared, provider_run_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn submit_leased_prompt_with_hidden_context(
+        &mut self,
+        leased_agent_id: &str,
+        prompt: &str,
+        hidden_system_context: &str,
+    ) -> Result<(String, crate::session::PromptSubmissionOutcome), DaemonError> {
+        let prepared = self.prepare_leased_prompt_submission(
+            leased_agent_id,
+            prompt,
+            hidden_system_context,
+            Vec::new(),
+            None,
+            None,
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )?;
+        let provider_run_id = match &prepared.provider_run {
+            PreparedLeasedProviderRun::Ready(provider_run_id) => provider_run_id.clone(),
+            PreparedLeasedProviderRun::LaunchRequired(request) => self
+                .app
+                .launch_leased_provider(request.clone())?
+                .id()
+                .to_string(),
         };
         self.finish_prepared_leased_prompt_submission(prepared, provider_run_id)
     }
@@ -140,6 +170,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         prompt: &str,
+        hidden_system_context: &str,
         attachments: Vec<RelayPromptAttachment>,
         workflow_context: Option<RemoteWorkflowTurnContext>,
         git_context: Option<RemoteGitTurnContext>,
@@ -157,12 +188,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
             })?;
         let materialized_attachments =
             self.materialize_leased_prompt_attachments(&leased_agent, attachments)?;
-        let hidden_system_context = if let Some(required_skills) = required_skills.as_deref() {
+        let required_skill_context = if let Some(required_skills) = required_skills.as_deref() {
             self.apply_required_remote_skills(&leased_agent, required_skills)?;
             self.required_remote_skill_prompt_context(&leased_agent, prompt)?
         } else {
             String::new()
         };
+        let hidden_system_context =
+            join_hidden_context(hidden_system_context, &required_skill_context);
         self.ensure_required_remote_mcps_available(&leased_agent, &required_mcps)?;
         if let Some(mode) = git_context
             .as_ref()
@@ -547,5 +580,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )?;
         self.app.leased_workflow_turns.remove(&binding_key);
         Ok(Some(completion))
+    }
+}
+
+fn join_hidden_context(first: &str, second: &str) -> String {
+    match (first.trim(), second.trim()) {
+        ("", "") => String::new(),
+        ("", second) => second.to_string(),
+        (first, "") => first.to_string(),
+        (first, second) => format!("{first}\n\n{second}"),
     }
 }

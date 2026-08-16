@@ -59,6 +59,7 @@ impl KernelRuntimeOwnedState {
             relay_token: remote_execution.relay_token,
             source_attachment_id: started.source_attachment_id().to_string(),
             prompt: started.prompt().to_string(),
+            hidden_system_context: started.hidden_system_context().to_string(),
             attachments: started.attachments().to_vec(),
             workspace_live_sync_mode: Some(
                 crate::provider::provider_workspace_live_sync_mode_for_session(
@@ -164,6 +165,7 @@ impl KernelRuntimeOwnedState {
                     relay_token: remote_execution.relay_token,
                     source_attachment_id: prompt.source_attachment_id().to_string(),
                     prompt: prompt.prompt().to_string(),
+                    hidden_system_context: prompt.hidden_system_context().to_string(),
                     attachments: prompt.attachments().to_vec(),
                     workspace_live_sync_mode: Some(
                         crate::provider::provider_workspace_live_sync_mode_for_session(

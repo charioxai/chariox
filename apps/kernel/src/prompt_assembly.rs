@@ -741,7 +741,21 @@ pub(crate) fn render_configured_prompt_with_manifest(
     bundled_default: &str,
     substitutions: &[(&str, &str)],
 ) -> (String, PromptManifestEntry) {
-    let body = PromptTemplateRegistry::from_env()
+    render_configured_prompt_with_manifest_from_registry(
+        &PromptTemplateRegistry::from_env(),
+        template_id,
+        bundled_default,
+        substitutions,
+    )
+}
+
+fn render_configured_prompt_with_manifest_from_registry(
+    registry: &PromptTemplateRegistry,
+    template_id: &str,
+    bundled_default: &str,
+    substitutions: &[(&str, &str)],
+) -> (String, PromptManifestEntry) {
+    let body = registry
         .read_setting(template_id)
         .map(|setting| setting.current)
         .unwrap_or_else(|_| bundled_default.to_string());
@@ -1454,7 +1468,7 @@ mod tests {
         registry
             .materialize_bundled_defaults()
             .expect("defaults should materialize");
-        let service = PromptAssemblyService::new(registry);
+        let service = PromptAssemblyService::new(registry.clone());
 
         let envelope = service
             .assemble_provider_turn(
@@ -1492,8 +1506,9 @@ mod tests {
         registry
             .materialize_bundled_defaults()
             .expect("defaults should materialize");
-        let service = PromptAssemblyService::new(registry);
-        let (context, entry) = render_configured_prompt_with_manifest(
+        let service = PromptAssemblyService::new(registry.clone());
+        let (context, entry) = render_configured_prompt_with_manifest_from_registry(
+            &registry,
             "runtime/scheduled-prompt",
             bundled_prompt_template("runtime/scheduled-prompt")
                 .expect("scheduled template should be bundled"),

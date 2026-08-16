@@ -379,6 +379,11 @@ Future unified node-transport fields should also allow:
 - `event_id`
 - `resume_from_event_id`
 
+Relay peer protocol v15 carries the home kernel's private hidden prompt context in
+`SubmitLeasedPrompt`. This preserves catalog manifest markers and other kernel-owned
+context when a queued prompt is dispatched to a leased worker; older workers are
+rejected by the existing relay peer version check.
+
 ## 4.1 Current Kernel Transport Baseline
 
 For the current local baseline, the kernel exposes a request/response plus pushed-event surface over a daemon-owned WebSocket transport.

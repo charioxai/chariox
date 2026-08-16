@@ -333,6 +333,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::SubmitLeasedPrompt {
             leased_agent_id,
             prompt,
+            hidden_system_context,
             attachments,
             workflow_context,
             git_context,
@@ -344,6 +345,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .relay_submit_leased_prompt(
                     &leased_agent_id,
                     &prompt,
+                    &hidden_system_context,
                     attachments,
                     workflow_context,
                     git_context,

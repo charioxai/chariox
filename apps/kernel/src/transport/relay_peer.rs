@@ -9,7 +9,7 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 14;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 15;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -304,6 +304,8 @@ pub enum RelayPeerRequest {
     SubmitLeasedPrompt {
         leased_agent_id: String,
         prompt: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        hidden_system_context: String,
         #[serde(default)]
         attachments: Vec<RelayPromptAttachment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

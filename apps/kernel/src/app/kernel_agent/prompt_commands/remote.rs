@@ -209,6 +209,7 @@ impl<'a> KernelAgentService<'a> {
                 RelayPeerRequest::SubmitLeasedPrompt {
                     leased_agent_id: dispatch.leased_agent_id.clone(),
                     prompt: dispatch.prompt.clone(),
+                    hidden_system_context: dispatch.hidden_system_context.clone(),
                     attachments,
                     workflow_context: dispatch.workflow_context.clone(),
                     git_context: Some(remote_git_turn_context(&dispatch)),
@@ -474,6 +475,7 @@ impl<'a> KernelAgentService<'a> {
                     RelayPeerRequest::SubmitLeasedPrompt {
                         leased_agent_id: leased_agent_id.to_string(),
                         prompt: peeked.prompt().to_string(),
+                        hidden_system_context: peeked.hidden_system_context().to_string(),
                         attachments: self
                             .app
                             .serialize_remote_prompt_attachments(peeked.attachments())?,

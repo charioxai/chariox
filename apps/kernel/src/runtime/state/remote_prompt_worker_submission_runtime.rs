@@ -219,6 +219,7 @@ async fn submit_remote_prompt_to_worker(
     let request = RelayPeerRequest::SubmitLeasedPrompt {
         leased_agent_id: dispatch.leased_agent_id.clone(),
         prompt,
+        hidden_system_context: dispatch.hidden_system_context.clone(),
         attachments,
         workflow_context: dispatch.workflow_context.clone(),
         git_context: Some(remote_git_turn_context(dispatch)),
