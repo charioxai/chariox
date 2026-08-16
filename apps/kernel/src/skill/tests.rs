@@ -49,6 +49,41 @@ fn detects_explicit_skill_requests() {
 }
 
 #[test]
+fn granted_skill_prompt_context_uses_the_prompt_catalog_template() {
+    let _guard = crate::env_lock::lock();
+    let home = temp_root("prompt-context-home");
+    let skill_dir = home.join(".chariox").join("skills").join("browser-qa");
+    fs::create_dir_all(&skill_dir).unwrap();
+    fs::write(
+        skill_dir.join("SKILL.md"),
+        "---\nname: browser-qa\ndescription: Browser QA workflow\nshort-description: QA\n---\nRun the browser checklist.\n",
+    )
+    .unwrap();
+    let previous_home = std::env::var_os("HOME");
+    std::env::set_var("HOME", &home);
+
+    let context = format_granted_skill_prompt_context(
+        "agent-ref",
+        &["browser-qa".to_string()],
+        "/workspace",
+        "Use browser-qa to validate this flow",
+    )
+    .expect("skill prompt context should render");
+
+    match previous_home {
+        Some(value) => std::env::set_var("HOME", value),
+        None => std::env::remove_var("HOME"),
+    }
+    let _ = fs::remove_dir_all(home);
+
+    assert!(context.contains("<skill-context-instructions>"));
+    assert!(context.contains("Available Chariox skills for this agent:"));
+    assert!(context.contains("- `browser-qa`: QA"));
+    assert!(context.contains("<chariox_skill name=\"browser-qa\">"));
+    assert!(context.contains("Run the browser checklist."));
+}
+
+#[test]
 fn parses_codex_style_skill_metadata() {
     let root = temp_root("parse");
     let skill_dir = root.join("browser-qa");

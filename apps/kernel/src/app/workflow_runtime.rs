@@ -17,8 +17,14 @@ impl WorkflowProgression {
         app: &mut DaemonApp,
         session_id: &str,
         agent_id: &str,
+        event_reply_enabled: bool,
     ) -> Result<String, DaemonError> {
-        crate::scheduler::runtime::ensure_workflow_provider_run_for_agent(app, session_id, agent_id)
+        crate::scheduler::runtime::ensure_workflow_provider_run_for_agent_with_event_reply(
+            app,
+            session_id,
+            agent_id,
+            event_reply_enabled,
+        )
     }
 
     fn preflight_local_provider_runs(
@@ -35,7 +41,7 @@ impl WorkflowProgression {
             if agent.remote_execution().is_some() {
                 continue;
             }
-            Self::ensure_provider_run(app, session_id, node.agent_id())?;
+            Self::ensure_provider_run(app, session_id, node.agent_id(), false)?;
         }
         Ok(())
     }
@@ -373,7 +379,59 @@ pub(crate) fn ensure_workflow_provider_run_from_runtime(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    WorkflowProgression::ensure_provider_run(app, session_id, agent_id)
+    WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false)
+}
+
+pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<String, DaemonError> {
+    let event_reply_enabled =
+        workflow_event_reply_enabled_for_prompt_from_runtime(app, session_id, prompt)?;
+    ensure_workflow_provider_run_with_event_reply_from_runtime(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+    )
+}
+
+pub(crate) fn ensure_workflow_provider_run_with_event_reply_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    event_reply_enabled: bool,
+) -> Result<String, DaemonError> {
+    WorkflowProgression::ensure_provider_run(app, session_id, agent_id, event_reply_enabled)
+}
+
+pub(crate) fn workflow_event_reply_enabled_for_prompt_from_runtime(
+    app: &DaemonApp,
+    session_id: &str,
+    prompt: &PromptQueueItem,
+) -> Result<bool, DaemonError> {
+    let Some(workflow_run_id) = prompt.workflow_run_id() else {
+        return Ok(false);
+    };
+    let workflow_run = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+    let Some(invocation) = workflow_run.publication_invocation() else {
+        return Ok(false);
+    };
+    if invocation.transport != "event" {
+        return Ok(false);
+    }
+    let Some(binding_id) = invocation.hook_id.as_deref() else {
+        return Ok(false);
+    };
+    Ok(app
+        .sessions()
+        .get_session(session_id)?
+        .workflow_event_binding(binding_id)
+        .is_some_and(|binding| matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"))))
 }
 
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
@@ -458,6 +516,123 @@ mod tests {
             .get_run(&run_id)
             .expect("workflow prompt should launch a provider run");
         assert_eq!(run.account_profile(), "profile-b");
+    }
+
+    #[test]
+    fn queued_event_prompt_derives_reply_capability_from_its_binding() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-event",
+                "worktree-event",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(crate::agent::CreateAgentRequest::new(session.id(), "codex"))
+            .expect("agent should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("event-reply".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("endpoint should be created");
+        let publication = app
+            .sessions_mut()
+            .create_workflow_publication_idempotent(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                None,
+                None,
+                Some("default".to_string()),
+                Some("event".to_string()),
+                Some(crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED.to_string()),
+                None,
+                Vec::new(),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                vec![agent.clone()],
+                "local".to_string(),
+            )
+            .expect("event publication should be created");
+        let binding = app
+            .sessions_mut()
+            .create_workflow_event_binding(
+                session.id(),
+                publication.id(),
+                "dev.chariox.github".to_string(),
+                "1".to_string(),
+                "manifest".to_string(),
+                "connection".to_string(),
+                "repo".to_string(),
+                "pull_request.opened".to_string(),
+                1,
+                serde_json::json!({}),
+                None,
+                Some("default".to_string()),
+                Some("thread".to_string()),
+            )
+            .expect("event binding should be created");
+        let invocation = crate::session::WorkflowPublicationInvocationEnvelope {
+            publication_id: publication.id().to_string(),
+            hook_id: Some(binding.id.clone()),
+            invocation_id: "event-1".to_string(),
+            transport: "event".to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            queue_ref: Some("default".to_string()),
+            input: serde_json::json!({ "prompt": "review" }),
+            artifacts: Vec::new(),
+            mode: None,
+            caller: serde_json::json!({ "type": "event" }),
+        };
+        let (_queued, claimed) = app
+            .sessions_mut()
+            .enqueue_workflow_prompt_and_maybe_create_run(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review".to_string()),
+                Some("default"),
+                crate::session::WorkflowQueuedPromptSource::Event,
+                None,
+                Some(invocation),
+            )
+            .expect("event prompt should be claimed");
+        let (_claimed_prompt, run, _workflow, _endpoint) =
+            claimed.expect("event prompt should create a workflow run");
+        let node_run = run
+            .node_runs()
+            .first()
+            .expect("event workflow should create a node run");
+        let prompt = PromptQueueItem::new(
+            "event-prompt",
+            crate::scheduler::runtime::workflow_prompt_source_attachment_id(run.id()),
+            agent.id(),
+            "review",
+            crate::session::PromptStatus::Queued,
+        )
+        .with_workflow_context(run.id(), node_run.id());
+        assert!(
+            workflow_event_reply_enabled_for_prompt_from_runtime(&app, session.id(), &prompt,)
+                .expect("binding capability should resolve")
+        );
     }
 
     #[test]

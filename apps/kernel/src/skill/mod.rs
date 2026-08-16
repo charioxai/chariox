@@ -371,10 +371,7 @@ pub(crate) fn format_granted_skill_prompt_context(
         .map(|root| vec![root])
         .unwrap_or_default();
     let registry = CharioxSkillRegistry::new(roots);
-    let mut lines = vec![
-        "Available Chariox skills for this agent:".to_string(),
-        "Use these granted skills as routing hints when they match the task. If a skill is explicitly selected, mentioned, or requested below, follow its full instructions.".to_string(),
-    ];
+    let mut summaries = Vec::new();
     let mut requested_skill_bodies = Vec::new();
     for grant in skill_grants {
         let Some(skill) = registry.get(grant)? else {
@@ -387,7 +384,7 @@ pub(crate) fn format_granted_skill_prompt_context(
             .short_description
             .as_ref()
             .unwrap_or(&skill.description);
-        lines.push(format!("- `{}`: {}", skill.name, summary));
+        summaries.push(format!("- `{}`: {}", skill.name, summary));
         if prompt_explicitly_requests_skill(prompt, &skill.name) {
             let body = std::fs::read_to_string(&skill.path).map_err(|error| {
                 DaemonError::LocalTransport {
@@ -402,16 +399,29 @@ pub(crate) fn format_granted_skill_prompt_context(
             requested_skill_bodies.push((skill.name, body));
         }
     }
-    if !requested_skill_bodies.is_empty() {
-        lines.push(String::new());
-        lines.push("Full instructions for explicitly requested Chariox skills:".to_string());
-        for (name, body) in requested_skill_bodies {
-            lines.push(format!("<chariox_skill name=\"{name}\">"));
-            lines.push(body.trim().to_string());
-            lines.push("</chariox_skill>".to_string());
-        }
-    }
-    Ok(lines.join("\n"))
+    let full_instructions = requested_skill_bodies
+        .iter()
+        .map(|(name, body)| {
+            format!(
+                "<chariox_skill name=\"{name}\">\n{}\n</chariox_skill>",
+                body.trim()
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let rendered = crate::prompt_assembly::render_configured_prompt(
+        "runtime/skill-context",
+        crate::prompt_assembly::bundled_skill_context_template(),
+        &[
+            ("AGENT_SCOPE", "this agent"),
+            ("SKILL_SUMMARIES", &summaries.join("\n")),
+            ("FULL_INSTRUCTIONS", &full_instructions),
+        ],
+    );
+    Ok(crate::prompt_assembly::prompt_component(
+        "skill-context-instructions",
+        &rendered,
+    ))
 }
 
 pub fn parse_skill_metadata(skill_md: &Path) -> Result<CharioxSkillMetadata, DaemonError> {

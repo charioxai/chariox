@@ -178,6 +178,16 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         workflow_run_id: "workflow-run-tools".to_string(),
         workflow_node_run_id: "workflow-node-tools".to_string(),
         delivery_token: "delivery-token-tools".to_string(),
+        event_reply_enabled: true,
+    };
+    let queued_workflow_context = crate::execution_lease::RemoteWorkflowTurnContext {
+        home_kernel_id: "home-kernel-tools".to_string(),
+        home_session_id: "home-session-tools".to_string(),
+        home_agent_id: "home-agent-tools".to_string(),
+        workflow_run_id: "workflow-run-tools-queued".to_string(),
+        workflow_node_run_id: "workflow-node-tools-queued".to_string(),
+        delivery_token: "delivery-token-tools-queued".to_string(),
+        event_reply_enabled: false,
     };
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let fresh_discovery_saw_reply = Arc::new(AtomicBool::new(false));
@@ -210,7 +220,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
                 "event-triggered leased prompt",
                 Vec::new(),
                 Some(workflow_context),
-                None,
+                Some(remote_git_context("home-prompt-tools-1")),
                 Vec::new(),
                 None,
                 crate::extension::RemoteExtensionManifest::default(),
@@ -260,8 +270,8 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
                     &leased_agent.id,
                     "second event-triggered leased prompt",
                     Vec::new(),
-                    None,
-                    None,
+                    Some(queued_workflow_context),
+                    Some(remote_git_context("home-prompt-tools-2")),
                     Vec::new(),
                     None,
                     crate::extension::RemoteExtensionManifest::default(),
@@ -269,8 +279,13 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
                 .expect("reused leased workflow prompt should submit");
         assert!(matches!(
             reused_outcome,
-            PromptSubmissionOutcome::Started { .. } | PromptSubmissionOutcome::Queued { .. }
+            PromptSubmissionOutcome::Queued { .. }
         ));
+        let active_context = crate::app::RemoteLeaseRuntime::new(&mut app_guard)
+            .leased_workflow_turn_context_for_provider_run(&provider_run_id)
+            .expect("active leased turn should retain its own workflow context");
+        assert_eq!(active_context.workflow_run_id, "workflow-run-tools");
+        assert!(active_context.event_reply_enabled);
         (ordinary_token, reused_provider_run_id)
     };
     assert_eq!(provider_run_id, reused_provider_run_id);

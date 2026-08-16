@@ -98,12 +98,22 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
+    /// Capability snapshot selected by the home workflow event binding.
+    /// Older peers default to disabled, preserving the safe behavior.
+    #[serde(default)]
+    pub event_reply_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LeasedWorkflowTurnBinding {
     pub leased_agent_id: String,
     pub provider_run_id: String,
+    /// Home/backing prompt that owns this context. Multiple queued prompts may
+    /// share one provider run, so the provider run is not a sufficient key.
+    pub home_prompt_id: String,
+    /// Prompt id in the worker/session queue. This is the stable promotion key
+    /// even though the queue item is not marked with a workflow source.
+    pub backing_prompt_id: String,
     pub context: RemoteWorkflowTurnContext,
 }
 

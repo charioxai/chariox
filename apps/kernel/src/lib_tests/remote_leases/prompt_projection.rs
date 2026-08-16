@@ -427,6 +427,311 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
 }
 
 #[test]
+fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let lease = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel",
+            "session-leased-workflow-queue",
+            "agent-home-leased-workflow-queue",
+            false,
+            "user-home",
+        )
+        .expect("execution lease should be created");
+    let leased_agent = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("leased agent should be created");
+
+    let first_home_prompt_id = "home-leased-workflow-first";
+    let (first_provider_run_id, first_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "first leased workflow prompt\n",
+            Vec::new(),
+            Some(crate::execution_lease::RemoteWorkflowTurnContext {
+                home_kernel_id: "home-kernel".to_string(),
+                home_session_id: "session-leased-workflow-queue".to_string(),
+                home_agent_id: "agent-home-leased-workflow-queue".to_string(),
+                workflow_run_id: "workflow-first".to_string(),
+                workflow_node_run_id: "node-first".to_string(),
+                delivery_token: "delivery-first".to_string(),
+                event_reply_enabled: true,
+            }),
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-leased-workflow-queue".to_string(),
+                home_agent_id: "agent-home-leased-workflow-queue".to_string(),
+                home_prompt_id: first_home_prompt_id.to_string(),
+                home_turn_id: first_home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "first leased workflow prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("first leased workflow prompt should submit");
+    assert!(matches!(
+        first_outcome,
+        PromptSubmissionOutcome::Started { .. }
+    ));
+    assert!(app
+        .providers()
+        .get_run(&first_provider_run_id)
+        .expect("first provider run should exist")
+        .workflow_event_reply_enabled());
+
+    let second_home_prompt_id = "home-leased-workflow-second";
+    let (queued_provider_run_id, second_outcome) = RemoteLeaseRuntime::new(&mut app)
+        .submit_leased_prompt_with_workflow_context(
+            &leased_agent.id,
+            "second leased workflow prompt\n",
+            Vec::new(),
+            Some(crate::execution_lease::RemoteWorkflowTurnContext {
+                home_kernel_id: "home-kernel".to_string(),
+                home_session_id: "session-leased-workflow-queue".to_string(),
+                home_agent_id: "agent-home-leased-workflow-queue".to_string(),
+                workflow_run_id: "workflow-second".to_string(),
+                workflow_node_run_id: "node-second".to_string(),
+                delivery_token: "delivery-second".to_string(),
+                event_reply_enabled: false,
+            }),
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: "session-leased-workflow-queue".to_string(),
+                home_agent_id: "agent-home-leased-workflow-queue".to_string(),
+                home_prompt_id: second_home_prompt_id.to_string(),
+                home_turn_id: second_home_prompt_id.to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "second leased workflow prompt".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+        .expect("second leased workflow prompt should submit");
+    let second_backing_prompt_id = match &second_outcome {
+        PromptSubmissionOutcome::Queued { prompt } => prompt.id().to_string(),
+        other => panic!("second workflow prompt should queue: {other:?}"),
+    };
+    let second_prompt_text = match &second_outcome {
+        PromptSubmissionOutcome::Queued { prompt } => prompt.prompt().to_string(),
+        other => panic!("second workflow prompt should queue: {other:?}"),
+    };
+    assert_eq!(queued_provider_run_id, first_provider_run_id);
+
+    RemoteLeaseRuntime::new(&mut app)
+        .complete_leased_workflow_prompt_for_provider_run(&first_provider_run_id)
+        .expect("first leased workflow prompt should complete")
+        .expect("first completion should settle the active prompt");
+    let promoted = app
+        .prompt_owner_active_prompt_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("active prompt state should load")
+        .or_else(|| {
+            RemoteLeaseRuntime::new(&mut app)
+                .recover_idle_leased_prompt_queue(&leased_agent.id)
+                .expect("queued leased workflow prompt should recover")
+        })
+        .expect("queued leased workflow prompt should be promoted");
+    assert_eq!(promoted.prompt(), second_prompt_text);
+
+    let second_provider_run_id = app
+        .providers()
+        .get_run_for_agent(
+            &leased_agent.backing_session_id,
+            &leased_agent.backing_agent_id,
+        )
+        .expect("replacement provider run should be active")
+        .id()
+        .to_string();
+    assert_ne!(second_provider_run_id, first_provider_run_id);
+    assert!(!app
+        .providers()
+        .get_run(&second_provider_run_id)
+        .expect("replacement provider run should exist")
+        .workflow_event_reply_enabled());
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_agent_snapshot_for_test(&leased_agent.id)
+            .and_then(|agent| agent.active_home_prompt_id),
+        Some(second_home_prompt_id.to_string())
+    );
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_workflow_turn_binding_for_test(second_home_prompt_id),
+        Some((second_backing_prompt_id, second_provider_run_id, false))
+    );
+    assert!(!RemoteLeaseRuntime::new(&mut app)
+        .has_leased_workflow_turn_binding_for_test(first_home_prompt_id));
+}
+
+#[test]
+fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
+    let mut config = DaemonConfig::for_tests();
+    config.accept_remote_leases = true;
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+
+    let lease_one = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel-one",
+            "session-leased-one",
+            "agent-home-one",
+            false,
+            "user-home",
+        )
+        .expect("first execution lease should be created");
+    let agent_one = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease_one.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("first leased agent should be created");
+    let lease_two = RemoteLeaseRuntime::new(&mut app)
+        .create_execution_lease(
+            "home-kernel-two",
+            "session-leased-two",
+            "agent-home-two",
+            false,
+            "user-home",
+        )
+        .expect("second execution lease should be created");
+    let agent_two = RemoteLeaseRuntime::new(&mut app)
+        .create_leased_agent(
+            &lease_two.id,
+            "managed-dev-stub",
+            Some("sonnet".to_string()),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .expect("second leased agent should be created");
+
+    let submit = |app: &mut DaemonApp,
+                  agent: &crate::execution_lease::LeasedAgent,
+                  home_kernel_id: &str,
+                  home_session_id: &str,
+                  home_agent_id: &str,
+                  workflow_run_id: &str,
+                  event_reply_enabled: bool| {
+        RemoteLeaseRuntime::new(app).submit_leased_prompt_with_workflow_context(
+            &agent.id,
+            "same home prompt id from independent lease\n",
+            Vec::new(),
+            Some(crate::execution_lease::RemoteWorkflowTurnContext {
+                home_kernel_id: home_kernel_id.to_string(),
+                home_session_id: home_session_id.to_string(),
+                home_agent_id: home_agent_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+                workflow_node_run_id: format!("{workflow_run_id}-node"),
+                delivery_token: format!("{workflow_run_id}-delivery"),
+                event_reply_enabled,
+            }),
+            Some(crate::transport::relay_peer::RemoteGitTurnContext {
+                home_session_id: home_session_id.to_string(),
+                home_agent_id: home_agent_id.to_string(),
+                home_prompt_id: "same-home-prompt".to_string(),
+                home_turn_id: "same-home-prompt".to_string(),
+                source_attachment_id: None,
+                workspace_live_sync_mode: None,
+                prompt_origin: Some(PromptOrigin::Chariox),
+                external_provider: None,
+                external_provider_session_id: None,
+                external_provider_turn_id: None,
+                prompt_summary: "same home prompt id from independent lease".to_string(),
+            }),
+            Vec::new(),
+            None,
+            crate::extension::RemoteExtensionManifest::default(),
+        )
+    };
+
+    let (first_provider_run_id, first_outcome) = submit(
+        &mut app,
+        &agent_one,
+        "home-kernel-one",
+        "session-leased-one",
+        "agent-home-one",
+        "workflow-one",
+        true,
+    )
+    .expect("first workflow prompt should submit");
+    let first_backing_prompt_id = match first_outcome {
+        PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        other => panic!("first workflow prompt should start: {other:?}"),
+    };
+    let (second_provider_run_id, second_outcome) = submit(
+        &mut app,
+        &agent_two,
+        "home-kernel-two",
+        "session-leased-two",
+        "agent-home-two",
+        "workflow-two",
+        false,
+    )
+    .expect("second workflow prompt should submit");
+    let second_backing_prompt_id = match second_outcome {
+        PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+        other => panic!("second workflow prompt should start: {other:?}"),
+    };
+
+    assert_ne!(first_backing_prompt_id, second_backing_prompt_id);
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_workflow_turn_binding_count_for_test("same-home-prompt"),
+        2,
+        "independent leases may reuse a home prompt id without overwriting context"
+    );
+
+    RemoteLeaseRuntime::new(&mut app)
+        .complete_leased_workflow_prompt_for_provider_run(&first_provider_run_id)
+        .expect("first workflow prompt should complete")
+        .expect("first workflow completion should settle");
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app)
+            .leased_workflow_turn_binding_count_for_test("same-home-prompt"),
+        1,
+    );
+    assert_eq!(
+        RemoteLeaseRuntime::new(&mut app).leased_workflow_turn_binding_for_test("same-home-prompt"),
+        Some((second_backing_prompt_id, second_provider_run_id, false)),
+        "completing one lease must leave the other lease's event context intact"
+    );
+}
+
+#[test]
 fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
     let mut config = DaemonConfig::for_tests();
     config.accept_remote_leases = true;

@@ -112,6 +112,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent: &LeasedAgent,
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
+        event_reply_enabled: bool,
     ) -> Result<LeasedProviderRunMatch, DaemonError> {
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
@@ -132,7 +133,10 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
         );
         if let Some(run) = existing.as_ref() {
-            if provider_run_mcp_set_matches(run, required_mcps)? {
+            let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
+            let reply_capability_matches =
+                run.workflow_event_reply_enabled() == event_reply_enabled;
+            if mcp_matches && reply_capability_matches {
                 if !remote_extension_manifest.is_empty() {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -142,14 +146,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 }
                 return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
             }
-            if self
+            let active = self
                 .app
                 .prompt_owner_active_prompt_for_agent(
                     &leased_agent.backing_session_id,
                     &leased_agent.backing_agent_id,
                 )?
-                .is_some()
-            {
+                .is_some();
+            if active && !mcp_matches {
                 return Err(DaemonError::LocalTransport {
                     operation: "remote MCP provider reload",
                     message: format!(
@@ -157,6 +161,14 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         run.id()
                     ),
                 });
+            }
+            // Provider tools/list is a run-level snapshot. If only the
+            // event-reply capability differs, let a busy run finish its
+            // already-admitted prompt and rotate it on the next idle boundary.
+            // This preserves FIFO queueing without advertising a capability
+            // change halfway through an active provider turn.
+            if active {
+                return Ok(LeasedProviderRunMatch::Ready(run.id().to_string()));
             }
             let run_id = run.id().to_string();
             let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
@@ -186,6 +198,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         )
         .with_agent_id(&leased_agent.backing_agent_id)
         .with_owner_user_id(lease.owner_user_id)
+        .with_workflow_event_reply(event_reply_enabled)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions

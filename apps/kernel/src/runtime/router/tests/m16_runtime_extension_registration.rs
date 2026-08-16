@@ -42,6 +42,11 @@ async fn runtime_tools_reject_ambiguous_provider_run_tokens_for_run_scoped_tools
         "dev-stub",
         "m16-model",
     );
+    let provider_run = app
+        .providers()
+        .enable_workflow_tools(provider_run.id())
+        .expect("shared provider run should expose workflow tools");
+    app.update_provider_run_projection(provider_run.clone());
     let auth_token = provider_run
         .runtime_mcp_auth_token()
         .expect("provider run should expose runtime MCP auth token")

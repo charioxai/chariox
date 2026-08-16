@@ -278,6 +278,15 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
 
     assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
+    assert!(!workflow_provider.workflow_event_reply_enabled());
+    let workflow_auth_token = workflow_provider
+        .runtime_mcp_auth_token()
+        .expect("workflow provider should expose runtime MCP auth")
+        .to_string();
+    let workflow_specs = runtime.runtime_tool_specs_for_auth_token(&workflow_auth_token);
+    assert!(!workflow_specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+    }));
     assert!(matches!(
         runtime
             .owned

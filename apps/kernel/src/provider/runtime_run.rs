@@ -53,6 +53,11 @@ pub struct RuntimeProviderRun {
     /// for workflow execution, keeping ordinary turns' tool surface small.
     #[serde(skip)]
     workflow_tools_enabled: bool,
+    /// Capability snapshot for the current workflow provider run. This is
+    /// separate from `workflow_tools_enabled` because event reply is opt-in at
+    /// the event binding and must not pollute ordinary workflow contexts.
+    #[serde(skip)]
+    workflow_event_reply_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
@@ -126,6 +131,7 @@ impl RuntimeProviderRun {
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
             workflow_tools_enabled: false,
+            workflow_event_reply_enabled: request.workflow_event_reply_enabled,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
             provider_config_overrides: request.provider_config_overrides.clone(),
@@ -186,6 +192,7 @@ impl RuntimeProviderRun {
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
             workflow_tools_enabled: false,
+            workflow_event_reply_enabled: false,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_config_overrides: BTreeMap::new(),
@@ -423,6 +430,10 @@ impl RuntimeProviderRun {
 
     pub fn enable_workflow_tools(&mut self) {
         self.workflow_tools_enabled = true;
+    }
+
+    pub fn workflow_event_reply_enabled(&self) -> bool {
+        self.workflow_event_reply_enabled
     }
 
     pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {

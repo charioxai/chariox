@@ -46,7 +46,10 @@ impl SessionService {
             .unwrap_or_else(|| {
                 crate::prompt_assembly::render_configured_prompt(
                     "workflow/schedule-continuation",
-                    include_str!("../../provider/workflow_schedule_continuation_instructions.md"),
+                    crate::prompt_assembly::bundled_prompt_template(
+                        "workflow/schedule-continuation",
+                    )
+                    .expect("workflow schedule prompt must be registered"),
                     &[],
                 )
             });

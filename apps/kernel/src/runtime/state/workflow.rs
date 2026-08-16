@@ -52,9 +52,13 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         agent_id: &str,
+        event_reply_enabled: bool,
     ) -> Result<String, DaemonError> {
-        if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
-            if run.workflow_tools_enabled() {
+        let existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
+        if let Some(run) = existing_run.as_ref() {
+            if run.workflow_tools_enabled()
+                && run.workflow_event_reply_enabled() == event_reply_enabled
+            {
                 if run.state() == crate::provider::ProviderRunState::Parked {
                     let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
                     self.session_store
@@ -82,7 +86,17 @@ impl KernelRuntimeOwnedState {
         }
         let agent = self.agent_store.get_agent(agent_id)?;
         let provider = crate::provider::provider_id_for_launch(agent.provider());
-        let adapter_key = crate::provider::adapter_key_for_provider(provider);
+        // An existing provider run can use a provider-specific variant on a
+        // shared adapter, such as the test-only `slow-structured` dev stub.
+        // The agent profile stores the provider id, but the adapter identity
+        // belongs to the run that is being rotated. Reuse that adapter when
+        // replacing an idle run so workflow admission does not try to resolve
+        // a provider variant as a standalone adapter.
+        let adapter_key = existing_run
+            .as_ref()
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            .map(|run| run.adapter_key())
+            .unwrap_or_else(|| crate::provider::adapter_key_for_provider(provider));
         let mut request = crate::provider::LaunchProviderRequest::new(
             session_id,
             adapter_key,
@@ -93,13 +107,17 @@ impl KernelRuntimeOwnedState {
         .with_agent_id(agent.id().to_string())
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string));
-        if let Some(worktree_id) = agent.worktree_id() {
-            request = request.with_working_directory(std::path::PathBuf::from(worktree_id));
+        if let Some(working_directory) = existing_run
+            .and_then(|run| run.working_directory().cloned())
+            .or_else(|| agent.worktree_id().map(std::path::PathBuf::from))
+        {
+            request = request.with_working_directory(working_directory);
         }
         request = self.prepare_provider_launch_request(
             request,
             self.config_projection.snapshot().runtime_mcp_url(),
         )?;
+        request = request.with_workflow_event_reply(event_reply_enabled);
         let started = self.start_provider_launch(request)?;
         // The owned workflow admission path is synchronous, so it cannot use the async app
         // launch helper. Enable the workflow tool surface before the detached launch is spawned;
@@ -110,6 +128,37 @@ impl KernelRuntimeOwnedState {
             .enable_workflow_tools(started.run.id())?;
         self.provider_run_projection.update(run.clone());
         Ok(run.id().to_string())
+    }
+
+    pub(super) fn workflow_event_reply_enabled_for_prompt(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let Some(workflow_run_id) = prompt.workflow_run_id() else {
+            return Ok(false);
+        };
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let Some(invocation) = workflow_run.publication_invocation() else {
+            return Ok(false);
+        };
+        if invocation.transport != "event" {
+            return Ok(false);
+        }
+        let Some(binding_id) = invocation.hook_id.as_deref() else {
+            return Ok(false);
+        };
+        Ok(self
+            .session_store
+            .read()
+            .get_session(session_id)?
+            .workflow_event_binding(binding_id)
+            .is_some_and(|binding| {
+                matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"))
+            }))
     }
 
     pub(super) fn workflow_dispatch_claim_id(
@@ -157,9 +206,12 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_agent(prepared.prompt.target_agent_id())?;
         if target_agent.remote_execution().is_none() {
+            let event_reply_enabled = self
+                .workflow_event_reply_enabled_for_prompt(&prepared.session_id, &prepared.prompt)?;
             self.workflow_ensure_provider_run(
                 &prepared.session_id,
                 prepared.prompt.target_agent_id(),
+                event_reply_enabled,
             )?;
         }
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
@@ -244,6 +296,8 @@ impl KernelRuntimeOwnedState {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
+        let event_reply_enabled =
+            self.workflow_event_reply_enabled_for_prompt(session_id, prompt)?;
         Ok(crate::execution_lease::RemoteWorkflowTurnContext {
             home_kernel_id: self.config_projection.snapshot().daemon_id,
             home_session_id: session_id.to_string(),
@@ -251,6 +305,7 @@ impl KernelRuntimeOwnedState {
             workflow_run_id: workflow_run.id().to_string(),
             workflow_node_run_id: workflow_node_run_id.to_string(),
             delivery_token,
+            event_reply_enabled,
         })
     }
 
