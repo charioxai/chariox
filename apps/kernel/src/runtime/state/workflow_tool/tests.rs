@@ -150,6 +150,84 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
 }
 
 #[test]
+fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workflow-idle-provider-workspace",
+            "workflow-idle-provider-worktree",
+        ))
+        .expect("session should be created");
+    let ordinary = app
+        .start_provider_launch(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("ordinary provider should start");
+
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session.id(), Some("idle-provider-admission".to_string()))
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    let endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let workflow_run = app
+        .sessions_mut()
+        .invoke_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            endpoint.id(),
+            Some("run from the queued workflow head".to_string()),
+        )
+        .expect("workflow run should be created");
+
+    let runtime = runtime_state_from_app(app);
+    let dispatches = runtime
+        .owned
+        .workflow_schedule_entry_node(session.id(), &workflow_run)
+        .expect("workflow prompt should be admitted");
+    let workflow_provider_id = dispatches
+        .starting_provider_runs
+        .first()
+        .expect("workflow admission should start a workflow provider");
+    let workflow_provider = runtime
+        .owned
+        .provider_store
+        .get_run(workflow_provider_id)
+        .expect("workflow provider should resolve");
+
+    assert_ne!(workflow_provider.id(), ordinary.run.id());
+    assert!(workflow_provider.workflow_tools_enabled());
+    assert!(matches!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(ordinary.run.id())
+            .expect("ordinary provider should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Parked | crate::provider::ProviderRunState::Ended
+    ));
+}
+
+#[test]
 fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instructions() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

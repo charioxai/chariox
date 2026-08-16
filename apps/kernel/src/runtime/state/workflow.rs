@@ -54,13 +54,27 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
     ) -> Result<String, DaemonError> {
         if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
-            if run.state() == crate::provider::ProviderRunState::Parked {
-                let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
-                self.session_store
-                    .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
-                return Ok(resumed.id().to_string());
-            }
-            if run.state() != crate::provider::ProviderRunState::Ended {
+            if run.workflow_tools_enabled() {
+                if run.state() == crate::provider::ProviderRunState::Parked {
+                    let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
+                    return Ok(resumed.id().to_string());
+                }
+                if run.state() != crate::provider::ProviderRunState::Ended {
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(run.id().to_string()))?;
+                    return Ok(run.id().to_string());
+                }
+            } else if matches!(
+                run.state(),
+                crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+            ) && self.provider_run_has_active_prompt(session_id, &run)?
+            {
+                // An ordinary provider with an active prompt owns the session until that
+                // prompt settles. The workflow prompt remains FIFO-queued and the normal
+                // settlement path will replace this run before it is promoted.
                 self.session_store
                     .set_active_provider_run(session_id, Some(run.id().to_string()))?;
                 return Ok(run.id().to_string());
@@ -87,7 +101,13 @@ impl KernelRuntimeOwnedState {
             self.config_projection.snapshot().runtime_mcp_url(),
         )?;
         let started = self.start_provider_launch(request)?;
-        let run = started.run;
+        // The owned workflow admission path is synchronous, so it cannot use the async app
+        // launch helper. Enable the workflow tool surface before the detached launch is spawned;
+        // otherwise an idle ordinary provider run can be reused and the workflow prompt is
+        // dispatched without the workflow tools it needs.
+        let run = self
+            .provider_store
+            .enable_workflow_tools(started.run.id())?;
         self.provider_run_projection.update(run.clone());
         Ok(run.id().to_string())
     }
