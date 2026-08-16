@@ -1,5 +1,9 @@
 use super::*;
-use crate::session::{RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionProjectSelection};
+use crate::session::{
+    RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionProjectSelection,
+    WorkflowDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowNodeRun,
+    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
+};
 use std::collections::BTreeSet;
 
 #[test]
@@ -525,6 +529,47 @@ fn kernel_restart_reconciliation_clears_restored_attachments() {
     let shutdown_reconciliation = shutdown.interrupt_runtime_for_shutdown();
     assert_eq!(shutdown_reconciliation.interrupted_prompt_count, 1);
     assert!(shutdown.active_prompt_for_agent("agent-1").is_none());
+}
+
+#[test]
+fn kernel_restart_reconciliation_stops_created_workflow_without_durable_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow = WorkflowDefinition::new("workflow-stale", Some("stale".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    session.create_workflow_run(WorkflowRun::new(
+        "run-stale",
+        "workflow-stale",
+        endpoint.id(),
+        node.id(),
+        Some("stale prompt".to_string()),
+        None,
+        vec![WorkflowNodeRun::new(
+            "node-run-stale",
+            node.id(),
+            "agent-1",
+            1,
+            WorkflowNodeRunStatus::Ready,
+        )],
+        Vec::new(),
+    ));
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+
+    assert_eq!(reconciliation.stopped_workflow_run_count, 1);
+    let run = session
+        .workflow_run("run-stale")
+        .expect("stale workflow run should remain inspectable");
+    assert_eq!(run.status(), WorkflowRunStatus::Stopped);
+    assert_eq!(run.node_runs()[0].status(), WorkflowNodeRunStatus::Stopped);
 }
 
 #[test]

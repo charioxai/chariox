@@ -201,6 +201,17 @@ impl RuntimeSession {
                 ))
             })
             .collect::<BTreeSet<_>>();
+        let durable_workflow_run_targets = self
+            .workflow_queued_prompts
+            .iter()
+            .filter(|queued_prompt| {
+                matches!(
+                    queued_prompt.status(),
+                    WorkflowQueuedPromptStatus::Dispatching | WorkflowQueuedPromptStatus::Running
+                )
+            })
+            .filter_map(|queued_prompt| queued_prompt.workflow_run_id().map(str::to_string))
+            .collect::<BTreeSet<_>>();
         let mut orphaned_prepared_workflow_run_ids = Vec::new();
         for workflow_run in &mut self.workflow_runs {
             let Some(active_node_run_id) = workflow_run.active_node_run_id().map(str::to_string)
@@ -209,9 +220,11 @@ impl RuntimeSession {
             };
             if durable_workflow_prompt_targets
                 .contains(&(workflow_run.id().to_string(), active_node_run_id.clone()))
+                || durable_workflow_run_targets.contains(workflow_run.id())
             {
                 continue;
             }
+            let orphaned_created_run = workflow_run.status() == WorkflowRunStatus::Created;
             let Some(node_run) = workflow_run.node_run_mut(&active_node_run_id) else {
                 continue;
             };
@@ -219,7 +232,7 @@ impl RuntimeSession {
                 && node_run.turn_envelope().is_some_and(|envelope| {
                     envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared
                 });
-            if !orphaned_prepared_turn {
+            if !orphaned_prepared_turn && !orphaned_created_run {
                 continue;
             }
             node_run.set_status(WorkflowNodeRunStatus::Stopped);
@@ -231,7 +244,11 @@ impl RuntimeSession {
                 WorkflowFailureKind::RunStopped,
                 active_node_run_id,
                 Vec::new(),
-                "prepared workflow turn had no durable active or queued prompt after kernel restart",
+                if orphaned_created_run {
+                    "created workflow run had no durable active or queued prompt after kernel restart"
+                } else {
+                    "prepared workflow turn had no durable active or queued prompt after kernel restart"
+                },
             ));
             workflow_run.set_status(WorkflowRunStatus::Stopped);
             orphaned_prepared_workflow_run_ids.push(workflow_run.id().to_string());
