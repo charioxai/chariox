@@ -125,11 +125,11 @@ impl KernelRuntimeState {
             &dispatch.prompt,
             crate::session::PromptStatus::Queued,
         )
-        .with_hidden_system_context(format!(
-            "<chariox-scheduled-prompt schedule_id=\"{}\">\n\
-This continuation prompt was scheduled by the user through Chariox.\n\
-</chariox-scheduled-prompt>",
-            dispatch.schedule_id
+        .with_hidden_system_context(crate::prompt_assembly::render_configured_prompt(
+            "runtime/scheduled-prompt",
+            crate::prompt_assembly::bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled prompt context must be registered"),
+            &[("SCHEDULE_ID", &dispatch.schedule_id)],
         ));
         let mut submission = self
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {

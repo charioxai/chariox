@@ -26,6 +26,9 @@ identify the exact template revisions without re-reading mutable UI state.
 Conditional workflow-node guidance is catalogued too: `workflow/node-max-turns`
 renders the configured turn limit, while `workflow/wait-for-all-inputs` is added
 only for nodes that wait for every incoming edge in the current iteration.
+Scheduled-agent context is catalogued as `runtime/scheduled-prompt`; its
+schedule identifier is rendered through the same Markdown registry instead of
+being assembled as an inline natural-language prompt.
 
 ## Context policy
 

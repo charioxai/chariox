@@ -42,6 +42,8 @@ const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
     include_str!("provider/agent_message_context_instructions.md");
 const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
+const RUNTIME_SCHEDULED_PROMPT: &str =
+    include_str!("provider/runtime_scheduled_prompt_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
 const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
@@ -626,6 +628,7 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
             ("Meta-agent runtime guidance", "runtime", "meta-agent")
         }
+        "runtime/scheduled-prompt" => ("Scheduled prompt context", "runtime", "provider-agent"),
         id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
         id if id.starts_with("runtime/") => {
             ("Runtime provider guidance", "runtime", "provider-agent")
@@ -956,6 +959,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         ),
         BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
+        BundledPromptTemplate::new("runtime/scheduled-prompt", RUNTIME_SCHEDULED_PROMPT),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
         BundledPromptTemplate::new(
@@ -2020,6 +2024,35 @@ mod tests {
             None => std::env::remove_var("CHARIOX_HOME"),
         }
         assert_eq!(rendered, "OVERRIDE 1 3 bad");
+    }
+
+    #[test]
+    fn scheduled_prompt_context_uses_the_markdown_catalog() {
+        let _guard = env_lock::lock();
+        let home = temp_prompt_root("configured-scheduled-prompt");
+        let root = home.join("prompts");
+        let registry = PromptTemplateRegistry::new(root.clone());
+        registry
+            .materialize_bundled_defaults()
+            .expect("defaults should materialize");
+        fs::write(
+            root.join("runtime").join("scheduled-prompt.md"),
+            "<scheduled>{{SCHEDULE_ID}}</scheduled>",
+        )
+        .expect("scheduled prompt override should write");
+        let previous = std::env::var_os("CHARIOX_HOME");
+        std::env::set_var("CHARIOX_HOME", &home);
+        let rendered = render_configured_prompt(
+            "runtime/scheduled-prompt",
+            bundled_prompt_template("runtime/scheduled-prompt")
+                .expect("scheduled prompt should be registered"),
+            &[("SCHEDULE_ID", "schedule-7")],
+        );
+        match previous {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        assert_eq!(rendered, "<scheduled>schedule-7</scheduled>");
     }
 
     #[test]
