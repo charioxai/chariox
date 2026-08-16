@@ -86,7 +86,17 @@ impl KernelRuntimeOwnedState {
         }
         let agent = self.agent_store.get_agent(agent_id)?;
         let provider = crate::provider::provider_id_for_launch(agent.provider());
-        let adapter_key = crate::provider::adapter_key_for_provider(provider);
+        // An existing provider run can use a provider-specific variant on a
+        // shared adapter, such as the test-only `slow-structured` dev stub.
+        // The agent profile stores the provider id, but the adapter identity
+        // belongs to the run that is being rotated. Reuse that adapter when
+        // replacing an idle run so workflow admission does not try to resolve
+        // a provider variant as a standalone adapter.
+        let adapter_key = existing_run
+            .as_ref()
+            .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
+            .map(|run| run.adapter_key())
+            .unwrap_or_else(|| crate::provider::adapter_key_for_provider(provider));
         let mut request = crate::provider::LaunchProviderRequest::new(
             session_id,
             adapter_key,

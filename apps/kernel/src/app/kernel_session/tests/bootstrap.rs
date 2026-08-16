@@ -526,38 +526,23 @@ fn bootstrap_preserves_durable_runtime_work_for_restart_recovery() {
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
             .create_session(CreateSessionRequest::new("workspace", "worktree"))
             .expect("session should create");
-        let attachment = crate::app::KernelSessionService::new(&mut app)
-            .attach(AttachRequest::new(
-                session.id(),
-                "client-a",
-                ClientCapabilityLevel::FullTerminal,
-            ))
-            .expect("attachment should attach");
-        app.sessions_mut()
-            .submit_prompt(
-                session.id(),
-                attachment.id(),
-                agent.id(),
-                "still running when the kernel stops",
-                Vec::new(),
-            )
-            .expect("prompt should start");
-
         let mut session = app
             .sessions()
             .get_session(session.id())
             .expect("session should still exist");
         let session_id = session.id().to_string();
+        let workflow_run_id = "workflow-run-stale".to_string();
+        let workflow_node_run_id = "node-run-stale".to_string();
         session.set_active_provider_run(Some("provider-run-stale".to_string()));
         let node_run = WorkflowNodeRun::new(
-            "node-run-stale",
+            &workflow_node_run_id,
             "node-1",
             agent.id(),
             1,
             WorkflowNodeRunStatus::Running,
         );
         let mut workflow_run = WorkflowRun::new(
-            "workflow-run-stale",
+            &workflow_run_id,
             "workflow-1",
             "endpoint-1",
             "node-1",
@@ -566,17 +551,28 @@ fn bootstrap_preserves_durable_runtime_work_for_restart_recovery() {
             vec![node_run],
             Vec::new(),
         );
-        workflow_run.set_active_node_run("node-run-stale");
+        workflow_run.set_active_node_run(&workflow_node_run_id);
         workflow_run.set_status(WorkflowRunStatus::Running);
         session.create_workflow_run(workflow_run);
         app.sessions.restore_session(session);
+        let outcome = app
+            .prompt_owner_submit_prepared_prompt(
+                &session_id,
+                PromptQueueItem::new(
+                    "prompt-workflow-stale",
+                    format!("workflow-run:{workflow_run_id}"),
+                    agent.id(),
+                    "still running when the kernel stops",
+                    PromptStatus::Queued,
+                )
+                .with_workflow_context(&workflow_run_id, &workflow_node_run_id),
+                false,
+            )
+            .expect("workflow prompt should start");
+        assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
         app.save_durable_state_snapshot()
             .expect("snapshot should save stale runtime state");
-        (
-            session_id,
-            "workflow-run-stale".to_string(),
-            "node-run-stale".to_string(),
-        )
+        (session_id, workflow_run_id, workflow_node_run_id)
     };
 
     let app = DaemonApp::bootstrap(config).expect("second daemon should boot");
@@ -762,19 +758,23 @@ fn bootstrap_preserves_prepared_workflow_run_with_durable_prompt_after_restart()
     let workflow_run = restored
         .workflow_run(&workflow_run_id)
         .expect("workflow run should restore");
-    assert_eq!(workflow_run.status(), WorkflowRunStatus::Created);
+    // Bootstrap recovery promotes a durable prepared prompt into the active
+    // workflow turn before the listener is ready. The persisted run is
+    // therefore intentionally Running/Dispatched after restart, not left in
+    // its pre-admission Created/Prepared projection.
+    assert_eq!(workflow_run.status(), WorkflowRunStatus::Running);
     assert_eq!(
         workflow_run.active_node_run_id(),
         Some(workflow_node_run_id.as_str())
     );
     let node_run = &workflow_run.node_runs()[0];
-    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Ready);
+    assert_eq!(node_run.status(), WorkflowNodeRunStatus::Running);
     assert_eq!(
         node_run
             .turn_envelope()
             .expect("turn envelope should remain visible")
             .state(),
-        crate::session::WorkflowTurnRuntimeState::Prepared
+        crate::session::WorkflowTurnRuntimeState::Dispatched
     );
     assert!(workflow_run.failure_events().is_empty());
 }
