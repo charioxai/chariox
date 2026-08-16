@@ -475,4 +475,55 @@ mod tests {
             Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION as u64)
         );
     }
+
+    #[test]
+    fn relay_client_response_projection_preserves_issued_client_tokens() {
+        let cloud_token = LocalDaemonResponse::CloudRelayClientTokenIssued {
+            profile: crate::local::CloudRelayProfile {
+                api_url: "https://cloud.example".to_string(),
+                email: "user@example.com".to_string(),
+                account_id: "account-1".to_string(),
+                user_id: "user-1".to_string(),
+                account_slug: "account".to_string(),
+                realm_id: "realm-1".to_string(),
+                relay_url: "wss://relay.example".to_string(),
+                issuer_id: "issuer-1".to_string(),
+                client_id: None,
+                client_alias: None,
+                machine_id: None,
+                machine_alias: None,
+                machine_credential: None,
+                cloud_session_token: None,
+                cloud_session_expires_at_ms: None,
+                token_expires_at_ms: None,
+            },
+            token: crate::local::CloudRelayRuntimeToken {
+                relay_url: "wss://relay.example".to_string(),
+                relay_token: "issued-runtime-token".to_string(),
+                token_expires_at: "2099-01-01T00:00:00Z".to_string(),
+            },
+        };
+        let connection = LocalDaemonResponse::KernelClientConnectionResolved {
+            connection: crate::local::KernelClientConnection {
+                relay_url: "wss://relay.example".to_string(),
+                relay_token: "issued-client-token".to_string(),
+                target_daemon_id: None,
+                target_daemon_alias: None,
+                token_expires_at: None,
+                machine_id: None,
+                kernel_id: None,
+            },
+        };
+
+        for mut response in [
+            serde_json::to_value(cloud_token).expect("cloud token should serialize"),
+            serde_json::to_value(connection).expect("client connection should serialize"),
+        ] {
+            crate::local::redact_client_response_value(&mut response);
+            assert!(
+                response.to_string().contains("issued-runtime-token")
+                    || response.to_string().contains("issued-client-token")
+            );
+        }
+    }
 }

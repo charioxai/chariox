@@ -43,7 +43,11 @@ pub use types::*;
 pub(crate) fn redact_client_response_value(value: &mut serde_json::Value) {
     match value {
         serde_json::Value::Object(object) => {
-            object.remove("relay_token");
+            if let Some(serde_json::Value::Object(remote_execution)) =
+                object.get_mut("remote_execution")
+            {
+                remote_execution.remove("relay_token");
+            }
             for child in object.values_mut() {
                 redact_client_response_value(child);
             }
