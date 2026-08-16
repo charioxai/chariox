@@ -727,6 +727,87 @@ fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_pr
 }
 
 #[test]
+fn live_reconciliation_stops_orphaned_running_workflow_before_queue_advancement() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow =
+        WorkflowDefinition::new("workflow-live-orphan", Some("live orphan".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    let mut workflow_run = WorkflowRun::new(
+        "run-live-orphan",
+        "workflow-live-orphan",
+        endpoint.id(),
+        node.id(),
+        Some("orphaned live prompt".to_string()),
+        None,
+        vec![WorkflowNodeRun::new(
+            "node-run-live-orphan",
+            node.id(),
+            "agent-1",
+            1,
+            WorkflowNodeRunStatus::Running,
+        )],
+        Vec::new(),
+    );
+    workflow_run
+        .node_run_mut("node-run-live-orphan")
+        .expect("node run should exist")
+        .set_turn_envelope(Some(crate::session::WorkflowTurnEnvelope::new(
+            "workflow-live-ack",
+            "orphaned live prompt".to_string(),
+            None,
+            None,
+        )));
+    workflow_run.set_status(WorkflowRunStatus::Running);
+    session.create_workflow_run(workflow_run);
+    session.enqueue_workflow_prompt(crate::session::WorkflowQueuedPrompt::new(
+        crate::session::WorkflowQueuedPromptInput {
+            id: "queued-behind-live-orphan".to_string(),
+            queue_id: "default".to_string(),
+            workflow_id: "workflow-live-orphan".to_string(),
+            endpoint_id: endpoint.id().to_string(),
+            prompt: Some("queued prompt".to_string()),
+            publication_invocation: None,
+            source: crate::session::WorkflowQueuedPromptSource::Event,
+            schedule_id: None,
+        },
+    ));
+
+    assert!(session.has_active_session_task());
+    let reconciled = session.reconcile_live_orphaned_workflow_runs(u64::MAX, 5_000);
+
+    assert_eq!(reconciled, 1);
+    assert!(!session.has_active_session_task());
+    let run = session
+        .workflow_run("run-live-orphan")
+        .expect("orphaned run should remain inspectable");
+    assert_eq!(run.status(), WorkflowRunStatus::Stopped);
+    assert_eq!(run.node_runs()[0].status(), WorkflowNodeRunStatus::Stopped);
+    assert_eq!(
+        run.node_runs()[0]
+            .turn_envelope()
+            .expect("turn envelope should exist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Cancelled
+    );
+    assert_eq!(
+        session
+            .pop_next_workflow_queued_prompt()
+            .expect("queue should advance after live orphan cleanup")
+            .id(),
+        "queued-behind-live-orphan"
+    );
+}
+
+#[test]
 fn kernel_restart_reconciliation_repairs_dispatched_workflow_prompt_projection() {
     let mut service = SessionService::new(&test_config());
     let mut session = service
