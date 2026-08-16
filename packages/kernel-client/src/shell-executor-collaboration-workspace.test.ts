@@ -113,6 +113,8 @@ test("executeShellCommand manages session invites and members", async () => {
 
   assert.match(inviteResult.message ?? "", /session invite invite-1/)
   assert.match(joinResult.message ?? "", /joined session session-1 as ana/)
+  assert.equal(joinResult.contextUpdates?.workspaceId, session.workspace_id)
+  assert.equal(joinResult.contextUpdates?.worktreeId, session.worktree_id)
   assert.match(membersResult.message ?? "", /Session members/)
   assert.match(invitesResult.message ?? "", /Session invites\n- invite-1 uses=0\/1/)
   assert.doesNotMatch(invitesResult.message ?? "", /invite-(?:revoked|expired|exhausted)/)
@@ -125,6 +127,45 @@ test("executeShellCommand manages session invites and members", async () => {
     { ListSessionMembers: { session_id: "session-1" } },
     { RevokeSessionInvite: { session_id: "session-1", invite_ref: "invite-1" } },
   ])
+})
+
+test("session join replaces typed workspace identities when switching workspaces", async () => {
+  const joinedSession = makeSession({
+    id: "session-b",
+    workspace_id: "workspace-b",
+    worktree_id: "worktree-b",
+    focused_agent_id: "agent-b",
+  })
+  const fake = {
+    client: {
+      send: async (request: Record<string, unknown>) => {
+        if ("JoinSessionInvite" in request) {
+          return { SessionInviteJoined: { member: { user_id: "ana" }, session: joinedSession } }
+        }
+        if ("AttachToSession" in request) {
+          return { SessionAttached: { attachment: { id: "attachment-b" } } }
+        }
+        throw new Error(`unexpected request ${JSON.stringify(request)}`)
+      },
+    },
+  }
+  const context = createDefaultShellContext({
+    workspace: "/workspace-a",
+    worktree: "/workspace-a/main",
+    workspaceId: "workspace-a",
+    worktreeId: "worktree-a",
+    sessionId: "session-a",
+  })
+  const result = await executeShellCommand(parseShellCommand("session join invite-b ana"), context, {
+    client: fake.client,
+    clientId: "shell-ana",
+  })
+  const next = applyShellCommandResult(context, result)
+  assert.equal(next.sessionId, "session-b")
+  assert.equal(next.workspace, "workspace-b")
+  assert.equal(next.worktree, "worktree-b")
+  assert.equal(next.workspaceId, "workspace-b")
+  assert.equal(next.worktreeId, "worktree-b")
 })
 
 test("executeShellCommand manages workspace links", async () => {

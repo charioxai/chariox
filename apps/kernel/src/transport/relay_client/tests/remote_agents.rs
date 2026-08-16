@@ -494,6 +494,7 @@ async fn remote_machine_agents_execute_prompts_through_the_home_session() {
         target_agent_id: Some(remote_agent_id.clone()),
         prompt: "remote prompt over home session\n".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command = KernelCommand::from_local_request(
         "command-remote-persistent-prompt",

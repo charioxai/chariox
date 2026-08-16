@@ -156,6 +156,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "slow structured provider submit should not block kernel".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )
@@ -228,6 +229,7 @@ fn kernel_websocket_state_and_cancel_ack_while_structured_provider_io_is_slow() 
                 prompt: "second agent prompt should ack during another run's provider I/O"
                     .to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             }),
         )
         .await;

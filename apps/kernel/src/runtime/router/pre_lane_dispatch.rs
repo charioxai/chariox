@@ -18,7 +18,9 @@ use crate::runtime::remote_relay_inventory::execute_remote_relay_inventory_reque
 use crate::runtime::session_read_control::{
     projected_session_inspection_response, projected_session_read_response,
 };
-use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
+use crate::runtime::terminal_command_catalog::{
+    terminal_command_catalog_response, terminal_operation_registry_response,
+};
 use crate::runtime::workflow_actor::is_workflow_command;
 use crate::runtime::workspace_command_executor::execute_workspace_command_request;
 
@@ -34,8 +36,6 @@ impl CommandRouter {
         if let Some(response) = projected_session_read_response(
             &self.runtime_state,
             &self.session_projection,
-            &self.provider_run_projection,
-            &self.provider_launch_pending,
             request,
             caller_user_id,
         )
@@ -85,6 +85,9 @@ impl CommandRouter {
         match request {
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 return terminal_command_catalog_response().map(Some);
+            }
+            LocalDaemonRequest::GetTerminalOperationRegistry(_) => {
+                return terminal_operation_registry_response().map(Some);
             }
             LocalDaemonRequest::ListProviderProcesses(request) => {
                 if let Some(processes) = self

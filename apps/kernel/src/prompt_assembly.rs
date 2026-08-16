@@ -1,9 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -38,59 +35,50 @@ const RUNTIME_WORKSPACE_LIVE_SYNC: &str =
 const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
     include_str!("provider/workspace_live_sync_tracked_instructions.md");
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
-const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
-    include_str!("provider/agent_message_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
 const RUNTIME_META_MODE_ENTERED: &str = include_str!("provider/meta_mode_entered_context.md");
-const RUNTIME_MCP_SKILL_CONTINUATION: &str =
-    include_str!("provider/mcp_skill_continuation_instructions.md");
-const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str =
-    include_str!("provider/workflow_direct_json_fallback_instructions.md");
-const RUNTIME_METAAGENT_EVENT: &str = include_str!("provider/metaagent_event_instructions.md");
-const RUNTIME_METAAGENT_TASK_RECOVERY: &str =
-    include_str!("provider/metaagent_task_recovery_instructions.md");
-const WORKFLOW_TURN: &str = include_str!("provider/workflow_turn_instructions.md");
-const WORKFLOW_RUN_COMPLETION: &str =
-    include_str!("provider/workflow_run_completion_instructions.md");
-const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str =
-    include_str!("provider/workflow_run_intermediate_output_instructions.md");
-const WORKFLOW_RUN_OUTPUT_CORRECTION: &str =
-    include_str!("provider/workflow_run_output_correction_instructions.md");
-const WORKFLOW_HANDOFF_CORRECTION: &str =
-    include_str!("provider/workflow_handoff_correction_instructions.md");
-const WORKFLOW_HANDOFF_COMPLETION_GUIDANCE: &str =
-    include_str!("provider/workflow_handoff_completion_guidance_instructions.md");
-const WORKFLOW_MISSING_OUTPUT_CORRECTION: &str =
-    include_str!("provider/workflow_missing_output_correction_instructions.md");
-const WORKFLOW_CONTROL_MAILBOX: &str =
-    include_str!("provider/workflow_control_mailbox_instructions.md");
-const WORKFLOW_EDGE_CONTRACTS: &str =
-    include_str!("provider/workflow_edge_contracts_instructions.md");
-const WORKFLOW_NODE_TURN_CONTEXT: &str =
-    include_str!("provider/workflow_node_turn_context_instructions.md");
-const WORKFLOW_OUTPUT_CONTRACT: &str =
-    include_str!("provider/workflow_output_contract_instructions.md");
-const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
-const WORKFLOW_SCHEDULE_CONTINUATION: &str =
-    include_str!("provider/workflow_schedule_continuation_instructions.md");
-const WORKFLOW_NODE_DEFAULT_INSTRUCTIONS: &str =
-    include_str!("provider/workflow_node_default_instructions.md");
-const WORKFLOW_HANDOFF_VALIDATION_PASSED: &str =
-    include_str!("provider/workflow_handoff_validation_passed_instructions.md");
-const WORKFLOW_HANDOFF_VALIDATION_FAILED: &str =
-    include_str!("provider/workflow_handoff_validation_failed_instructions.md");
-const WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID: &str =
-    include_str!("provider/workflow_output_submission_final_valid_instructions.md");
-const WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID: &str =
-    include_str!("provider/workflow_output_submission_final_invalid_instructions.md");
-const WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE: &str =
-    include_str!("provider/workflow_output_submission_intermediate_instructions.md");
-const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str =
-    include_str!("provider/workspace_commit_message_instructions.md");
-const UTILITY_SEMANTIC_RECALL_SEARCH: &str =
-    include_str!("provider/semantic_recall_search_instructions.md");
+const RUNTIME_MCP_SKILL_CONTINUATION: &str = "MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Chariox workspace live sync file write before replying.";
+const RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK: &str = "Chariox runtime MCP tools may not be exposed as provider-native callable tools in this provider turn. If the Chariox workflow tools are not available in your actual callable tool list, do not search the repository for them, do not ask the user about them, and do not write pseudo tool calls such as XML `<invoke>` blocks. Complete the workflow turn by emitting the required fenced ```json block directly.";
+const RUNTIME_METAAGENT_EVENT: &str = "Chariox runtime event for the session metaagent.\n\nEvent id: {{EVENT_ID}}\nKind: {{EVENT_KIND}}\nSource: {{SOURCE}}\nTitle: {{TITLE}}\n\n{{BODY}}\n\nUse `chariox.meta.session_overview`, `chariox.meta.list_events`, or `chariox.meta.read_event` if you need more context. Decide whether to act now or continue your current work.";
+
+const WORKFLOW_TURN: &str = concat!(
+    "You are an agent participating in a Chariox workflow turn.\n\n",
+    "{{NODE_INSTRUCTION_REFERENCE_BLOCK}}",
+    "Your node-level instructions are in the referenced markdown file above. ",
+    "If you do not remember them exactly, read that file before continuing.\n\n",
+    "{{WORKFLOW_HANDOFF_PAYLOADS_BLOCK}}",
+    "{{OUTGOING_EDGE_CONTRACTS_BLOCK}}",
+    "{{CONTROL_MAILBOX_BLOCK}}",
+    "For the proper behavior of the workflow, you MUST acknowledge that you have successfully read the current input from the queue by calling the Chariox runtime MCP tool `ack_workflow_turn` exactly once with this JSON argument object:\n",
+    "{\"delivery_token\":\"{{DELIVERY_TOKEN}}\"}\n\n",
+    "Outgoing edge routing:\n",
+    "- If your final `output.message` is plain text or JSON without a non-empty `workflow_handoffs` array, the runtime sends the same handoff to every outgoing edge listed above.\n",
+    "- If your final `output.message` is JSON with a non-empty `workflow_handoffs` array, the runtime sends handoffs only to the matching outgoing edges.\n",
+    "- Each `workflow_handoffs` entry may target one outgoing edge with `edge_id` or one target node with `to_node_id`.\n",
+    "- Each routed handoff may include `summary` and either `output.message` or top-level `message`.\n",
+    "- A routed handoff with a null message suppresses output for that route.\n",
+    "- Use the edge ids and target node ids exactly as listed in the outgoing edge contracts.\n\n",
+    "When routing to selected edges, put the routing object inside the required final JSON block as `output.message`, for example:\n",
+    "{\"summary\":\"human-facing summary\",\"output\":{\"message\":{\"workflow_handoffs\":[{\"edge_id\":\"edge-id-from-contract\",\"summary\":\"route summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}]}}}\n\n",
+    "Only `handoff_schema_ref` values listed in this turn's `outgoing-edge-contracts` are valid for validation. Any schema ref inside `workflow-handoff-payloads` belongs to a completed incoming edge and MUST NOT be used for this turn.\n\n",
+    "If an outgoing edge contract for this turn includes a `handoff_schema_ref`, validation is required before finalizing. For a plain `output.message`, validate that value by calling the Chariox runtime MCP tool `validate_workflow_handoff` with the delivery token above and the edge's `handoff_schema_ref`. If you use `workflow_handoffs`, do not validate the outer routing wrapper; validate only the routed message inside each selected edge entry with that edge's `handoff_schema_ref`. If no `handoff_schema_ref` is present for this turn, do not call `validate_workflow_handoff`.\n\n",
+    "If your node-level instructions require shared console output or inspection, you MUST use the Chariox runtime MCP tools `workflow_console_read`, `workflow_console_write`, and `workflow_console_clear` for that work.\n\n",
+    "Do not ask the user which workflow runtime tool to call, whether to use an MCP tool, or how to proceed with workflow mechanics. Do not use provider-native question, ask-user, clarification, or approval tools for workflow mechanics. If a required Chariox runtime MCP tool is genuinely unavailable, continue with the explicit fallback output format below instead of asking.\n\n",
+    "At the end of this workflow turn, return exactly one fenced ```json block with this shape:\n",
+    "{\"summary\":\"human-facing summary\",\"output\":{\"message\":\"explicit downstream handoff message\"}}\n",
+    "Do not output any prose before or after that fenced block. Do not mention acknowledgments, tool calls, or workflow mechanics in the summary unless the task explicitly requires it. The downstream handoff payload is only output.message plus any workflow-owned artifacts.\n\n",
+    "If a Control mailbox is present, resolve every listed issue before finalizing and do not repeat the invalid payload. When this turn includes a `handoff_schema_ref`, validation is a gate, not a suggestion. If `validate_workflow_handoff` returns `valid: false` or any warning, do not finalize the turn yet. Revise the proposed handoff, call `validate_workflow_handoff` again, and only finalize once the tool returns `valid: true` with no warning. A single failed validation call does not satisfy this turn's completion requirements."
+);
+
+const WORKFLOW_RUN_COMPLETION: &str = "This node is authorized to complete the workflow run.\nIf you consider that the workflow is complete and the run should stop, or will stop by design at this node, generate final workflow run output and submit it by calling the Chariox runtime MCP tool `validate_and_submit_workflow_run_output`.\nWhen you are generating final workflow run output, normal node-to-node output is not necessary and does not need `validate_workflow_handoff`.\nDo not finalize the turn until `validate_and_submit_workflow_run_output` returns `valid: true` with no warning.\n\n";
+
+const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str = "This node is authorized to emit intermediate workflow run outputs.\nIntermediate outputs are user-visible progress, event, or status updates for the endpoint and workflow run observers. They do not send data downstream, do not satisfy outgoing edge handoff requirements, and do not replace the final fenced JSON handoff required at the end of this turn.\nIf you want to send one user-visible intermediate output without terminating the workflow run, call the Chariox runtime MCP tool `validate_and_submit_intermediate_workflow_run_output`.\nYou may call `validate_and_submit_intermediate_workflow_run_output` multiple times in the same workflow node turn when useful, for example during long-running work. Every intermediate output call in this node uses the same node-level intermediate output schema.\nAfter each successful intermediate output submission, continue this same workflow turn. You may still need to produce normal node-to-node output for downstream workflow edges in the same turn, and downstream handoff validation rules still apply.\nDo not treat intermediate output as downstream handoff data.\n\n";
+
+const UTILITY_WORKSPACE_COMMIT_MESSAGE: &str = "Generate a git commit subject for the workspace changes supplied by the user.\nRules:\n- Output exactly one concise imperative subject line.\n- Do not include markdown, quotes, bullets, explanation, prefixes, or trailing punctuation.\n- Keep it under 72 characters.";
+
+const UTILITY_SEMANTIC_RECALL_SEARCH: &str = "You are running a Chariox recall-search utility. Answer the user's question only from the supplied recall candidates.\nDo not use external knowledge. Do not mention tool calls or runtime mechanics.\nReturn exactly one JSON object matching the JSON Schema supplied by the user.\nRules:\n- Select only event_id values present in Recall candidates.\n- If the candidates do not answer the question, say that in answer and return an empty matches array.\n- Keep answer concise.\n- Output JSON only.";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct PromptEnvelope {
@@ -183,7 +171,7 @@ pub(crate) struct PromptTemplateRegistry {
     root: PathBuf,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 struct BundledPromptDefaultsState {
     version: String,
     template_sha256: BTreeMap<String, String>,
@@ -207,181 +195,11 @@ impl PromptTemplateRegistry {
         Self { root }
     }
 
-    pub(crate) fn list_settings(&self) -> Result<Vec<PromptSettingRecord>, DaemonError> {
-        self.materialize_bundled_defaults()?;
-        bundled_templates()
-            .into_iter()
-            .map(|template| self.read_setting_materialized(template.id))
-            .collect()
-    }
-
-    pub(crate) fn read_setting(
-        &self,
-        template_id: &str,
-    ) -> Result<PromptSettingRecord, DaemonError> {
-        self.materialize_bundled_defaults()?;
-        self.read_setting_materialized(template_id)
-    }
-
-    fn read_setting_materialized(
-        &self,
-        template_id: &str,
-    ) -> Result<PromptSettingRecord, DaemonError> {
-        let template = bundled_templates()
-            .into_iter()
-            .find(|template| template.id == template_id)
-            .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
-        let path = self.path_for(template.id);
-        let current = fs::read_to_string(&path)
-            .map_err(|error| prompt_io_error("read", &path, error))?
-            .trim()
-            .to_string();
-        let default = template.body.trim().to_string();
-        let metadata = prompt_setting_metadata(template.id);
-        Ok(PromptSettingRecord {
-            id: template.id.to_string(),
-            title: metadata.title.to_string(),
-            scope: metadata.scope.to_string(),
-            audience: metadata.audience.to_string(),
-            provider_applicability: metadata
-                .provider_applicability
-                .iter()
-                .map(|provider| (*provider).to_string())
-                .collect(),
-            source: if sha256_hex(&current) == sha256_hex(&default) {
-                "bundled".to_string()
-            } else {
-                "user_override".to_string()
-            },
-            current_sha256: sha256_hex(&current),
-            default_sha256: sha256_hex(&default),
-            current_bytes: current.len(),
-            default_bytes: default.len(),
-            revision: prompt_revision(&current),
-            variables: prompt_variables(&current),
-            current,
-            default,
-            editable: metadata.editable,
-            protected: metadata.protected,
-        })
-    }
-
-    pub(crate) fn update_setting_if_version(
-        &self,
-        template_id: &str,
-        body: &str,
-        expected_revision: u64,
-        expected_sha256: &str,
-    ) -> Result<PromptSettingRecord, DaemonError> {
-        let current = self.read_setting(template_id)?;
-        if current.protected {
-            return Err(prompt_settings_error(
-                "protected prompt setting cannot be edited",
-                template_id,
-            ));
-        }
-        validate_prompt_markdown(template_id, &current.default, body)?;
-        let path = self.path_for(template_id);
-        let _guard = prompt_registry_write_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let persisted =
-            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
-        let persisted_body = persisted.trim();
-        let current_revision = prompt_revision(persisted_body);
-        let current_sha256 = sha256_hex(persisted_body);
-        if current_revision != expected_revision || current_sha256 != expected_sha256 {
-            return Err(DaemonError::PromptSettingConflict {
-                id: template_id.to_string(),
-                expected_revision,
-                current_revision,
-            });
-        }
-        atomic_write(&path, body.trim())?;
-        drop(_guard);
-        self.read_setting(template_id)
-    }
-
-    pub(crate) fn reset_setting_if_version(
-        &self,
-        template_id: &str,
-        expected_revision: u64,
-        expected_sha256: &str,
-    ) -> Result<PromptSettingRecord, DaemonError> {
-        let template = bundled_templates()
-            .into_iter()
-            .find(|template| template.id == template_id)
-            .ok_or_else(|| prompt_settings_error("unknown prompt setting", template_id))?;
-        self.materialize_bundled_defaults()?;
-        let path = self.path_for(template_id);
-        let _guard = prompt_registry_write_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let persisted =
-            fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
-        let persisted_body = persisted.trim();
-        let current_revision = prompt_revision(persisted_body);
-        let current_sha256 = sha256_hex(persisted_body);
-        if current_revision != expected_revision || current_sha256 != expected_sha256 {
-            return Err(DaemonError::PromptSettingConflict {
-                id: template_id.to_string(),
-                expected_revision,
-                current_revision,
-            });
-        }
-        atomic_write(&path, template.body.trim())?;
-        drop(_guard);
-        self.read_setting(template_id)
-    }
-
-    pub(crate) fn reset_all_settings_if_versions(
-        &self,
-        expected: &BTreeMap<String, crate::local::PromptSettingVersion>,
-    ) -> Result<Vec<PromptSettingRecord>, DaemonError> {
-        self.materialize_bundled_defaults()?;
-        let _guard = prompt_registry_write_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let templates = bundled_templates();
-        if expected.len() != templates.len() {
-            return Err(prompt_settings_error(
-                "reset-all requires the complete prompt catalog version map",
-                "expected",
-            ));
-        }
-        for template in &templates {
-            let path = self.path_for(template.id);
-            let Some(version) = expected.get(template.id) else {
-                return Err(prompt_settings_error(
-                    "reset-all version map is missing a prompt setting",
-                    template.id,
-                ));
-            };
-            let persisted =
-                fs::read_to_string(&path).map_err(|error| prompt_io_error("read", &path, error))?;
-            let persisted_body = persisted.trim();
-            let current_revision = prompt_revision(persisted_body);
-            let current_sha256 = sha256_hex(persisted_body);
-            if current_revision != version.revision || current_sha256 != version.sha256 {
-                return Err(DaemonError::PromptSettingConflict {
-                    id: template.id.to_string(),
-                    expected_revision: version.revision,
-                    current_revision,
-                });
-            }
-        }
-        for template in templates {
-            let path = self.path_for(template.id);
-            atomic_write(&path, template.body.trim())?;
-        }
-        drop(_guard);
-        self.list_settings()
+    pub(crate) fn root(&self) -> &Path {
+        &self.root
     }
 
     pub(crate) fn materialize_bundled_defaults(&self) -> Result<(), DaemonError> {
-        let _guard = prompt_registry_write_lock()
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let state_path = self.root.join(PROMPT_DEFAULTS_STATE_FILE);
         let previous_state = fs::read_to_string(&state_path)
             .ok()
@@ -412,7 +230,8 @@ impl PromptTemplateRegistry {
                     .is_some_and(|(previous, existing)| previous == existing)
                 || is_known_legacy_default;
             if should_materialize && existing_body.as_deref() != Some(bundled_body) {
-                atomic_write(&path, bundled_body)?;
+                fs::write(&path, bundled_body)
+                    .map_err(|error| prompt_io_error("write", &path, error))?;
             }
         }
         fs::create_dir_all(&self.root)
@@ -428,9 +247,8 @@ impl PromptTemplateRegistry {
                 message: error.to_string(),
             }
         })?;
-        if previous_state.as_ref() != Some(&state) {
-            atomic_write(&state_path, &state_body)?;
-        }
+        fs::write(&state_path, state_body)
+            .map_err(|error| prompt_io_error("write", &state_path, error))?;
         Ok(())
     }
 
@@ -474,258 +292,10 @@ fn known_legacy_bundled_default(template_id: &str, hash: &str) -> bool {
     }
 }
 
-fn prompt_registry_write_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
-
-fn atomic_write(path: &Path, body: &str) -> Result<(), DaemonError> {
-    let Some(parent) = path.parent() else {
-        return Err(prompt_settings_error(
-            "prompt path has no parent",
-            &path.display().to_string(),
-        ));
-    };
-    fs::create_dir_all(parent).map_err(|error| prompt_io_error("create", parent, error))?;
-    static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
-    let temp_path = parent.join(format!(
-        ".{}.tmp-{}-{}",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("prompt"),
-        std::process::id(),
-        TEMP_COUNTER.fetch_add(1, Ordering::Relaxed),
-    ));
-    let result = (|| {
-        let mut file = fs::File::create(&temp_path)
-            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
-        file.write_all(body.as_bytes())
-            .map_err(|error| prompt_io_error("write", &temp_path, error))?;
-        file.sync_all()
-            .map_err(|error| prompt_io_error("sync", &temp_path, error))?;
-        fs::rename(&temp_path, path).map_err(|error| prompt_io_error("rename", path, error))
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temp_path);
-    }
-    result
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PromptTemplate {
     pub(crate) id: String,
     pub(crate) body: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PromptSettingRecord {
-    pub id: String,
-    pub title: String,
-    pub scope: String,
-    pub audience: String,
-    pub provider_applicability: Vec<String>,
-    pub source: String,
-    pub current: String,
-    pub default: String,
-    pub current_sha256: String,
-    pub default_sha256: String,
-    pub current_bytes: usize,
-    pub default_bytes: usize,
-    pub revision: u64,
-    pub variables: Vec<String>,
-    pub editable: bool,
-    pub protected: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct PromptSettingMetadata {
-    title: &'static str,
-    scope: &'static str,
-    audience: &'static str,
-    provider_applicability: &'static [&'static str],
-    editable: bool,
-    protected: bool,
-}
-
-fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
-    let (title, scope, audience) = match template_id {
-        "workflow/turn" => ("Workflow turn contract", "workflow", "workflow-agent"),
-        "workflow/run-completion" => ("Workflow completion", "workflow", "workflow-agent"),
-        "workflow/run-intermediate-output" => {
-            ("Workflow progress output", "workflow", "workflow-agent")
-        }
-        "workflow/run-output-correction" => {
-            ("Workflow output correction", "workflow", "workflow-agent")
-        }
-        "workflow/handoff-correction" => {
-            ("Workflow handoff correction", "workflow", "workflow-agent")
-        }
-        "workflow/handoff-completion-guidance" => (
-            "Workflow handoff completion guidance",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/missing-output-correction" => (
-            "Workflow missing-output correction",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/control-mailbox" => ("Workflow control mailbox", "workflow", "workflow-agent"),
-        "workflow/edge-contracts" => ("Workflow edge contracts", "workflow", "workflow-agent"),
-        "workflow/node-turn-context" => {
-            ("Workflow node turn context", "workflow", "workflow-agent")
-        }
-        "workflow/output-contract" => ("Workflow output contract", "workflow", "workflow-agent"),
-        "workflow/last-turn" => ("Workflow last-turn guidance", "workflow", "workflow-agent"),
-        "workflow/schedule-continuation" => (
-            "Workflow schedule continuation",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/node-default-instructions" => (
-            "Workflow node default instructions",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/handoff-validation-passed" => (
-            "Workflow handoff validation passed",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/handoff-validation-failed" => (
-            "Workflow handoff validation failed",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/output-submission-final-valid" => (
-            "Workflow final output submitted",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/output-submission-final-invalid" => (
-            "Workflow final output rejected",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/output-submission-intermediate" => (
-            "Workflow intermediate output submitted",
-            "workflow",
-            "workflow-agent",
-        ),
-        id if id.starts_with("runtime/metaagent") || id == "runtime/meta-mode-entered" => {
-            ("Meta-agent runtime guidance", "runtime", "meta-agent")
-        }
-        id if id.starts_with("utility/") => ("Utility prompt", "utility", "utility-agent"),
-        id if id.starts_with("runtime/") => {
-            ("Runtime provider guidance", "runtime", "provider-agent")
-        }
-        _ => ("Chariox prompt", "runtime", "provider-agent"),
-    };
-    let protected = matches!(
-        template_id,
-        "runtime/base"
-            | "runtime/native-permissions"
-            | "runtime/workspace-live-sync"
-            | "runtime/workspace-live-sync-tracked"
-            | "runtime/slice"
-            | "runtime/metaagent-delegation"
-            | "runtime/agent-message-context"
-    );
-    PromptSettingMetadata {
-        title,
-        scope,
-        audience,
-        provider_applicability: &["codex", "claude", "opencode"],
-        editable: !protected,
-        protected,
-    }
-}
-
-fn prompt_variables(body: &str) -> Vec<String> {
-    let mut variables = BTreeMap::<String, ()>::new();
-    let mut remainder = body;
-    while let Some(start) = remainder.find("{{") {
-        let after_start = &remainder[start + 2..];
-        let Some(end) = after_start.find("}}") else {
-            break;
-        };
-        let variable = after_start[..end].trim();
-        if !variable.is_empty() {
-            variables.insert(variable.to_string(), ());
-        }
-        remainder = &after_start[end + 2..];
-    }
-    variables.into_keys().collect()
-}
-
-fn prompt_revision(body: &str) -> u64 {
-    let digest = Sha256::digest(body.as_bytes());
-    // Prompt revisions cross the browser/kernel JSON boundary and are represented
-    // as JavaScript numbers by the web client. Keep the content-derived revision
-    // within Number.MAX_SAFE_INTEGER so optimistic concurrency checks do not lose
-    // precision in transit.
-    u64::from_be_bytes(digest[..8].try_into().unwrap_or_default()) & ((1 << 53) - 1)
-}
-
-fn validate_prompt_markdown(
-    template_id: &str,
-    bundled_default: &str,
-    body: &str,
-) -> Result<(), DaemonError> {
-    let trimmed = body.trim();
-    if trimmed.is_empty() {
-        return Err(prompt_settings_error(
-            "prompt Markdown cannot be empty",
-            "body",
-        ));
-    }
-    if trimmed.len() > 64 * 1024 {
-        return Err(prompt_settings_error(
-            "prompt Markdown exceeds the 64 KiB limit",
-            "body",
-        ));
-    }
-    let mut remainder = trimmed;
-    while let Some(start) = remainder.find("{{") {
-        let Some(end) = remainder[start + 2..].find("}}") else {
-            return Err(prompt_settings_error(
-                "prompt variables must have balanced delimiters",
-                template_id,
-            ));
-        };
-        remainder = &remainder[start + 2 + end + 2..];
-    }
-    let variables = prompt_variables(trimmed);
-    if let Some(required) = prompt_variables(bundled_default)
-        .into_iter()
-        .find(|required| !variables.iter().any(|variable| variable == required))
-    {
-        return Err(prompt_settings_error(
-            &format!("prompt must preserve required variable `{{{{{required}}}}}`"),
-            template_id,
-        ));
-    }
-    Ok(())
-}
-
-pub(crate) fn render_configured_prompt(
-    template_id: &str,
-    bundled_default: &str,
-    substitutions: &[(&str, &str)],
-) -> String {
-    let body = PromptTemplateRegistry::from_env()
-        .read_setting(template_id)
-        .map(|setting| setting.current)
-        .unwrap_or_else(|_| bundled_default.to_string());
-    render_bundled_prompt(&body, substitutions)
-}
-
-fn prompt_settings_error(message: &str, setting_id: &str) -> DaemonError {
-    DaemonError::ProviderProtocol {
-        provider_run_id: "prompt-settings".to_string(),
-        operation: "prompt_settings",
-        message: format!("{message}: {setting_id}"),
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -873,36 +443,8 @@ pub(crate) fn bundled_workflow_run_intermediate_output_template() -> &'static st
     WORKFLOW_RUN_INTERMEDIATE_OUTPUT
 }
 
-pub(crate) fn bundled_workflow_run_output_correction_template() -> &'static str {
-    WORKFLOW_RUN_OUTPUT_CORRECTION
-}
-
-pub(crate) fn bundled_workflow_handoff_correction_template() -> &'static str {
-    WORKFLOW_HANDOFF_CORRECTION
-}
-
-pub(crate) fn bundled_workflow_handoff_completion_guidance_template() -> &'static str {
-    WORKFLOW_HANDOFF_COMPLETION_GUIDANCE
-}
-
-pub(crate) fn bundled_workflow_missing_output_correction_template() -> &'static str {
-    WORKFLOW_MISSING_OUTPUT_CORRECTION
-}
-
-pub(crate) fn render_bundled_prompt(template: &str, replacements: &[(&str, &str)]) -> String {
-    replacements
-        .iter()
-        .fold(template.to_string(), |body, (key, value)| {
-            body.replace(&format!("{{{{{key}}}}}"), value)
-        })
-}
-
 pub(crate) fn bundled_metaagent_event_template() -> &'static str {
     RUNTIME_METAAGENT_EVENT
-}
-
-pub(crate) fn bundled_agent_message_context_template() -> &'static str {
-    RUNTIME_AGENT_MESSAGE_CONTEXT
 }
 
 fn current_kernel_is_slice() -> bool {
@@ -923,10 +465,6 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED,
         ),
         BundledPromptTemplate::new("runtime/native-permissions", RUNTIME_NATIVE_PERMISSIONS),
-        BundledPromptTemplate::new(
-            "runtime/agent-message-context",
-            RUNTIME_AGENT_MESSAGE_CONTEXT,
-        ),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
@@ -939,61 +477,11 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             RUNTIME_WORKFLOW_DIRECT_JSON_FALLBACK,
         ),
         BundledPromptTemplate::new("runtime/metaagent-event", RUNTIME_METAAGENT_EVENT),
-        BundledPromptTemplate::new(
-            "runtime/metaagent-task-recovery",
-            RUNTIME_METAAGENT_TASK_RECOVERY,
-        ),
         BundledPromptTemplate::new("workflow/turn", WORKFLOW_TURN),
         BundledPromptTemplate::new("workflow/run-completion", WORKFLOW_RUN_COMPLETION),
         BundledPromptTemplate::new(
             "workflow/run-intermediate-output",
             WORKFLOW_RUN_INTERMEDIATE_OUTPUT,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/run-output-correction",
-            WORKFLOW_RUN_OUTPUT_CORRECTION,
-        ),
-        BundledPromptTemplate::new("workflow/handoff-correction", WORKFLOW_HANDOFF_CORRECTION),
-        BundledPromptTemplate::new(
-            "workflow/handoff-completion-guidance",
-            WORKFLOW_HANDOFF_COMPLETION_GUIDANCE,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/missing-output-correction",
-            WORKFLOW_MISSING_OUTPUT_CORRECTION,
-        ),
-        BundledPromptTemplate::new("workflow/control-mailbox", WORKFLOW_CONTROL_MAILBOX),
-        BundledPromptTemplate::new("workflow/edge-contracts", WORKFLOW_EDGE_CONTRACTS),
-        BundledPromptTemplate::new("workflow/node-turn-context", WORKFLOW_NODE_TURN_CONTEXT),
-        BundledPromptTemplate::new("workflow/output-contract", WORKFLOW_OUTPUT_CONTRACT),
-        BundledPromptTemplate::new("workflow/last-turn", WORKFLOW_LAST_TURN),
-        BundledPromptTemplate::new(
-            "workflow/schedule-continuation",
-            WORKFLOW_SCHEDULE_CONTINUATION,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/node-default-instructions",
-            WORKFLOW_NODE_DEFAULT_INSTRUCTIONS,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/handoff-validation-passed",
-            WORKFLOW_HANDOFF_VALIDATION_PASSED,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/handoff-validation-failed",
-            WORKFLOW_HANDOFF_VALIDATION_FAILED,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/output-submission-final-valid",
-            WORKFLOW_OUTPUT_SUBMISSION_FINAL_VALID,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/output-submission-final-invalid",
-            WORKFLOW_OUTPUT_SUBMISSION_FINAL_INVALID,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/output-submission-intermediate",
-            WORKFLOW_OUTPUT_SUBMISSION_INTERMEDIATE,
         ),
         BundledPromptTemplate::new(
             "utility/workspace-commit-message",
@@ -1686,326 +1174,5 @@ mod tests {
             .entries
             .iter()
             .any(|entry| entry.template_id == "runtime/meta-mode-entered"));
-    }
-
-    #[test]
-    fn prompt_settings_catalog_reads_edits_and_resets_without_exposing_paths() {
-        let root = temp_prompt_root("settings-catalog");
-        let registry = PromptTemplateRegistry::new(root.clone());
-        let settings = registry.list_settings().expect("catalog should load");
-        let workflow = settings
-            .iter()
-            .find(|setting| setting.id == "workflow/turn")
-            .expect("workflow prompt should be catalogued");
-        assert!(workflow.editable);
-        assert_eq!(workflow.source, "bundled");
-        assert!(workflow.current_sha256.len() == 64);
-        assert_eq!(workflow.current_bytes, workflow.current.len());
-        assert!(!workflow.default.is_empty());
-
-        let default = registry
-            .read_setting("workflow/turn")
-            .expect("workflow prompt should read");
-        let updated = registry
-            .update_setting_if_version(
-                "workflow/turn",
-                &format!("{}\nHello {{{{NAME}}}}", default.default),
-                default.revision,
-                &default.current_sha256,
-            )
-            .expect("editable prompt should update");
-        assert!(updated.current.contains("Hello {{NAME}}"));
-        assert!(updated.variables.iter().any(|variable| variable == "NAME"));
-        assert_eq!(updated.source, "user_override");
-        assert_eq!(updated.current_bytes, updated.current.len());
-        assert_ne!(updated.current_sha256, updated.default_sha256);
-
-        let reset = registry
-            .reset_setting_if_version("workflow/turn", updated.revision, &updated.current_sha256)
-            .expect("prompt should reset");
-        assert_eq!(reset.current_sha256, reset.default_sha256);
-        assert!(registry.root.starts_with(root));
-    }
-
-    #[test]
-    fn prompt_revisions_fit_the_browser_safe_integer_range() {
-        assert!(prompt_revision("browser-safe") <= 9_007_199_254_740_991);
-    }
-
-    #[test]
-    fn every_editable_prompt_is_consumed_by_kernel_loader_and_reset_all_restores_defaults() {
-        let root = temp_prompt_root("settings-all-prompts");
-        let registry = PromptTemplateRegistry::new(root);
-        let initial = registry.list_settings().expect("catalog should load");
-        assert!(!initial.is_empty(), "the prompt catalog must not be empty");
-
-        for setting in &initial {
-            if !setting.editable {
-                continue;
-            }
-            let updated = registry
-                .update_setting_if_version(
-                    &setting.id,
-                    &format!(
-                        "{}\n\n<!-- kernel-prompt-settings-test -->",
-                        setting.default
-                    ),
-                    setting.revision,
-                    &setting.current_sha256,
-                )
-                .unwrap_or_else(|error| panic!("failed to edit {}: {error}", setting.id));
-            assert_eq!(
-                updated.source, "user_override",
-                "{} should be overridden",
-                setting.id
-            );
-            let loaded = registry.read_required(&setting.id).unwrap_or_else(|error| {
-                panic!("kernel loader could not read {}: {error}", setting.id)
-            });
-            assert!(
-                loaded.body.contains("kernel-prompt-settings-test"),
-                "kernel loader did not consume edited template {}",
-                setting.id
-            );
-        }
-
-        let edited = registry
-            .list_settings()
-            .expect("edited catalog should load");
-        let expected = edited
-            .iter()
-            .map(|setting| {
-                (
-                    setting.id.clone(),
-                    crate::local::PromptSettingVersion {
-                        revision: setting.revision,
-                        sha256: setting.current_sha256.clone(),
-                    },
-                )
-            })
-            .collect::<BTreeMap<_, _>>();
-        let reset = registry
-            .reset_all_settings_if_versions(&expected)
-            .expect("reset-all should restore every catalog entry");
-        assert_eq!(reset.len(), edited.len());
-        for setting in registry.list_settings().expect("reset catalog should load") {
-            assert_eq!(
-                setting.current, setting.default,
-                "{} did not reset",
-                setting.id
-            );
-            assert_eq!(
-                setting.source, "bundled",
-                "{} remained overridden",
-                setting.id
-            );
-        }
-    }
-
-    #[test]
-    fn prompt_settings_catalog_does_not_rewrite_unchanged_defaults_state() {
-        let root = temp_prompt_root("settings-catalog-no-rewrite");
-        let registry = PromptTemplateRegistry::new(root.clone());
-        registry.list_settings().expect("first catalog should load");
-        let state_path = root.join(PROMPT_DEFAULTS_STATE_FILE);
-        let before = fs::metadata(&state_path)
-            .expect("defaults state should exist")
-            .modified()
-            .expect("defaults state should have a modification time");
-        registry
-            .list_settings()
-            .expect("second catalog should load");
-        let after = fs::metadata(&state_path)
-            .expect("defaults state should still exist")
-            .modified()
-            .expect("defaults state should still have a modification time");
-        assert_eq!(
-            before, after,
-            "unchanged catalog must not rewrite defaults state"
-        );
-    }
-
-    #[test]
-    fn prompt_settings_reject_missing_required_variables() {
-        let root = temp_prompt_root("required-variables");
-        let registry = PromptTemplateRegistry::new(root);
-        let current = registry
-            .read_setting("workflow/turn")
-            .expect("workflow prompt should read");
-        let error = registry
-            .update_setting_if_version(
-                "workflow/turn",
-                "custom instructions",
-                current.revision,
-                &current.current_sha256,
-            )
-            .expect_err("contract variables must be preserved");
-        assert!(error.to_string().contains("required variable"));
-    }
-
-    #[test]
-    fn prompt_settings_reject_stale_versioned_updates() {
-        let root = temp_prompt_root("version-conflict");
-        let registry = PromptTemplateRegistry::new(root);
-        let current = registry
-            .read_setting("workflow/turn")
-            .expect("workflow prompt should read");
-        let first_body = format!("{}\nfirst", current.default);
-        registry
-            .update_setting_if_version(
-                "workflow/turn",
-                &first_body,
-                current.revision,
-                &current.current_sha256,
-            )
-            .expect("first writer should update");
-        let stale_body = format!("{}\nstale", current.default);
-        let error = registry
-            .update_setting_if_version(
-                "workflow/turn",
-                &stale_body,
-                current.revision,
-                &current.current_sha256,
-            )
-            .expect_err("stale writer must not overwrite a newer prompt");
-        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
-        assert!(registry
-            .read_setting("workflow/turn")
-            .expect("workflow prompt should remain readable")
-            .current
-            .contains("first"));
-    }
-
-    #[test]
-    fn prompt_settings_reject_stale_resets() {
-        let root = temp_prompt_root("reset-version-conflict");
-        let registry = PromptTemplateRegistry::new(root);
-        let current = registry
-            .read_setting("workflow/turn")
-            .expect("prompt should read");
-        registry
-            .update_setting_if_version(
-                "workflow/turn",
-                &format!("{}\nnewer", current.default),
-                current.revision,
-                &current.current_sha256,
-            )
-            .expect("newer writer should update");
-        let error = registry
-            .reset_setting_if_version("workflow/turn", current.revision, &current.current_sha256)
-            .expect_err("stale reset must not overwrite a newer prompt");
-        assert!(matches!(error, DaemonError::PromptSettingConflict { .. }));
-        assert!(registry
-            .read_setting("workflow/turn")
-            .expect("prompt should remain readable")
-            .current
-            .contains("newer"));
-    }
-
-    #[test]
-    fn workflow_completion_guidance_keeps_a_separator_after_materialization() {
-        let root = temp_prompt_root("workflow-completion-guidance-separator");
-        let registry = PromptTemplateRegistry::new(root);
-        registry
-            .materialize_bundled_defaults()
-            .expect("defaults should materialize");
-        let handoff = registry
-            .read_setting("workflow/handoff-correction")
-            .expect("handoff prompt should read");
-        let guidance = registry
-            .read_setting("workflow/handoff-completion-guidance")
-            .expect("guidance should read");
-        let replacement = format!("\n\n{}", guidance.current);
-        let rendered =
-            render_bundled_prompt(&handoff.current, &[("COMPLETION_GUIDANCE", &replacement)]);
-        assert!(rendered.contains("no warning.\n\nIf the work is accepted"));
-    }
-
-    #[test]
-    fn configured_correction_prompt_uses_user_override() {
-        let _guard = env_lock::lock();
-        let home = temp_prompt_root("configured-correction");
-        let root = home.join("prompts");
-        let registry = PromptTemplateRegistry::new(root.clone());
-        registry
-            .materialize_bundled_defaults()
-            .expect("defaults should materialize");
-        fs::write(
-            root.join("workflow").join("run-output-correction.md"),
-            "OVERRIDE {{ATTEMPT}} {{MAX_ATTEMPTS}} {{ERROR}}",
-        )
-        .expect("correction override should write");
-        let previous = std::env::var_os("CHARIOX_HOME");
-        std::env::set_var("CHARIOX_HOME", &home);
-        let rendered = render_configured_prompt(
-            "workflow/run-output-correction",
-            bundled_workflow_run_output_correction_template(),
-            &[("ATTEMPT", "1"), ("MAX_ATTEMPTS", "3"), ("ERROR", "bad")],
-        );
-        match previous {
-            Some(value) => std::env::set_var("CHARIOX_HOME", value),
-            None => std::env::remove_var("CHARIOX_HOME"),
-        }
-        assert_eq!(rendered, "OVERRIDE 1 3 bad");
-    }
-
-    #[test]
-    fn prompt_registry_concurrent_reads_never_observe_partial_updates() {
-        let root = temp_prompt_root("atomic-updates");
-        let registry = PromptTemplateRegistry::new(root);
-        registry
-            .materialize_bundled_defaults()
-            .expect("defaults should materialize");
-        let default = registry
-            .read_setting("workflow/run-output-correction")
-            .expect("correction prompt should read")
-            .default;
-        let writer_registry = registry.clone();
-        let reader_registry = registry.clone();
-        let writer = std::thread::spawn(move || {
-            for index in 0..40 {
-                let current = writer_registry
-                    .read_setting("workflow/run-output-correction")
-                    .expect("prompt should read");
-                writer_registry
-                    .update_setting_if_version(
-                        "workflow/run-output-correction",
-                        &format!("{default}\nmarker-{index}"),
-                        current.revision,
-                        &current.current_sha256,
-                    )
-                    .expect("atomic prompt update should succeed");
-            }
-        });
-        for _ in 0..200 {
-            let setting = reader_registry
-                .read_setting("workflow/run-output-correction")
-                .expect("concurrent prompt read should succeed");
-            assert!(!setting.current.is_empty());
-            assert!(setting.current.contains("{{ERROR}}"));
-        }
-        writer.join().expect("writer should finish");
-    }
-
-    #[test]
-    fn protected_prompt_settings_are_read_only_but_resettable() {
-        let root = temp_prompt_root("settings-protected");
-        let registry = PromptTemplateRegistry::new(root);
-        let current = registry
-            .read_setting("runtime/base")
-            .expect("protected prompt should read");
-        let error = registry
-            .update_setting_if_version(
-                "runtime/base",
-                "unsafe override",
-                current.revision,
-                &current.current_sha256,
-            )
-            .expect_err("protected prompts must not be editable");
-        assert!(error.to_string().contains("protected prompt setting"));
-        let setting = registry
-            .reset_setting_if_version("runtime/base", current.revision, &current.current_sha256)
-            .expect("protected prompt should reset");
-        assert!(setting.protected);
     }
 }

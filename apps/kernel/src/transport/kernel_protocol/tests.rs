@@ -319,6 +319,7 @@ fn prompt_runtime_activity_changes_can_skip_session_snapshot() {
                 status: crate::runtime::projection::AgentPromptRuntimeStatus::Running,
                 phase: crate::runtime::projection::AgentTurnRuntimePhase::Accepted,
                 prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+                prompt_source: crate::session::PromptSource::Human,
                 external_provider: None,
                 external_provider_session_id: None,
                 external_provider_turn_id: None,

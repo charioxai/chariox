@@ -55,6 +55,7 @@ fn completed_native_tui_turn_projects_undo_action_for_tracked_session() {
             target_agent_id: Some(agent.id().to_string()),
             prompt: "turn actions prompt".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should start")
     {
@@ -182,6 +183,7 @@ fn queued_native_tui_turn_projects_undo_action_after_provider_launch_inner() {
             target_agent_id: Some(agent.id().to_string()),
             prompt: "queued turn actions prompt".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should queue while native TUI provider starts")
     {
@@ -610,6 +612,7 @@ fn undo_turn_request_conflict_fails_without_partial_writes_inner() {
             target_agent_id: Some(agent.id().to_string()),
             prompt: "make conflicting changes".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should start")
     {
@@ -803,6 +806,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
             target_agent_id: Some(source.id().to_string()),
             prompt: "remember source context".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("source prompt should submit")
     {

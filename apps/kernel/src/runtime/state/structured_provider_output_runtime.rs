@@ -142,9 +142,11 @@ impl KernelRuntimeState {
                         })
                 });
             let active_prompt_id = active_prompt.as_ref().map(|prompt| prompt.id().to_string());
-            let active_prompt_is_dispatching = active_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.delivery_pending());
+            let active_prompt_is_dispatching = active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.status() == crate::session::PromptStatus::Dispatching
+                    || prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            });
             if polled_prompt_id != active_prompt_id || active_prompt_is_dispatching {
                 crate::logging::debug_with_fields(
                     "daemon.provider",
@@ -229,10 +231,11 @@ impl KernelRuntimeState {
                                 .active_prompt_for_agent(&session, &agent_id)
                         })
                 });
-            if active_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.delivery_pending())
-            {
+            if active_prompt.as_ref().is_some_and(|prompt| {
+                prompt.status() == crate::session::PromptStatus::Dispatching
+                    || prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+            }) {
                 owned.structured_output_records.schedule_after_empty_poll(
                     provider_run_id.to_string(),
                     crate::session::unix_epoch_ms(),

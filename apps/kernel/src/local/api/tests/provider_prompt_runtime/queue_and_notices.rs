@@ -56,6 +56,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
             target_agent_id: None,
             prompt: "first".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("first prompt should start");
     let second = harness
@@ -65,6 +66,7 @@ fn local_request_api_exposes_queue_config_and_notices() {
             target_agent_id: None,
             prompt: "second".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("second prompt should queue");
     let config = harness
@@ -273,6 +275,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
             target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "first prompt\n".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("first prompt should start");
     let _ = harness
@@ -282,6 +285,7 @@ fn local_request_api_can_cancel_an_active_prompt() {
             target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "second prompt\n".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("second prompt should queue");
 

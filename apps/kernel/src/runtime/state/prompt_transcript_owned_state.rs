@@ -23,8 +23,6 @@ pub(super) struct ActivePromptTranscriptMetadata {
     pub(super) source_attachment_id: Option<String>,
 }
 
-type AgentOutputSequenceUpdate = (String, String, u64);
-
 impl KernelRuntimeOwnedState {
     pub(super) fn record_provider_failure_output(
         &self,
@@ -452,7 +450,8 @@ impl KernelRuntimeOwnedState {
             );
             return;
         }
-        self.append_operational_history_entry(&entry, None, None, None);
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(&entry, None, None, None);
     }
 
     pub(super) fn append_history_entries(
@@ -479,6 +478,7 @@ impl KernelRuntimeOwnedState {
             );
             return;
         }
+        let _append_guard = self.transcript_history_append_guard();
         self.append_operational_history_entries(&entries);
     }
 
@@ -489,47 +489,45 @@ impl KernelRuntimeOwnedState {
         workflow_run_id_override: Option<&str>,
         workflow_node_run_id_override: Option<&str>,
     ) {
-        // Context resolution reads session state. Do it before taking the
-        // transcript mutex so a session writer can never be forced to wait
-        // for this mutex while the history path waits for the session lock.
+        let _append_guard = self.transcript_history_append_guard();
+        self.append_operational_history_entry_unlocked(
+            entry,
+            prompt_id_override,
+            workflow_run_id_override,
+            workflow_node_run_id_override,
+        );
+    }
+
+    fn append_operational_history_entry_unlocked(
+        &self,
+        entry: &crate::history::SessionHistoryEntry,
+        prompt_id_override: Option<&str>,
+        workflow_run_id_override: Option<&str>,
+        workflow_node_run_id_override: Option<&str>,
+    ) {
         let context = self.operational_history_context(
             entry,
             prompt_id_override,
             workflow_run_id_override,
             workflow_node_run_id_override,
         );
-        let update = {
-            let _append_guard = self.transcript_history_append_guard();
-            self.append_operational_history_entry_unlocked(entry, context)
-        };
-        self.apply_agent_output_sequence_update(update);
-    }
-
-    fn append_operational_history_entry_unlocked(
-        &self,
-        entry: &crate::history::SessionHistoryEntry,
-        context: crate::history::HistoryEventTurnContext,
-    ) -> Option<AgentOutputSequenceUpdate> {
         match self
             .operational_history_store
             .append_transcript(entry, context)
         {
             Ok(event) => {
-                let update = if is_unread_output_history_entry(entry) {
-                    entry.agent_id.as_deref().map(|agent_id| {
-                        (
-                            entry.session_id.clone(),
-                            agent_id.to_string(),
+                if is_unread_output_history_entry(entry) {
+                    if let Some(agent_id) = entry.agent_id.as_deref() {
+                        let _ = self.session_store.note_agent_output_sequence(
+                            entry.session_id.as_str(),
+                            agent_id,
                             event.sequence,
-                        )
-                    })
-                } else {
-                    None
-                };
+                        );
+                    }
+                }
                 if self.history_archive_enabled() {
                     self.enqueue_history_archive_event(&event);
                 }
-                update
             }
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -540,16 +538,7 @@ impl KernelRuntimeOwnedState {
                         "error": error.to_string(),
                     }),
                 );
-                None
             }
-        }
-    }
-
-    fn apply_agent_output_sequence_update(&self, update: Option<AgentOutputSequenceUpdate>) {
-        if let Some((session_id, agent_id, sequence)) = update {
-            let _ = self
-                .session_store
-                .note_agent_output_sequence(&session_id, &agent_id, sequence);
         }
     }
 
@@ -644,56 +633,47 @@ impl KernelRuntimeOwnedState {
             );
             prepared.push((entry, context));
         }
-        let updates = {
-            let _append_guard = self.transcript_history_append_guard();
-            match self.operational_history_store.append_transcripts(prepared) {
-                Ok(events) => {
-                    let mut updates = Vec::new();
-                    for (entry, event) in entries.iter().zip(events.iter()) {
-                        if is_unread_output_history_entry(entry) {
-                            if let Some(agent_id) = entry.agent_id.as_deref() {
-                                updates.push((
-                                    entry.session_id.clone(),
-                                    agent_id.to_string(),
-                                    event.sequence,
-                                ));
-                            }
-                        }
-                    }
-                    if self.history_archive_enabled() {
-                        if let Err(error) = self
-                            .operational_history_store
-                            .enqueue_archive_events(&events)
-                        {
-                            crate::logging::warn_with_fields(
-                                "daemon.history",
-                                "failed to enqueue history archive events",
-                                serde_json::json!({
-                                    "session_id": entries.first().map(|entry| entry.session_id.as_str()),
-                                    "entry_count": entries.len(),
-                                    "error": error.to_string(),
-                                }),
+        match self.operational_history_store.append_transcripts(prepared) {
+            Ok(events) => {
+                for (entry, event) in entries.iter().zip(events.iter()) {
+                    if is_unread_output_history_entry(entry) {
+                        if let Some(agent_id) = entry.agent_id.as_deref() {
+                            let _ = self.session_store.note_agent_output_sequence(
+                                entry.session_id.as_str(),
+                                agent_id,
+                                event.sequence,
                             );
                         }
                     }
-                    updates
                 }
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.history",
-                        "failed to append operational history batch",
-                        serde_json::json!({
-                            "session_id": entries.first().map(|entry| entry.session_id.as_str()),
-                            "entry_count": entries.len(),
-                            "error": error.to_string(),
-                        }),
-                    );
-                    Vec::new()
+                if self.history_archive_enabled() {
+                    if let Err(error) = self
+                        .operational_history_store
+                        .enqueue_archive_events(&events)
+                    {
+                        crate::logging::warn_with_fields(
+                            "daemon.history",
+                            "failed to enqueue history archive events",
+                            serde_json::json!({
+                                "session_id": entries.first().map(|entry| entry.session_id.as_str()),
+                                "entry_count": entries.len(),
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
                 }
             }
-        };
-        for update in updates {
-            self.apply_agent_output_sequence_update(Some(update));
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.history",
+                    "failed to append operational history batch",
+                    serde_json::json!({
+                        "session_id": entries.first().map(|entry| entry.session_id.as_str()),
+                        "entry_count": entries.len(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -710,8 +690,7 @@ impl KernelRuntimeOwnedState {
         workflow_node_run_id: Option<&str>,
         timestamp_ms: Option<u64>,
     ) -> Result<(), DaemonError> {
-        // Take the session snapshot before the transcript mutex for the same
-        // lock-order reason as provider-output history appends below.
+        let _append_guard = self.transcript_history_append_guard();
         let _ = self.session_snapshot_without_projection_update(session_id)?;
         let mut entry = crate::history::SessionHistoryEntry::user_prompt_with_attachments(
             session_id,
@@ -727,14 +706,12 @@ impl KernelRuntimeOwnedState {
         if let Some(prompt_id) = prompt_id {
             entry.merge_key = Some(user_prompt_history_merge_key(prompt_id));
         }
-        let context = self.operational_history_context(
+        self.append_operational_history_entry_unlocked(
             &entry,
             prompt_id,
             workflow_run_id,
             workflow_node_run_id,
         );
-        let _append_guard = self.transcript_history_append_guard();
-        let _ = self.append_operational_history_entry_unlocked(&entry, context);
         Ok(())
     }
 

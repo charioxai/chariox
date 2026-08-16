@@ -446,28 +446,6 @@ impl ProviderLaunchPendingTracker {
         }
     }
 
-    pub(crate) async fn has_unsettled_launch(
-        &self,
-        session_id: &str,
-        session_projection: &SessionStateProjectionStore,
-        provider_run_projection: &ProviderRunProjectionStore,
-    ) -> bool {
-        if !self.sessions.lock().await.contains(session_id) {
-            return false;
-        }
-        if let Some(is_starting) = provider_launch_is_still_starting_from_projection(
-            session_id,
-            session_projection,
-            provider_run_projection,
-        ) {
-            if !is_starting {
-                self.sessions.lock().await.remove(session_id);
-            }
-            return is_starting;
-        }
-        true
-    }
-
     pub(crate) async fn clear_if_settled(
         &self,
         app: &Arc<Mutex<DaemonApp>>,

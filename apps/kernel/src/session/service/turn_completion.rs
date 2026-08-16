@@ -761,16 +761,8 @@ impl SessionService {
             .map(str::trim)
             .unwrap_or("");
         format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/run-output-correction",
-                crate::prompt_assembly::bundled_workflow_run_output_correction_template(),
-                &[
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                    ("ERROR", &failure.message),
-                ],
-            )
+            "{invocation_prompt}\n\nThe previous final workflow output failed schema validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Produce corrected final output, call `validate_and_submit_workflow_run_output`, and do not finish until that tool returns `valid: true` with no warning.",
+            failure.attempt, failure.max_attempts, failure.message
         )
         .trim()
         .to_string()
@@ -790,29 +782,12 @@ impl SessionService {
             .node(context.source_node_run.node_id())
             .filter(|node| node.can_complete_workflow_run())
             .map(|_| {
-                format!(
-                    "\n\n{}",
-                    crate::prompt_assembly::render_configured_prompt(
-                        "workflow/handoff-completion-guidance",
-                        crate::prompt_assembly::bundled_workflow_handoff_completion_guidance_template(),
-                        &[],
-                    )
-                )
+                " If the work is accepted and the workflow should finish, do not emit an outgoing handoff. Call `validate_and_submit_workflow_run_output` with output matching the final workflow schema, and do not finish until it returns `valid: true` with no warning."
             })
-            .unwrap_or_default();
+            .unwrap_or("");
         format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/handoff-correction",
-                crate::prompt_assembly::bundled_workflow_handoff_correction_template(),
-                &[
-                    ("EDGE_ID", &failure.edge_id),
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                    ("ERROR", &failure.message),
-                    ("COMPLETION_GUIDANCE", &completion_guidance),
-                ],
-            )
+            "{invocation_prompt}\n\nThe previous workflow handoff for edge `{}` failed validation on attempt {}/{}: {}\nRetry this same workflow invocation now. Put the selected `workflow_handoffs` array inside final `output.message`, validate the selected edge payload with `validate_workflow_handoff`, and do not finish until validation returns `valid: true` with no warning.{completion_guidance}",
+            failure.edge_id, failure.attempt, failure.max_attempts, failure.message,
         )
         .trim()
         .to_string()
@@ -828,15 +803,8 @@ impl SessionService {
             .map(str::trim)
             .unwrap_or("");
         format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/missing-output-correction",
-                crate::prompt_assembly::bundled_workflow_missing_output_correction_template(),
-                &[
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                ],
-            )
+            "{invocation_prompt}\n\nThe previous workflow turn ended without the required validated structured output on attempt {}/{}. Retry this same workflow invocation now. Follow the workflow runtime tool and fenced JSON requirements exactly. If this node completes the run, call `validate_and_submit_workflow_run_output`, and do not finish until the required output is accepted.",
+            failure.attempt, failure.max_attempts
         )
         .trim()
         .to_string()

@@ -193,6 +193,7 @@ mod tests {
                 target_agent_id: Some("agent-1".to_string()),
                 prompt: "hello".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             }),
         );
 
@@ -214,6 +215,7 @@ mod tests {
                 target_agent_id: Some("agent-1".to_string()),
                 prompt: prompt.to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             })
         };
         let first = KernelCommand::from_local_request("cmd-1", None, None, &request("hello"));
@@ -458,6 +460,7 @@ mod tests {
             target_agent_id: Some("agent-1".to_string()),
             prompt: "hello".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         });
         let command = KernelCommand::from_local_request_with_source(
             "ipc-1",

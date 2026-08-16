@@ -215,6 +215,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
             target_agent_id: None,
             prompt: "keep streaming while focus changes\n".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt should start");
 
@@ -423,6 +424,7 @@ fn local_request_api_auto_launches_provider_run_for_prompt() {
             target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "whoami".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should auto-launch a provider run");
 
@@ -474,6 +476,7 @@ fn direct_prompt_completion_resolves_unfocused_single_active_agent() {
             target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "whoami".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should start")
     {
@@ -550,6 +553,7 @@ fn direct_prompt_cancel_resolves_unfocused_single_active_agent() {
             target_agent_id: Some(prompt_agent.id().to_string()),
             prompt: "whoami".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("prompt submit should start")
     {
@@ -637,6 +641,7 @@ fn direct_prompt_cancel_uses_explicit_target_agent_when_multiple_agents_are_acti
                 target_agent_id: Some(agent.id().to_string()),
                 prompt: prompt_text.to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             }))
             .expect("prompt submit should start")
         {

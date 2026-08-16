@@ -28,6 +28,7 @@ async fn prompt_submit_rejects_cross_session_agent_before_admission() {
         target_agent_id: Some(first_agent_id.clone()),
         prompt: "must not cross session boundary".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command = KernelCommand::from_local_request(
         "cmd-cross-session-prompt-submit",
@@ -90,6 +91,7 @@ async fn agent_and_workflow_lanes_are_removed_when_session_ends() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "create agent lane".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-agent-lane-create", None, None, &prompt_request);
@@ -169,6 +171,7 @@ async fn agent_lane_is_removed_when_agent_is_destroyed() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "create agent lane".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command = KernelCommand::from_local_request(
         "cmd-agent-destroy-lane-create",
@@ -251,6 +254,7 @@ async fn prompt_submit_uses_agent_lane_without_generic_interactive_lane() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "hello from agent lane".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);
@@ -317,6 +321,7 @@ async fn prompt_submit_uses_session_focus_projection_without_app_lock_for_routin
         target_agent_id: None,
         prompt: "hello through projected focus".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-projection", None, None, &prompt_request);
@@ -384,6 +389,7 @@ async fn prompt_submit_uses_warmed_session_projection_without_app_lock_for_focus
         target_agent_id: None,
         prompt: "hello through warmed session projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command = KernelCommand::from_local_request(
         "cmd-prompt-session-projection-focus",
@@ -473,6 +479,7 @@ async fn agent_spawn_refreshes_focus_projection_for_followup_prompt_routing() {
         target_agent_id: None,
         prompt: "hello after spawn".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-after-spawn", None, None, &prompt_request);
@@ -546,6 +553,7 @@ async fn get_session_state_uses_projection_after_prompt_submit_without_app_lock(
         target_agent_id: Some(agent_id.clone()),
         prompt: "warm session projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-state", None, None, &prompt_request);

@@ -62,6 +62,7 @@ fn terminal_output_drain_streams_parallel_agent_prompts_for_same_attachment() {
                 target_agent_id: Some(agent_id.to_string()),
                 prompt: format!("parallel prompt for {agent_id}\n"),
                 attachments: Vec::new(),
+                prompt_source: None,
             }))
             .expect("prompt should start")
         {

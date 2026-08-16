@@ -197,13 +197,6 @@ impl ProviderProcessServiceStore {
             .update_run_remote_extension_manifest(run_id, manifest)
     }
 
-    pub(crate) fn enable_workflow_tools(
-        &self,
-        run_id: &str,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.write().enable_workflow_tools(run_id)
-    }
-
     pub(crate) fn reconcile_run_liveness_provider_only(
         &self,
         session_id: &str,

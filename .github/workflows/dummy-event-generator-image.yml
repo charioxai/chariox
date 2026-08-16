@@ -2,9 +2,6 @@ name: Dummy event generator image
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - aegs-dummy-v*
 
 permissions:
   contents: read
@@ -14,6 +11,7 @@ permissions:
 
 jobs:
   publish:
+    if: vars.CHARIOX_CI_ENABLED == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6

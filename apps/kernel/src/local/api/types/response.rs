@@ -50,6 +50,7 @@ pub enum LocalDaemonResponse {
     MetaagentEventRead { event: serde_json::Value, },
     MetaagentEventsAcked { acked: Vec<serde_json::Value>, },
     TerminalCommandCatalog { catalog: TerminalCommandCatalog, },
+    TerminalOperationRegistry { registry: TerminalOperationRegistry, },
     DaemonHealth { projection: DaemonHealthProjection, },
     DebugBundleExported {
         bundle_dir: String,
@@ -204,10 +205,6 @@ pub enum LocalDaemonResponse {
     SessionHistoryBlobContent { blob_id: String, entries: Vec<SessionHistoryPageEntry>, },
     PromptInputHistory { entries: Vec<PromptInputHistoryEntry>, },
     PromptInputHistoryRecorded { entry: PromptInputHistoryEntry, },
-    PromptSettingsListed { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
-    PromptSetting { setting: crate::prompt_assembly::PromptSettingRecord, },
-    PromptSettingPreview { id: String, markdown: String, variables: BTreeMap<String, String>, },
-    PromptSettingsReset { settings: Vec<crate::prompt_assembly::PromptSettingRecord>, },
     AgentPromptScheduleCreated { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
     AgentPromptScheduleCancelled { schedule: crate::session::AgentPromptSchedule, session: RuntimeSession, },
     RecallEvents { events: Vec<HistoryEvent>, next_sequence: Option<u64>, },

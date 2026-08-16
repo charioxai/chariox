@@ -359,6 +359,7 @@ test("agent activity projection exposes live active turn identity", () => {
       provider_run_id: "run-1",
       source_attachment_id: "attachment-1",
       prompt_origin: " external ",
+      prompt_source: "provider_external",
       external_provider: " CODEX ",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
@@ -376,6 +377,7 @@ test("agent activity projection exposes live active turn identity", () => {
       provider_run_id: "run-1",
       source_attachment_id: "attachment-1",
       prompt_origin: " external ",
+      prompt_source: "provider_external",
       external_provider: " CODEX ",
       external_provider_session_id: "thread-1",
       external_provider_turn_id: "turn-1",
@@ -387,6 +389,7 @@ test("agent activity projection exposes live active turn identity", () => {
     activeTurnProviderRunId: "run-1",
     activeTurnSourceAttachmentId: "attachment-1",
     activeTurnPromptOrigin: "external",
+    activeTurnPromptSource: "provider_external",
     activeTurnExternalProvider: "codex",
     activeTurnExternalProviderSessionId: "thread-1",
     activeTurnExternalProviderTurnId: "turn-1",
@@ -401,6 +404,15 @@ test("agent activity projection exposes live active turn identity", () => {
     unreadIdleOutput: false,
   })
   assert.equal(agentRuntimeActivityProjectionHasExternalActiveTurn(externalProjection), true)
+
+  const agentProjection = projectAgentRuntimeActivity({
+    status: "working",
+    prompt_status: "running",
+    busy: true,
+    active_turn: { prompt_id: "prompt-agent", prompt_origin: "chariox", prompt_source: "agent_terminal", status: "running", phase: "streaming" },
+  })
+  assert.equal(agentProjection.activeTurnPromptOrigin, "chariox")
+  assert.equal(agentProjection.activeTurnPromptSource, "agent_terminal")
 
   assert.deepEqual(projectAgentRuntimeActivity({
     status: "working",

@@ -233,27 +233,6 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         promoted.durable_delivery_phase(),
         Some(crate::session::DurablePromptDeliveryPhase::Accepted)
     );
-    runtime
-        .owned
-        .prompt_state_owner
-        .mark_active_prompt_running(&current_session, agent.id())
-        .expect(
-            "promoted prompt should be representable as running before provider acknowledgement",
-        );
-    let (active_prompt, queued_prompts) = runtime
-        .owned
-        .prompt_state_owner
-        .state_parts(&current_session, agent.id());
-    runtime
-        .owned
-        .mirror_prompt_owner_agent_state(session.id(), agent.id(), active_prompt, queued_prompts)
-        .expect("running prompt state should persist");
-    let promoted = runtime
-        .owned
-        .prompt_state_owner
-        .active_prompt_for_agent(&current_session, agent.id())
-        .expect("promoted workflow prompt should remain active");
-    assert_eq!(promoted.status(), crate::session::PromptStatus::Running);
     let promoted_prompt_id = promoted.id().to_string();
 
     runtime
@@ -311,23 +290,8 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
     );
     runtime
         .owned
-        .workflow_mark_prompt_started(session.id(), &promoted)
-        .expect("promoted workflow prompt should enter workflow dispatch");
-    let dispatched_session = runtime
-        .owned
-        .session_store
-        .get_session(session.id())
-        .expect("dispatched session should exist");
-    assert_eq!(
-        dispatched_session
-            .workflow_run(workflow_run.id())
-            .expect("workflow run should exist")
-            .node_runs()[0]
-            .turn_envelope()
-            .expect("workflow turn envelope should exist")
-            .state(),
-        crate::session::WorkflowTurnRuntimeState::Dispatched
-    );
+        .workflow_start_prompt(session.id(), &promoted)
+        .expect("guarded workflow prompt should proceed to provider dispatch");
     runtime
         .owned
         .mark_active_prompt_delivery(

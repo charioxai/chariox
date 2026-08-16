@@ -167,61 +167,70 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
 ) -> Result<String, DaemonError> {
     match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
         Ok(provider_run_id) => {
-            let Some(run) = app.providers().get_run(&provider_run_id).ok() else {
-                return Err(DaemonError::NoActiveProviderRun {
-                    session_id: session_id.to_string(),
-                });
-            };
-            if run.workflow_tools_enabled() {
+            let ended = app
+                .providers()
+                .get_run(&provider_run_id)
+                .ok()
+                .is_some_and(|run| run.state() == crate::provider::ProviderRunState::Ended);
+            if ended {
+                let agent = app.agents().get_agent(agent_id)?;
+                if agent.remote_execution().is_some() {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "ensure workflow provider run for agent",
+                        message: format!(
+                            "agent `{agent_id}` is remote-backed and must relaunch its provider on the worker kernel"
+                        ),
+                    });
+                }
+                let provider = crate::provider::provider_id_for_launch(agent.provider());
+                let adapter_key = crate::provider::adapter_key_for_provider(provider);
+                let session = app.sessions().get_session(session_id)?;
+                let effective_config =
+                    crate::session::effective_agent_execution_config(&session, Some(&agent));
+                let mut request = LaunchProviderRequest::new(
+                    session_id,
+                    adapter_key,
+                    provider,
+                    agent.provider_account_profile(),
+                    agent.model().unwrap_or("default"),
+                )
+                .with_agent_id(agent.id().to_string())
+                .with_variant(agent.effort().map(str::to_string))
+                .with_execution_mode(effective_config.mode)
+                .with_permission_level(effective_config.permission_level);
+                if let Some(worktree_id) = agent.worktree_id() {
+                    request = request.with_working_directory(PathBuf::from(worktree_id));
+                }
+                let provider_run = app.launch_provider_detached(request)?;
                 app.sessions_mut()
-                    .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
-                return Ok(provider_run_id);
+                    .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
+                return Ok(provider_run.id().to_string());
             }
-            // An ordinary provider may already have cached the reduced MCP tool
-            // list. Replace it before the workflow prompt is dispatched so the
-            // provider discovers the workflow-only actions at startup; flipping
-            // a flag on a running process is too late (tools/list is not dynamic).
-            if run.state() == crate::provider::ProviderRunState::Running
-                && app.provider_run_has_active_prompt(session_id, &run)?
-            {
-                return Ok(provider_run_id);
-            }
-            let request = workflow_provider_request(app, session_id, agent_id)?;
-            let provider_run = app.start_workflow_provider_launch(request)?;
-            Ok(provider_run.id().to_string())
+            app.sessions_mut()
+                .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
+            Ok(provider_run_id)
         }
         Err(DaemonError::NoActiveProviderRun { .. }) => {
-            let request = workflow_provider_request(app, session_id, agent_id)?;
-            let provider_run = app.start_workflow_provider_launch(request)?;
+            let agent = app.agents().get_agent(agent_id)?;
+            let provider = crate::provider::provider_id_for_launch(agent.provider());
+            let adapter_key = crate::provider::adapter_key_for_provider(provider);
+            let mut request = LaunchProviderRequest::new(
+                session_id,
+                adapter_key,
+                provider,
+                agent.provider_account_profile(),
+                agent.model().unwrap_or("default"),
+            )
+            .with_agent_id(agent.id().to_string())
+            .with_variant(agent.effort().map(str::to_string));
+            if let Some(worktree_id) = agent.worktree_id() {
+                request = request.with_working_directory(PathBuf::from(worktree_id));
+            }
+            let provider_run = app.launch_provider_detached(request)?;
+            app.sessions_mut()
+                .set_active_provider_run(session_id, Some(provider_run.id().to_string()))?;
             Ok(provider_run.id().to_string())
         }
         Err(error) => Err(error),
     }
-}
-
-fn workflow_provider_request(
-    app: &DaemonApp,
-    session_id: &str,
-    agent_id: &str,
-) -> Result<LaunchProviderRequest, DaemonError> {
-    let agent = app.agents().get_agent(agent_id)?;
-    let provider = crate::provider::provider_id_for_launch(agent.provider());
-    let adapter_key = crate::provider::adapter_key_for_provider(provider);
-    let session = app.sessions().get_session(session_id)?;
-    let effective_config = crate::session::effective_agent_execution_config(&session, Some(&agent));
-    let mut request = LaunchProviderRequest::new(
-        session_id,
-        adapter_key,
-        provider,
-        agent.provider_account_profile(),
-        agent.model().unwrap_or("default"),
-    )
-    .with_agent_id(agent.id().to_string())
-    .with_variant(agent.effort().map(str::to_string))
-    .with_execution_mode(effective_config.mode)
-    .with_permission_level(effective_config.permission_level);
-    if let Some(worktree_id) = agent.worktree_id() {
-        request = request.with_working_directory(PathBuf::from(worktree_id));
-    }
-    Ok(request)
 }

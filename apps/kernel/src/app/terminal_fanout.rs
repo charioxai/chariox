@@ -61,6 +61,35 @@ impl DaemonApp {
         _workflow_run_id: Option<&str>,
         _workflow_node_run_id: Option<&str>,
     ) -> Result<(), crate::error::DaemonError> {
+        self.spawn_user_prompt_history_append_with_prompt_id_and_source(
+            session_id,
+            source_attachment_id,
+            agent_id,
+            prompt,
+            attachments,
+            prompt_origin,
+            crate::session::PromptSource::Human,
+            prompt_id,
+            prompt_created_at_ms,
+            _workflow_run_id,
+            _workflow_node_run_id,
+        )
+    }
+
+    pub(crate) fn spawn_user_prompt_history_append_with_prompt_id_and_source(
+        &self,
+        session_id: &str,
+        source_attachment_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        attachments: &[PromptAttachment],
+        prompt_origin: crate::session::PromptOrigin,
+        prompt_source: crate::session::PromptSource,
+        prompt_id: &str,
+        prompt_created_at_ms: u64,
+        _workflow_run_id: Option<&str>,
+        _workflow_node_run_id: Option<&str>,
+    ) -> Result<(), crate::error::DaemonError> {
         let session = crate::app::KernelSessionReadService::new(self)
             .session_snapshot_without_projection_update(session_id)?;
         let mut entry = SessionHistoryEntry::user_prompt_with_attachments(
@@ -70,7 +99,8 @@ impl DaemonApp {
             render_prompt_transcript(prompt, attachments),
             attachments,
         )
-        .with_prompt_origin(prompt_origin);
+        .with_prompt_origin(prompt_origin)
+        .with_prompt_source(prompt_source);
         entry.timestamp_ms = prompt_created_at_ms;
         entry.merge_key = Some(format!("prompt:{prompt_id}"));
         self.spawn_history_append(session.id().to_string(), entry);

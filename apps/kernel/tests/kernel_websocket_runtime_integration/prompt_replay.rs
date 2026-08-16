@@ -95,6 +95,7 @@ fn kernel_websocket_replayed_prompt_submit_reuses_original_prompt() {
             target_agent_id: Some(agent_id.clone()),
             prompt: "replayed prompt submit must not duplicate user intent".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         });
         for (socket, request_id) in [
             (&mut first_socket, "submit-prompt-original"),

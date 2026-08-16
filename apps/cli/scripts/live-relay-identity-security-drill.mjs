@@ -138,7 +138,7 @@ async function nextJson(ws, label = 'relay message', timeoutMs = 3_000) {
   })
 }
 
-async function expectCloseAfterSend(url, payload, label) {
+async function expectCloseAfterSend(url, payload, label, { allowCloseMessage = false } = {}) {
   const ws = await connect(url)
   const closed = new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`${label} was not rejected`)), 3_000)
@@ -147,6 +147,12 @@ async function expectCloseAfterSend(url, payload, label) {
       resolve()
     })
     ws.once('message', (data) => {
+      const message = JSON.parse(String(data))
+      if (allowCloseMessage && message.kind === 'close') {
+        clearTimeout(timer)
+        resolve()
+        return
+      }
       clearTimeout(timer)
       reject(new Error(`${label} unexpectedly received ${String(data)}`))
     })
@@ -298,7 +304,7 @@ async function main() {
       kind: 'client_connect',
       auth_token: clientAToken,
       target: { daemon_id: 'daemon-b', daemon_alias: null },
-    }, 'cross-realm client route')
+    }, 'cross-realm client route', { allowCloseMessage: true })
     passedChecks.push('cross-realm client route rejected')
 
     const clientB = await connect(url)

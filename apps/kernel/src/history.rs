@@ -236,6 +236,12 @@ impl HistoryEvent {
                 serde_json::to_value(prompt_origin).unwrap_or(serde_json::Value::Null),
             );
         }
+        if let Some(prompt_source) = entry.prompt_source {
+            metadata.insert(
+                "prompt_source".to_string(),
+                serde_json::to_value(prompt_source).unwrap_or(serde_json::Value::Null),
+            );
+        }
         if let Some(source) = entry.source {
             metadata.insert(
                 "source".to_string(),
@@ -331,6 +337,11 @@ impl HistoryEvent {
             prompt_origin: self
                 .metadata
                 .get("prompt_origin")
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok()),
+            prompt_source: self
+                .metadata
+                .get("prompt_source")
                 .cloned()
                 .and_then(|value| serde_json::from_value(value).ok()),
             kind,

@@ -57,6 +57,7 @@ async fn prompt_submit_uses_owned_runtime_state_without_app_lock_for_local_promp
         target_agent_id: Some(agent_id.clone()),
         prompt: "owned submit".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -168,6 +169,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "/meta Inspect the repo by delegation.".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -214,6 +216,7 @@ async fn prompt_submit_meta_slash_activates_meta_mode_and_strips_command() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "/meta Expand the delegation plan.".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let replacement_local_request = LocalDaemonRequest::SubmitPrompt(replacement_request.clone());
     let replacement_command = crate::runtime::command::KernelCommand::from_local_request(
@@ -388,6 +391,7 @@ async fn rejected_meta_slash_does_not_activate_meta_mode_or_create_a_task() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "/meta Inspect the repo by delegation.".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -473,6 +477,7 @@ async fn prompt_submit_uses_owned_runtime_state_for_multi_agent_pty_prompt_witho
         target_agent_id: Some(agent_id.clone()),
         prompt: "owned pty submit".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -569,6 +574,7 @@ async fn prompt_submit_routes_leading_agent_alias_and_focuses_target() {
         target_agent_id: Some(default_agent_id),
         prompt: "  @reviewer   inspect package.json".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(
@@ -635,6 +641,7 @@ async fn prompt_submit_rejects_unknown_leading_agent_alias_without_changing_focu
         target_agent_id: Some(agent.id().to_string()),
         prompt: "@missing inspect package.json".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     };
     let local_request = LocalDaemonRequest::SubmitPrompt(request.clone());
     let command = crate::runtime::command::KernelCommand::from_local_request(

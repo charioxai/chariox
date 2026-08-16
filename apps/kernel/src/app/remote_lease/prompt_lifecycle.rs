@@ -74,8 +74,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let provider_run_id = match &prepared.provider_run {
             PreparedLeasedProviderRun::Ready(provider_run_id) => provider_run_id.clone(),
             PreparedLeasedProviderRun::LaunchRequired(request) => {
-                let run = self.app.launch_leased_provider(request.clone())?;
-                run.id().to_string()
+                self.app.launch_provider(request.clone())?.id().to_string()
             }
         };
         self.finish_prepared_leased_prompt_submission(prepared, provider_run_id)
@@ -185,7 +184,6 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &remote_extension_manifest,
         )? {
             LeasedProviderRunMatch::Ready(provider_run_id) => {
-                self.app.mark_leased_provider_run(&provider_run_id);
                 PreparedLeasedProviderRun::Ready(provider_run_id)
             }
             LeasedProviderRunMatch::LaunchRequired(request) => {

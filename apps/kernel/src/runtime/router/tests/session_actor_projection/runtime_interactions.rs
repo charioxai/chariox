@@ -1,4 +1,75 @@
 use super::*;
+use crate::local::UpdateAgentProfileRequest;
+
+#[tokio::test]
+async fn subscription_snapshot_replays_agent_profile_changes_to_other_terminals() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let agent_id = agent.id().to_string();
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            &session_id,
+            "profile-projection-other-terminal",
+            ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let attachment_id = attachment.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let initial = router
+        .relay_watch_subscription_state(&session_id, &attachment_id, true, None, 0)
+        .await;
+    let initial_snapshot = match initial {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => snapshot
+            .as_ref()
+            .clone()
+            .expect("initial subscription should include a snapshot"),
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    };
+    assert_eq!(initial_snapshot.session.agents()[0].provider(), "default");
+
+    let request = LocalDaemonRequest::UpdateAgentProfile(UpdateAgentProfileRequest {
+        session_id: session_id.clone(),
+        agent_id,
+        provider: Some("opencode".to_string()),
+        model: Some("default".to_string()),
+        effort: None,
+        clear_effort: false,
+    });
+    let command =
+        KernelCommand::from_local_request("agent-profile-projection-update", None, None, &request);
+    router
+        .dispatch(command, request)
+        .await
+        .expect("agent profile update should succeed");
+
+    let update = router
+        .relay_watch_subscription_state(
+            &session_id,
+            &attachment_id,
+            true,
+            Some(initial_snapshot),
+            0,
+        )
+        .await;
+    match update {
+        crate::runtime_transport::WatchResult::Ok { snapshot, .. } => {
+            let snapshot = snapshot
+                .as_ref()
+                .as_ref()
+                .expect("profile update should produce a snapshot for other terminals");
+            assert_eq!(snapshot.session.agents()[0].provider(), "opencode");
+        }
+        crate::runtime_transport::WatchResult::Unavailable(message) => {
+            panic!("subscription unavailable: {message}")
+        }
+    }
+}
 
 #[tokio::test]
 async fn get_session_state_reconciles_a_stale_projection_without_app_lock_access() {

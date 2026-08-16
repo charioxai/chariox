@@ -475,11 +475,6 @@ impl DaemonApp {
         self.provider_process_projection.invalidate();
     }
 
-    pub(crate) fn mark_leased_provider_run(&self, provider_run_id: &str) {
-        self.provider_run_projection
-            .mark_leased_provider_run(provider_run_id);
-    }
-
     pub(crate) fn update_remote_provider_run_projection(
         &self,
         run: RuntimeProviderRun,

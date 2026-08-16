@@ -1,1 +1,0 @@
-Intermediate workflow run output was submitted as a user-visible event. Continue this same workflow turn. You may submit more intermediate outputs if useful. Before stopping, either emit the required final fenced JSON handoff or submit final workflow run output if authorized.

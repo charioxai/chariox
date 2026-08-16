@@ -7,7 +7,7 @@ use tokio::sync::Notify;
 
 use crate::error::DaemonError;
 use crate::runtime::workspace_coordinator::WorkspaceOperationClaimSnapshot;
-use crate::session::{PromptQueueItem, RuntimeSession, SessionStatus};
+use crate::session::{PromptQueueItem, PromptSource, RuntimeSession, SessionStatus};
 
 use super::{
     AgentActiveTurnProjection, AgentPromptRuntimeStatus, AgentRuntimeActivity,
@@ -287,6 +287,7 @@ impl SessionStateProjectionStore {
                 provider_run_id: None,
                 source_attachment_id: Some(prompt.source_attachment_id().to_string()),
                 prompt_origin: Some(prompt.prompt_origin()),
+                prompt_source: PromptSource::ProviderExternal,
                 external_provider: Some(external.provider),
                 external_provider_session_id: Some(external.provider_session_id),
                 external_provider_turn_id: Some(external.provider_turn_id),

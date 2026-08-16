@@ -37,18 +37,6 @@ mod workspace_live_sync_remote_dispatch;
 use workspace_live_sync_managed_fanout::*;
 
 impl KernelRuntimeState {
-    #[cfg(test)]
-    pub(crate) fn runtime_mcp_auth_token_for_provider_run(
-        &self,
-        provider_run_id: &str,
-    ) -> Option<String> {
-        self.owned
-            .provider_store
-            .get_run(provider_run_id)
-            .ok()
-            .and_then(|run| run.runtime_mcp_auth_token().map(str::to_string))
-    }
-
     pub(crate) fn runtime_tool_specs_for_auth_token(
         &self,
         auth_token: &str,
@@ -90,22 +78,7 @@ impl KernelRuntimeState {
                 specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
             }
         }
-        // MCP discovery runs independently of the app mutex.  Leased-run identity is
-        // projected into the lock-free provider projection when the lease launches or
-        // reuses a backing run, so contention cannot silently hide lease-only tools.
-        let leased_provider_run = provider_runs.iter().any(|run| {
-            self.owned
-                .provider_run_projection
-                .is_leased_provider_run(run.id())
-        });
-        let workflow_tools_enabled =
-            leased_provider_run || provider_runs.iter().any(|run| run.workflow_tools_enabled());
-        if workflow_tools_enabled {
-            specs.extend(
-                crate::transport::runtime_tools::workflow_runtime_tool_specs_without_event_reply(),
-            );
-            specs.push(crate::transport::runtime_tools::workflow_reply_to_event_tool_spec());
-        }
+        specs.extend(crate::transport::runtime_tools::workflow_runtime_tool_specs());
         specs
     }
 

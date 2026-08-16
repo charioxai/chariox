@@ -181,25 +181,6 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     ]
 }
 
-/// Return the workflow contract tools without the provider reply action.
-///
-/// Replying is opt-in at the event binding level. Keeping the action out of the
-/// provider tool list for ordinary workflows avoids adding unrelated capability
-/// prose to every provider context while the dispatcher remains the final guard.
-pub fn workflow_runtime_tool_specs_without_event_reply() -> Vec<RuntimeToolSpec> {
-    workflow_runtime_tool_specs()
-        .into_iter()
-        .filter(|spec| spec.name != REPLY_TO_EVENT_TOOL_QUALIFIED)
-        .collect()
-}
-
-pub fn workflow_reply_to_event_tool_spec() -> RuntimeToolSpec {
-    workflow_runtime_tool_specs()
-        .into_iter()
-        .find(|spec| spec.name == REPLY_TO_EVENT_TOOL_QUALIFIED)
-        .expect("workflow runtime tool list must contain reply_to_event")
-}
-
 pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
     match tool_name {
         ACK_WORKFLOW_TURN_TOOL => Some(ACK_WORKFLOW_TURN_TOOL),

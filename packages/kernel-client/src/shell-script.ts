@@ -6,14 +6,19 @@ import {
   parseShellCommand,
   renderShellCommandResult,
   type ShellContext,
+  type ShellCommandResult,
 } from "./shell-core.js"
 import { executeShellCommand, type ShellExecutorDeps } from "./shell-executor.js"
 
 export type ShellScriptOptions = {
+  signal?: AbortSignal | undefined
   continueOnError?: boolean | undefined
   loadScript?: ((path: string, context: ShellContext) => Promise<string>) | undefined
   maxSourceDepth?: number | undefined
   sourceDepth?: number | undefined
+  validateCommand?: ((line: string, context: ShellContext) => void) | undefined
+  echoCommands?: boolean | undefined
+  redactResult?: ((result: ShellCommandResult) => ShellCommandResult) | undefined
 }
 
 export async function executeShellScriptLines(
@@ -36,12 +41,13 @@ export async function executeShellScript(
   let context = initialContext
   let failed = false
   for (let index = 0; index < lines.length; index += 1) {
+    throwIfAborted(options.signal)
     const sourceLine = lines[index] ?? ""
     const line = sourceLine.trim()
     if (!line || line.startsWith("#")) {
       continue
     }
-    write(`@ ${line}\n`)
+    if (options.echoCommands !== false) write(`@ ${line}\n`)
     try {
       const result = await executeShellLine(line, context, deps, write, options)
       context = result.context
@@ -79,7 +85,9 @@ export async function executeShellLine(
   write: (text: string) => void = () => {},
   options: ShellScriptOptions = {},
 ): Promise<{ ok: boolean; context: ShellContext; exit?: boolean | undefined }> {
+  throwIfAborted(options.signal)
   const parsed = parseShellCommand(line, context)
+  options.validateCommand?.(line, context)
   if (parsed.command === "source" || parsed.command === "run") {
     if (parsed.args.length !== 1) {
       write(`usage: ${parsed.command} <file>\n`)
@@ -101,7 +109,7 @@ export async function executeShellLine(
     return { ok: nested.code === 0, context: nested.context }
   }
   const result = await executeShellCommand(parsed, context, deps)
-  const rendered = renderShellCommandResult(result)
+  const rendered = renderShellCommandResult(options.redactResult?.(result) ?? result)
   if (rendered) {
     write(`${rendered}\n`)
   }
@@ -114,6 +122,10 @@ export async function executeShellLine(
 
 export function resolveShellScriptPath(scriptPath: string, context: ShellContext): string {
   return isAbsolute(scriptPath) ? scriptPath : resolvePath(context.worktree, scriptPath)
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError")
 }
 
 function formatShellScriptError(error: unknown): string {

@@ -6,6 +6,7 @@
   "exports": {
     ".": "./dist/index.js",
     "./ipc": "./dist/ipc.js",
+    "./agent-terminal": "./dist/agent-terminal.js",
     "./ipc-requests": "./dist/ipc-requests.js",
     "./extension-grant-placement": "./dist/extension-grant-placement.js",
     "./agent-activity": "./dist/agent-activity.js",
@@ -17,6 +18,7 @@
     "./kernel-transport-frames": "./dist/kernel-transport-frames.js",
     "./kernel-transport-requests": "./dist/kernel-transport-requests.js",
     "./kernel-types": "./dist/kernel-types.js",
+    "./kernel-types-terminal": "./dist/kernel-types-terminal.js",
     "./prompt-origin": "./dist/prompt-origin.js",
     "./prompt-history": "./dist/prompt-history.js",
     "./prompt-meta": "./dist/prompt-meta.js",

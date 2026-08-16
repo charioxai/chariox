@@ -66,6 +66,7 @@ async fn daemon_health_projection_reports_session_and_agent_mailboxes_inner() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "hello from health projection test".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt", None, None, &prompt_request);

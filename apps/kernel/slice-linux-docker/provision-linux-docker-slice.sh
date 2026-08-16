@@ -17,9 +17,9 @@ runtime_source_revision() {
     cd "$REPO_ROOT"
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git ls-files --cached --others --exclude-standard \
-        apps/kernel apps/relay examples/workflow-code
+        apps/kernel apps/relay packages/event-protocol examples/workflow-code
     else
-      find apps/kernel apps/relay examples/workflow-code -type f \
+      find apps/kernel apps/relay packages/event-protocol examples/workflow-code -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
         | LC_ALL=C sort

@@ -118,11 +118,6 @@ pub struct RuntimeSession {
     worktree_assignments: Vec<RuntimeWorktreeAssignment>,
     workflows: Vec<WorkflowDefinition>,
     workflow_runs: Vec<WorkflowRun>,
-    /// Workflow runs whose provider prompt has been removed and is completing
-    /// its post-provider settlement. This is process-local coordination state:
-    /// on restart the durable prompt/run projection is reconciled normally.
-    #[serde(skip)]
-    settling_workflow_run_counts: BTreeMap<String, usize>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
     #[serde(default, skip_serializing_if = "VecDeque::is_empty")]
@@ -210,7 +205,6 @@ impl RuntimeSession {
             )],
             workflows: Vec::new(),
             workflow_runs: Vec::new(),
-            settling_workflow_run_counts: BTreeMap::new(),
             workflow_prompt_queues: Vec::new(),
             workflow_queued_prompts: VecDeque::new(),
             workflow_schedules: Vec::new(),

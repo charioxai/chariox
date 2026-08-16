@@ -315,6 +315,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
         target_agent_id: Some(local_agent_id.clone()),
         prompt: "should be denied".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     assert_ownership_denied(
         router
@@ -522,6 +523,7 @@ async fn full_collaboration_invite_allows_prompting_other_users_agents() {
         target_agent_id: Some(local_agent_id),
         prompt: "allowed by full collaboration".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let error = router
         .dispatch(remote_command_for_request(&submit, Some("user-2")), submit)

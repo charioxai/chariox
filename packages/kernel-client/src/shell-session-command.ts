@@ -120,6 +120,8 @@ export async function executeSessionCommand(
         agentId: sessionContextAgentId(session),
         workspace: session.workspace_id,
         worktree: session.worktree_id,
+        workspaceId: session.workspace_id,
+        worktreeId: session.worktree_id,
       }
       return resourceResult(
         `created session ${session.alias ?? session.id} in ${session.worktree_id}\n${formatCreatedSessionWorkspaceLiveSync(session)}`,
@@ -144,6 +146,8 @@ export async function executeSessionCommand(
         agentId: sessionContextAgentId(session),
         workspace: session.workspace_id,
         worktree: session.worktree_id,
+        workspaceId: session.workspace_id,
+        worktreeId: session.worktree_id,
       }
       return resourceResult(
         `current session = ${session.alias ?? session.id}`,
@@ -272,6 +276,8 @@ export async function executeSessionCommand(
           agentId: sessionContextAgentId(payload.session),
           workspace: payload.session.workspace_id,
           worktree: payload.session.worktree_id,
+          workspaceId: payload.session.workspace_id,
+          worktreeId: payload.session.worktree_id,
         },
       }
     }

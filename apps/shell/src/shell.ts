@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url"
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import { createDefaultShellContext, type ShellContext } from "@chariox/kernel-client/shell-core"
 import { executeShellLine, executeShellScript, executeShellScriptLines } from "@chariox/kernel-client/shell-script"
+import { runAgentTerminalJsonl, runAgentTerminalServer } from "./agent-terminal.js"
 
 export { executeShellLine, executeShellScript, executeShellScriptLines }
 
@@ -21,6 +22,8 @@ export type ShellCliOptions = {
   scriptPath?: string | undefined
   continueOnError?: boolean | undefined
   variables?: Record<string, string> | undefined
+  agentTerminal?: boolean | undefined
+  agentTerminalFormat?: "mcp" | "jsonl" | undefined
 }
 
 export type ShellIo = {
@@ -29,9 +32,25 @@ export type ShellIo = {
   error: NodeJS.WritableStream
 }
 
+function createShellClient(endpoint: string): LocalIpcClient {
+  return new LocalIpcClient(endpoint, {
+    relayAuthToken: process.env.CHARIOX_RELAY_AUTH_TOKEN,
+    targetDaemonId: process.env.CHARIOX_RELAY_TARGET_DAEMON_ID,
+    targetDaemonAlias: process.env.CHARIOX_RELAY_TARGET_DAEMON_ALIAS,
+  })
+}
+
 export function parseShellCliArgs(argv: string[]): ShellCliOptions {
   const options: ShellCliOptions = {}
   let args = argv
+  if (args[0] === "agent-terminal") {
+    options.agentTerminal = true
+    args = args.slice(1)
+    if (args[0] === "--jsonl") {
+      options.agentTerminalFormat = "jsonl"
+      args = args.slice(1)
+    }
+  }
   if (args[0] === "run") {
     const scriptPath = args[1]
     if (!scriptPath || scriptPath.startsWith("--")) {
@@ -123,6 +142,7 @@ export function createInitialShellContext(options: ShellCliOptions): ShellContex
 export function shellUsage(): string {
   return [
     "usage: chariox-shell [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE]",
+    "       chariox-shell agent-terminal [--jsonl] [--kernel-url URL|--socket PATH]",
     "       chariox-shell run <file> [--kernel-url URL|--socket PATH] [--workspace PATH] [--worktree PATH] [--provider NAME] [--model MODEL] [--effort LEVEL] [--var NAME=VALUE] [--continue-on-error]",
     "",
     "Runs a Chariox command REPL. Commands do not use the TUI slash prefix:",
@@ -153,7 +173,7 @@ export async function runShellRepl(options: ShellCliOptions, io: ShellIo = {
   error: defaultStderr,
 }): Promise<number> {
   let context = createInitialShellContext(options)
-  const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
+  const client = createShellClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
   const clientId = `chariox-shell-${process.pid}-${Date.now()}`
   const readline = createInterface({ input: io.input, output: io.output, terminal: Boolean((io.output as { isTTY?: boolean }).isTTY) })
 
@@ -265,7 +285,7 @@ export async function runShellScript(options: ShellCliOptions, io: ShellIo = {
     return 1
   }
   const context = createInitialShellContext(options)
-  const client = new LocalIpcClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
+  const client = createShellClient(options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint())
   const clientId = `chariox-shell-script-${process.pid}-${Date.now()}`
   try {
     const source = await readFile(options.scriptPath, "utf8")
@@ -299,7 +319,18 @@ class ShellHelpRequested extends Error {}
 async function main() {
   try {
     const options = parseShellCliArgs(process.argv.slice(2))
-    process.exitCode = options.mode === "run" ? await runShellScript(options) : await runShellRepl(options)
+    if (options.agentTerminal) {
+      const runAgentTerminal = options.agentTerminalFormat === "jsonl" ? runAgentTerminalJsonl : runAgentTerminalServer
+      await runAgentTerminal({
+        endpoint: options.socketPath ?? options.kernelUrl ?? defaultKernelEndpoint(),
+        relayAuthToken: process.env.CHARIOX_RELAY_AUTH_TOKEN,
+        targetDaemonId: process.env.CHARIOX_RELAY_TARGET_DAEMON_ID,
+        targetDaemonAlias: process.env.CHARIOX_RELAY_TARGET_DAEMON_ALIAS,
+      })
+      process.exitCode = 0
+    } else {
+      process.exitCode = options.mode === "run" ? await runShellScript(options) : await runShellRepl(options)
+    }
   } catch (error) {
     if (error instanceof ShellHelpRequested) {
       console.log(shellUsage())

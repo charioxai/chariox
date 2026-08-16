@@ -31,7 +31,6 @@ import type { ShellPlacementDeps } from "./shell-placement.js"
 import { executeWorkflowCommand } from "./shell-workflow-command.js"
 import { executeWorkspaceCommand } from "./shell-workspace-command.js"
 import { executeNotificationCommand } from "./shell-notification-command.js"
-import { executePromptSettingsCommand } from "./shell-prompt-settings-command.js"
 
 type ShellKernelClient = {
   send: (request: Record<string, unknown>) => Promise<Record<string, unknown>>
@@ -40,6 +39,7 @@ type ShellKernelClient = {
 export type ShellExecutorDeps = ShellPlacementDeps & {
   client: ShellKernelClient
   clientId?: string | undefined
+  signal?: AbortSignal | undefined
   readSecret?: ((prompt: string) => Promise<string>) | undefined
 }
 
@@ -100,11 +100,6 @@ export async function executeShellCommand(
       return executeWorkflowCommand(parsed, context, deps)
     case "notifications":
       return executeNotificationCommand(parsed.args, deps.client)
-    case "settings":
-      if (parsed.args[0] !== "prompts") {
-        return { ok: false, message: "usage: settings prompts list|reset <id> [--confirm]|reset-all [--confirm]" }
-      }
-      return executePromptSettingsCommand(parsed.args.slice(1), deps.client)
     case "workspace":
       return executeWorkspaceCommand(parsed, context, deps)
     case "recall":

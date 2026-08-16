@@ -219,6 +219,7 @@ async fn provider_process_projection_invalidates_when_prompt_state_changes_inner
         target_agent_id: Some(agent_id.clone()),
         prompt: "invalidate provider process projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command = KernelCommand::from_local_request(
         "cmd-process-projection-invalidating-prompt",

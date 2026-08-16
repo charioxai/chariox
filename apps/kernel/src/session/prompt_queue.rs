@@ -21,6 +21,23 @@ pub enum PromptOrigin {
     External,
 }
 
+/// Identifies the interaction surface that submitted or observed a prompt.
+/// This is intentionally orthogonal to [`PromptOrigin`]: agent-terminal
+/// prompts are Chariox-owned prompts, while provider-native turns remain
+/// `PromptOrigin::External` and use `ProviderExternal` as their source.
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptSource {
+    #[default]
+    Human,
+    AgentTerminal,
+    ProviderExternal,
+}
+
+fn is_human_prompt_source(source: &PromptSource) -> bool {
+    *source == PromptSource::Human
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum DurablePromptDeliveryPhase {
@@ -88,6 +105,8 @@ pub struct PromptQueueItem {
     status: PromptStatus,
     #[serde(default)]
     prompt_origin: PromptOrigin,
+    #[serde(default, skip_serializing_if = "is_human_prompt_source")]
+    prompt_source: PromptSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     external_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -173,6 +192,8 @@ pub struct PendingPromptSubmission {
     #[serde(default, skip_serializing, skip_deserializing)]
     private_metadata: Option<Box<PromptPrivateMetadata>>,
     prompt_origin: PromptOrigin,
+    #[serde(default)]
+    prompt_source: PromptSource,
     external_provider: Option<String>,
     external_provider_session_id: Option<String>,
     external_provider_turn_id: Option<String>,
@@ -196,6 +217,7 @@ impl PendingPromptSubmission {
             updated_at_ms: now,
             private_metadata: prompt.private_metadata,
             prompt_origin: prompt.prompt_origin,
+            prompt_source: prompt.prompt_source,
             external_provider: prompt.external_provider,
             external_provider_session_id: prompt.external_provider_session_id,
             external_provider_turn_id: prompt.external_provider_turn_id,
@@ -217,6 +239,7 @@ impl PendingPromptSubmission {
             private_metadata: self.private_metadata,
             status: PromptStatus::Queued,
             prompt_origin: self.prompt_origin,
+            prompt_source: self.prompt_source,
             external_provider: self.external_provider,
             external_provider_session_id: self.external_provider_session_id,
             external_provider_turn_id: self.external_provider_turn_id,
@@ -247,6 +270,7 @@ impl PromptQueueItem {
             private_metadata: None,
             status,
             prompt_origin: PromptOrigin::Chariox,
+            prompt_source: PromptSource::Human,
             external_provider: None,
             external_provider_session_id: None,
             external_provider_turn_id: None,
@@ -280,6 +304,7 @@ impl PromptQueueItem {
             PromptStatus::Running,
         )
         .with_prompt_origin(PromptOrigin::External);
+        let prompt = prompt.with_prompt_source(PromptSource::ProviderExternal);
         prompt.with_external_observed_id(external_observed_id)
     }
 
@@ -338,6 +363,11 @@ impl PromptQueueItem {
 
     pub fn with_prompt_origin(mut self, prompt_origin: PromptOrigin) -> Self {
         self.prompt_origin = prompt_origin;
+        self
+    }
+
+    pub fn with_prompt_source(mut self, prompt_source: PromptSource) -> Self {
+        self.prompt_source = prompt_source;
         self
     }
 
@@ -441,19 +471,6 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.delivery_phase)
     }
 
-    /// Returns true while a durable prompt has been accepted by the kernel but has not
-    /// yet been acknowledged by its provider. Provider output from a previous turn must
-    /// not be allowed to settle this prompt during that window.
-    pub(crate) fn delivery_pending(&self) -> bool {
-        self.status == PromptStatus::Dispatching
-            || matches!(
-                self.durable_delivery_phase(),
-                Some(
-                    DurablePromptDeliveryPhase::Accepted | DurablePromptDeliveryPhase::Dispatching
-                )
-            )
-    }
-
     pub(crate) fn durable_delivery_provider_run_id(&self) -> Option<&str> {
         self.private_metadata
             .as_ref()
@@ -555,6 +572,10 @@ impl PromptQueueItem {
 
     pub fn prompt_origin(&self) -> PromptOrigin {
         self.prompt_origin
+    }
+
+    pub fn prompt_source(&self) -> PromptSource {
+        self.prompt_source
     }
 
     pub fn is_external(&self) -> bool {
@@ -725,6 +746,30 @@ mod tests {
         assert_eq!(
             serde_json::to_string(&origin).expect("prompt origin should serialize"),
             r#""chariox""#
+        );
+    }
+
+    #[test]
+    fn agent_terminal_source_is_orthogonal_to_prompt_origin() {
+        let item = PromptQueueItem::new(
+            "prompt-agent-terminal",
+            "attachment-1",
+            "agent-1",
+            "hello",
+            PromptStatus::Queued,
+        )
+        .with_prompt_source(PromptSource::AgentTerminal);
+
+        assert_eq!(item.prompt_origin(), PromptOrigin::Chariox);
+        assert_eq!(item.prompt_source(), PromptSource::AgentTerminal);
+        let value = serde_json::to_value(item).expect("prompt should serialize");
+        assert_eq!(
+            value.get("prompt_origin"),
+            Some(&serde_json::json!("chariox"))
+        );
+        assert_eq!(
+            value.get("prompt_source"),
+            Some(&serde_json::json!("agent_terminal"))
         );
     }
 

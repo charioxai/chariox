@@ -9,7 +9,7 @@ use crate::agent::AgentState;
 use crate::app::{ActivePromptState, ActiveTurnPhase, ActiveTurnState, DaemonApp};
 use crate::error::DaemonError;
 use crate::provider::{ProviderRunState, RuntimeProviderRun};
-use crate::session::{PromptOrigin, PromptQueueItem, PromptStatus, RuntimeSession};
+use crate::session::{PromptOrigin, PromptQueueItem, PromptSource, PromptStatus, RuntimeSession};
 
 pub(crate) const SESSION_SNAPSHOT_PROJECTION_VERSION: u64 = 3;
 
@@ -75,6 +75,8 @@ pub struct AgentActiveTurnProjection {
     pub source_attachment_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prompt_origin: Option<PromptOrigin>,
+    #[serde(default, skip_serializing_if = "is_human_prompt_source")]
+    pub prompt_source: PromptSource,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub external_provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -85,6 +87,10 @@ pub struct AgentActiveTurnProjection {
     pub phase: AgentTurnRuntimePhase,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub started_at_ms: Option<u64>,
+}
+
+fn is_human_prompt_source(source: &PromptSource) -> bool {
+    *source == PromptSource::Human
 }
 
 impl SessionSnapshotProjection {
@@ -216,6 +222,15 @@ pub(crate) fn agent_activity_for_session_projection(
                 let prompt_origin = active_prompt_for_turn
                     .map(PromptQueueItem::prompt_origin)
                     .or(turn.prompt_origin);
+                let prompt_source = active_prompt_for_turn
+                    .map(PromptQueueItem::prompt_source)
+                    .unwrap_or_else(|| {
+                        if prompt_origin == Some(PromptOrigin::External) {
+                            PromptSource::ProviderExternal
+                        } else {
+                            PromptSource::Human
+                        }
+                    });
                 let external_observed_id = active_prompt_for_turn
                     .and_then(PromptQueueItem::external_observed_id)
                     .or_else(|| turn.external_observed_id.clone());
@@ -226,6 +241,7 @@ pub(crate) fn agent_activity_for_session_projection(
                         .map(|prompt| prompt.source_attachment_id().to_string())
                         .or_else(|| turn.source_attachment_id.clone()),
                     prompt_origin,
+                    prompt_source,
                     external_observed_id,
                     prompt_status.clone(),
                     AgentTurnRuntimePhase::from(&turn.phase),
@@ -239,6 +255,7 @@ pub(crate) fn agent_activity_for_session_projection(
                         provider_run.as_ref().map(|run| run.id().to_string()),
                         Some(prompt.source_attachment_id().to_string()),
                         Some(prompt.prompt_origin()),
+                        prompt.prompt_source(),
                         prompt.external_observed_id(),
                         prompt_status.clone(),
                         AgentTurnRuntimePhase::Accepted,
@@ -317,6 +334,7 @@ fn active_turn_projection(
     provider_run_id: Option<String>,
     source_attachment_id: Option<String>,
     prompt_origin: Option<PromptOrigin>,
+    prompt_source: PromptSource,
     external_observed_id: Option<crate::history::ExternalProviderObservedId>,
     status: AgentPromptRuntimeStatus,
     phase: AgentTurnRuntimePhase,
@@ -328,6 +346,7 @@ fn active_turn_projection(
         provider_run_id,
         source_attachment_id,
         prompt_origin,
+        prompt_source,
         external_provider: external.as_ref().map(|metadata| metadata.provider.clone()),
         external_provider_session_id: external
             .as_ref()

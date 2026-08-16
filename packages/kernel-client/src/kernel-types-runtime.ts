@@ -54,6 +54,7 @@ export type AgentActiveTurn = {
   provider_run_id?: string | null
   source_attachment_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_source?: "human" | "agent_terminal" | "provider_external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
@@ -376,6 +377,7 @@ export type PromptQueueItem = {
   updated_at_ms?: number
   status: string
   prompt_origin?: "chariox" | "external" | string
+  prompt_source?: "human" | "agent_terminal" | "provider_external" | string
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null

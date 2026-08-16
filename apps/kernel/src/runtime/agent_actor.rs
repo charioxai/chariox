@@ -169,7 +169,9 @@ impl AgentRuntime {
                 results: Vec::new(),
                 failures: Vec::new(),
                 agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
+                agent_activity_revision: self
+                    .session_projection
+                    .session_change_sequence(session.id()),
                 session,
             });
         }
@@ -181,7 +183,9 @@ impl AgentRuntime {
                 results: Vec::new(),
                 failures,
                 agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
+                agent_activity_revision: self
+                    .session_projection
+                    .session_change_sequence(session.id()),
                 session,
             });
         }
@@ -200,7 +204,9 @@ impl AgentRuntime {
                 results: Vec::new(),
                 failures: authorization_failures,
                 agent_activity: self.store.agent_activity_for_session(&session).await,
-                agent_activity_revision: self.session_projection.change_sequence(),
+                agent_activity_revision: self
+                    .session_projection
+                    .session_change_sequence(session.id()),
                 session,
             });
         }
@@ -294,7 +300,9 @@ impl AgentRuntime {
             failures,
             session,
             agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            agent_activity_revision: self
+                .session_projection
+                .session_change_sequence(&response_session_id),
         })
     }
 
@@ -867,6 +875,7 @@ mod tests {
             target_agent_id: agent_id.to_string(),
             prompt: format!("prompt {agent_id}"),
             attachments: Vec::new(),
+            prompt_source: None,
         }
     }
 

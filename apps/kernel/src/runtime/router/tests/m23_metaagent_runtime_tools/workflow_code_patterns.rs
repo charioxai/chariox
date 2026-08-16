@@ -299,8 +299,15 @@ async fn metaagent_workflow_code_applies_and_runs_canonical_routing_pattern_inne
     );
 }
 
-#[tokio::test]
-async fn metaagent_workflow_code_applies_inline_typescript_source() {
+#[test]
+fn metaagent_workflow_code_applies_inline_typescript_source() {
+    run_large_stack_async_test(
+        "metaagent-workflow-code-applies-inline-typescript-source",
+        metaagent_workflow_code_applies_inline_typescript_source_inner,
+    );
+}
+
+async fn metaagent_workflow_code_applies_inline_typescript_source_inner() {
     let node_path = match crate::workflow_code::discover_workflow_code_node_path() {
         Ok(path) => path,
         Err(error) => {

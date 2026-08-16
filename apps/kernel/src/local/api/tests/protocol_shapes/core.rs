@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_project_management_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let create = LocalDaemonRequest::CreateSession(
         crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -91,7 +91,7 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let create = LocalDaemonRequest::CreateAgentPromptSchedule(
         crate::local::CreateAgentPromptScheduleRequest {
@@ -163,7 +163,7 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -192,7 +192,7 @@ fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let request = LocalDaemonRequest::PauseWorkflowRun(PauseWorkflowRunRequest {
         session_id: "session-1".to_string(),
@@ -242,7 +242,7 @@ fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
         session_id: "session-1".to_string(),
@@ -281,7 +281,7 @@ fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
     assert_eq!(
@@ -357,8 +357,88 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 }
 
 #[test]
+fn local_daemon_protocol_terminal_operation_registry_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
+
+    let request =
+        LocalDaemonRequest::GetTerminalOperationRegistry(GetTerminalOperationRegistryRequest);
+    assert_eq!(
+        serde_json::to_value(request).expect("terminal operation registry request should encode"),
+        serde_json::json!({ "GetTerminalOperationRegistry": null })
+    );
+
+    let response = LocalDaemonResponse::TerminalOperationRegistry {
+        registry: TerminalOperationRegistry {
+            revision: "sha256:registry".to_string(),
+            operations: vec![TerminalOperationContract {
+                id: "workflow.node.instructions.update".to_string(),
+                command: None,
+                description: "Update workflow node instructions".to_string(),
+                search_aliases: vec!["workflow instructions".to_string()],
+                intents: vec!["change workflow node instructions".to_string()],
+                required_context: vec!["workspace".to_string(), "worktree".to_string()],
+                required_targets: vec![
+                    "session_id".to_string(),
+                    "workflow_id".to_string(),
+                    "node_id".to_string(),
+                ],
+                input_schema: serde_json::json!({
+                    "type": "object",
+                    "required": ["instructions"],
+                    "properties": { "instructions": { "type": "string" } }
+                }),
+                result_kind: "workflow_snapshot".to_string(),
+                mutation: true,
+                expected_projections: vec![
+                    "session_snapshot".to_string(),
+                    "terminal_events".to_string(),
+                ],
+                supported_surfaces: vec![
+                    "agent_terminal".to_string(),
+                    "tui".to_string(),
+                    "web".to_string(),
+                ],
+                examples: vec!["Update the reviewer node instructions".to_string()],
+                parity_variants: vec!["UpdateWorkflowNodeInstructions".to_string()],
+                presentation_only: false,
+            }],
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("terminal operation registry response should encode"),
+        serde_json::json!({
+            "TerminalOperationRegistry": {
+                "registry": {
+                    "revision": "sha256:registry",
+                    "operations": [{
+                        "id": "workflow.node.instructions.update",
+                        "description": "Update workflow node instructions",
+                        "search_aliases": ["workflow instructions"],
+                        "intents": ["change workflow node instructions"],
+                        "required_context": ["workspace", "worktree"],
+                        "required_targets": ["session_id", "workflow_id", "node_id"],
+                        "input_schema": {
+                            "type": "object",
+                            "required": ["instructions"],
+                            "properties": { "instructions": { "type": "string" } }
+                        },
+                        "result_kind": "workflow_snapshot",
+                        "mutation": true,
+                        "expected_projections": ["session_snapshot", "terminal_events"],
+                        "supported_surfaces": ["agent_terminal", "tui", "web"],
+                        "examples": ["Update the reviewer node instructions"],
+                        "parity_variants": ["UpdateWorkflowNodeInstructions"],
+                        "presentation_only": false
+                    }]
+                }
+            }
+        })
+    );
+}
+
+#[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -394,7 +474,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -442,7 +522,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let active_cancel_request =
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
@@ -598,7 +678,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(8),
@@ -640,6 +720,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
                 target_agent_id: "agent-1".to_string(),
                 prompt: "review shard 1".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             SubmitPromptsRequestItem {
                 session_id: Some("session-2".to_string()),
@@ -647,6 +728,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
                 target_agent_id: "agent-2".to_string(),
                 prompt: "review shard 2".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     });
@@ -682,7 +764,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 261);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 260);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),

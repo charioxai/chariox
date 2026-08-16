@@ -45,6 +45,7 @@ type ParsedPromptArgs = {
 
 export type ShellPromptCommandDeps = {
   client: ShellKernelClient
+  signal?: AbortSignal | undefined
 }
 
 export async function executePromptCommand(
@@ -73,6 +74,7 @@ export async function executePromptCommand(
     target.id,
     promptText,
     [],
+    context.promptSource ?? "human",
   ))
   const payload = promptSubmittedPayloadWithActivity(
     expectVariant<PromptSubmittedPayload>(response, "PromptSubmitted"),
@@ -186,15 +188,20 @@ async function waitForPromptCompletion(
   const deadline = Date.now() + 120_000
   let latest: RuntimeSession | null = null
   while (Date.now() < deadline) {
+    throwIfAborted(deps.signal)
     await deps.client.send(pumpTerminalOutputRequest(sessionId, attachmentId)).catch(() => ({}))
     const response = await deps.client.send(getSessionStateRequest(sessionId))
     latest = expectSessionState(response)
     if (!sessionHasPendingPrompt(latest, agentId, promptId)) {
       return latest
     }
-    await sleep(250)
+    await sleep(250, deps.signal)
   }
   throw new Error(`timed out waiting for prompt ${promptId}`)
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new DOMException("The operation was aborted", "AbortError")
 }
 
 async function readPromptHistory(
@@ -225,8 +232,14 @@ async function readPromptHistory(
   return entries.sort((left, right) => left.entry_index - right.entry_index)
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms)
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer)
+      resolve()
+    }, { once: true })
+  })
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

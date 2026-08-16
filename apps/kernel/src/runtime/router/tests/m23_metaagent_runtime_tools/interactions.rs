@@ -67,6 +67,7 @@ async fn metaagent_can_resolve_owned_regular_agent_interactions_but_not_its_own_
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: "stay busy while a worker asks for permission".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(

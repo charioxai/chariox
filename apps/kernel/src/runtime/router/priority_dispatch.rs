@@ -21,7 +21,6 @@ use crate::runtime::kernel_lifecycle_executor::execute_kernel_lifecycle_request;
 use crate::runtime::metaagent_event_control::execute_metaagent_event_request;
 use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
-use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
@@ -40,7 +39,9 @@ use crate::runtime::state::workflow_publication_runtime_lifecycle::{
     execute_bind_workflow_publication_deployment_request,
     execute_control_workflow_publication_runtime_request,
 };
-use crate::runtime::terminal_command_catalog::terminal_command_catalog_response;
+use crate::runtime::terminal_command_catalog::{
+    terminal_command_catalog_response, terminal_operation_registry_response,
+};
 use crate::runtime::terminal_output_executor::{
     execute_append_native_provider_output_batch_request,
     execute_append_native_provider_output_request,
@@ -75,6 +76,9 @@ impl CommandRouter {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         match request {
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => terminal_command_catalog_response(),
+            LocalDaemonRequest::GetTerminalOperationRegistry(_) => {
+                terminal_operation_registry_response()
+            }
             LocalDaemonRequest::RespondToInteraction(_) => Err(DaemonError::LocalTransport {
                 operation: "dispatch normal or background",
                 message: "interaction responses must be dispatched through the session runtime"
@@ -297,14 +301,6 @@ impl CommandRouter {
                     request,
                 )
                 .await
-            }
-            request @ (LocalDaemonRequest::ListPromptSettings(_)
-            | LocalDaemonRequest::GetPromptSetting(_)
-            | LocalDaemonRequest::UpdatePromptSetting(_)
-            | LocalDaemonRequest::PreviewPromptSetting(_)
-            | LocalDaemonRequest::ResetPromptSetting(_)
-            | LocalDaemonRequest::ResetAllPromptSettings(_)) => {
-                execute_prompt_settings_request(&command, request).await
             }
             request @ LocalDaemonRequest::DeleteKernel(_) => {
                 execute_kernel_lifecycle_request(

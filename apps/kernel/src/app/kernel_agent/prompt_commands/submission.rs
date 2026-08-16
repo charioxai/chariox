@@ -274,18 +274,20 @@ impl<'a> KernelAgentService<'a> {
         prompt: &str,
         attachments: &[PromptAttachment],
     ) -> Result<(), DaemonError> {
-        self.app.spawn_user_prompt_history_append_with_prompt_id(
-            &admission.session_id,
-            history_source_attachment_id.unwrap_or(&admission.attachment_id),
-            &admission.target_agent_id,
-            prompt,
-            attachments,
-            admission.prompt.prompt_origin(),
-            prompt_id,
-            admission.prompt.created_at_ms(),
-            admission.prompt.workflow_run_id(),
-            admission.prompt.workflow_node_run_id(),
-        )
+        self.app
+            .spawn_user_prompt_history_append_with_prompt_id_and_source(
+                &admission.session_id,
+                history_source_attachment_id.unwrap_or(&admission.attachment_id),
+                &admission.target_agent_id,
+                prompt,
+                attachments,
+                admission.prompt.prompt_origin(),
+                admission.prompt.prompt_source(),
+                prompt_id,
+                admission.prompt.created_at_ms(),
+                admission.prompt.workflow_run_id(),
+                admission.prompt.workflow_node_run_id(),
+            )
     }
 
     fn submit_admitted_prompt_to_owner(

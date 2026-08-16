@@ -105,6 +105,7 @@ impl AgentRuntimeCommandExecutor {
             &target_agent_id,
             request.attachments,
         )?;
+        let prompt_source = request.prompt_source.unwrap_or_default();
         let meta_slash = crate::runtime::state::parse_meta_slash_command(&request.prompt);
         if let Some(meta_slash) = meta_slash.as_ref() {
             if self
@@ -125,6 +126,7 @@ impl AgentRuntimeCommandExecutor {
                     task.task_markdown(),
                     PromptStatus::Queued,
                 )
+                .with_prompt_source(prompt_source)
                 .with_attachments(task.attachments().to_vec());
                 if response_mode == PromptSubmitResponseMode::Full {
                     publish_session_runtime_projection(
@@ -143,7 +145,8 @@ impl AgentRuntimeCommandExecutor {
                         Default::default()
                     },
                     agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                        self.session_projection.change_sequence()
+                        self.session_projection
+                            .session_change_sequence(&request.session_id)
                     } else {
                         0
                     },
@@ -174,6 +177,7 @@ impl AgentRuntimeCommandExecutor {
             provider_prompt,
             PromptStatus::Queued,
         )
+        .with_prompt_source(prompt_source)
         .with_hidden_system_context(hidden_system_context)
         .with_durable_operation(operation_id, operation_fingerprint)
         .with_attachments(materialized_attachments);
@@ -221,6 +225,7 @@ impl AgentRuntimeCommandExecutor {
         } else {
             Default::default()
         };
+        let response_session_id = response_session.id().to_string();
 
         if let Some(dispatch) = prepared.dispatch {
             self.prompt_commands.spawn_prompt_dispatch(dispatch);
@@ -234,7 +239,8 @@ impl AgentRuntimeCommandExecutor {
             session: response_session,
             agent_activity,
             agent_activity_revision: if response_mode == PromptSubmitResponseMode::Full {
-                self.session_projection.change_sequence()
+                self.session_projection
+                    .session_change_sequence(&response_session_id)
             } else {
                 0
             },
@@ -300,7 +306,9 @@ impl AgentRuntimeCommandExecutor {
             prompt: prepared.prompt,
             session: prepared.session,
             agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            agent_activity_revision: self
+                .session_projection
+                .session_change_sequence(&request.session_id),
         })
     }
 
@@ -331,7 +339,9 @@ impl AgentRuntimeCommandExecutor {
             prompt: prepared.prompt,
             session: prepared.session,
             agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            agent_activity_revision: self
+                .session_projection
+                .session_change_sequence(&request.session_id),
         })
     }
 
@@ -363,7 +373,9 @@ impl AgentRuntimeCommandExecutor {
             prompt: prepared.prompt,
             session: prepared.session,
             agent_activity,
-            agent_activity_revision: self.session_projection.change_sequence(),
+            agent_activity_revision: self
+                .session_projection
+                .session_change_sequence(&request.session_id),
         })
     }
 

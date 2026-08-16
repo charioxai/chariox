@@ -60,6 +60,7 @@ export type SessionLifecycleLaunchSession<TAgent extends SessionLifecycleLaunchA
 export type SessionLifecycleAttachLaunchSession<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
   SessionLifecycleLaunchSession<TAgent> & {
     active_provider_run_id?: string | null
+    collaboration_agent_counts?: RuntimeSession["collaboration_agent_counts"]
   }
 
 export type SessionLifecycleAttachProviderLaunchDecision<TAgent extends SessionLifecycleLaunchAgent = SessionLifecycleLaunchAgent> =
@@ -75,7 +76,7 @@ export type SessionLifecycleAttachProviderLaunchDecision<TAgent extends SessionL
   }
   | {
     readonly action: "skip_launch"
-    readonly reason: "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent"
+    readonly reason: "no_visible_agents" | "missing_focused_agent" | "unowned_visible_agent" | "remote_backed_agent"
     readonly launch: SessionLifecycleLaunchSelection
     readonly targetAgent: TAgent | null
   }
@@ -243,6 +244,13 @@ export function resolveAttachTimeProviderLaunch<TAgent extends SessionLifecycleL
   }
   if (!targetAgent && !createdSession) {
     return { action: "skip_launch", reason: "missing_focused_agent", launch, targetAgent }
+  }
+  if (
+    !createdSession
+    && targetAgent
+    && session.collaboration_agent_counts?.owned_agent_count === 0
+  ) {
+    return { action: "skip_launch", reason: "unowned_visible_agent", launch, targetAgent }
   }
   if (targetAgent?.remote_execution) {
     return { action: "skip_launch", reason: "remote_backed_agent", launch, targetAgent }

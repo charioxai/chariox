@@ -1,15 +1,16 @@
 use super::*;
 use crate::local::{
-    GetTerminalCommandCatalogRequest, TerminalCommandCatalog,
+    GetTerminalCommandCatalogRequest, GetTerminalOperationRegistryRequest, TerminalCommandCatalog,
     TerminalCommandCatalogExecutionTarget, TerminalCommandCatalogNode,
-    TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
+    TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface, TerminalOperationContract,
+    TerminalOperationRegistry,
 };
 
+mod agent_terminal_contracts;
 mod core;
 mod credential_enrollment;
 mod event_publication;
 mod native_spawn_slice;
-mod prompt_settings;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
@@ -39,6 +40,7 @@ fn history_page_entry(
                 }
                 _ => None,
             },
+            prompt_source: None,
             kind,
             merge_key: None,
             source: None,

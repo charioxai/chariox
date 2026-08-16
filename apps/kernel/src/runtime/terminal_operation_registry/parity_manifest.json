@@ -1,0 +1,1611 @@
+{
+  "schema_version": 1,
+  "source": "LocalDaemonRequest",
+  "requests": [
+    {
+      "variant": "CreateSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AttachToSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DetachFromSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListSessionMembers",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "JoinSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RevokeSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkspaceLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkspaceLinks",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ShowWorkspaceLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AttachWorkspaceLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DetachWorkspaceLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkspaceLiveSyncStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LaunchProviderRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LaunchProviderRuns",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListProjects",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RenameProject",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ArchiveProject",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteProject",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RestoreProject",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListSessions",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResolveSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSessionState",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateMetaagentTask",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PauseMetaagentTask",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResumeMetaagentTask",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AbortMetaagentTask",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SearchMetaagentCommands",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetMetaagentTurnOverview",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetMetaagentTurnBlob",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListMetaagentEvents",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ReadMetaagentEvent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AckMetaagentEvents",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetTerminalCommandCatalog",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetTerminalOperationRegistry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetDaemonHealth",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ExportDebugBundle",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetProviderRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateProviderRunSelection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetProviderCatalog",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetProviderCommandCatalogs",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "InstallMcpServer",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateMcpServer",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UninstallMcpServer",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportMcpServers",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportProviderCapabilities",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetMcpServer",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListMcpServers",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterEnvironment",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveEnvironment",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetEnvironment",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListEnvironments",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ValidateScript",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterScript",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveScript",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetScript",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListScripts",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterCredential",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpsertCredential",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveCredential",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetCredential",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListCredentials",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterConnector",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpsertConnector",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterConnectorAdapter",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveConnectorAdapter",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetConnectorAdapter",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListConnectorAdapters",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveConnector",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetConnector",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListConnectors",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "TestConnector",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpsertSkill",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "InstallSkill",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateSkill",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UninstallSkill",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportSkills",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSkill",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListSkills",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RelayStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ConfigureRelay",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CloudRelayStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StartCloudRelayLogin",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PollCloudRelayLogin",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LogoutCloudRelay",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PairCloudRelayClient",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PairCloudRelayMachine",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ConnectCloudRelay",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "IssueCloudRelayClientToken",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResolveKernelClientConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateCloudSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ShowCloudSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AcceptCloudSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RevokeCloudSessionInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListCloudSessionMembers",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListCloudCollaborators",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetUserConfig",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetUserConfigSchema",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetUserConfigValue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkspaceLiveSyncMode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UnsetUserConfigValue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetCredentialSecret",
+      "classification": "presentation_only",
+      "reason": "Plaintext vault secret entry is a hidden human interaction; agent terminals may initiate the existing out-of-band enrollment flow but must not receive a secret value field."
+    },
+    {
+      "variant": "DeleteCredentialSecret",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetCredentialVaultStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LockCredentialVault",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ManageCredentialVault",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListSlices",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateSlice",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSlice",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StartSlice",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StopSlice",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteSlice",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportSliceProviderAuth",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveSliceProviderAuth",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StartSliceProviderLogin",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetSliceProviderAuthAlias",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSliceDisplayEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSliceLogs",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListSliceAudit",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SaveSliceState",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSliceStateStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResetSliceState",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateSliceBackup",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListRemoteMachines",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListRemoteMachineKernels",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWaitingRoomInventory",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWaitingRoomPublicSnapshot",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListExternalProviderSessions",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RefreshExternalProviderSessions",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportExternalProviderSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportExternalProviderAgent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SearchWorkspaceDirectories",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkspaceDirectory",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkspaceWorktrees",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkspaceWorktree",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteWorkspaceWorktree",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkspacePullRequest",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkspaceGitOverview",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkspaceFiles",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkspaceFileContent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RunAgentUtility",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GenerateWorkspaceCommitMessage",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CommitWorkspaceChanges",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PushWorkspaceBranch",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CommitAndPushWorkspaceChanges",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ApproveRemoteMachine",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ForgetRemoteMachine",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RenameRemoteMachine",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreatePairingInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "JoinPairingInvite",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateTerminalPairingLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "JoinTerminalPairingLink",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListTerminals",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListPairedClients",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RecordPairedClient",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RevokePairedClient",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetProviderAuthStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StartProviderLogin",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LogoutProvider",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListProviderProcesses",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "TeardownProviderProcesses",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSessionHistoryOutline",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetSessionHistoryBlobContent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetPromptInputHistory",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RecordPromptInputHistory",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "QueryRecall",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SearchRecall",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SemanticSearchRecall",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PollRuntimeNotices",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RespondToInteraction",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ArmDeploymentCredentialEnrollment",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RequestCredentialEnrollmentInteraction",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RequestNativeProviderInteraction",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SubmitPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SubmitPrompts",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateAgentPromptSchedule",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CancelAgentPromptSchedule",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CompletePrompt",
+      "classification": "kernel_internal",
+      "reason": "Prompt completion callback generated by the kernel runtime."
+    },
+    {
+      "variant": "CancelActivePrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SteerQueuedPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CancelQueuedPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateQueuedPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateSessionConfig",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateAgentConfig",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateAgentProfile",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateAgentSubstitutes",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResizeTerminal",
+      "classification": "presentation_only",
+      "reason": "Terminal layout is a human presentation concern."
+    },
+    {
+      "variant": "SendTerminalInput",
+      "classification": "presentation_only",
+      "reason": "Raw provider PTY input is a presentation/native-terminal concern."
+    },
+    {
+      "variant": "PumpTerminalOutput",
+      "classification": "presentation_only",
+      "reason": "Output pumping is transport bookkeeping performed by the agent client."
+    },
+    {
+      "variant": "AppendNativeProviderOutput",
+      "classification": "kernel_internal",
+      "reason": "Provider output callback generated by the kernel/provider bridge."
+    },
+    {
+      "variant": "AppendNativeProviderOutputBatch",
+      "classification": "kernel_internal",
+      "reason": "Provider output callback generated by the kernel/provider bridge."
+    },
+    {
+      "variant": "RunShellCommand",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ReadDirectoryTree",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ReadFile",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "EditFile",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "InspectGit",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CaptureScreenshot",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StoreTransferredFile",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "EndSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteKernel",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AliasSession",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AliasAgent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SpawnAgent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SpawnAgents",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UndoTurn",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ForkAgent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "MoveAgentToRemote",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "MoveAgentToLocal",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SyncRemoteExtensionManifest",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListHomeExtensionAudit",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DestroyAgent",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "FocusAgent",
+      "classification": "presentation_only",
+      "reason": "Human focus is presentation state; agent context targets agent_id directly."
+    },
+    {
+      "variant": "AcknowledgeAgentOutputSeen",
+      "classification": "presentation_only",
+      "reason": "Unread-output acknowledgement is terminal presentation state."
+    },
+    {
+      "variant": "CycleAgentFocus",
+      "classification": "presentation_only",
+      "reason": "Human focus cycling is presentation state."
+    },
+    {
+      "variant": "GrantAgentExtension",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RevokeAgentExtension",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListAgents",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflow",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ValidateWorkflowCode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ApplyWorkflowCode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ApplyWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RunWorkflowCode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RunWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowRegistry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkflowRegistryEntry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AddWorkflowRegistryEntry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AddWorkflowRegistryEntryFromWorkflow",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteWorkflowRegistryEntry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "LoadWorkflowRegistryEntry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RunWorkflowRegistryEntry",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "BindWorkflowCodeSource",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RebuildWorkflowCodeSource",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateWorkflowCodeSourceFromWorkflow",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowCodeArtifacts",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DeleteWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ExportWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportWorkflowCodeArtifact",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ExportWorkflowCodePackage",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ImportWorkflowCodePackage",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ExportWorkflowCodeSource",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ApplyWorkflowDesignOp",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AliasWorkflow",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflows",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResolveWorkflow",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowPublication",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowPublications",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkflowPublication",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ExportWorkflowPublicationPackage",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "DisableWorkflowPublication",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetEventGeneratorCatalogLanding",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SearchEventGeneratorCatalog",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "BrowseEventGeneratorCategory",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetEventGeneratorDetail",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "BrowseEventGeneratorEvents",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "StartEventGeneratorAuthorization",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListEventGeneratorResources",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListEventConnections",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "InstallEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ObserveEventConnectionAuthorization",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RefreshEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "TestEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ReconnectEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListEventConnectionResources",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListEventConnectionDependencies",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveEventConnection",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowEventBinding",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowEventBindings",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowEventBindingStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "TransferWorkflowEventBinding",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "TestWorkflowEventBinding",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetEventDeliveryStatus",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ControlWorkflowPublicationRuntime",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "BindWorkflowPublicationDeployment",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RegisterWorkflowPublicationEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "MaterializeWorkflowPublication",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AliasWorkflowEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "BindWorkflowEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AddWorkflowNode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveWorkflowNode",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateWorkflowNodeInstructions",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowNodeCanCompleteRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowNodeCanEmitIntermediateOutput",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowNodeWaitForAllInputs",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowNodeIntermediateOutputSchema",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowNodeMaxTurns",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AddWorkflowEdge",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveWorkflowEdge",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateWorkflowCanvasLayout",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "InvokeWorkflowEndpoint",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowRuns",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "GetWorkflowRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CancelWorkflowRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PauseWorkflowRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ResumeWorkflowRun",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowWatchdog",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowWatchdogs",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowWatchdogEnabled",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveWorkflowWatchdog",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowSchedule",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowSchedules",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowScheduleEnabled",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveWorkflowSchedule",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "PreviewWorkflowSchedule",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowFlushContext",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "SetWorkflowRunOutputSchema",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListWorkflowPromptQueues",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "CreateWorkflowPromptQueue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateWorkflowPromptQueue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveWorkflowPromptQueue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ListQueuedWorkflowPrompts",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "UpdateQueuedWorkflowPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "RemoveQueuedWorkflowPrompt",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ClearWorkflowPromptQueue",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "ValidateWorkflowHandoff",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    },
+    {
+      "variant": "AckWorkflowTurn",
+      "classification": "agent_terminal_supported",
+      "reason": "User-facing kernel state operation; requires a canonical agent-terminal contract."
+    }
+  ]
+}

@@ -130,6 +130,7 @@ fn local_ipc_round_trip_exercises_session_and_terminal_flow() {
                     target_agent_id: None,
                     prompt: "ipc smoke\n".to_string(),
                     attachments: Vec::new(),
+                    prompt_source: None,
                 }))
                 .expect("prompt submit should succeed");
 
@@ -303,6 +304,7 @@ fn local_ipc_prompt_submit_acks_while_shell_capability_is_slow() {
                     prompt: "ipc prompt should ack while shell command is still running"
                         .to_string(),
                     attachments: Vec::new(),
+                    prompt_source: None,
                 }))
             });
             tokio::pin!(slow_task);
