@@ -746,7 +746,7 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
         leased_agent_id: "leased-agent-1".to_string(),
         active_worker_provider_run_id: Some("worker-run-1".to_string()),
         relay_url: Some("wss://relay.example.test".to_string()),
-        relay_token: Some("token".to_string()),
+        relay_token: Some("secret-token".to_string()),
         relay_peer_protocol_version: Some(
             crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
         ),
@@ -757,7 +757,16 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let response = LocalDaemonResponse::AgentMovedToRemote {
         agent: serde_json::from_value(agent_value).expect("remote agent snapshot should decode"),
     };
-    let snapshot = serde_json::json!(response);
+    let mut snapshot = serde_json::json!(response);
+    snapshot
+        .pointer_mut("/AgentMovedToRemote/agent/remote_execution")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("remote binding should be present")
+        .remove("relay_token");
+    assert_eq!(
+        snapshot.pointer("/AgentMovedToRemote/agent/remote_execution/relay_token"),
+        None
+    );
     assert_eq!(
         snapshot.pointer("/AgentMovedToRemote/agent/remote_execution/relay_peer_protocol_version"),
         Some(&serde_json::json!(
@@ -768,6 +777,6 @@ fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "7cbca2b4014de6c3300aa865f2a490c622e4e776de0c0fea3915fb554a827515"
+        "b149b6dcb502355ed8e47cc230db918e3818e38224af16132867a96be73792d8"
     );
 }

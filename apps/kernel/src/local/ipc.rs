@@ -339,10 +339,33 @@ fn serialize_request(request: &LocalDaemonRequest) -> Result<Vec<u8>, DaemonErro
 }
 
 fn encode_envelope(envelope: IpcResponseEnvelope) -> Result<Vec<u8>, DaemonError> {
-    serde_json::to_vec(&envelope).map_err(|error| DaemonError::LocalTransport {
+    let mut value =
+        serde_json::to_value(envelope).map_err(|error| DaemonError::LocalTransport {
+            operation: "serialize local response",
+            message: error.to_string(),
+        })?;
+    redact_local_response_credentials(&mut value);
+    serde_json::to_vec(&value).map_err(|error| DaemonError::LocalTransport {
         operation: "serialize local response",
         message: error.to_string(),
     })
+}
+
+fn redact_local_response_credentials(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::Object(object) => {
+            object.remove("relay_token");
+            for child in object.values_mut() {
+                redact_local_response_credentials(child);
+            }
+        }
+        serde_json::Value::Array(values) => {
+            for child in values {
+                redact_local_response_credentials(child);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn decode_envelope(bytes: &[u8]) -> Result<IpcResponseEnvelope, DaemonError> {
