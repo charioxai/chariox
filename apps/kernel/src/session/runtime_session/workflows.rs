@@ -326,35 +326,37 @@ impl RuntimeSession {
             {
                 continue;
             }
-            let orphaned_node_run_id = workflow_run
-                .active_node_run_id()
-                .map(str::to_string)
-                .or_else(|| {
-                    workflow_run
-                        .node_runs()
-                        .iter()
-                        .find(|node| {
-                            !matches!(
-                                node.status(),
-                                WorkflowNodeRunStatus::Completed
-                                    | WorkflowNodeRunStatus::Failed
-                                    | WorkflowNodeRunStatus::Stopped
-                            )
-                        })
-                        .map(|node| node.id().to_string())
-                });
-            if let Some(node_run_id) = orphaned_node_run_id.as_deref() {
-                if let Some(node_run) = workflow_run.node_run_mut(node_run_id) {
-                    node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                    if let Some(envelope) = node_run.turn_envelope_mut() {
-                        envelope.mark_cancelled();
-                    }
+            let orphaned_node_run_ids = workflow_run
+                .node_runs()
+                .iter()
+                .filter(|node| {
+                    !matches!(
+                        node.status(),
+                        WorkflowNodeRunStatus::Completed
+                            | WorkflowNodeRunStatus::Failed
+                            | WorkflowNodeRunStatus::Stopped
+                    )
+                })
+                .map(|node| node.id().to_string())
+                .collect::<Vec<_>>();
+            for node_run in workflow_run.node_runs_mut() {
+                if !orphaned_node_run_ids.iter().any(|id| id == node_run.id()) {
+                    continue;
+                }
+                node_run.set_status(WorkflowNodeRunStatus::Stopped);
+                if let Some(envelope) = node_run.turn_envelope_mut() {
+                    envelope.mark_cancelled();
                 }
             }
+            let failure_source_node_run_id = workflow_run
+                .active_node_run_id()
+                .map(str::to_string)
+                .or_else(|| orphaned_node_run_ids.first().cloned())
+                .unwrap_or_else(|| workflow_run.id().to_string());
             workflow_run.clear_active_node_run();
             workflow_run.add_failure_event(WorkflowFailureEvent::new(
                 WorkflowFailureKind::RunStopped,
-                orphaned_node_run_id.unwrap_or_else(|| workflow_run.id().to_string()),
+                failure_source_node_run_id,
                 Vec::new(),
                 "non-terminal workflow run had no durable active or queued prompt after kernel restart",
             ));

@@ -583,6 +583,7 @@ fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_pr
         Some("running orphan".to_string()),
     );
     let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let fanout_node = workflow.add_node(WorkflowNodeDefinition::new("node-2", "agent-1"));
     let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
         "endpoint-1",
         Some("entry".to_string()),
@@ -596,13 +597,22 @@ fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_pr
         node.id(),
         Some("orphaned prompt".to_string()),
         None,
-        vec![WorkflowNodeRun::new(
-            "node-run-running-orphan",
-            node.id(),
-            "agent-1",
-            1,
-            WorkflowNodeRunStatus::Running,
-        )],
+        vec![
+            WorkflowNodeRun::new(
+                "node-run-running-orphan",
+                node.id(),
+                "agent-1",
+                1,
+                WorkflowNodeRunStatus::Running,
+            ),
+            WorkflowNodeRun::new(
+                "node-run-running-orphan-fanout",
+                fanout_node.id(),
+                "agent-1",
+                1,
+                WorkflowNodeRunStatus::Ready,
+            ),
+        ],
         Vec::new(),
     );
     let node_run = workflow_run
@@ -622,6 +632,15 @@ fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_pr
         .turn_envelope_mut()
         .expect("turn envelope should exist")
         .mark_acknowledged();
+    let fanout_node_run = workflow_run
+        .node_run_mut("node-run-running-orphan-fanout")
+        .expect("fan-out node run should exist");
+    fanout_node_run.set_turn_envelope(Some(crate::session::WorkflowTurnEnvelope::new(
+        "workflow-ack:node-run-running-orphan-fanout",
+        "fan-out orphaned prompt".to_string(),
+        None,
+        None,
+    )));
     workflow_run.set_status(WorkflowRunStatus::Running);
     session.create_workflow_run(workflow_run);
     let mut waiting_workflow_run = WorkflowRun::new(
@@ -678,6 +697,14 @@ fn kernel_restart_reconciliation_stops_non_terminal_workflows_without_durable_pr
         run.node_runs()[0]
             .turn_envelope()
             .expect("turn envelope should exist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Cancelled
+    );
+    assert_eq!(run.node_runs()[1].status(), WorkflowNodeRunStatus::Stopped);
+    assert_eq!(
+        run.node_runs()[1]
+            .turn_envelope()
+            .expect("fan-out turn envelope should exist")
             .state(),
         crate::session::WorkflowTurnRuntimeState::Cancelled
     );
