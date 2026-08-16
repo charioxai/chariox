@@ -196,6 +196,15 @@ impl<'a> KernelAgentService<'a> {
             .app
             .serialize_remote_prompt_attachments(&dispatch.attachments)?;
         let agent = self.app.agents().get_agent(&dispatch.agent_id)?;
+        let remote_execution =
+            agent
+                .remote_execution()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "submit remote prepared prompt",
+                    message: format!("agent `{}` lost its remote binding", dispatch.agent_id),
+                })?;
+        self.app
+            .ensure_remote_agent_binding_protocol(remote_execution)?;
         let (required_mcps, required_skills, remote_extension_manifest) =
             self.app.remote_prompt_capabilities_for_agent(&agent)?;
         let relay_config = remote_dispatch_relay_config(self.app, &dispatch);
