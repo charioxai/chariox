@@ -559,8 +559,15 @@ async fn provider_command_catalogs_do_not_wait_for_app_lock() {
     }
 }
 
-#[tokio::test]
-async fn provider_auth_status_does_not_use_generic_app_fallback() {
+#[test]
+fn provider_auth_status_does_not_use_generic_app_fallback() {
+    run_status_projection_large_stack_test(
+        "provider-auth-status-does-not-use-generic-app-fallback",
+        provider_auth_status_does_not_use_generic_app_fallback_inner,
+    );
+}
+
+async fn provider_auth_status_does_not_use_generic_app_fallback_inner() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
