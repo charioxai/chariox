@@ -1,4 +1,5 @@
 use super::*;
+use crate::agent::RemoteAgentBinding;
 use crate::agent::{AgentInstance, GridPosition};
 use crate::runtime::projection::ProjectionMetadata;
 use crate::session::{
@@ -35,6 +36,46 @@ fn terminal_output_event_batches_stay_under_json_byte_cap() {
     for batch in batches {
         assert!(terminal_output_event_json_bytes(&batch) <= MAX_TERMINAL_OUTPUT_EVENT_JSON_BYTES);
     }
+}
+
+#[test]
+fn session_snapshot_frame_redacts_remote_relay_credentials() {
+    let mut projection = session_snapshot_with_agent();
+    let mut agent = projection.session.agents()[0].clone();
+    agent.set_remote_execution(Some(RemoteAgentBinding {
+        worker_kernel_id: "worker-1".to_string(),
+        worker_machine_id: "machine-1".to_string(),
+        execution_lease_id: "lease-1".to_string(),
+        leased_agent_id: "agent-a".to_string(),
+        active_worker_provider_run_id: None,
+        relay_url: Some("wss://relay.example".to_string()),
+        relay_token: Some("snapshot-secret".to_string()),
+        relay_peer_protocol_version: Some(
+            crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        ),
+    }));
+    projection.session.set_agents(vec![agent]);
+    let frame = KernelOutgoingFrame::Event {
+        event_id: 1,
+        event: Box::new(KernelEvent::SessionSnapshot {
+            session: Box::new(projection.session),
+            provider_run: Box::new(None),
+            agent_activity: Box::new(projection.agent_activity),
+            agent_activity_revision: 0,
+        }),
+    };
+
+    let encoded = serialize_frame(&frame).expect("session snapshot should serialize");
+    let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON frame");
+    assert!(value
+        .pointer("/event/session/agents/0/remote_execution/relay_token")
+        .is_none());
+    assert_eq!(
+        value
+            .pointer("/event/session/agents/0/remote_execution/relay_url")
+            .and_then(serde_json::Value::as_str),
+        Some("wss://relay.example")
+    );
 }
 
 #[test]
