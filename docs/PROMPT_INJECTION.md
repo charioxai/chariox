@@ -23,6 +23,10 @@ The prompt manifest records every template body used by a provider turn. The
 manifest is part of the durable/replay-visible prompt envelope, so a replay can
 identify the exact template revisions without re-reading mutable UI state.
 
+Conditional workflow-node guidance is catalogued too: `workflow/node-max-turns`
+renders the configured turn limit, while `workflow/wait-for-all-inputs` is added
+only for nodes that wait for every incoming edge in the current iteration.
+
 ## Context policy
 
 The always-on workflow contract is deliberately small. Workflow/node
@@ -59,6 +63,11 @@ omitting a description is an optimization and never an authorization boundary.
    literals to runtime code.
 5. Add a catalog/render/reset/replay test and update the prompt settings UI
    catalog fallback only if the new entry is visible before a kernel connects.
+
+The disconnected browser catalog is a read-only projection of this same
+catalog, not an independent inventory. When a new entry is added, the Cloud
+fallback must add the same stable ID and a matching focused test; otherwise a
+browser without a compatible kernel would silently show an incomplete list.
 
 The browser Settings workspace and TUI `/settings prompts` commands call the
 authenticated kernel API for list, update, preview, reset-one, and reset-all.

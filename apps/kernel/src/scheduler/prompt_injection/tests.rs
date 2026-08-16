@@ -137,11 +137,28 @@ fn workflow_prompt_assembly_tags_runtime_subprompts_without_legacy_titles() {
             "Final workflow run output contract:\n- workflow_run_output_schema_ref: schema:final\n- workflow_run_output_schema: {\"type\":\"object\"}\n\n".to_string(),
         ),
         can_emit_intermediate_output: true,
-        wait_for_all_inputs: false,
+        wait_for_all_inputs: true,
     });
 
     let assembly = build_workflow_turn_prompt_assembly(context);
     restore_chariox_home(previous_home);
+
+    assert!(assembly
+        .hidden_system_context
+        .contains("- node max turns: 3"));
+    assert!(assembly
+        .hidden_system_context
+        .contains("- this node starts only after every incoming edge"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/node-max-turns"));
+    assert!(assembly
+        .manifest
+        .entries
+        .iter()
+        .any(|entry| entry.template_id == "workflow/wait-for-all-inputs"));
 
     for tag in [
         "workflow-level-prompt",

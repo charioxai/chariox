@@ -71,6 +71,10 @@ const WORKFLOW_EDGE_CONTRACTS: &str =
     include_str!("provider/workflow_edge_contracts_instructions.md");
 const WORKFLOW_NODE_TURN_CONTEXT: &str =
     include_str!("provider/workflow_node_turn_context_instructions.md");
+const WORKFLOW_NODE_MAX_TURNS: &str =
+    include_str!("provider/workflow_node_max_turns_instructions.md");
+const WORKFLOW_WAIT_FOR_ALL_INPUTS: &str =
+    include_str!("provider/workflow_wait_for_all_inputs_instructions.md");
 const WORKFLOW_OUTPUT_CONTRACT: &str =
     include_str!("provider/workflow_output_contract_instructions.md");
 const WORKFLOW_LAST_TURN: &str = include_str!("provider/workflow_last_turn_instructions.md");
@@ -576,6 +580,12 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         "workflow/node-turn-context" => {
             ("Workflow node turn context", "workflow", "workflow-agent")
         }
+        "workflow/node-max-turns" => ("Workflow node turn limit", "workflow", "workflow-agent"),
+        "workflow/wait-for-all-inputs" => (
+            "Workflow input synchronization",
+            "workflow",
+            "workflow-agent",
+        ),
         "workflow/output-contract" => ("Workflow output contract", "workflow", "workflow-agent"),
         "workflow/last-turn" => ("Workflow last-turn guidance", "workflow", "workflow-agent"),
         "workflow/schedule-continuation" => (
@@ -983,6 +993,8 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new("workflow/control-mailbox", WORKFLOW_CONTROL_MAILBOX),
         BundledPromptTemplate::new("workflow/edge-contracts", WORKFLOW_EDGE_CONTRACTS),
         BundledPromptTemplate::new("workflow/node-turn-context", WORKFLOW_NODE_TURN_CONTEXT),
+        BundledPromptTemplate::new("workflow/node-max-turns", WORKFLOW_NODE_MAX_TURNS),
+        BundledPromptTemplate::new("workflow/wait-for-all-inputs", WORKFLOW_WAIT_FOR_ALL_INPUTS),
         BundledPromptTemplate::new("workflow/output-contract", WORKFLOW_OUTPUT_CONTRACT),
         BundledPromptTemplate::new("workflow/last-turn", WORKFLOW_LAST_TURN),
         BundledPromptTemplate::new(
