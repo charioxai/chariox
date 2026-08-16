@@ -498,11 +498,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         provider_run_id: &str,
     ) -> Result<Option<crate::session::PromptCompletion>, DaemonError> {
-        let Some(binding) = self
+        let Some((binding_key, binding)) = self
             .app
             .leased_workflow_turns
-            .values()
-            .find(|binding| {
+            .iter()
+            .find(|(_, binding)| {
                 binding.provider_run_id == provider_run_id
                     && self
                         .app
@@ -511,7 +511,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                         .and_then(|agent| agent.active_home_prompt_id.as_deref())
                         == Some(binding.home_prompt_id.as_str())
             })
-            .cloned()
+            .map(|(key, binding)| (key.clone(), binding.clone()))
         else {
             return Ok(None);
         };
@@ -541,9 +541,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent.backing_agent_id,
             Some(provider_run_id),
         )?;
-        self.app
-            .leased_workflow_turns
-            .remove(&binding.home_prompt_id);
+        self.app.leased_workflow_turns.remove(&binding_key);
         Ok(Some(completion))
     }
 }

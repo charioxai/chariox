@@ -359,12 +359,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
         backing_prompt_id: &str,
         provider_run_id: &str,
     ) {
-        let Some(binding) = self
+        // The backing queue is keyed by the worker prompt id, while the binding
+        // registry is keyed by the home prompt id so multiple worker prompts can
+        // retain distinct home contexts on one provider run. Resolve the binding
+        // by its explicit backing id at promotion time; indexing the map directly
+        // would silently leave the queued context attached to the old run.
+        let Some(binding_key) = self
             .app
             .leased_workflow_turns
-            .get(backing_prompt_id)
-            .cloned()
+            .iter()
+            .find(|(_, binding)| binding.backing_prompt_id == backing_prompt_id)
+            .map(|(key, _)| key.clone())
         else {
+            return;
+        };
+        let Some(binding) = self.app.leased_workflow_turns.get(&binding_key).cloned() else {
             return;
         };
         if let Some(agent) = self.app.leased_agents.get_mut(&binding.leased_agent_id) {
@@ -375,7 +384,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             agent.active_home_prompt_id = Some(binding.home_prompt_id.clone());
             agent.active_home_prompt_started_at_ms = Some(crate::session::unix_epoch_ms());
         }
-        if let Some(binding) = self.app.leased_workflow_turns.get_mut(backing_prompt_id) {
+        if let Some(binding) = self.app.leased_workflow_turns.get_mut(&binding_key) {
             binding.provider_run_id = provider_run_id.to_string();
         }
     }
@@ -637,6 +646,28 @@ impl<'a> RemoteLeaseRuntime<'a> {
         leased_agent_id: &str,
     ) -> Option<LeasedAgent> {
         self.app.leased_agents.get(leased_agent_id).cloned()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn leased_workflow_turn_binding_for_test(
+        &self,
+        home_prompt_id: &str,
+    ) -> Option<(String, String, bool)> {
+        self.app
+            .leased_workflow_turns
+            .get(home_prompt_id)
+            .map(|binding| {
+                (
+                    binding.backing_prompt_id.clone(),
+                    binding.provider_run_id.clone(),
+                    binding.context.event_reply_enabled,
+                )
+            })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_leased_workflow_turn_binding_for_test(&self, home_prompt_id: &str) -> bool {
+        self.app.leased_workflow_turns.contains_key(home_prompt_id)
     }
 
     #[cfg(test)]

@@ -532,9 +532,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     agent.applied_home_steer_ids.clear();
                 }
             }
-            self.app
-                .leased_workflow_turns
-                .retain(|_, binding| binding.provider_run_id != provider_run_id);
+            // A single provider run can own an active home turn and queued
+            // leased turns. Only the binding whose home prompt completed is
+            // retired; removing every binding with this provider id loses the
+            // queued contexts before queue promotion can reactivate them.
+            self.app.leased_workflow_turns.retain(|_, binding| {
+                binding.provider_run_id != provider_run_id
+                    || home_prompt_id
+                        .as_deref()
+                        .is_some_and(|completed| binding.home_prompt_id != completed)
+            });
         }
         if replay_settled_completion
             && completions.is_empty()
