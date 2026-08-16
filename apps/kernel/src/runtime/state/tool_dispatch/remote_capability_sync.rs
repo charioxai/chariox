@@ -360,10 +360,7 @@ impl KernelRuntimeState {
             .iter()
             .map(|entry| (entry.name.as_str(), entry))
             .collect::<std::collections::BTreeMap<_, _>>();
-        let mut lines = vec![
-            "Available Chariox skills for this remote agent:".to_string(),
-            "These granted skills were synchronized from the home kernel and materialized on this worker before this prompt. Follow them when they match the task; assets, scripts, and references are available under each materialized_root.".to_string(),
-        ];
+        let mut summaries = Vec::new();
         let mut bodies = Vec::new();
         for grant in skill_grants {
             let Some(skill) = registry.get(&grant)? else {
@@ -385,7 +382,7 @@ impl KernelRuntimeState {
                 .short_description
                 .as_ref()
                 .unwrap_or(&skill.description);
-            lines.push(format!(
+            summaries.push(format!(
                 "- `{}`: {}; materialized_root: {}; version: {}",
                 skill.name, summary, materialized.materialized_root, materialized.version_hash
             ));
@@ -401,15 +398,27 @@ impl KernelRuntimeState {
             })?;
             bodies.push((skill.name, materialized.materialized_root.clone(), body));
         }
-        lines.push(String::new());
-        lines.push("Full instructions for synchronized Chariox skills:".to_string());
-        for (name, materialized_root, body) in bodies {
-            lines.push(format!(
-                "<chariox_skill name=\"{name}\" materialized_root=\"{materialized_root}\">"
-            ));
-            lines.push(body.trim().to_string());
-            lines.push("</chariox_skill>".to_string());
-        }
-        Ok(format!("{}\n\n{}", lines.join("\n"), prompt))
+        let full_instructions = bodies
+            .iter()
+            .map(|(name, materialized_root, body)| {
+                format!(
+                    "<chariox_skill name=\"{name}\" materialized_root=\"{materialized_root}\">\n{}\n</chariox_skill>",
+                    body.trim()
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let rendered = crate::prompt_assembly::render_configured_prompt(
+            "runtime/skill-context",
+            crate::prompt_assembly::bundled_skill_context_template(),
+            &[
+                ("AGENT_SCOPE", "this remote agent"),
+                ("SKILL_SUMMARIES", &summaries.join("\n")),
+                ("FULL_INSTRUCTIONS", &full_instructions),
+            ],
+        );
+        let context =
+            crate::prompt_assembly::prompt_component("skill-context-instructions", &rendered);
+        Ok(format!("{context}\n\n{prompt}"))
     }
 }

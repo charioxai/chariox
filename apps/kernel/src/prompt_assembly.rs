@@ -40,6 +40,7 @@ const RUNTIME_WORKSPACE_LIVE_SYNC_TRACKED: &str =
 const RUNTIME_NATIVE_PERMISSIONS: &str = include_str!("provider/native_permission_instructions.md");
 const RUNTIME_AGENT_MESSAGE_CONTEXT: &str =
     include_str!("provider/agent_message_context_instructions.md");
+const RUNTIME_SKILL_CONTEXT: &str = include_str!("provider/skill_context_instructions.md");
 const RUNTIME_SLICE: &str = include_str!("provider/slice_runtime_instructions.md");
 const RUNTIME_METAAGENT_DELEGATION: &str =
     include_str!("provider/metaagent_delegation_instructions.md");
@@ -905,6 +906,10 @@ pub(crate) fn bundled_agent_message_context_template() -> &'static str {
     RUNTIME_AGENT_MESSAGE_CONTEXT
 }
 
+pub(crate) fn bundled_skill_context_template() -> &'static str {
+    RUNTIME_SKILL_CONTEXT
+}
+
 fn current_kernel_is_slice() -> bool {
     std::env::var("CHARIOX_MACHINE_ID")
         .ok()
@@ -927,6 +932,7 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
             "runtime/agent-message-context",
             RUNTIME_AGENT_MESSAGE_CONTEXT,
         ),
+        BundledPromptTemplate::new("runtime/skill-context", RUNTIME_SKILL_CONTEXT),
         BundledPromptTemplate::new("runtime/slice", RUNTIME_SLICE),
         BundledPromptTemplate::new("runtime/metaagent-delegation", RUNTIME_METAAGENT_DELEGATION),
         BundledPromptTemplate::new("runtime/meta-mode-entered", RUNTIME_META_MODE_ENTERED),
@@ -1051,6 +1057,7 @@ fn prompt_component_tag(template_id: &str) -> String {
         "runtime/mcp-skill-continuation" => "mcp-skill-continuation-context",
         "runtime/workflow-direct-json-fallback" => "workflow-direct-json-fallback",
         "runtime/metaagent-event" => "metaagent-event",
+        "runtime/skill-context" => "skill-context-instructions",
         "workflow/turn" => "workflow-runtime-instructions",
         "workflow/run-completion" | "workflow/run-intermediate-output" => {
             "system-node-level-prompt"
@@ -1105,6 +1112,7 @@ const CHARIOX_PROMPT_COMPONENT_TAGS: &[&str] = &[
     "mcp-skill-continuation-context",
     "workflow-direct-json-fallback",
     "metaagent-event",
+    "skill-context-instructions",
     "workspace-commit-message-instructions",
     "semantic-recall-search-instructions",
     "endpoint-prompt",
@@ -1725,6 +1733,35 @@ mod tests {
             .expect("prompt should reset");
         assert_eq!(reset.current_sha256, reset.default_sha256);
         assert!(registry.root.starts_with(root));
+    }
+
+    #[test]
+    fn every_provider_markdown_prompt_is_registered_in_the_catalog() {
+        let provider_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/provider");
+        let files = fs::read_dir(&provider_dir)
+            .expect("provider prompt directory should exist")
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .is_some_and(|extension| extension == "md")
+            })
+            .collect::<Vec<_>>();
+        let templates = bundled_templates();
+        assert_eq!(
+            files.len(),
+            templates.len(),
+            "every provider Markdown prompt must have one catalog entry"
+        );
+        for file in files {
+            let body = fs::read_to_string(file.path()).expect("prompt Markdown should be readable");
+            assert!(
+                templates.iter().any(|template| template.body == body),
+                "provider prompt {:?} is not registered in bundled_templates",
+                file.file_name()
+            );
+        }
     }
 
     #[test]

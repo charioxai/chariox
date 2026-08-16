@@ -4,7 +4,9 @@ Chariox-owned natural-language instructions are catalogued by stable IDs in
 `apps/kernel/src/prompt_assembly.rs` and stored as individual Markdown files
 under `apps/kernel/src/provider/`. The kernel's `PromptAssemblyService` is the
 only renderer for provider-turn hidden context, workflow system/node guidance,
-meta-agent event/recovery guidance, and utility prompts. User-authored workflow
+meta-agent event/recovery guidance, granted-skill context, and utility prompts.
+Skill discovery remains owned by the skill registry, but its agent-facing
+prose is rendered through the `runtime/skill-context` catalog entry. User-authored workflow
 and node instructions remain data owned by the workflow; provider-native prompt
 text and UI/error copy remain outside this catalog.
 
