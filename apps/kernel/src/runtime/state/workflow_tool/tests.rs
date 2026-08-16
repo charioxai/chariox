@@ -160,7 +160,7 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         ))
         .expect("session should be created");
     let ordinary = app
-        .start_provider_launch(
+        .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
                 "dev-stub",
@@ -170,18 +170,79 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
             )
             .with_agent_id(agent.id()),
         )
-        .expect("ordinary provider should start");
+        .expect("ordinary provider should launch");
+    let ordinary_auth_token = ordinary
+        .runtime_mcp_auth_token()
+        .expect("ordinary provider should expose runtime MCP auth")
+        .to_string();
+    let ordinary_attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "ordinary-client",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("ordinary attachment should create");
+    let ordinary_prompt = crate::session::PromptQueueItem::new(
+        "ordinary-turn-before-workflow",
+        ordinary_attachment.id(),
+        agent.id(),
+        "complete this ordinary turn before workflow admission",
+        crate::session::PromptStatus::Queued,
+    );
+    let ordinary_submission = app
+        .prompt_owner_submit_prepared_prompt(session.id(), ordinary_prompt, false)
+        .expect("ordinary prompt should submit");
+    assert!(matches!(
+        ordinary_submission,
+        crate::session::PromptSubmissionOutcome::Started { .. }
+    ));
 
-    let workflow = app
-        .sessions_mut()
+    let runtime = runtime_state_from_app(app);
+    let ordinary_specs = runtime.runtime_tool_specs_for_auth_token(&ordinary_auth_token);
+    assert!(!ordinary_specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+    }));
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(ordinary.id()))
+        .expect("ordinary turn should settle");
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(ordinary.id())
+            .expect("ordinary provider should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Running
+    );
+    assert!(!runtime
+        .owned
+        .provider_run_has_active_prompt(
+            session.id(),
+            &runtime
+                .owned
+                .provider_store
+                .get_run(ordinary.id())
+                .expect("ordinary provider should resolve")
+        )
+        .expect("ordinary prompt state should resolve"));
+
+    let workflow = runtime
+        .owned
+        .session_store
+        .write()
         .create_workflow(session.id(), Some("idle-provider-admission".to_string()))
         .expect("workflow should be created");
-    let node = app
-        .sessions_mut()
+    let node = runtime
+        .owned
+        .session_store
+        .write()
         .add_workflow_node(session.id(), workflow.id(), agent.id())
         .expect("workflow node should be created");
-    let endpoint = app
-        .sessions_mut()
+    let endpoint = runtime
+        .owned
+        .session_store
+        .write()
         .create_workflow_endpoint(
             session.id(),
             workflow.id(),
@@ -189,8 +250,10 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
             Some("entry".to_string()),
         )
         .expect("workflow endpoint should be created");
-    let workflow_run = app
-        .sessions_mut()
+    let workflow_run = runtime
+        .owned
+        .session_store
+        .write()
         .invoke_workflow_endpoint(
             session.id(),
             workflow.id(),
@@ -199,7 +262,6 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         )
         .expect("workflow run should be created");
 
-    let runtime = runtime_state_from_app(app);
     let dispatches = runtime
         .owned
         .workflow_schedule_entry_node(session.id(), &workflow_run)
@@ -214,13 +276,13 @@ fn workflow_admission_replaces_idle_ordinary_provider_before_dispatch() {
         .get_run(workflow_provider_id)
         .expect("workflow provider should resolve");
 
-    assert_ne!(workflow_provider.id(), ordinary.run.id());
+    assert_ne!(workflow_provider.id(), ordinary.id());
     assert!(workflow_provider.workflow_tools_enabled());
     assert!(matches!(
         runtime
             .owned
             .provider_store
-            .get_run(ordinary.run.id())
+            .get_run(ordinary.id())
             .expect("ordinary provider should remain addressable")
             .state(),
         crate::provider::ProviderRunState::Parked | crate::provider::ProviderRunState::Ended

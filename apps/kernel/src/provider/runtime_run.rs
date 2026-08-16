@@ -526,8 +526,11 @@ pub(crate) fn worker_provider_run_id_from_projected_leased_id(
 fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
     match state {
         ProviderRunState::Running => 3,
-        ProviderRunState::Parked => 2,
-        ProviderRunState::Starting => 1,
+        // A newly selected run must win over a parked fallback even before its
+        // process is fully initialized. Otherwise admission can rediscover the
+        // parked predecessor and dispatch the prompt to the wrong provider.
+        ProviderRunState::Starting => 2,
+        ProviderRunState::Parked => 1,
         ProviderRunState::Ended => 0,
     }
 }
