@@ -548,6 +548,7 @@ async fn prompt_submit_does_not_wait_behind_slow_history_load() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "submit while history is slow".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-during-history", None, None, &prompt_request);
@@ -622,6 +623,7 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
         target_agent_id: Some(agent_id.clone()),
         prompt: "prompt to cancel while catalog is slow".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-catalog-prompt", None, None, &prompt_request);

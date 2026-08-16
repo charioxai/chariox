@@ -58,6 +58,7 @@ RUN mkdir -p /opt/chariox-source/apps /opt/chariox-slice/bin /opt/chariox-slice/
 
 COPY --chown=slice:slice apps/kernel /opt/chariox-source/apps/kernel
 COPY --chown=slice:slice apps/relay /opt/chariox-source/apps/relay
+COPY --chown=slice:slice packages/event-protocol /opt/chariox-source/packages/event-protocol
 COPY --chown=slice:slice examples/workflow-code /opt/chariox-source/examples/workflow-code
 
 USER slice

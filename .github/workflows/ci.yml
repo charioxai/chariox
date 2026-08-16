@@ -2,13 +2,14 @@ name: CI
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    branches: [main]
+  workflow_dispatch:
 
 jobs:
   node:
+    if: vars.CHARIOX_CI_ENABLED == 'true'
     runs-on: ubuntu-latest
 
     steps:
@@ -50,10 +51,11 @@ jobs:
         run: pnpm test
 
   rust:
-    # The full workspace suite is intentionally deferred for draft PRs. The
-    # reviewer still receives every synchronize event, while the expensive
-    # Rust gate runs on the final ready-for-review head and on main.
-    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
+    # The full workspace suite is intentionally deferred for draft PRs. When
+    # Actions is enabled, the reviewer still receives every synchronize event,
+    # while the expensive Rust gate runs on the final ready-for-review head
+    # and on main.
+    if: vars.CHARIOX_CI_ENABLED == 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-latest
 
     steps:

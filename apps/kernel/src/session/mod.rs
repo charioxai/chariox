@@ -33,6 +33,7 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use prompt_queue::PromptSource;
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };

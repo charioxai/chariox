@@ -55,6 +55,8 @@ test("executeShellCommand creates a session and binds assignment", async () => {
     agentId: "agent-1",
     workspace: "/repo",
     worktree: "/repo/qa",
+    workspaceId: "/repo",
+    worktreeId: "/repo/qa",
   })
 })
 
@@ -110,6 +112,8 @@ test("executeShellCommand does not adopt stale focused agent ids from session pa
     agentId: undefined,
     workspace: "/repo",
     worktree: "/repo/qa",
+    workspaceId: "/repo",
+    worktreeId: "/repo/qa",
   })
 })
 

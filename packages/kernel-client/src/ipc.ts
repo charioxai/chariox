@@ -196,9 +196,11 @@ function isHostedPublicationGateway() {
   return hostedPublicationEnvironmentNames.some((name) => Boolean(process.env[name]?.trim()))
 }
 
-type LocalIpcClientOptions = {
+export type LocalIpcClientOptions = {
   localAuthToken?: string | undefined
   relayAuthToken?: string | undefined
+  /** Resolve a fresh relay token before each new relay websocket connection. */
+  relayAuthTokenProvider?: (() => Promise<string>) | undefined
   targetDaemonId?: string | undefined
   targetDaemonAlias?: string | undefined
   kernelEventStaleMs?: number | undefined
@@ -214,7 +216,10 @@ export class LocalIpcClient {
   readonly socketPath: string
   private readonly localAuthEndpoint: string | null
   private readonly localAuthToken: string | null
-  private readonly relayAuthToken: string | null
+  private relayAuthToken: string | null
+  private readonly relayAuthTokenProvider: (() => Promise<string>) | null
+  private relayAuthTokenRefreshPromise: Promise<string> | null = null
+  private relayAuthTokenUsed = false
   private readonly relayTarget: RelayTarget | null
   private controlWebsocket: WebSocket | null = null
   private eventWebsocket: WebSocket | null = null
@@ -263,6 +268,7 @@ export class LocalIpcClient {
       10,
     )
     this.relayAuthToken = options.relayAuthToken?.trim() || null
+    this.relayAuthTokenProvider = options.relayAuthTokenProvider ?? null
     const explicitLocalAuthToken = options.localAuthToken?.trim()
     if (options.localAuthToken !== undefined && !explicitLocalAuthToken) {
       throw new Error("kernel local auth token must not be empty")
@@ -273,7 +279,7 @@ export class LocalIpcClient {
     )) {
       throw new Error("explicit and environment kernel local auth credentials cannot both be configured")
     }
-    if (this.relayAuthToken && (
+    if ((this.relayAuthToken || this.relayAuthTokenProvider) && (
       explicitLocalAuthToken
       || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN !== undefined
       || process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE !== undefined
@@ -283,13 +289,13 @@ export class LocalIpcClient {
     if (explicitLocalAuthToken && isHostedPublicationGateway()) {
       throw new Error("hosted publication gateways require a one-shot kernel local auth token file")
     }
-    this.localAuthToken = this.relayAuthToken
+    this.localAuthToken = this.relayAuthToken || this.relayAuthTokenProvider
       ? null
       : explicitLocalAuthToken ?? consumeKernelLocalAuthTokenFromEnv(endpoint) ?? null
     this.localAuthEndpoint = this.localAuthToken
       ? requireCanonicalLoopbackKernelEndpoint(endpoint)
       : null
-    this.relayTarget = this.relayAuthToken
+    this.relayTarget = this.relayAuthToken || this.relayAuthTokenProvider
       ? {
         daemon_id: options.targetDaemonId?.trim() || null,
         daemon_alias: options.targetDaemonAlias?.trim() || null,
@@ -302,7 +308,32 @@ export class LocalIpcClient {
   }
 
   private isRelayMode() {
-    return this.relayAuthToken != null
+    return this.relayAuthToken != null || this.relayAuthTokenProvider != null
+  }
+
+  private async resolveRelayAuthToken(): Promise<string> {
+    if (!this.relayAuthTokenProvider) {
+      if (!this.relayAuthToken) throw new Error("relay authentication token is unavailable")
+      return this.relayAuthToken
+    }
+    if (!this.relayAuthTokenUsed && this.relayAuthToken) {
+      this.relayAuthTokenUsed = true
+      return this.relayAuthToken
+    }
+    this.relayAuthTokenUsed = true
+    if (!this.relayAuthTokenRefreshPromise) {
+      this.relayAuthTokenRefreshPromise = this.relayAuthTokenProvider()
+        .then((token) => {
+          const normalized = token.trim()
+          if (!normalized) throw new Error("relay authentication token provider returned an empty token")
+          this.relayAuthToken = normalized
+          return normalized
+        })
+        .finally(() => {
+          this.relayAuthTokenRefreshPromise = null
+        })
+    }
+    return this.relayAuthTokenRefreshPromise
   }
 
   send<TResponse>(request: unknown): Promise<TResponse> {
@@ -625,6 +656,16 @@ export class LocalIpcClient {
       return connectPromise
     }
 
+    const relayAuthToken = this.isRelayMode() ? await this.resolveRelayAuthToken() : null
+    const connectedAfterTokenRefresh = this.getWebSocket(lane)
+    if (connectedAfterTokenRefresh?.readyState === WebSocket.OPEN) {
+      return connectedAfterTokenRefresh
+    }
+    const connectPromiseAfterTokenRefresh = this.getWebSocketConnectPromise(lane)
+    if (connectPromiseAfterTokenRefresh) {
+      return connectPromiseAfterTokenRefresh
+    }
+
     const nextConnectPromise = new Promise<WebSocket>((resolve, reject) => {
       const socket = this.localAuthToken && this.localAuthEndpoint && !this.isRelayMode()
         ? new WebSocket(this.localAuthEndpoint, {
@@ -762,7 +803,7 @@ export class LocalIpcClient {
 
         socket.on("message", handleRelayHandshakeMessage)
         try {
-          socket.send(JSON.stringify(buildRelayConnectFrame(this.relayAuthToken, this.relayTarget)))
+          socket.send(JSON.stringify(buildRelayConnectFrame(relayAuthToken!, this.relayTarget)))
         } catch (error) {
           socket.off("message", handleRelayHandshakeMessage)
           fail("write relay connect frame", error, "write_failed", true)

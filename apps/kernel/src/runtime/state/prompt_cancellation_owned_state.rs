@@ -148,9 +148,6 @@ impl KernelRuntimeOwnedState {
         } else {
             None
         };
-        if let Some(started_next) = started_next.as_ref() {
-            self.workflow_mark_prompt_started(session_id, started_next)?;
-        }
         let (active_prompt, queued_prompts) = self
             .prompt_state_owner
             .state_parts(&self.session_store.get_session(session_id)?, agent_id);

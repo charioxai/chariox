@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process'
-import { mkdir, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
@@ -10,6 +11,7 @@ const cliRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const repoRoot = path.resolve(cliRoot, '..', '..')
 
 const { LocalIpcClient } = await import('../../../packages/kernel-client/dist/ipc.js')
+const { AgentTerminal } = await import('../../../packages/kernel-client/dist/agent-terminal.js')
 const {
   attachToSessionRequest,
   createSessionRequest,
@@ -18,6 +20,7 @@ const {
   endSessionRequest,
   getSliceDisplayEndpointRequest,
   getSliceRequest,
+  getSessionStateRequest,
   importSliceProviderAuthRequest,
   listSessionsRequest,
   listSlicesRequest,
@@ -356,7 +359,9 @@ async function main() {
     effort: 'low',
   }
 
-  const root = path.join(repoRoot, 'target', 'live-slice-lifecycle-drill', runLabel)
+  // Keep the fixture outside any repository so workspace canonicalization does
+  // not rewrite the temporary workspace to the host checkout root.
+  const root = await mkdtemp(path.join(tmpdir(), 'chariox-live-slice-lifecycle-'))
   const workspace = path.join(root, 'workspace')
   const otherWorktree = path.join(root, 'workspace-other')
   const home = path.join(root, 'home')
@@ -483,7 +488,26 @@ async function main() {
     log('session-scope-rejected', { slice: incompatibleSlice.id, expectedWorktree: workspace, actualWorktree: otherWorktree })
 
     const session = variant(await client.send(createSessionRequest(workspace, workspace, 'slice-drill-session', agentDefaults, created.id)), 'SessionCreated').session
-    await client.send(attachToSessionRequest(session.id, `slice-lifecycle-drill-${process.pid}`))
+    const sessionAttachment = variant(await client.send(attachToSessionRequest(session.id, `slice-lifecycle-drill-${process.pid}`)), 'SessionAttached').attachment
+    const sliceAgentTerminal = new AgentTerminal(client, `slice-agent-terminal-${process.pid}`)
+    const sliceAgentContext = { workspace, worktree: workspace, session_id: session.id }
+    const sliceStatus = await sliceAgentTerminal.status(sliceAgentContext)
+    assert(sliceStatus.connected && sliceStatus.session, 'agent terminal should inspect a slice-backed session through the home kernel')
+    const sliceRead = await sliceAgentTerminal.executeOperation('terminal.get_session_state', undefined, sliceAgentContext)
+    assert(sliceRead.ok && /SessionState|session/i.test(sliceRead.output), 'agent terminal structured read should work for a slice-backed session')
+    const sliceWorkflowAlias = `slice-agent-terminal-${process.pid}`
+    const sliceWrite = await sliceAgentTerminal.executeOperation(
+      'terminal.create_workflow',
+      { alias: sliceWorkflowAlias },
+      sliceAgentContext,
+    )
+    assert(sliceWrite.ok && /WorkflowCreated|workflow/i.test(sliceWrite.output), 'agent terminal structured mutation should work for a slice-backed session', sliceWrite)
+    const sliceMutationState = await client.send(getSessionStateRequest(session.id))
+    const sliceMutationSession = sliceMutationState.SessionState?.session ?? sliceMutationState.SessionStateLoaded?.session
+    assert(sliceMutationSession?.workflows?.some((workflow) => workflow.alias === sliceWorkflowAlias || workflow.name === sliceWorkflowAlias), 'home kernel should observe the slice agent-terminal mutation', sliceMutationState)
+    await sliceAgentTerminal.close()
+    assert(sessionAttachment.id, 'slice session should retain its ordinary attachment')
+    log('agent-terminal-slice-read-write-ok', { sessionId: session.id, slice: created.id, sliceWorkflowAlias })
     let agentScopeRejected = false
     try {
       await client.send(spawnAgentRequest(

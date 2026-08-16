@@ -162,6 +162,7 @@ async fn metaagent_turn_overview_and_blob_are_scoped_to_owned_regular_agents_inn
         target_agent_id: Some(worker.id().to_string()),
         prompt: "summarize the trace".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(

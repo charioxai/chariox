@@ -10,6 +10,7 @@ export type SessionHistoryEntry = {
   agent_id?: string | null
   provider_run_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_source?: "human" | "agent_terminal" | "provider_external" | string | null
   kind: "user_prompt" | "provider_output" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status" | "notice"
   merge_key?: string
   source?: "external_provider_observed" | null
@@ -54,6 +55,7 @@ export type SessionHistoryOutlineTurn = {
   turn_id: string
   prompt_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_source?: "human" | "agent_terminal" | "provider_external" | string | null
   external_provider?: string | null
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null

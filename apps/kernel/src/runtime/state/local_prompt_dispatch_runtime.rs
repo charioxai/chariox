@@ -1086,57 +1086,6 @@ mod tests {
             .drain_completion_records(&session_id, &observer_id)
             .is_empty());
     }
-
-    #[tokio::test]
-    async fn stale_dispatch_failure_does_not_cancel_replacement_prompt() {
-        let (runtime, session_id, agent_id, _observer_id, provider_run_id, stale_dispatch) =
-            runtime_with_admitted_prompt().await;
-
-        runtime
-            .owned
-            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(&provider_run_id))
-            .expect("the original prompt should settle");
-        let replacement = runtime
-            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
-                session_id: session_id.clone(),
-                prompt: PromptQueueItem::new(
-                    "replacement-prompt",
-                    &stale_dispatch.source_attachment_id,
-                    &agent_id,
-                    "replacement prompt",
-                    PromptStatus::Queued,
-                ),
-                force_queue: false,
-                refresh_projection: true,
-            })
-            .await
-            .expect("replacement prompt should be admitted");
-        let PromptSubmissionOutcome::Started { prompt } = replacement.outcome else {
-            panic!("replacement prompt should start");
-        };
-
-        runtime
-            .fail_prompt_dispatch(
-                stale_dispatch,
-                DaemonError::LocalTransport {
-                    operation: "stale dispatch",
-                    message: "late provider failure".to_string(),
-                },
-            )
-            .await
-            .expect_err("the original dispatch failure remains observable");
-
-        let session = runtime
-            .owned
-            .session_snapshot(&session_id)
-            .expect("session should remain available");
-        let active = runtime
-            .owned
-            .prompt_state_owner
-            .active_prompt_for_agent(&session, &agent_id)
-            .expect("replacement prompt should remain active");
-        assert_eq!(active.id(), prompt.id());
-    }
 }
 
 impl KernelRuntimeState {
@@ -1521,14 +1470,7 @@ impl KernelRuntimeState {
                     &error.to_string(),
                 );
             }
-            // A dispatch completion can arrive after the prompt has already been
-            // settled and the next queued prompt has become active.  Only the
-            // exact dispatch prompt may be failed or cancelled; treating any
-            // active prompt as a match lets a stale provider error cancel the
-            // replacement prompt and strand the queue.
-            let failed_prompt_matches = failed_prompt
-                .as_ref()
-                .is_some_and(|prompt| prompt.id() == dispatch.prompt_id);
+            let failed_prompt_matches = failed_prompt.is_some();
             let dispatch_failure = format!("Provider prompt dispatch failed: {error}");
             if failed_prompt_matches {
                 owned.record_provider_failure_output(

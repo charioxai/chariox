@@ -9,7 +9,7 @@ import type {
 } from "./cli-types.js"
 
 type RuntimeAgent = RuntimeSession["agents"][number]
-type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent"
+type SkipReason = "no_visible_agents" | "missing_focused_agent" | "unowned_visible_agent" | "remote_backed_agent"
 
 export type AttachProviderRunSettlement =
   | {

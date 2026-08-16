@@ -253,6 +253,31 @@ test("resolveAttachTimeProviderLaunch launches with resolved focused agent defau
   )
 })
 
+test("resolveAttachTimeProviderLaunch does not relaunch a visible collaborator-owned agent", () => {
+  const session = makeSession({
+    collaboration_agent_counts: {
+      owned_agent_count: 0,
+      other_user_agent_count: 1,
+      total_agent_count: 1,
+      collaborator_count: 1,
+    },
+  })
+
+  assert.deepEqual(
+    resolveAttachTimeProviderLaunch(
+      session,
+      { provider: "codex", model: "codex/gpt-5", effort: "low" },
+      false,
+    ),
+    {
+      action: "skip_launch",
+      reason: "unowned_visible_agent",
+      launch: { provider: "codex", model: "codex/gpt-5", effort: "medium" },
+      targetAgent: session.agents[0],
+    },
+  )
+})
+
 test("resolveAttachTimeProviderLaunch skips attach-time launches that cannot be local", () => {
   const fallback = { provider: "codex", model: "codex/gpt-5", effort: "low" }
   const remoteAgent = makeAgent("agent-a", {

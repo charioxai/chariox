@@ -131,6 +131,7 @@ export function submitPromptRequest(
   targetAgentId: string | null,
   prompt: string,
   attachments: PromptAttachmentPart[],
+  promptSource: "human" | "agent_terminal" = "human",
 ) {
   return {
     SubmitPrompt: {
@@ -139,6 +140,7 @@ export function submitPromptRequest(
       target_agent_id: targetAgentId,
       prompt,
       attachments,
+      ...(promptSource === "agent_terminal" ? { prompt_source: promptSource } : {}),
     },
   }
 }
@@ -291,6 +293,10 @@ export function pollRuntimeNoticesRequest(sessionId: string, attachmentId: strin
 
 export function getTerminalCommandCatalogRequest() {
   return { GetTerminalCommandCatalog: null }
+}
+
+export function getTerminalOperationRegistryRequest() {
+  return { GetTerminalOperationRegistry: null }
 }
 
 export function respondToInteractionRequest(

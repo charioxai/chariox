@@ -472,6 +472,7 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: first_prompt.to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let first = router
         .dispatch(
@@ -496,6 +497,7 @@ async fn prompt_to_metaagent_creates_task_without_overwriting_active_task() {
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: "also keep the report short".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let second = router
         .dispatch(
@@ -1065,6 +1067,7 @@ async fn resumed_metaagent_task_defers_private_continuation_behind_active_user_p
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: user_text.to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let submitted = router
         .dispatch(

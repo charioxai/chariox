@@ -617,6 +617,7 @@ fn workflow_node_dispatch_blocks_and_retries_on_workspace_claim_release() {
             target_agent_id: Some(interactive_agent.id().to_string()),
             prompt: "hold the worktree".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("interactive prompt should start")
     {

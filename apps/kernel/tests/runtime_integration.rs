@@ -543,6 +543,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
             target_agent_id: None,
             prompt: "first local prompt\n".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("first prompt should start");
     let second_prompt = client
@@ -552,6 +553,7 @@ fn local_request_surface_supports_prompt_queue_and_config_updates_inner() {
             target_agent_id: None,
             prompt: "second local prompt\n".to_string(),
             attachments: Vec::new(),
+            prompt_source: None,
         }))
         .expect("second prompt should queue");
     let config = client

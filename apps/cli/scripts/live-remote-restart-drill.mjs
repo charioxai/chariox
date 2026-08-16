@@ -376,9 +376,11 @@ async function main() {
     const modules = await Promise.all([
       import('../../../packages/kernel-client/dist/ipc.js'),
       import('../../../packages/kernel-client/dist/ipc-requests.js'),
+      import('../../../packages/kernel-client/dist/agent-terminal.js'),
     ])
     const { LocalIpcClient } = modules[0]
     requests = modules[1]
+    const { AgentTerminal } = modules[2]
     const kernelBinary = await buildBinary(path.join(repoRoot, 'apps/kernel/Cargo.toml'), 'chariox-kernel')
     const relayBinary = await buildBinary(path.join(repoRoot, 'apps/relay/Cargo.toml'), 'chariox-relay')
 
@@ -501,6 +503,29 @@ async function main() {
     requireCondition(finalAgent?.remote_execution?.leased_agent_id, 'both restart did not leave remote agent bound after repair', finalState)
     requireRemotePlacement(finalAgent, finalWorkerKernel, 'both-restarted remote agent')
     log('both-restart-ok', { leasedAgentId: finalAgent.remote_execution.leased_agent_id })
+
+    const agentTerminal = new AgentTerminal(attached.client, `remote-agent-terminal-${process.pid}`)
+    const agentContext = { workspace, worktree: workspace, session_id: sessionId, agent_id: remoteAgentId }
+    const agentStatus = await agentTerminal.status(agentContext)
+    requireCondition(agentStatus.connected && agentStatus.session, 'agent terminal could not inspect the remote-backed session after restart', agentStatus)
+    const agentRead = await agentTerminal.executeOperation('terminal.get_session_state', undefined, agentContext)
+    requireCondition(agentRead.ok && /SessionState|session/i.test(agentRead.output), 'agent terminal structured read failed for the remote-backed session', agentRead)
+    const remoteWorkflowAlias = `remote-agent-terminal-${process.pid}`
+    const agentWrite = await agentTerminal.executeOperation(
+      'terminal.create_workflow',
+      { alias: remoteWorkflowAlias },
+      agentContext,
+    )
+    requireCondition(agentWrite.ok && /WorkflowCreated|workflow/i.test(agentWrite.output), 'agent terminal structured mutation failed for the remote-backed session', agentWrite)
+    const remoteMutationState = unwrapVariant(await attached.client.send(requests.getSessionStateRequest(sessionId)), 'SessionStateLoaded', 'SessionState')
+    const remoteMutationSession = remoteMutationState.session || remoteMutationState
+    requireCondition(
+      Array.isArray(remoteMutationSession.workflows) && remoteMutationSession.workflows.some((workflow) => workflow.alias === remoteWorkflowAlias || workflow.name === remoteWorkflowAlias),
+      'home kernel did not observe the agent-terminal mutation on the remote-backed session',
+      remoteMutationState,
+    )
+    await agentTerminal.close()
+    log('agent-terminal-remote-read-write-ok', { sessionId, remoteAgentId, remoteWorkflowAlias })
 
     console.log(JSON.stringify({
       status: 'ok',

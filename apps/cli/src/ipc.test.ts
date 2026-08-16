@@ -708,6 +708,61 @@ test("LocalIpcClient uses relay request frames when relay mode is configured", a
   assert.equal(receivedFrames[1]?.request, undefined)
 })
 
+test("LocalIpcClient refreshes relay authentication before reconnecting", async (t) => {
+  const server = new WebSocketServer({ port: 0 })
+  await once(server, "listening")
+
+  const address = server.address() as AddressInfo
+  const endpoint = `ws://127.0.0.1:${address.port}`
+  const receivedTokens: string[] = []
+  let connectionNumber = 0
+  server.on("connection", (socket) => {
+    connectionNumber += 1
+    socket.on("message", (payload) => {
+      const frame = JSON.parse(String(payload)) as Record<string, unknown>
+      if (frame.kind === "client_connect") {
+        receivedTokens.push(String(frame.auth_token))
+        const daemon = createECDH("prime256v1")
+        const daemonPublicKey = daemon.generateKeys().toString("base64")
+        ;(socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon = daemon
+        socket.send(JSON.stringify({ kind: "client_connected", target: frame.target, daemon_public_key: daemonPublicKey }))
+        return
+      }
+      if (frame.kind !== "client_request") return
+      const daemon = (socket as unknown as { daemon: ReturnType<typeof createECDH> }).daemon
+      const encryptedRequest = frame.encrypted_request as TestEncryptedRelayPayload
+      socket.send(JSON.stringify({
+        kind: "client_response",
+        request_id: frame.request_id,
+        encrypted_response: encryptRelayPayload(
+          daemon,
+          encryptedRequest.sender_public_key,
+          Buffer.from(JSON.stringify({ ok: true, connection: connectionNumber }), "utf8"),
+        ),
+        error: null,
+      }))
+      if (connectionNumber === 1) setTimeout(() => socket.close(), 10)
+    })
+  })
+
+  let tokenNumber = 0
+  const client = new LocalIpcClient(endpoint, {
+    relayAuthTokenProvider: async () => `token-${++tokenNumber}`,
+    targetDaemonId: "daemon-1",
+    reconnectJitterMs: 0,
+  })
+  t.after(async () => {
+    await client.close()
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  })
+
+  assert.deepEqual(await client.send({ first: true }), { ok: true, connection: 1 })
+  await new Promise((resolve) => setTimeout(resolve, 50))
+  assert.deepEqual(await client.send({ second: true }), { ok: true, connection: 2 })
+  assert.deepEqual(receivedTokens, ["token-1", "token-2"])
+  assert.equal(tokenNumber, 2)
+})
+
 test("LocalIpcClient subscribes to relay kernel events with encrypted payloads", async (t) => {
   const server = new WebSocketServer({ port: 0 })
   await once(server, "listening")

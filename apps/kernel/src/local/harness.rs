@@ -90,6 +90,7 @@ pub fn run_local_harness(app: DaemonApp) -> Result<LocalHarnessReport, DaemonErr
         target_agent_id: None,
         prompt: "harness smoke\n".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     }))?;
 
     let output_preview = wait_for_output(&client, session.id(), prompt_source.id())?;

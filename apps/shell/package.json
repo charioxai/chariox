@@ -14,6 +14,7 @@
     "@chariox/kernel-client": "workspace:*"
   },
   "bin": {
-    "chariox-shell": "dist/shell.js"
+    "chariox-shell": "dist/shell.js",
+    "chariox-agent-terminal": "dist/agent-terminal-main.js"
   }
 }

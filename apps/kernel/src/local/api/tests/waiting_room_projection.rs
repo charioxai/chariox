@@ -455,6 +455,7 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
                     target_agent_id: Some(agent.id().to_string()),
                     prompt: "keep working\n".to_string(),
                     attachments: Vec::new(),
+                    prompt_source: None,
                 }))
                 .expect("prompt should submit");
             let response_prompt_sent_at_ms = match submitted {

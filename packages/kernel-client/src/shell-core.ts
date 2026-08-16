@@ -3,6 +3,10 @@ export type ShellCommandKind = "shared" | "shell-local" | "tui-only" | "empty" |
 export type ShellContext = {
   workspace: string
   worktree: string
+  /** Kernel workspace identity; distinct from the local filesystem path. */
+  workspaceId?: string | undefined
+  /** Kernel worktree identity; distinct from the local filesystem path. */
+  worktreeId?: string | undefined
   sessionId?: string | undefined
   attachmentId?: string | undefined
   agentId?: string | undefined
@@ -10,6 +14,7 @@ export type ShellContext = {
   provider: string
   model: string
   effort: string
+  promptSource?: "human" | "agent_terminal" | undefined
   variables: Record<string, string>
 }
 
@@ -62,6 +67,8 @@ export function createDefaultShellContext(options: Partial<ShellContext> = {}): 
   return {
     workspace,
     worktree: options.worktree ?? workspace,
+    ...(options.workspaceId !== undefined ? { workspaceId: options.workspaceId } : {}),
+    ...(options.worktreeId !== undefined ? { worktreeId: options.worktreeId } : {}),
     sessionId: options.sessionId,
     attachmentId: options.attachmentId,
     agentId: options.agentId,
@@ -69,6 +76,7 @@ export function createDefaultShellContext(options: Partial<ShellContext> = {}): 
     provider: options.provider ?? "opencode",
     model: options.model ?? "default",
     effort: options.effort ?? "medium",
+    promptSource: options.promptSource ?? "human",
     variables: { ...(options.variables ?? {}) },
   }
 }

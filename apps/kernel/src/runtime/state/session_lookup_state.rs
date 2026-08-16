@@ -111,7 +111,10 @@ impl KernelRuntimeState {
         let session = self.owned.session_snapshot(&request.session_id)?;
         Ok(LocalDaemonResponse::SessionState {
             agent_activity: self.agent_activity_for_session(&session),
-            agent_activity_revision: self.owned.session_projection.change_sequence(),
+            agent_activity_revision: self
+                .owned
+                .session_projection
+                .session_change_sequence(session.id()),
             session,
         })
     }

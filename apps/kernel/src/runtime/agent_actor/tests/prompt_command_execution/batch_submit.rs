@@ -59,6 +59,7 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
                 target_agent_id: first_agent_id.clone(),
                 prompt: "batch prompt one".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             crate::local::SubmitPromptsRequestItem {
                 session_id: None,
@@ -66,6 +67,7 @@ async fn prompt_submit_batch_starts_multiple_agents_with_one_kernel_request() {
                 target_agent_id: second_agent_id.clone(),
                 prompt: "batch prompt two".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     };
@@ -162,6 +164,7 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
                 target_agent_id: agent_id.clone(),
                 prompt: "duplicate batch prompt one".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             crate::local::SubmitPromptsRequestItem {
                 session_id: None,
@@ -169,6 +172,7 @@ async fn prompt_submit_batch_rejects_duplicate_targets_without_partial_submit() 
                 target_agent_id: agent_id.clone(),
                 prompt: "duplicate batch prompt two".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     };
@@ -259,6 +263,7 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
                 target_agent_id: agent_id.clone(),
                 prompt: "valid prompt must not partially start".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             crate::local::SubmitPromptsRequestItem {
                 session_id: None,
@@ -266,6 +271,7 @@ async fn prompt_submit_batch_rejects_invalid_targets_without_partial_submit() {
                 target_agent_id: "missing-agent".to_string(),
                 prompt: "invalid prompt".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     };
@@ -379,6 +385,7 @@ async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
                 target_agent_id: first_agent_id.clone(),
                 prompt: "valid prompt must not partially start".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             crate::local::SubmitPromptsRequestItem {
                 session_id: Some(second_session_id.clone()),
@@ -386,6 +393,7 @@ async fn prompt_submit_batch_accepts_explicit_mixed_sessions() {
                 target_agent_id: second_agent_id.clone(),
                 prompt: "mixed session prompt".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     };
@@ -516,6 +524,7 @@ async fn prompt_submit_batch_projects_final_queued_prompt_state() {
                 target_agent_id: first_agent_id.clone(),
                 prompt: "queued batch prompt one".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
             crate::local::SubmitPromptsRequestItem {
                 session_id: None,
@@ -523,6 +532,7 @@ async fn prompt_submit_batch_projects_final_queued_prompt_state() {
                 target_agent_id: second_agent_id.clone(),
                 prompt: "queued batch prompt two".to_string(),
                 attachments: Vec::new(),
+                prompt_source: None,
             },
         ],
     };

@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
 use std::time::{Duration, Instant};
@@ -14,56 +14,12 @@ use super::{
     ProviderRunIdentityIssue, ProviderRunSessionPointerIssue, ProviderRunTerminalDiagnosticIssue,
 };
 
-#[cfg(test)]
-type LeasedProviderRunProbe = Arc<dyn Fn(&str) + Send + Sync + 'static>;
-
 #[derive(Clone, Default)]
 pub(crate) struct ProviderRunProjectionStore {
     runs: Arc<StdMutex<HashMap<String, RuntimeProviderRun>>>,
-    leased_provider_run_ids: Arc<StdMutex<HashSet<String>>>,
-    #[cfg(test)]
-    leased_provider_run_probe: Arc<StdMutex<Option<LeasedProviderRunProbe>>>,
 }
 
 impl ProviderRunProjectionStore {
-    pub(crate) fn mark_leased_provider_run(&self, provider_run_id: &str) {
-        self.leased_provider_run_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(provider_run_id.to_string());
-    }
-
-    #[cfg(test)]
-    pub(crate) fn notify_leased_provider_run_pre_spawn(&self, provider_run_id: &str) {
-        #[cfg(test)]
-        if let Some(probe) = self
-            .leased_provider_run_probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()
-        {
-            probe(provider_run_id);
-        }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn install_leased_provider_run_probe(
-        &self,
-        probe: impl Fn(&str) + Send + Sync + 'static,
-    ) {
-        *self
-            .leased_provider_run_probe
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::new(probe));
-    }
-
-    pub(crate) fn is_leased_provider_run(&self, provider_run_id: &str) -> bool {
-        self.leased_provider_run_ids
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains(provider_run_id)
-    }
-
     pub(crate) fn get(&self, provider_run_id: &str) -> Option<RuntimeProviderRun> {
         self.runs
             .lock()

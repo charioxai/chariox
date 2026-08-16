@@ -170,6 +170,11 @@ export async function bootstrapSession(
         session_id: session.id,
         focused_agent_id: attachedSession.focused_agent_id,
       })
+    } else if (providerSettlement.reason === "unowned_visible_agent") {
+      deps.logger?.warn("skipping attach-time provider launch for an agent owned by another collaborator", {
+        session_id: session.id,
+        agent_id: providerSettlement.targetAgent?.id ?? null,
+      })
     } else if (providerSettlement.reason === "remote_backed_agent") {
       deps.logger?.info?.("skipping attach-time provider launch for remote-backed agent", {
         session_id: session.id,

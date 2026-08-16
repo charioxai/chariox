@@ -393,7 +393,7 @@ impl KernelRuntimeState {
                     if crate::scheduler::runtime::is_workflow_prompt_attachment(
                         started_next.source_attachment_id(),
                     ) {
-                        owned.workflow_mark_prompt_started(session_id, started_next)?;
+                        owned.workflow_start_prompt(session_id, started_next)?;
                     }
                 }
                 if let Some(dispatch) = completion.dispatch {

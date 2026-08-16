@@ -119,6 +119,7 @@ fn kernel_websocket_prompt_submit_acks_while_history_read_is_slow() {
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "prompt should ack while history is still loading".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )
@@ -255,6 +256,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "prompt should ack while provider catalog is still loading".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )
@@ -392,6 +394,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_process_list_is_slow() {
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "prompt should ack while provider process list is delayed".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )
@@ -530,6 +533,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_launch_is_initializing() {
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "prompt should ack while provider launch is initializing".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )
@@ -680,6 +684,7 @@ fn kernel_websocket_prompt_submit_acks_while_shell_capability_is_slow() {
                     target_agent_id: Some(agent_id.clone()),
                     prompt: "prompt should ack while shell command is still running".to_string(),
                     attachments: Vec::new(),
+            prompt_source: None,
                 }),
             }),
         )

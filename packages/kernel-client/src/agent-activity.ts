@@ -42,6 +42,7 @@ export type AgentRuntimeActivityProjection = {
   readonly activeTurnProviderRunId?: string
   readonly activeTurnSourceAttachmentId?: string | null
   readonly activeTurnPromptOrigin?: string
+  readonly activeTurnPromptSource?: string
   readonly activeTurnExternalProvider?: string
   readonly activeTurnExternalProviderSessionId?: string
   readonly activeTurnExternalProviderTurnId?: string
@@ -452,6 +453,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
   const activeTurnProviderRunId = readStringField(activeTurn, "provider_run_id") ?? undefined
   const activeTurnSourceAttachmentId = metadata.sourceAttachmentId
   const activeTurnPromptOrigin = metadata.promptOrigin
+  const activeTurnPromptSource = readNullableStringField(activeTurn, "prompt_source") ?? undefined
   const activeTurnExternalIdentity = projectAgentRuntimeExternalIdentity(metadata)
   const activeTurnStatus = normalizeAgentRuntimePromptProjectionStatus(readStringField(activeTurn, "status")) ?? undefined
   const activeTurnPhase = readStringField(activeTurn, "phase") ?? undefined
@@ -461,6 +463,7 @@ function projectAgentRuntimeActiveTurnIdentity(activeTurn: Record<string, unknow
     ...(activeTurnProviderRunId ? { activeTurnProviderRunId } : {}),
     ...(activeTurnSourceAttachmentId !== undefined ? { activeTurnSourceAttachmentId } : {}),
     ...(activeTurnPromptOrigin ? { activeTurnPromptOrigin } : {}),
+    ...(activeTurnPromptSource ? { activeTurnPromptSource } : {}),
     ...(activeTurnExternalIdentity.externalProvider
       ? { activeTurnExternalProvider: activeTurnExternalIdentity.externalProvider }
       : {}),

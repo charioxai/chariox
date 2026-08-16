@@ -124,6 +124,7 @@ function makePorts() {
 function makeEnv(ports, rootDir) {
   const daemonId = `multi-user-cli-workflow-daemon-${process.pid}-${Date.now()}`
   const daemonAlias = `multi-user-cli-workflow-${process.pid}`
+  const kernelHome = path.join(rootDir, 'kernel-home')
   const daemonRelayToken = signRelayToken(relayClaims({
     subject: daemonId,
     subjectKind: 'kernel',
@@ -153,18 +154,35 @@ function makeEnv(ports, rootDir) {
       CHARIOX_DAEMON_ALIAS: daemonAlias,
       CHARIOX_DAEMON_SOCKET: path.join(rootDir, 'daemon.sock'),
       CHARIOX_SESSION_HISTORY_DIR: path.join(rootDir, 'session-history'),
+      // Keep the disposable kernel away from the operator's persisted config.
+      // In particular, a user's managed workspace-live-sync policy must not
+      // leak into the dev-stub mixed-client drill.
+      CHARIOX_HOME: kernelHome,
+      HOME: kernelHome,
       CHARIOX_TEST_TUI: '1',
     },
   }
 }
 
 async function buildKernelIfNeeded() {
-  const binary = path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel')
-  const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
-  if (exists) return binary
-  const result = await runCommand('cargo', ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'])
+  const configuredTarget = process.env.CARGO_TARGET_DIR
+    ? path.resolve(repoRoot, process.env.CARGO_TARGET_DIR)
+    : path.join(repoRoot, 'target')
+  const candidates = [
+    path.join(configuredTarget, 'debug', 'chariox-kernel'),
+    path.join(repoRoot, 'apps/kernel/target/debug/chariox-kernel'),
+  ]
+  for (const binary of candidates) {
+    const exists = await stat(binary).then((info) => info.isFile()).catch(() => false)
+    if (exists) return binary
+  }
+  const result = await runCommand(
+    'cargo',
+    ['build', '--manifest-path', path.join(repoRoot, 'apps/kernel/Cargo.toml'), '--bin', 'chariox-kernel'],
+    { env: { ...process.env, CARGO_TARGET_DIR: configuredTarget } },
+  )
   if (result.code !== 0) throw new Error(`kernel build failed\n${result.stdout}\n${result.stderr}`)
-  return binary
+  return path.join(configuredTarget, 'debug', 'chariox-kernel')
 }
 
 async function requireBuiltCli() {

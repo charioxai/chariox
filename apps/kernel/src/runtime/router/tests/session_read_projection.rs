@@ -71,6 +71,14 @@ async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
         .await
         .expect("initial list should hydrate per-session projection entries");
 
+    // Model an unsettled provider launch while another terminal reads the
+    // session. GetSessionState must stay on the projection lane and never
+    // wait for the session actor/app lock.
+    router
+        .provider_launch_pending
+        .insert_for_tests(session_id.clone())
+        .await;
+
     let app_guard = app.lock().await;
     let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
         session_id: session_id.clone(),
@@ -98,6 +106,74 @@ async fn get_session_state_uses_list_warmed_projection_without_app_lock() {
         }
         _ => panic!("unexpected state response"),
     }
+}
+
+#[tokio::test]
+async fn get_session_state_activity_revision_is_scoped_to_the_requested_session() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (first, _first_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree-1"))
+        .expect("first session should be created");
+    let (second, _second_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace", "worktree-2"))
+        .expect("second session should be created");
+    let first_id = first.id().to_string();
+    let second_id = second.id().to_string();
+    let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 1);
+
+    let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+    let list_command =
+        KernelCommand::from_local_request("cmd-session-revision-warm", None, None, &list_request);
+    router
+        .dispatch(list_command, list_request)
+        .await
+        .expect("session list should warm both projections");
+
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: first_id.clone(),
+    });
+    let state_command = KernelCommand::from_local_request(
+        "cmd-session-revision-before",
+        None,
+        None,
+        &state_request,
+    );
+    let before = router
+        .dispatch(state_command, state_request)
+        .await
+        .expect("first session state should resolve");
+    let before_revision = match before {
+        LocalDaemonResponse::SessionState {
+            agent_activity_revision,
+            ..
+        } => agent_activity_revision,
+        _ => panic!("unexpected first session response"),
+    };
+
+    let mut changed_second = router
+        .session_projection
+        .get(&second_id)
+        .expect("second session projection should be warmed");
+    changed_second.set_alias(Some("changed-second".to_string()));
+    router.session_projection.update(changed_second);
+
+    let state_request = LocalDaemonRequest::GetSessionState(GetSessionStateRequest {
+        session_id: first_id,
+    });
+    let state_command =
+        KernelCommand::from_local_request("cmd-session-revision-after", None, None, &state_request);
+    let after = router
+        .dispatch(state_command, state_request)
+        .await
+        .expect("first session state should still resolve");
+    let after_revision = match after {
+        LocalDaemonResponse::SessionState {
+            agent_activity_revision,
+            ..
+        } => agent_activity_revision,
+        _ => panic!("unexpected second session response"),
+    };
+    assert_eq!(after_revision, before_revision);
 }
 
 #[tokio::test]

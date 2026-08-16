@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use crate::local::{
     LocalDaemonResponse, TerminalCommandCatalog, TerminalCommandCatalogExecutionTarget,
     TerminalCommandCatalogNode, TerminalCommandCatalogNodeKind, TerminalCommandCatalogSurface,
+    TerminalOperationContract, TerminalOperationRegistry,
 };
 
 const CATALOG_JSON_FRAGMENTS: &[(&str, &str)] = &[
@@ -34,6 +35,37 @@ const CATALOG_JSON_FRAGMENTS: &[(&str, &str)] = &[
     ),
 ];
 
+const PARITY_MANIFEST_JSON: &str = include_str!("terminal_operation_registry/parity_manifest.json");
+const AGENT_TERMINAL_CONTRACTS_JSON: &str =
+    include_str!("terminal_operation_registry/contracts.json");
+
+#[derive(Debug, Deserialize)]
+struct ParityManifest {
+    schema_version: u32,
+    source: String,
+    requests: Vec<ParityManifestEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ParityManifestEntry {
+    variant: String,
+    classification: String,
+    reason: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTerminalContracts {
+    schema_version: u32,
+    source: String,
+    contracts: std::collections::HashMap<String, AgentTerminalContract>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AgentTerminalContract {
+    required_targets: Vec<String>,
+    input_schema: serde_json::Value,
+}
+
 #[derive(Debug, Deserialize)]
 struct RawCommandNode {
     id: String,
@@ -62,6 +94,319 @@ pub(crate) fn terminal_command_catalog_response() -> Result<LocalDaemonResponse,
     Ok(LocalDaemonResponse::TerminalCommandCatalog {
         catalog: terminal_command_catalog()?,
     })
+}
+
+pub(crate) fn terminal_operation_registry_response() -> Result<LocalDaemonResponse, DaemonError> {
+    Ok(LocalDaemonResponse::TerminalOperationRegistry {
+        registry: terminal_operation_registry()?,
+    })
+}
+
+pub(crate) fn terminal_operation_registry() -> Result<TerminalOperationRegistry, DaemonError> {
+    let manifest =
+        serde_json::from_str::<ParityManifest>(PARITY_MANIFEST_JSON).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "terminal_operation_registry.parse",
+                message: error.to_string(),
+            }
+        })?;
+    if manifest.schema_version != 1 || manifest.source != "LocalDaemonRequest" {
+        return Err(DaemonError::LocalTransport {
+            operation: "terminal_operation_registry.schema",
+            message: "unsupported terminal parity manifest".to_string(),
+        });
+    }
+    let mut operations = terminal_command_catalog()?
+        .nodes
+        .iter()
+        .flat_map(flatten_catalog_operations)
+        .collect::<Vec<_>>();
+    let catalog_ids = operations
+        .iter()
+        .map(|operation| operation.id.clone())
+        .collect::<std::collections::HashSet<_>>();
+    operations.extend(
+        manifest
+            .requests
+            .iter()
+            .map(operation_from_manifest_entry)
+            .filter(|operation| !catalog_ids.contains(&operation.id))
+            .collect::<Vec<_>>(),
+    );
+    let revision = operation_registry_revision(&operations)?;
+    Ok(TerminalOperationRegistry {
+        revision,
+        operations,
+    })
+}
+
+fn flatten_catalog_operations(node: &TerminalCommandCatalogNode) -> Vec<TerminalOperationContract> {
+    let mut operations = vec![operation_from_catalog_node(node)];
+    for child in &node.children {
+        operations.extend(flatten_catalog_operations(child));
+    }
+    operations
+}
+
+fn operation_from_catalog_node(node: &TerminalCommandCatalogNode) -> TerminalOperationContract {
+    let action = node.id.rsplit('-').next().unwrap_or(node.id.as_str());
+    let mutation = ![
+        "get",
+        "list",
+        "show",
+        "read",
+        "search",
+        "inspect",
+        "open",
+        "status",
+        "health",
+        "members",
+        "collaborators",
+        "invites",
+        "kernels",
+        "ls",
+        "runs",
+        "logs",
+        "trace",
+        "preview",
+        "validate",
+    ]
+    .iter()
+    .any(|verb| action == *verb);
+    let mut search_aliases = node.search_aliases.clone();
+    if search_aliases.is_empty() {
+        search_aliases.push(node.id.replace('-', " "));
+        let label = node.label.trim_start_matches('/').trim();
+        if !label.is_empty() {
+            search_aliases.push(label.to_string());
+        }
+    }
+    search_aliases.sort();
+    search_aliases.dedup();
+    let intents = if node.intents.is_empty() {
+        vec![if mutation {
+            "mutate".to_string()
+        } else {
+            "inspect".to_string()
+        }]
+    } else {
+        node.intents.clone()
+    };
+    let examples = if node.examples.is_empty() {
+        vec![node.value.trim().to_string()]
+    } else {
+        node.examples.clone()
+    };
+    let presentation_only = node.execution_target != TerminalCommandCatalogExecutionTarget::Kernel;
+    let supported_surfaces = node
+        .surfaces
+        .iter()
+        .map(|surface| {
+            match surface {
+                TerminalCommandCatalogSurface::Session => "session",
+                TerminalCommandCatalogSurface::WaitingRoom => "waiting_room",
+                TerminalCommandCatalogSurface::WorkflowScreen => "workflow_screen",
+            }
+            .to_string()
+        })
+        .chain(
+            agent_terminal_supported_for_catalog_node(node).then_some("agent_terminal".to_string()),
+        )
+        .collect();
+    TerminalOperationContract {
+        id: node.id.clone(),
+        command: Some(node.value.trim_start_matches('/').to_string()),
+        description: node.description.clone(),
+        search_aliases,
+        intents,
+        required_context: vec!["workspace".to_string(), "worktree".to_string()],
+        required_targets: required_targets_for(&node.id),
+        input_schema: serde_json::json!({
+            "type": "string",
+            "description": "Arguments appended to the native Chariox shell command"
+        }),
+        result_kind: "terminal_command".to_string(),
+        mutation,
+        expected_projections: vec![
+            "session_snapshot".to_string(),
+            "terminal_events".to_string(),
+        ],
+        supported_surfaces,
+        examples,
+        parity_variants: Vec::new(),
+        presentation_only,
+    }
+}
+
+fn agent_terminal_supported_for_catalog_node(node: &TerminalCommandCatalogNode) -> bool {
+    if node.execution_target != TerminalCommandCatalogExecutionTarget::Kernel {
+        return false;
+    }
+    !matches!(
+        node.id.as_str(),
+        "agent-focus"
+            | "agent-cycle"
+            | "view"
+            | "view-individual"
+            | "view-split"
+            | "waiting"
+            | "exit"
+            | "quit"
+            | "credential-set"
+            | "credential-register"
+    )
+}
+
+fn required_targets_for(variant: &str) -> Vec<String> {
+    let mut targets = Vec::new();
+    if variant.contains("session")
+        || variant.contains("prompt")
+        || variant.contains("agent")
+        || variant.contains("workflow")
+        || variant.contains("interaction")
+        || variant.contains("provider")
+        || variant.contains("workspace")
+    {
+        targets.push("session_id".to_string());
+    }
+    if variant.contains("agent") || variant.contains("prompt") {
+        targets.push("agent_id".to_string());
+    }
+    if variant.contains("workflow") {
+        targets.push("workflow_ref".to_string());
+    }
+    targets
+}
+
+fn operation_from_manifest_entry(entry: &ParityManifestEntry) -> TerminalOperationContract {
+    let snake = snake_case(&entry.variant);
+    // The parity manifest is an inventory of kernel requests. A request is
+    // only exposed to stateless agent terminals once it has a concrete input
+    // contract and target adapter; generic serde forwarding is not a contract.
+    let explicit_contract = explicit_agent_terminal_contract(&entry.variant);
+    let supported =
+        entry.classification == "agent_terminal_supported" && explicit_contract.is_some();
+    let mutation = !matches!(
+        entry.variant.as_str(),
+        value if value.starts_with("Get")
+            || value.starts_with("List")
+            || value.starts_with("Resolve")
+            || value.starts_with("Search")
+            || value.starts_with("Read")
+            || value.starts_with("Inspect")
+            || value.starts_with("Poll")
+            || value.starts_with("Query")
+            || value.starts_with("Semantic")
+            || value.starts_with("Show")
+            || value.starts_with("Browse")
+            || value.starts_with("Observe")
+    );
+    let required_targets = explicit_contract
+        .as_ref()
+        .map(|contract| contract.required_targets.clone())
+        .unwrap_or_else(|| required_targets_for(&entry.variant.to_lowercase()));
+    let input_schema = explicit_contract
+        .as_ref()
+        .map(|contract| contract.input_schema.clone())
+        .unwrap_or_else(|| serde_json::json!({
+            "type": "object",
+            "description": "Kernel request contract pending an agent-terminal adapter; not executable on the agent-terminal surface.",
+            "additionalProperties": false
+        }));
+    let description = if supported {
+        format!("Execute or inspect {snake} through the Chariox kernel")
+    } else {
+        entry.reason.clone()
+    };
+    TerminalOperationContract {
+        id: format!("terminal.{snake}"),
+        command: None,
+        description,
+        search_aliases: vec![entry.variant.clone(), snake.replace('_', " ")],
+        intents: vec![if mutation {
+            "mutate".to_string()
+        } else {
+            "inspect".to_string()
+        }],
+        required_context: vec!["workspace".to_string(), "worktree".to_string()],
+        required_targets,
+        input_schema,
+        result_kind: "kernel_response".to_string(),
+        mutation,
+        expected_projections: if mutation {
+            vec![
+                "session_snapshot".to_string(),
+                "terminal_events".to_string(),
+            ]
+        } else {
+            vec!["response".to_string()]
+        },
+        supported_surfaces: if supported {
+            vec![
+                "agent_terminal".to_string(),
+                "tui".to_string(),
+                "web".to_string(),
+            ]
+        } else {
+            vec!["tui".to_string()]
+        },
+        examples: if supported {
+            vec![format!("terminal.{snake}")]
+        } else {
+            Vec::new()
+        },
+        parity_variants: vec![entry.variant.clone()],
+        presentation_only: entry.classification == "presentation_only",
+    }
+}
+
+struct ExplicitAgentTerminalContract {
+    required_targets: Vec<String>,
+    input_schema: serde_json::Value,
+}
+
+fn explicit_agent_terminal_contract(variant: &str) -> Option<ExplicitAgentTerminalContract> {
+    static CONTRACTS: std::sync::OnceLock<Option<AgentTerminalContracts>> =
+        std::sync::OnceLock::new();
+    let contracts = CONTRACTS
+        .get_or_init(|| {
+            serde_json::from_str::<AgentTerminalContracts>(AGENT_TERMINAL_CONTRACTS_JSON)
+                .ok()
+                .filter(|contracts| {
+                    contracts.schema_version == 1 && contracts.source == "LocalDaemonRequest"
+                })
+        })
+        .as_ref()?;
+    let contract = contracts.contracts.get(variant)?;
+    Some(ExplicitAgentTerminalContract {
+        required_targets: contract.required_targets.clone(),
+        input_schema: contract.input_schema.clone(),
+    })
+}
+
+fn operation_registry_revision(
+    operations: &[TerminalOperationContract],
+) -> Result<String, DaemonError> {
+    let serialized =
+        serde_json::to_vec(operations).map_err(|error| DaemonError::LocalTransport {
+            operation: "terminal_operation_registry.revision",
+            message: error.to_string(),
+        })?;
+    let hash = Sha256::digest(serialized);
+    Ok(format!("sha256:{hash:x}"))
+}
+
+fn snake_case(value: &str) -> String {
+    value
+        .chars()
+        .enumerate()
+        .fold(String::new(), |mut output, (index, character)| {
+            if character.is_uppercase() && index > 0 {
+                output.push('_');
+            }
+            output.extend(character.to_lowercase());
+            output
+        })
 }
 
 pub(crate) fn terminal_command_catalog() -> Result<TerminalCommandCatalog, DaemonError> {
@@ -144,7 +489,17 @@ fn infer_execution_target(
     }
     if matches!(
         id,
-        "view" | "view-split" | "view-individual" | "exit" | "quit"
+        "view"
+            | "view-split"
+            | "view-individual"
+            | "exit"
+            | "quit"
+            | "model"
+            | "variant"
+            | "mode"
+            | "permissions"
+            | "misc"
+            | "attach"
     ) {
         return TerminalCommandCatalogExecutionTarget::TerminalLocal;
     }
@@ -435,6 +790,180 @@ mod tests {
                 ]
             );
         }
+    }
+
+    #[test]
+    fn terminal_operation_registry_classifies_namespaced_reads_by_action() {
+        let registry = terminal_operation_registry().expect("registry should load");
+        for id in [
+            "session-list",
+            "session-status",
+            "cloud-status",
+            "cloud-members",
+            "cloud-collaborators",
+            "collab-invites",
+            "kernel-health",
+            "kernel-status",
+            "machine-kernels",
+            "machine-ls",
+        ] {
+            let operation = registry
+                .operations
+                .iter()
+                .find(|operation| operation.id == id)
+                .unwrap_or_else(|| panic!("{id} should be registered"));
+            assert!(!operation.mutation, "{id} should be read-only");
+            assert!(
+                operation.intents.iter().any(|intent| intent == "inspect"),
+                "{id} should inspect"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_operation_registry_covers_catalog_and_parity_manifest() {
+        let catalog = terminal_command_catalog().expect("catalog should load");
+        let registry = terminal_operation_registry().expect("operation registry should load");
+        let mut nodes = Vec::new();
+        collect(&catalog.nodes, &mut nodes);
+
+        for node in nodes {
+            let operation = registry
+                .operations
+                .iter()
+                .find(|operation| operation.id == node.id)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "catalog command {} is missing from operation registry",
+                        node.id
+                    )
+                });
+            assert_eq!(
+                operation.command.as_deref(),
+                Some(node.value.trim_start_matches('/'))
+            );
+            assert_eq!(
+                operation.presentation_only,
+                node.execution_target != TerminalCommandCatalogExecutionTarget::Kernel
+            );
+        }
+
+        let manifest = serde_json::from_str::<ParityManifest>(PARITY_MANIFEST_JSON)
+            .expect("parity manifest should remain valid");
+        for entry in manifest.requests {
+            assert!(
+                registry
+                    .operations
+                    .iter()
+                    .any(|operation| operation.parity_variants.contains(&entry.variant)),
+                "parity variant {} is missing from operation registry",
+                entry.variant
+            );
+        }
+        assert!(registry.revision.starts_with("sha256:"));
+
+        for id in [
+            "agent-focus",
+            "agent-cycle",
+            "waiting",
+            "credential-set",
+            "meta",
+            "loop",
+            "goal",
+            "wait-in",
+            "wait-every",
+            "model",
+            "variant",
+            "mode",
+            "permissions",
+            "misc",
+            "attach",
+        ] {
+            let operation = registry
+                .operations
+                .iter()
+                .find(|operation| operation.id == id)
+                .unwrap_or_else(|| panic!("{id} command should be present"));
+            assert!(
+                !operation
+                    .supported_surfaces
+                    .iter()
+                    .any(|surface| surface == "agent_terminal"),
+                "{id} must not be advertised to agent terminals"
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_operation_registry_publishes_real_contracts_for_supported_requests() {
+        let registry = terminal_operation_registry().expect("operation registry should load");
+        let supported = registry
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation.parity_variants.first().is_some_and(|variant| {
+                    operation
+                        .supported_surfaces
+                        .iter()
+                        .any(|surface| surface == "agent_terminal")
+                        && variant != "AppendNativeProviderOutput"
+                        && variant != "AppendNativeProviderOutputBatch"
+                        && variant != "CompletePrompt"
+                })
+            })
+            .collect::<Vec<_>>();
+        let manifest_supported = serde_json::from_str::<ParityManifest>(PARITY_MANIFEST_JSON)
+            .expect("parity manifest should remain valid")
+            .requests
+            .into_iter()
+            .filter(|entry| entry.classification == "agent_terminal_supported")
+            .count();
+        assert_eq!(
+            supported.len(),
+            manifest_supported,
+            "all user-facing request variants need agent-terminal contracts"
+        );
+        assert!(supported
+            .iter()
+            .all(|operation| operation.input_schema.is_object()
+                || operation.input_schema.get("type")
+                    == Some(&serde_json::Value::String("null".to_string()))));
+        let advertised = registry
+            .operations
+            .iter()
+            .filter(|operation| {
+                operation
+                    .supported_surfaces
+                    .iter()
+                    .any(|surface| surface == "agent_terminal")
+            })
+            .collect::<Vec<_>>();
+        assert!(advertised.iter().all(|operation| {
+            !operation.description.trim().is_empty()
+                && !operation.search_aliases.is_empty()
+                && !operation.intents.is_empty()
+                && !operation.expected_projections.is_empty()
+                && !operation.supported_surfaces.is_empty()
+                && !operation.examples.is_empty()
+        }));
+
+        let submit_prompts = registry
+            .operations
+            .iter()
+            .find(|operation| operation.parity_variants == vec!["SubmitPrompts".to_string()])
+            .expect("SubmitPrompts should be discoverable");
+        assert!(submit_prompts
+            .supported_surfaces
+            .iter()
+            .any(|surface| surface == "agent_terminal"));
+        assert_eq!(
+            submit_prompts.input_schema["required"],
+            serde_json::json!(["session_id", "attachment_id", "prompts"])
+        );
+        assert_eq!(
+            submit_prompts.input_schema["properties"]["prompts"]["items"]["required"],
+            serde_json::json!(["target_agent_id", "prompt"])
+        );
     }
 
     #[test]

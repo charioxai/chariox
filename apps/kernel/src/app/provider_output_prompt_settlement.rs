@@ -48,7 +48,10 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         else {
             return Ok(());
         };
-        if active_prompt.delivery_pending() {
+        if active_prompt.status() == crate::session::PromptStatus::Dispatching
+            || active_prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
             return Ok(());
         }
         let active_prompt_status = active_prompt.status();
@@ -137,9 +140,6 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         let Some(prompt) = self.active_prompt_for_settlement(session_id, provider_run_id)? else {
             return Ok(());
         };
-        if prompt.status() != PromptStatus::Cancelling && prompt.delivery_pending() {
-            return Ok(());
-        }
         if prompt.status() != PromptStatus::Cancelling
             && self.workflow_prompt_is_waiting_for_completion_output(session_id, provider_run_id)?
         {
@@ -219,7 +219,10 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
             self.clear_prompt_activity(provider_run_id);
             return Ok(());
         };
-        if prompt.delivery_pending() {
+        if prompt.status() == PromptStatus::Dispatching
+            || prompt.durable_delivery_phase()
+                == Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        {
             return Ok(());
         }
         let agent_id = self.provider_run_agent_id(provider_run_id)?;

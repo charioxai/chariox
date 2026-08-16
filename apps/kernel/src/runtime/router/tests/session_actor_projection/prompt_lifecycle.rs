@@ -32,6 +32,7 @@ async fn get_session_state_projection_tracks_prompt_completion_without_app_lock(
         target_agent_id: Some(agent_id.clone()),
         prompt: "complete projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-complete-state", None, None, &prompt_request);
@@ -152,6 +153,7 @@ async fn session_snapshot_refresh_tracks_agent_runtime_projection_inner() {
         target_agent_id: Some(agent_id.clone()),
         prompt: "shadow refresh".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-shadow-submit", None, None, &prompt_request);
@@ -236,6 +238,7 @@ async fn prompt_complete_uses_agent_runtime_projection_when_session_projection_i
         target_agent_id: Some(spawned_agent_id.clone()),
         prompt: "complete owner projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-complete-owner", None, None, &prompt_request);
@@ -327,6 +330,7 @@ async fn get_session_state_projection_tracks_prompt_cancellation_without_app_loc
         target_agent_id: Some(agent_id.clone()),
         prompt: "cancel projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-cancel-state", None, None, &prompt_request);
@@ -441,6 +445,7 @@ async fn prompt_cancel_uses_agent_runtime_projection_when_session_projection_is_
         target_agent_id: Some(spawned_agent_id.clone()),
         prompt: "cancel owner projection".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     let prompt_command =
         KernelCommand::from_local_request("cmd-prompt-cancel-owner", None, None, &prompt_request);

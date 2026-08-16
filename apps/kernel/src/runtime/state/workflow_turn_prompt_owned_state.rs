@@ -108,8 +108,8 @@ impl KernelRuntimeOwnedState {
                         .and_then(|node| node.instructions())
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
-                        .map(str::to_string)
-                        .unwrap_or_else(crate::scheduler::prompt_injection::workflow_node_default_instructions),
+                        .unwrap_or("No node-specific instructions were configured.")
+                        .to_string(),
                     instruction_ref,
                     handoff_payloads_json: handoff_payloads_json.map(str::to_string),
                     outgoing_edge_contracts: self.workflow_outgoing_edge_contracts_text(

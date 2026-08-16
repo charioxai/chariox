@@ -468,6 +468,7 @@ async fn regular_agent_turn_completion_injects_metaagent_event_and_inbox_entry_i
         target_agent_id: Some(worker.id().to_string()),
         prompt: "finish this test turn".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(
@@ -626,6 +627,7 @@ async fn idle_metaagent_turn_with_active_task_injects_orphaned_task_event_inner(
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: "Start a task, then stop without marking it complete.".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(
@@ -800,6 +802,7 @@ async fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_i
         target_agent_id: Some(worker.id().to_string()),
         prompt: "keep working".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(
@@ -814,6 +817,7 @@ async fn metaagent_turn_with_active_worker_does_not_inject_orphaned_task_event_i
         target_agent_id: Some(metaagent.id().to_string()),
         prompt: "Start a task while the worker is still active.".to_string(),
         attachments: Vec::new(),
+        prompt_source: None,
     });
     router
         .dispatch(

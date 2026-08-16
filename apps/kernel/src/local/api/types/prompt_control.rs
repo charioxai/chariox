@@ -8,6 +8,8 @@ pub struct SubmitPromptRequest {
     pub prompt: String,
     #[serde(default)]
     pub attachments: Vec<PromptAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_source: Option<crate::session::PromptSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +31,8 @@ pub struct SubmitPromptsRequestItem {
     pub prompt: String,
     #[serde(default)]
     pub attachments: Vec<PromptAttachment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prompt_source: Option<crate::session::PromptSource>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -50,6 +54,7 @@ impl SubmitPromptsRequestItem {
             target_agent_id: Some(self.target_agent_id),
             prompt: self.prompt,
             attachments: self.attachments,
+            prompt_source: self.prompt_source,
         }
     }
 

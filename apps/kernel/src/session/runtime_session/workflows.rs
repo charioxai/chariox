@@ -1,165 +1,11 @@
 use super::*;
 
 impl RuntimeSession {
-    /// A workflow run can lose its provider prompt while the kernel remains alive, for
-    /// example if the provider process exits between prompt acknowledgement and the
-    /// completion transition.  Such a run still looks active to session arbitration and
-    /// blocks every later workflow queue head.  Restart reconciliation handles this case
-    /// during boot; this live variant is used by queue admission as a safety net.
-    pub fn reconcile_live_orphaned_workflow_runs(
-        &mut self,
-        now_ms: u64,
-        grace_period_ms: u64,
-    ) -> usize {
-        let durable_workflow_prompt_targets = self
-            .prompt_runtime
-            .prompt_states()
-            .values()
-            .flat_map(|state| {
-                state
-                    .active_prompt()
-                    .into_iter()
-                    .chain(state.queued_prompts())
-            })
-            .filter_map(|prompt| {
-                Some((
-                    prompt.workflow_run_id()?.to_string(),
-                    prompt.workflow_node_run_id()?.to_string(),
-                ))
-            })
-            .collect::<BTreeSet<_>>();
-        let mut orphaned_workflow_run_ids = Vec::new();
-        let settling_workflow_run_ids = self
-            .settling_workflow_run_counts
-            .keys()
-            .cloned()
-            .collect::<BTreeSet<_>>();
-
-        for workflow_run in &mut self.workflow_runs {
-            if workflow_run.status() != WorkflowRunStatus::Running
-                || durable_workflow_prompt_targets
-                    .iter()
-                    .any(|(run_id, _)| run_id == workflow_run.id())
-                || settling_workflow_run_ids.contains(workflow_run.id())
-            {
-                continue;
-            }
-            if workflow_run
-                .node_runs()
-                .iter()
-                .any(|node| node.status() == WorkflowNodeRunStatus::BlockedOnWorkspaceClaim)
-            {
-                continue;
-            }
-            let orphaned_node_run_ids = workflow_run
-                .node_runs()
-                .iter()
-                .filter(|node| {
-                    !matches!(
-                        node.status(),
-                        WorkflowNodeRunStatus::Completed
-                            | WorkflowNodeRunStatus::Failed
-                            | WorkflowNodeRunStatus::Stopped
-                    )
-                })
-                .map(|node| node.id().to_string())
-                .collect::<Vec<_>>();
-            if orphaned_node_run_ids.is_empty()
-                || orphaned_node_run_ids.iter().any(|node_run_id| {
-                    workflow_run
-                        .node_runs()
-                        .iter()
-                        .find(|node| node.id() == node_run_id)
-                        .and_then(|node| node.started_at_ms().or(Some(node.created_at_ms())))
-                        .is_some_and(|started_at_ms| {
-                            now_ms.saturating_sub(started_at_ms) < grace_period_ms
-                        })
-                })
-            {
-                continue;
-            }
-
-            for node_run in workflow_run.node_runs_mut() {
-                if !orphaned_node_run_ids.iter().any(|id| id == node_run.id()) {
-                    continue;
-                }
-                node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                if let Some(envelope) = node_run.turn_envelope_mut() {
-                    envelope.mark_cancelled();
-                }
-            }
-            let failure_source_node_run_id = workflow_run
-                .active_node_run_id()
-                .map(str::to_string)
-                .or_else(|| orphaned_node_run_ids.first().cloned())
-                .unwrap_or_else(|| workflow_run.id().to_string());
-            workflow_run.clear_active_node_run();
-            workflow_run.add_failure_event(WorkflowFailureEvent::new(
-                WorkflowFailureKind::RunStopped,
-                failure_source_node_run_id,
-                Vec::new(),
-                "non-terminal workflow run had no live active or queued provider prompt",
-            ));
-            workflow_run.set_status(WorkflowRunStatus::Stopped);
-            orphaned_workflow_run_ids.push(workflow_run.id().to_string());
-        }
-
-        for workflow_run_id in &orphaned_workflow_run_ids {
-            self.prompt_runtime.remove_queued_prompts_by_workflow_run(
-                workflow_run_id,
-                self.focused_agent_id.as_deref(),
-            );
-        }
-        orphaned_workflow_run_ids.len()
-    }
-
     pub fn create_workflow(&mut self, workflow: WorkflowDefinition) -> WorkflowDefinition {
         let workflow_id = workflow.id().to_string();
         self.workflows.push(workflow.clone());
         self.ensure_default_workflow_prompt_queue(&workflow_id);
         workflow
-    }
-
-    /// Drop queued workflow records that cannot be dispatched anymore because their
-    /// workflow, endpoint, or queue was removed by an older runtime.
-    pub fn reconcile_workflow_queue_ownership(&mut self) -> usize {
-        let valid_workflows = self
-            .workflows
-            .iter()
-            .map(|workflow| workflow.id().to_string())
-            .collect::<BTreeSet<_>>();
-        let valid_endpoints = self
-            .workflows
-            .iter()
-            .flat_map(|workflow| {
-                workflow
-                    .endpoints()
-                    .iter()
-                    .map(move |endpoint| (workflow.id().to_string(), endpoint.id().to_string()))
-            })
-            .collect::<BTreeSet<_>>();
-        let valid_queues = self
-            .workflow_prompt_queues
-            .iter()
-            .flat_map(|queue| {
-                [queue.id(), queue.alias()]
-                    .into_iter()
-                    .map(move |queue_ref| (queue.workflow_id().to_string(), queue_ref.to_string()))
-            })
-            .collect::<BTreeSet<_>>();
-        let before = self.workflow_queued_prompts.len();
-        self.workflow_queued_prompts.retain(|prompt| {
-            valid_workflows.contains(prompt.workflow_id())
-                && valid_endpoints.contains(&(
-                    prompt.workflow_id().to_string(),
-                    prompt.endpoint_id().to_string(),
-                ))
-                && valid_queues.contains(&(
-                    prompt.workflow_id().to_string(),
-                    prompt.queue_id().to_string(),
-                ))
-        });
-        before.saturating_sub(self.workflow_queued_prompts.len())
     }
 
     pub(crate) fn replace_publication_runtime_workflows(
@@ -179,11 +25,6 @@ impl RuntimeSession {
         for workflow_id in workflow_ids {
             self.ensure_default_workflow_prompt_queue(&workflow_id);
         }
-        // Materializing a publication replaces the runtime-owned workflow graph.
-        // Drop queue records that point at the previous graph immediately. Waiting
-        // for restart reconciliation leaves them visible in the session-wide queue
-        // inventory and makes them look like they belong to the replacement workflow.
-        self.reconcile_workflow_queue_ownership();
     }
 
     pub fn remove_workflow(&mut self, workflow_id: &str) -> Option<WorkflowDefinition> {
@@ -191,16 +32,7 @@ impl RuntimeSession {
             .workflows
             .iter()
             .position(|workflow| workflow.id() == workflow_id)?;
-        let removed = self.workflows.remove(index);
-        self.workflow_prompt_queues
-            .retain(|queue| queue.workflow_id() != workflow_id);
-        self.workflow_queued_prompts
-            .retain(|prompt| prompt.workflow_id() != workflow_id);
-        self.workflow_schedules
-            .retain(|schedule| schedule.workflow_id() != workflow_id);
-        self.workflow_consoles
-            .retain(|console| console.workflow_id() != workflow_id);
-        Some(removed)
+        Some(self.workflows.remove(index))
     }
 
     pub fn workflow(&self, workflow_id: &str) -> Option<&WorkflowDefinition> {
@@ -326,44 +158,8 @@ impl RuntimeSession {
         })
     }
 
-    /// Mark the workflow run before removing its active provider prompt. The
-    /// provider settlement path performs asynchronous post-processing after
-    /// that removal (for example git observation); live orphan reconciliation
-    /// must not mistake that short gap for a lost workflow.
-    pub fn mark_workflow_run_settling(&mut self, workflow_run_id: &str) -> bool {
-        if !self
-            .workflow_runs
-            .iter()
-            .any(|workflow_run| workflow_run.id() == workflow_run_id)
-        {
-            return false;
-        }
-        *self
-            .settling_workflow_run_counts
-            .entry(workflow_run_id.to_string())
-            .or_default() += 1;
-        true
-    }
-
-    pub fn clear_workflow_run_settling(&mut self, workflow_run_id: &str) {
-        let Some(count) = self.settling_workflow_run_counts.get_mut(workflow_run_id) else {
-            return;
-        };
-        *count = count.saturating_sub(1);
-        if *count == 0 {
-            self.settling_workflow_run_counts.remove(workflow_run_id);
-        }
-    }
-
-    pub fn is_workflow_run_settling(&self, workflow_run_id: &str) -> bool {
-        self.settling_workflow_run_counts
-            .contains_key(workflow_run_id)
-    }
-
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
         let mut reconciliation = KernelRestartReconciliation::default();
-        reconciliation.removed_orphaned_workflow_prompt_count =
-            self.reconcile_workflow_queue_ownership();
         if self.active_provider_run_id.take().is_some() {
             reconciliation.cleared_active_provider_run = true;
         }
@@ -388,88 +184,6 @@ impl RuntimeSession {
             })
             .count();
 
-        // A previous kernel could have admitted a workflow prompt and persisted the
-        // provider-side prompt as Dispatching before persisting the workflow node's
-        // Running/Dispatched transition.  That state is not orphaned: the active
-        // provider prompt is the durable proof that this node owns the session lane.
-        // Repair the workflow projection before queue arbitration runs, otherwise
-        // `has_active_workflow_run` sees a Created run and every later event remains
-        // queued indefinitely.
-        let active_workflow_prompts = self
-            .prompt_runtime
-            .prompt_states()
-            .values()
-            .filter_map(|state| state.active_prompt().cloned())
-            .filter(|prompt| {
-                matches!(
-                    prompt.status(),
-                    crate::session::PromptStatus::Dispatching
-                        | crate::session::PromptStatus::Running
-                )
-            })
-            .filter_map(|prompt| {
-                Some((
-                    prompt.workflow_run_id()?.to_string(),
-                    prompt.workflow_node_run_id()?.to_string(),
-                ))
-            })
-            .collect::<Vec<_>>();
-        for (workflow_run_id, workflow_node_run_id) in active_workflow_prompts {
-            let Some((workflow_run_status, node_run_status, envelope_state)) = self
-                .workflow_run(&workflow_run_id)
-                .and_then(|workflow_run| {
-                    workflow_run
-                        .node_runs()
-                        .iter()
-                        .find(|node_run| node_run.id() == workflow_node_run_id)
-                        .map(|node_run| {
-                            (
-                                workflow_run.status(),
-                                node_run.status(),
-                                node_run.turn_envelope().map(|envelope| envelope.state()),
-                            )
-                        })
-                })
-            else {
-                continue;
-            };
-            // Only repair the pre-start projection that can be left behind by a
-            // crash between prompt admission and workflow start.  A terminal
-            // workflow/node/envelope is authoritative and must never be
-            // resurrected merely because its prompt cleanup was interrupted.
-            if matches!(
-                workflow_run_status,
-                WorkflowRunStatus::Completed
-                    | WorkflowRunStatus::Failed
-                    | WorkflowRunStatus::Stopped
-            ) || node_run_status != WorkflowNodeRunStatus::Ready
-                || !matches!(
-                    envelope_state,
-                    Some(
-                        crate::session::WorkflowTurnRuntimeState::Prepared
-                            | crate::session::WorkflowTurnRuntimeState::Dispatched
-                    )
-                )
-            {
-                continue;
-            }
-            let Some(workflow_run) = self.workflow_run_mut(&workflow_run_id) else {
-                continue;
-            };
-            let Some(node_run) = workflow_run.node_run_mut(&workflow_node_run_id) else {
-                continue;
-            };
-            if let Some(envelope) = node_run.turn_envelope_mut() {
-                if envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared {
-                    envelope.mark_dispatched();
-                }
-            }
-            node_run.set_status(WorkflowNodeRunStatus::Running);
-            workflow_run.set_active_node_run(workflow_node_run_id);
-            workflow_run.set_status(WorkflowRunStatus::Running);
-            reconciliation.repaired_workflow_prompt_count += 1;
-        }
-
         let durable_workflow_prompt_targets = self
             .prompt_runtime
             .prompt_states()
@@ -487,88 +201,43 @@ impl RuntimeSession {
                 ))
             })
             .collect::<BTreeSet<_>>();
-        let durable_workflow_run_targets = self
-            .workflow_queued_prompts
-            .iter()
-            .filter(|queued_prompt| {
-                matches!(
-                    queued_prompt.status(),
-                    WorkflowQueuedPromptStatus::Dispatching | WorkflowQueuedPromptStatus::Running
-                )
-            })
-            .filter_map(|queued_prompt| queued_prompt.workflow_run_id().map(str::to_string))
-            .collect::<BTreeSet<_>>();
-        let mut orphaned_workflow_run_ids = Vec::new();
+        let mut orphaned_prepared_workflow_run_ids = Vec::new();
         for workflow_run in &mut self.workflow_runs {
-            if !matches!(
-                workflow_run.status(),
-                WorkflowRunStatus::Created
-                    | WorkflowRunStatus::Running
-                    | WorkflowRunStatus::Waiting
-            ) {
+            let Some(active_node_run_id) = workflow_run.active_node_run_id().map(str::to_string)
+            else {
                 continue;
-            }
+            };
             if durable_workflow_prompt_targets
-                .iter()
-                .any(|(run_id, _)| run_id == workflow_run.id())
-                || durable_workflow_run_targets.contains(workflow_run.id())
+                .contains(&(workflow_run.id().to_string(), active_node_run_id.clone()))
             {
                 continue;
             }
-            // A non-terminal workflow run must have a durable provider prompt (or a durable
-            // dispatching queue record) that owns the session lane. If neither exists, the
-            // provider turn was lost between snapshots (for example after an acknowledged
-            // provider turn exited before recording completion). Leaving the run Running/Waiting
-            // makes `has_active_session_task` block every later queue head.
-            // Workspace claims are process-local and are retried by the runtime recovery pass;
-            // do not classify a blocked node as orphaned before that pass gets a chance to
-            // reacquire its claim and dispatch the prepared prompt.
-            if workflow_run
-                .node_runs()
-                .iter()
-                .any(|node| node.status() == WorkflowNodeRunStatus::BlockedOnWorkspaceClaim)
-            {
+            let Some(node_run) = workflow_run.node_run_mut(&active_node_run_id) else {
+                continue;
+            };
+            let orphaned_prepared_turn = node_run.status() == WorkflowNodeRunStatus::Ready
+                && node_run.turn_envelope().is_some_and(|envelope| {
+                    envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared
+                });
+            if !orphaned_prepared_turn {
                 continue;
             }
-            let orphaned_node_run_ids = workflow_run
-                .node_runs()
-                .iter()
-                .filter(|node| {
-                    !matches!(
-                        node.status(),
-                        WorkflowNodeRunStatus::Completed
-                            | WorkflowNodeRunStatus::Failed
-                            | WorkflowNodeRunStatus::Stopped
-                    )
-                })
-                .map(|node| node.id().to_string())
-                .collect::<Vec<_>>();
-            for node_run in workflow_run.node_runs_mut() {
-                if !orphaned_node_run_ids.iter().any(|id| id == node_run.id()) {
-                    continue;
-                }
-                node_run.set_status(WorkflowNodeRunStatus::Stopped);
-                if let Some(envelope) = node_run.turn_envelope_mut() {
-                    envelope.mark_cancelled();
-                }
+            node_run.set_status(WorkflowNodeRunStatus::Stopped);
+            if let Some(envelope) = node_run.turn_envelope_mut() {
+                envelope.mark_cancelled();
             }
-            let failure_source_node_run_id = workflow_run
-                .active_node_run_id()
-                .map(str::to_string)
-                .or_else(|| orphaned_node_run_ids.first().cloned())
-                .unwrap_or_else(|| workflow_run.id().to_string());
             workflow_run.clear_active_node_run();
             workflow_run.add_failure_event(WorkflowFailureEvent::new(
                 WorkflowFailureKind::RunStopped,
-                failure_source_node_run_id,
+                active_node_run_id,
                 Vec::new(),
-                "non-terminal workflow run had no durable active or queued prompt after kernel restart",
+                "prepared workflow turn had no durable active or queued prompt after kernel restart",
             ));
             workflow_run.set_status(WorkflowRunStatus::Stopped);
-            orphaned_workflow_run_ids.push(workflow_run.id().to_string());
+            orphaned_prepared_workflow_run_ids.push(workflow_run.id().to_string());
             reconciliation.stopped_workflow_run_count += 1;
         }
-        for workflow_run_id in orphaned_workflow_run_ids {
+        for workflow_run_id in orphaned_prepared_workflow_run_ids {
             self.prompt_runtime.remove_queued_prompts_by_workflow_run(
                 &workflow_run_id,
                 self.focused_agent_id.as_deref(),

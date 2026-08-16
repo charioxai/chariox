@@ -3,8 +3,7 @@ use crate::local::{
     GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
     LocalDaemonResponse, ResolveSessionRequest,
 };
-use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
-use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
+use crate::runtime::projection::SessionStateProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{
     projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
@@ -38,10 +37,20 @@ pub(crate) fn projected_session_state_response(
     request: &GetSessionStateRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
-    let session = match runtime_state.session_state_response(request.clone()) {
-        Ok(LocalDaemonResponse::SessionState { session, .. }) => session,
-        Ok(_) => unreachable!("session state request returned a different response"),
-        Err(error) => return Some(Err(error)),
+    // Session projection is the non-blocking read model. In particular, do
+    // not fall through to the session actor while a provider launch is still
+    // being settled: another terminal must be able to observe queue/activity
+    // state in parallel with that provider turn.
+    // A session read must never fall back to the actor-backed snapshot. The
+    // projection is warmed at router startup and refreshed on every session
+    // mutation; using the actor here would let a provider turn serialize an
+    // otherwise read-only terminal and recreate the cross-surface stall this
+    // lane is designed to prevent.
+    let session = session_projection.get(&request.session_id);
+    let Some(session) = session else {
+        return Some(Err(DaemonError::SessionNotFound {
+            session_id: request.session_id.clone(),
+        }));
     };
     if !session.has_member(caller_user_id) {
         return Some(Err(DaemonError::SessionAccessDenied {
@@ -62,7 +71,7 @@ pub(crate) fn projected_session_state_response(
             .into_iter()
             .filter(|(agent_id, _)| visible_agent_ids.contains(agent_id))
             .collect(),
-        agent_activity_revision: session_projection.change_sequence(),
+        agent_activity_revision: session_projection.session_change_sequence(&request.session_id),
         session: redacted_session,
     }))
 }
@@ -126,28 +135,17 @@ pub(crate) async fn projected_list_sessions_response(
 pub(crate) async fn projected_session_read_response(
     runtime_state: &KernelRuntimeState,
     session_projection: &SessionStateProjectionStore,
-    provider_run_projection: &ProviderRunProjectionStore,
-    provider_launch_pending: &ProviderLaunchPendingTracker,
     request: &LocalDaemonRequest,
     caller_user_id: &str,
 ) -> Option<Result<LocalDaemonResponse, DaemonError>> {
     if let LocalDaemonRequest::GetSessionState(request) = request {
-        if !provider_launch_pending
-            .has_unsettled_launch(
-                &request.session_id,
-                session_projection,
-                provider_run_projection,
-            )
-            .await
-        {
-            if let Some(response) = projected_session_state_response(
-                runtime_state,
-                session_projection,
-                request,
-                caller_user_id,
-            ) {
-                return Some(response);
-            }
+        if let Some(response) = projected_session_state_response(
+            runtime_state,
+            session_projection,
+            request,
+            caller_user_id,
+        ) {
+            return Some(response);
         }
     }
     if let LocalDaemonRequest::ResolveSession(request) = request {

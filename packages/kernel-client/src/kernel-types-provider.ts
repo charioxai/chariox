@@ -195,6 +195,7 @@ export type TerminalOutputRecord = {
   agent_id?: string | null
   prompt_id?: string | null
   prompt_origin?: "chariox" | "external" | string | null
+  prompt_source?: "human" | "agent_terminal" | "provider_external" | string | null
   source_attachment_id?: string | null
   kind: "provider_output" | "provider_terminal" | "prompt_echo" | "provider_reasoning" | "provider_tool" | "provider_error" | "provider_status"
   merge_key?: string

@@ -22,6 +22,21 @@ test("parseShellCliArgs parses kernel and context options", () => {
   })
 })
 
+test("parseShellCliArgs supports the stateless agent-terminal MCP mode", () => {
+  assert.deepEqual(parseShellCliArgs(["agent-terminal", "--kernel-url", "ws://127.0.0.1:43118/kernel"]), {
+    agentTerminal: true,
+    kernelUrl: "ws://127.0.0.1:43118/kernel",
+  })
+})
+
+test("parseShellCliArgs supports the stateless agent-terminal JSONL mode", () => {
+  assert.deepEqual(parseShellCliArgs(["agent-terminal", "--jsonl", "--kernel-url", "ws://127.0.0.1:43118/kernel"]), {
+    agentTerminal: true,
+    agentTerminalFormat: "jsonl",
+    kernelUrl: "ws://127.0.0.1:43118/kernel",
+  })
+})
+
 test("parseShellCliArgs rejects conflicting endpoints", () => {
   assert.throws(() => parseShellCliArgs(["--kernel-url", "ws://x", "--socket", "/tmp/k.sock"]), /cannot be used together/)
 })
