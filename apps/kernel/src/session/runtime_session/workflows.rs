@@ -29,7 +29,11 @@ impl RuntimeSession {
             })
             .collect::<BTreeSet<_>>();
         let mut orphaned_workflow_run_ids = Vec::new();
-        let settling_workflow_run_ids = self.settling_workflow_run_ids.clone();
+        let settling_workflow_run_ids = self
+            .settling_workflow_run_counts
+            .keys()
+            .cloned()
+            .collect::<BTreeSet<_>>();
 
         for workflow_run in &mut self.workflow_runs {
             if workflow_run.status() != WorkflowRunStatus::Running
@@ -334,16 +338,26 @@ impl RuntimeSession {
         {
             return false;
         }
-        self.settling_workflow_run_ids
-            .insert(workflow_run_id.to_string())
+        *self
+            .settling_workflow_run_counts
+            .entry(workflow_run_id.to_string())
+            .or_default() += 1;
+        true
     }
 
     pub fn clear_workflow_run_settling(&mut self, workflow_run_id: &str) {
-        self.settling_workflow_run_ids.remove(workflow_run_id);
+        let Some(count) = self.settling_workflow_run_counts.get_mut(workflow_run_id) else {
+            return;
+        };
+        *count = count.saturating_sub(1);
+        if *count == 0 {
+            self.settling_workflow_run_counts.remove(workflow_run_id);
+        }
     }
 
     pub fn is_workflow_run_settling(&self, workflow_run_id: &str) -> bool {
-        self.settling_workflow_run_ids.contains(workflow_run_id)
+        self.settling_workflow_run_counts
+            .contains_key(workflow_run_id)
     }
 
     pub fn reconcile_after_kernel_restart(&mut self) -> KernelRestartReconciliation {
