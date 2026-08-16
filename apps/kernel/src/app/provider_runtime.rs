@@ -18,13 +18,41 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<StartedProviderLaunch, DaemonError> {
-        self.start_provider_launch_with_lease(request, false)
+        self.start_provider_launch_with_options(request, false, false)
+    }
+
+    pub(crate) fn start_workflow_provider_launch(
+        &mut self,
+        request: LaunchProviderRequest,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        let started = self.start_provider_launch_with_options(request, false, true)?;
+        let binding = match ProviderProcessService::initialize_runtime_binding(&started.run) {
+            Ok(binding) => binding,
+            Err(error) => {
+                self.fail_provider_launch(&started, &error);
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.finish_provider_launch(&started, binding) {
+            self.fail_provider_launch(&started, &error);
+            return Err(error);
+        }
+        self.providers.get_run(started.run.id())
     }
 
     fn start_provider_launch_with_lease(
         &mut self,
+        request: LaunchProviderRequest,
+        leased: bool,
+    ) -> Result<StartedProviderLaunch, DaemonError> {
+        self.start_provider_launch_with_options(request, leased, false)
+    }
+
+    fn start_provider_launch_with_options(
+        &mut self,
         mut request: LaunchProviderRequest,
         leased: bool,
+        workflow_tools_enabled: bool,
     ) -> Result<StartedProviderLaunch, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
         crate::logging::info_with_fields(
@@ -42,7 +70,11 @@ impl DaemonApp {
             .attachments
             .list_session_attachment_ids(&request_session_id);
         let started = ProviderRunActivationState::start_provider_run_for_session(self, request)?;
-        let run = started.run.clone();
+        let run = if workflow_tools_enabled {
+            self.providers.enable_workflow_tools(started.run.id())?
+        } else {
+            started.run.clone()
+        };
         // Publish lease identity before spawning the provider process. The provider's
         // first MCP tools/list can happen during PTY startup, before launch_provider
         // returns to the caller.
@@ -386,13 +418,6 @@ impl DaemonApp {
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         self.launch_provider_detached_with_options(request, false)
-    }
-
-    pub(crate) fn launch_workflow_provider_detached(
-        &mut self,
-        request: LaunchProviderRequest,
-    ) -> Result<RuntimeProviderRun, DaemonError> {
-        self.launch_provider_detached_with_options(request, true)
     }
 
     fn launch_provider_detached_with_options(

@@ -482,6 +482,40 @@ fn native_tui_provider_launch_reuses_compatible_starting_run() {
 }
 
 #[test]
+fn workflow_provider_launch_replaces_ordinary_run_before_tool_discovery() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session create should succeed");
+
+    let ordinary = app
+        .start_provider_launch(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id()),
+        )
+        .expect("ordinary provider should start");
+    assert!(!ordinary.run.workflow_tools_enabled());
+
+    let workflow = app
+        .start_workflow_provider_launch(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "sonnet")
+                .with_agent_id(agent.id()),
+        )
+        .expect("workflow provider should replace ordinary run");
+
+    assert_ne!(workflow.id(), ordinary.run.id());
+    assert!(workflow.workflow_tools_enabled());
+    assert!(matches!(
+        app.providers()
+            .get_run(ordinary.run.id())
+            .expect("ordinary run should remain addressable")
+            .state(),
+        ProviderRunState::Parked | ProviderRunState::Ended
+    ));
+}
+
+#[test]
 fn native_tui_provider_launch_rejects_parameter_mismatch_without_duplicate() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

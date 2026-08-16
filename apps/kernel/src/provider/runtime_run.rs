@@ -51,7 +51,7 @@ pub struct RuntimeProviderRun {
     runtime_mcp_auth_token: Option<String>,
     /// Workflow-only runtime actions are projected after this run is selected
     /// for workflow execution, keeping ordinary turns' tool surface small.
-    #[serde(default)]
+    #[serde(skip)]
     workflow_tools_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<CharioxMcpServerConfig>,

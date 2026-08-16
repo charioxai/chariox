@@ -211,20 +211,50 @@ impl RuntimeSession {
             })
             .collect::<Vec<_>>();
         for (workflow_run_id, workflow_node_run_id) in active_workflow_prompts {
+            let Some((workflow_run_status, node_run_status, envelope_state)) = self
+                .workflow_run(&workflow_run_id)
+                .and_then(|workflow_run| {
+                    workflow_run
+                        .node_runs()
+                        .iter()
+                        .find(|node_run| node_run.id() == workflow_node_run_id)
+                        .map(|node_run| {
+                            (
+                                workflow_run.status(),
+                                node_run.status(),
+                                node_run.turn_envelope().map(|envelope| envelope.state()),
+                            )
+                        })
+                })
+            else {
+                continue;
+            };
+            // Only repair the pre-start projection that can be left behind by a
+            // crash between prompt admission and workflow start.  A terminal
+            // workflow/node/envelope is authoritative and must never be
+            // resurrected merely because its prompt cleanup was interrupted.
+            if matches!(
+                workflow_run_status,
+                WorkflowRunStatus::Completed
+                    | WorkflowRunStatus::Failed
+                    | WorkflowRunStatus::Stopped
+            ) || node_run_status != WorkflowNodeRunStatus::Ready
+                || !matches!(
+                    envelope_state,
+                    Some(
+                        crate::session::WorkflowTurnRuntimeState::Prepared
+                            | crate::session::WorkflowTurnRuntimeState::Dispatched
+                    )
+                )
+            {
+                continue;
+            }
             let Some(workflow_run) = self.workflow_run_mut(&workflow_run_id) else {
                 continue;
             };
-            let workflow_projection_needs_repair = workflow_run.status()
-                != WorkflowRunStatus::Running
-                || workflow_run.active_node_run_id() != Some(workflow_node_run_id.as_str());
             let Some(node_run) = workflow_run.node_run_mut(&workflow_node_run_id) else {
                 continue;
             };
-            let repaired = node_run.status() != WorkflowNodeRunStatus::Running
-                || workflow_projection_needs_repair;
-            if !repaired {
-                continue;
-            }
             if let Some(envelope) = node_run.turn_envelope_mut() {
                 if envelope.state() == crate::session::WorkflowTurnRuntimeState::Prepared {
                     envelope.mark_dispatched();

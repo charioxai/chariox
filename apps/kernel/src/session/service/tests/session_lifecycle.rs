@@ -644,6 +644,81 @@ fn kernel_restart_reconciliation_repairs_dispatched_workflow_prompt_projection()
 }
 
 #[test]
+fn kernel_restart_reconciliation_does_not_resurrect_failed_workflow_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow =
+        WorkflowDefinition::new("workflow-failed-repair", Some("failed".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    let mut workflow_run = WorkflowRun::new(
+        "run-failed-repair",
+        "workflow-failed-repair",
+        endpoint.id(),
+        node.id(),
+        Some("failed prompt".to_string()),
+        None,
+        vec![WorkflowNodeRun::new(
+            "node-run-failed-repair",
+            node.id(),
+            "agent-1",
+            1,
+            WorkflowNodeRunStatus::Ready,
+        )],
+        Vec::new(),
+    );
+    let node_run = workflow_run
+        .node_run_mut("node-run-failed-repair")
+        .expect("node run should exist");
+    node_run.set_turn_envelope(Some(crate::session::WorkflowTurnEnvelope::new(
+        "workflow-ack:node-run-failed-repair",
+        "failed prompt".to_string(),
+        None,
+        None,
+    )));
+    node_run.set_status(WorkflowNodeRunStatus::Failed);
+    node_run
+        .turn_envelope_mut()
+        .expect("turn envelope should exist")
+        .mark_failed();
+    workflow_run.set_status(WorkflowRunStatus::Failed);
+    session.create_workflow_run(workflow_run);
+    session.activate_prompt(
+        crate::session::PromptQueueItem::new(
+            "prompt-failed-repair",
+            "attachment-1",
+            "agent-1",
+            "failed prompt",
+            crate::session::PromptStatus::Running,
+        )
+        .with_workflow_context("run-failed-repair", "node-run-failed-repair"),
+    );
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+
+    assert_eq!(reconciliation.repaired_workflow_prompt_count, 0);
+    let run = session
+        .workflow_run("run-failed-repair")
+        .expect("workflow run should remain inspectable");
+    assert_eq!(run.status(), WorkflowRunStatus::Failed);
+    assert_eq!(run.node_runs()[0].status(), WorkflowNodeRunStatus::Failed);
+    assert_eq!(
+        run.node_runs()[0]
+            .turn_envelope()
+            .expect("turn envelope should exist")
+            .state(),
+        crate::session::WorkflowTurnRuntimeState::Failed
+    );
+}
+
+#[test]
 fn prompt_queue_starts_then_queues_then_advances() {
     let mut service = SessionService::new(&test_config());
     let created = service
