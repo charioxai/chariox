@@ -42,9 +42,17 @@ impl KernelRuntimeOwnedState {
                 "valid": warning.is_none(),
                 "warning": warning,
                 "next_action": if warning.is_none() {
-                    "Validation passed. Now finish this same workflow turn by emitting exactly one final fenced json block and then stop."
+                    crate::prompt_assembly::render_configured_prompt(
+                        "workflow/handoff-validation-passed",
+                        include_str!("../../provider/workflow_handoff_validation_passed_instructions.md"),
+                        &[],
+                    )
                 } else {
-                    "Validation failed or warned. Revise the output and call validate_workflow_handoff again before finalizing."
+                    crate::prompt_assembly::render_configured_prompt(
+                        "workflow/handoff-validation-failed",
+                        include_str!("../../provider/workflow_handoff_validation_failed_instructions.md"),
+                        &[],
+                    )
                 },
             }),
         })
@@ -395,17 +403,23 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-fn workflow_output_submission_next_action(is_final: bool, valid: bool) -> &'static str {
+fn workflow_output_submission_next_action(is_final: bool, valid: bool) -> String {
     match (is_final, valid) {
-        (true, true) => {
-            "Final workflow run output was submitted and validated. Finish this same workflow turn now."
-        }
-        (true, false) => {
-            "Final workflow run output failed validation. Revise it and call validate_and_submit_workflow_run_output again. Do not finish this turn until the tool returns valid: true with no warning."
-        }
-        (false, _) => {
-            "Intermediate workflow run output was submitted as a user-visible event. Continue this same workflow turn. You may submit more intermediate outputs if useful. Before stopping, either emit the required final fenced JSON handoff or submit final workflow run output if authorized."
-        }
+        (true, true) => crate::prompt_assembly::render_configured_prompt(
+            "workflow/output-submission-final-valid",
+            include_str!("../../provider/workflow_output_submission_final_valid_instructions.md"),
+            &[],
+        ),
+        (true, false) => crate::prompt_assembly::render_configured_prompt(
+            "workflow/output-submission-final-invalid",
+            include_str!("../../provider/workflow_output_submission_final_invalid_instructions.md"),
+            &[],
+        ),
+        (false, _) => crate::prompt_assembly::render_configured_prompt(
+            "workflow/output-submission-intermediate",
+            include_str!("../../provider/workflow_output_submission_intermediate_instructions.md"),
+            &[],
+        ),
     }
 }
 

@@ -22,41 +22,25 @@ impl<'a> KernelAgentService<'a> {
             let is_workflow_prompt = crate::app::workflow_runtime::is_workflow_prompt_source(
                 peeked.source_attachment_id(),
             );
-            let provider_run_id = match self
-                .app
-                .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
-            {
+            let provider_run_id = match if is_workflow_prompt {
+                crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
+                    self.app,
+                    session_id,
+                    &target_agent_id,
+                )
+            } else {
+                self.app
+                    .ensure_prompt_provider_run_for_agent(session_id, &target_agent_id)
+            } {
                 Ok(provider_run_id) => provider_run_id,
-                Err(DaemonError::NoActiveProviderRun { .. }) if is_workflow_prompt => {
-                    match crate::app::workflow_runtime::ensure_workflow_provider_run_from_runtime(
-                        self.app,
-                        session_id,
-                        &target_agent_id,
-                    ) {
-                        Ok(provider_run_id) => provider_run_id,
-                        Err(error) => {
-                            self.app.record_notice(
-                                session_id,
-                                None,
-                                self.app.attachments.list_session_attachment_ids(session_id),
-                                format!(
-                                    "Deferred queued workflow prompt `{}` because Chariox could not launch the provider run for agent `{}`: {}",
-                                    peeked.id(),
-                                    target_agent_id,
-                                    error
-                                ),
-                            );
-                            return Ok(None);
-                        }
-                    }
-                }
                 Err(error) => {
                     self.app.record_notice(
                         session_id,
                         None,
                         self.app.attachments.list_session_attachment_ids(session_id),
                         format!(
-                            "Deferred queued prompt `{}` because Chariox could not activate the provider run for agent `{}`: {}",
+                            "Deferred queued {}prompt `{}` because Chariox could not activate the provider run for agent `{}`: {}",
+                            if is_workflow_prompt { "workflow " } else { "" },
                             peeked.id(),
                             target_agent_id,
                             error

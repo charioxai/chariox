@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import { executeNotificationCommand } from "./shell-notification-command.js"
+import { executePromptSettingsCommand } from "./shell-prompt-settings-command.js"
 
 test("notification center installs and reuses kernel-owned connections", async () => {
   const requests: Record<string, unknown>[] = []
@@ -43,6 +44,75 @@ test("notification center installs and reuses kernel-owned connections", async (
   assert.deepEqual(requests, [
     { InstallEventConnection: { generator_id: "dev.chariox.github", return_url: null } },
     { ListEventConnections: { generator_id: "dev.chariox.github", cursor: null, limit: 20 } },
+  ])
+})
+
+test("prompt settings slash command resets one setting with optimistic versioning", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      if ("ListPromptSettings" in request) {
+        return { PromptSettingsListed: { settings: [{
+          id: "workflow/turn",
+          title: "Workflow turn contract",
+          current_sha256: "sha-current",
+          revision: 3,
+          editable: true,
+          protected: false,
+          source: "user_override",
+        }] } }
+      }
+      return { PromptSetting: { setting: {
+        id: "workflow/turn",
+        title: "Workflow turn contract",
+        current_sha256: "sha-default",
+        revision: 4,
+        editable: true,
+        protected: false,
+        source: "bundled",
+      } } }
+    },
+  }
+  const result = await executePromptSettingsCommand(["reset", "workflow/turn", "--confirm"], client)
+  assert.equal(result.ok, true)
+  assert.match(result.message ?? "", /reset workflow\/turn/)
+  assert.deepEqual(requests, [
+    { ListPromptSettings: null },
+    { ResetPromptSetting: {
+      id: "workflow/turn",
+      expected_revision: 3,
+      expected_sha256: "sha-current",
+    } },
+  ])
+})
+
+test("prompt settings reset-all requires explicit confirmation and uses every catalog version", async () => {
+  const requests: Record<string, unknown>[] = []
+  const client = {
+    send: async (request: Record<string, unknown>) => {
+      requests.push(request)
+      if ("ListPromptSettings" in request) {
+        return { PromptSettingsListed: { settings: [
+          { id: "a", current_sha256: "sha-a", revision: 1, editable: true, protected: false, source: "user_override" },
+          { id: "b", current_sha256: "sha-b", revision: 2, editable: false, protected: true, source: "bundled" },
+        ] } }
+      }
+      return { PromptSettingsReset: { settings: [] } }
+    },
+  }
+  const denied = await executePromptSettingsCommand(["reset-all"], client)
+  assert.equal(denied.ok, false)
+  assert.match(denied.message ?? "", /--confirm/)
+  assert.equal(requests.length, 0)
+  const result = await executePromptSettingsCommand(["reset-all", "--confirm"], client)
+  assert.equal(result.ok, true)
+  assert.deepEqual(requests, [
+    { ListPromptSettings: null },
+    { ResetAllPromptSettings: { expected: {
+      a: { revision: 1, sha256: "sha-a" },
+      b: { revision: 2, sha256: "sha-b" },
+    } } },
   ])
 })
 

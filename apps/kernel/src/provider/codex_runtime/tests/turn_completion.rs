@@ -1,4 +1,4 @@
-use super::super::drain::codex_turn_should_backfill;
+use super::super::drain::{codex_authoritative_backfill_due, codex_turn_should_backfill};
 use super::super::events::codex_completed_turn_has_settlement_evidence;
 use super::super::prompt::note_codex_turn_start_response;
 use super::super::turn::CodexTerminalSignal;
@@ -1552,4 +1552,10 @@ fn managed_turn_does_not_backfill_from_pre_tool_commentary() {
         &turn_tracker,
         true,
     ));
+}
+
+#[test]
+fn authoritative_backfill_is_due_even_when_the_notification_drain_is_not_quiet() {
+    assert!(codex_authoritative_backfill_due(true, None));
+    assert!(!codex_authoritative_backfill_due(false, None));
 }

@@ -1,0 +1,2 @@
+The previous workflow handoff for edge `{{EDGE_ID}}` failed validation on attempt {{ATTEMPT}}/{{MAX_ATTEMPTS}}: {{ERROR}}
+Retry this same workflow invocation now. Put the selected `workflow_handoffs` array inside final `output.message`, validate the selected edge payload with `validate_workflow_handoff`, and do not finish until validation returns `valid: true` with no warning.{{COMPLETION_GUIDANCE}}

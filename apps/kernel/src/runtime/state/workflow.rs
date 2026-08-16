@@ -54,13 +54,27 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
     ) -> Result<String, DaemonError> {
         if let Some(run) = self.provider_store.get_run_for_agent(session_id, agent_id) {
-            if run.state() == crate::provider::ProviderRunState::Parked {
-                let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
-                self.session_store
-                    .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
-                return Ok(resumed.id().to_string());
-            }
-            if run.state() != crate::provider::ProviderRunState::Ended {
+            if run.workflow_tools_enabled() {
+                if run.state() == crate::provider::ProviderRunState::Parked {
+                    let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
+                    return Ok(resumed.id().to_string());
+                }
+                if run.state() != crate::provider::ProviderRunState::Ended {
+                    self.session_store
+                        .set_active_provider_run(session_id, Some(run.id().to_string()))?;
+                    return Ok(run.id().to_string());
+                }
+            } else if matches!(
+                run.state(),
+                crate::provider::ProviderRunState::Starting
+                    | crate::provider::ProviderRunState::Running
+            ) && self.provider_run_has_active_prompt(session_id, &run)?
+            {
+                // An ordinary provider with an active prompt owns the session until that
+                // prompt settles. The workflow prompt remains FIFO-queued and the normal
+                // settlement path will replace this run before it is promoted.
                 self.session_store
                     .set_active_provider_run(session_id, Some(run.id().to_string()))?;
                 return Ok(run.id().to_string());
@@ -87,7 +101,13 @@ impl KernelRuntimeOwnedState {
             self.config_projection.snapshot().runtime_mcp_url(),
         )?;
         let started = self.start_provider_launch(request)?;
-        let run = started.run;
+        // The owned workflow admission path is synchronous, so it cannot use the async app
+        // launch helper. Enable the workflow tool surface before the detached launch is spawned;
+        // otherwise an idle ordinary provider run can be reused and the workflow prompt is
+        // dispatched without the workflow tools it needs.
+        let run = self
+            .provider_store
+            .enable_workflow_tools(started.run.id())?;
         self.provider_run_projection.update(run.clone());
         Ok(run.id().to_string())
     }
@@ -101,11 +121,35 @@ impl KernelRuntimeOwnedState {
         format!("workflow-node:{session_id}:{workflow_run_id}:{workflow_node_run_id}")
     }
 
+    /// Promote a workflow prompt that was already admitted to the provider queue.
+    ///
+    /// Queue promotion can happen outside the normal workflow launch path (for
+    /// example after a provider cancellation). Keep the workflow run transition
+    /// coupled to that promotion so a Ready node cannot strand the session with
+    /// a provider prompt that is already Dispatching.
+    pub(super) fn workflow_mark_prompt_started(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<(), DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(());
+        };
+        self.session_store.write().mark_workflow_turn_dispatched(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        self.workflow_start_prompt(session_id, prompt)
+    }
+
     pub(super) fn workflow_submit_prepared_prompt(
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
-        workflow_run_id: &str,
-        workflow_node_run_id: &str,
+        _workflow_run_id: &str,
+        _workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let prepared = normalize_workflow_prepared_prompt(prepared);
         let mut dispatches = WorkflowPromptDispatches::default();
@@ -127,12 +171,7 @@ impl KernelRuntimeOwnedState {
         };
         dispatches.mark_workflow_prompt_admitted();
         if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome {
-            let _ = self.session_store.write().mark_workflow_turn_dispatched(
-                &prepared.session_id,
-                workflow_run_id,
-                workflow_node_run_id,
-            );
-            let _ = self.workflow_start_prompt(&prepared.session_id, prompt);
+            self.workflow_mark_prompt_started(&prepared.session_id, prompt)?;
         }
         if let Some(dispatch) = submission.dispatch.take() {
             dispatches.local.push(dispatch);

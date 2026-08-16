@@ -2,7 +2,56 @@
 
 use super::*;
 
+const LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS: u64 = 5_000;
+
 impl KernelRuntimeOwnedState {
+    fn workflow_reconcile_live_orphans(&self, session_id: &str) {
+        let reconciled = self
+            .session_store
+            .write()
+            .reconcile_live_orphaned_workflow_runs(
+                session_id,
+                crate::session::unix_epoch_ms(),
+                LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS,
+            );
+        let count = match reconciled {
+            Ok(count) => count,
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.runtime",
+                    "live workflow orphan reconciliation failed",
+                    serde_json::json!({
+                        "session_id": session_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                return;
+            }
+        };
+        if count == 0 {
+            return;
+        }
+        self.record_notice(
+            session_id,
+            None,
+            self.attachment_store
+                .list_session_attachment_ids(session_id),
+            format!("Stopped {count} orphaned workflow run(s) so queued prompts can advance."),
+        );
+        if let Err(error) =
+            self.persist_workflow_runtime_session(session_id, "workflow_live_orphan_reconciled")
+        {
+            crate::logging::warn_with_fields(
+                "daemon.runtime",
+                "live workflow orphan reconciliation persistence failed",
+                serde_json::json!({
+                    "session_id": session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
+
     pub(super) fn workflow_collect_due_watchdog_dispatches(
         &self,
         now_ms: u64,
@@ -51,6 +100,7 @@ impl KernelRuntimeOwnedState {
         &self,
         plan: crate::session::WorkflowWatchdogTickPlan,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        self.workflow_reconcile_live_orphans(&plan.session_id);
         let should_start = self
             .session_store
             .read()
@@ -111,6 +161,7 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        self.workflow_reconcile_live_orphans(session_id);
         let workflow = self
             .session_store
             .read()
@@ -248,6 +299,7 @@ impl KernelRuntimeOwnedState {
         )>,
         DaemonError,
     > {
+        self.workflow_reconcile_live_orphans(session_id);
         loop {
             let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
                 .session_store
@@ -279,6 +331,7 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> WorkflowPromptDispatches {
+        self.workflow_reconcile_live_orphans(session_id);
         loop {
             let next_workflow = {
                 self.session_store

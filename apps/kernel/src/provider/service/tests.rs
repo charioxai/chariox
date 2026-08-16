@@ -140,6 +140,35 @@ fn active_provider_run_lookup_prefers_deterministic_latest_highest_state_run() {
 }
 
 #[test]
+fn active_provider_run_lookup_prefers_new_starting_run_over_parked_fallback() {
+    let mut sessions = sessions();
+    let session = sessions
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let agent_id = "agent-1".to_string();
+    let mut providers = ProviderProcessService::new();
+
+    let parked = launch_running_provider_run(
+        &mut providers,
+        &mut sessions,
+        launch_request(session.id(), "sonnet").with_agent_id(&agent_id),
+    );
+    providers
+        .park_run_provider_only(session.id(), parked.id())
+        .expect("old provider run should park");
+    let starting = providers
+        .start_run_provider_only(launch_request(session.id(), "opus").with_agent_id(&agent_id))
+        .expect("replacement provider run should start");
+
+    assert_eq!(
+        providers
+            .get_run_for_agent(session.id(), &agent_id)
+            .map(|run| run.id().to_string()),
+        Some(starting.run().id().to_string())
+    );
+}
+
+#[test]
 fn claude_native_tui_runs_use_pty_output_pumping() {
     let providers = ProviderProcessService::new();
     let request = LaunchProviderRequest::new("session-1", "claude", "default", "sonnet", "low")

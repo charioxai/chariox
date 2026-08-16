@@ -109,11 +109,7 @@ impl KernelRuntimeState {
                 started_next_prompt: false,
             });
         }
-        if !force
-            && (active_prompt.status() == crate::session::PromptStatus::Dispatching
-                || active_prompt.durable_delivery_phase()
-                    == Some(crate::session::DurablePromptDeliveryPhase::Dispatching))
-        {
+        if !force && active_prompt.delivery_pending() {
             owned.schedule_provider_output_check_after(
                 provider_run_id,
                 STRUCTURED_PROMPT_SETTLE_QUIET_FOR,
@@ -335,13 +331,37 @@ impl KernelRuntimeState {
         // work instead of leaving the queue parked behind the ended run.
         let provider_run_was_running =
             provider_run.state() == crate::provider::ProviderRunState::Running;
-        let next_queued_prompt = if provider_run_was_running {
+        let next_queued_prompt_candidate = if provider_run_was_running {
             owned
                 .prompt_state_owner
                 .peek_next_queued_prompt(&owned.session_store.get_session(session_id)?, &agent_id)
         } else {
             None
         };
+        // An ordinary provider has already discovered the reduced MCP surface.
+        // Do not promote a workflow prompt onto it: complete the current turn
+        // first, then the app-level queue path will replace the provider with a
+        // workflow-scoped run before dispatching the queued prompt.
+        let defer_workflow_prompt_for_provider_switch =
+            next_queued_prompt_candidate.as_ref().is_some_and(|prompt| {
+                crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    prompt.source_attachment_id(),
+                ) && !provider_run.workflow_tools_enabled()
+            });
+        let next_queued_prompt = (!defer_workflow_prompt_for_provider_switch)
+            .then_some(next_queued_prompt_candidate)
+            .flatten();
+        // Removing the active prompt is not the end of workflow settlement: the
+        // path below still performs asynchronous post-provider work before it
+        // records the workflow completion. Mark the run first so live orphan
+        // reconciliation cannot stop a real run during that gap.
+        let settling_workflow_run_id = active_prompt.workflow_run_id().map(str::to_string);
+        if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+            owned
+                .session_store
+                .write()
+                .mark_workflow_run_settling(session_id, workflow_run_id)?;
+        }
         let completion = if let Some(next_queued_prompt) = next_queued_prompt.as_ref() {
             owned.complete_local_prompt_with_queued_advance_if_matches(
                 session_id,
@@ -349,16 +369,34 @@ impl KernelRuntimeState {
                 Some(provider_run_id),
                 next_queued_prompt,
                 Some(active_prompt.id()),
-            )?
+            )
         } else {
             owned.complete_local_prompt_without_advance_if_matches(
                 session_id,
                 &agent_id,
                 Some(provider_run_id),
                 Some(active_prompt.id()),
-            )?
+            )
+        };
+        let completion = match completion {
+            Ok(completion) => completion,
+            Err(error) => {
+                if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                    owned
+                        .session_store
+                        .write()
+                        .clear_workflow_run_settling(session_id, workflow_run_id)?;
+                }
+                return Err(error);
+            }
         };
         let Some(completion) = completion else {
+            if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                owned
+                    .session_store
+                    .write()
+                    .clear_workflow_run_settling(session_id, workflow_run_id)?;
+            }
             crate::logging::debug_with_fields(
                 "daemon.provider",
                 "ignored stale provider settlement after active prompt changed",
@@ -390,13 +428,30 @@ impl KernelRuntimeState {
             }),
         );
         if completion.completion.completed.workflow_run_id().is_some() {
-            let mut dispatches = owned.workflow_complete_prompt(
+            let workflow_completion = owned.workflow_complete_prompt(
                 session_id,
                 &completion.completion.completed,
                 Some(provider_run_id),
-            )?;
+            );
+            if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+                owned
+                    .session_store
+                    .write()
+                    .clear_workflow_run_settling(session_id, workflow_run_id)?;
+            }
+            let mut dispatches = workflow_completion?;
             if completion.released_claim {
                 dispatches.extend(owned.workflow_retry_blocked_claims());
+            }
+            if let Some(started_next) = completion.completion.started_next.as_ref() {
+                if crate::scheduler::runtime::is_workflow_prompt_attachment(
+                    started_next.source_attachment_id(),
+                ) {
+                    // Mark the envelope as dispatched before the provider can observe
+                    // the promoted prompt. This keeps workflow acknowledgement aligned
+                    // with the normal completion-promotion path.
+                    owned.workflow_mark_prompt_started(session_id, started_next)?;
+                }
             }
             let reuses_provider_run = dispatches
                 .local
@@ -432,13 +487,6 @@ impl KernelRuntimeState {
             }
             self.spawn_workflow_prompt_dispatches(dispatches);
         }
-        if let Some(started_next) = completion.completion.started_next.as_ref() {
-            if crate::scheduler::runtime::is_workflow_prompt_attachment(
-                started_next.source_attachment_id(),
-            ) {
-                owned.workflow_start_prompt(session_id, started_next)?;
-            }
-        }
         if completion.released_claim && completion.completion.completed.workflow_run_id().is_none()
         {
             self.spawn_workflow_prompt_dispatches(owned.workflow_retry_blocked_claims());
@@ -455,6 +503,36 @@ impl KernelRuntimeState {
                 .await
             {
                 let _ = self.fail_prompt_dispatch(dispatch, error).await;
+            }
+        } else if let Some(workflow_run_id) = settling_workflow_run_id.as_deref() {
+            owned
+                .session_store
+                .write()
+                .clear_workflow_run_settling(session_id, workflow_run_id)?;
+        }
+        if defer_workflow_prompt_for_provider_switch {
+            let session_id_for_queue = session_id.to_string();
+            let agent_id_for_queue = agent_id.clone();
+            match self
+                .with_app_side_effect(move |app| {
+                    app.advance_next_queued_prompt(&session_id_for_queue, &agent_id_for_queue)
+                })
+                .await
+            {
+                Ok(Some(_)) => {}
+                Ok(None) => {}
+                Err(error) => {
+                    self.owned.record_notice(
+                        session_id,
+                        Some(provider_run_id),
+                        self.owned
+                            .attachment_store
+                            .list_session_attachment_ids(session_id),
+                        format!(
+                            "Queued workflow prompt remained pending during provider capability switch: {error}"
+                        ),
+                    );
+                }
             }
         }
         if completion.completion.started_next.is_none() && !provider_run_was_running {

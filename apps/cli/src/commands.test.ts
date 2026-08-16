@@ -64,6 +64,21 @@ test("parseSlashCommand parses the kernel notification center namespace", () => 
   ), true)
 })
 
+test("parseSlashCommand parses prompt settings reset namespace", () => {
+  assert.deepEqual(parseSlashCommand("/settings prompts reset workflow/turn --confirm"), {
+    kind: "settings",
+    raw: "/settings prompts reset workflow/turn --confirm",
+    args: ["prompts", "reset", "workflow/turn", "--confirm"],
+  })
+})
+
+test("prompt settings slash commands use the shared kernel shell path", () => {
+  assert.equal(
+    sharedShellCommandForSlashCommand("/settings prompts reset workflow/turn --confirm"),
+    "settings prompts reset workflow/turn --confirm",
+  )
+})
+
 test("parseSlashCommand parses durable agent wait schedules", () => {
   assert.deepEqual(parseSlashCommand("/wait-in 0.05 Check once"), {
     kind: "wait",

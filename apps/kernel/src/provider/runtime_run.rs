@@ -49,6 +49,10 @@ pub struct RuntimeProviderRun {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     runtime_mcp_server_url: Option<String>,
     runtime_mcp_auth_token: Option<String>,
+    /// Workflow-only runtime actions are projected after this run is selected
+    /// for workflow execution, keeping ordinary turns' tool surface small.
+    #[serde(skip)]
+    workflow_tools_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
@@ -121,6 +125,7 @@ impl RuntimeProviderRun {
                 .runtime_mcp_binding
                 .as_ref()
                 .map(|binding| binding.auth_token.clone()),
+            workflow_tools_enabled: false,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
             provider_config_overrides: request.provider_config_overrides.clone(),
@@ -180,6 +185,7 @@ impl RuntimeProviderRun {
             runtime_mcp_server_url: None,
             runtime_mcp_auth_token: inferred_has_runtime_mcp_binding
                 .then(|| "inferred-managed-mcp".to_string()),
+            workflow_tools_enabled: false,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_config_overrides: BTreeMap::new(),
@@ -411,6 +417,14 @@ impl RuntimeProviderRun {
         self.runtime_mcp_auth_token = auth_token;
     }
 
+    pub fn workflow_tools_enabled(&self) -> bool {
+        self.workflow_tools_enabled
+    }
+
+    pub fn enable_workflow_tools(&mut self) {
+        self.workflow_tools_enabled = true;
+    }
+
     pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {
         self.control_capabilities = capabilities;
     }
@@ -512,8 +526,11 @@ pub(crate) fn worker_provider_run_id_from_projected_leased_id(
 fn provider_run_active_selection_rank(state: ProviderRunState) -> u8 {
     match state {
         ProviderRunState::Running => 3,
-        ProviderRunState::Parked => 2,
-        ProviderRunState::Starting => 1,
+        // A newly selected run must win over a parked fallback even before its
+        // process is fully initialized. Otherwise admission can rediscover the
+        // parked predecessor and dispatch the prompt to the wrong provider.
+        ProviderRunState::Starting => 2,
+        ProviderRunState::Parked => 1,
         ProviderRunState::Ended => 0,
     }
 }

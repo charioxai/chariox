@@ -1,0 +1,1 @@
+MCP `{{MCP_NAME}}` is now loaded. Continue the visible user request exactly. Use the newly available provider-native MCP tool if requested, then complete any required Chariox workspace live sync file write before replying.

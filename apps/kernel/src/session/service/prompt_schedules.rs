@@ -1,7 +1,5 @@
 use super::*;
 
-const DEFAULT_CONTINUATION_PROMPT: &str = "Continue from where you left off.";
-
 impl SessionService {
     pub fn next_scheduled_runtime_wake_at_ms(&self) -> Option<u64> {
         self.store
@@ -45,7 +43,13 @@ impl SessionService {
         let prompt = prompt
             .map(|prompt| prompt.trim().to_string())
             .filter(|prompt| !prompt.is_empty())
-            .unwrap_or_else(|| DEFAULT_CONTINUATION_PROMPT.to_string());
+            .unwrap_or_else(|| {
+                crate::prompt_assembly::render_configured_prompt(
+                    "workflow/schedule-continuation",
+                    include_str!("../../provider/workflow_schedule_continuation_instructions.md"),
+                    &[],
+                )
+            });
         let schedule = AgentPromptSchedule::new(
             self.next_agent_prompt_schedule_id(),
             agent_id,

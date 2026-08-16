@@ -441,6 +441,19 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.delivery_phase)
     }
 
+    /// Returns true while a durable prompt has been accepted by the kernel but has not
+    /// yet been acknowledged by its provider. Provider output from a previous turn must
+    /// not be allowed to settle this prompt during that window.
+    pub(crate) fn delivery_pending(&self) -> bool {
+        self.status == PromptStatus::Dispatching
+            || matches!(
+                self.durable_delivery_phase(),
+                Some(
+                    DurablePromptDeliveryPhase::Accepted | DurablePromptDeliveryPhase::Dispatching
+                )
+            )
+    }
+
     pub(crate) fn durable_delivery_provider_run_id(&self) -> Option<&str> {
         self.private_metadata
             .as_ref()

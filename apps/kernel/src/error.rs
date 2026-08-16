@@ -101,6 +101,12 @@ pub enum DaemonError {
         expected_revision: u64,
         current_revision: u64,
     },
+    #[error("prompt setting `{id}` changed: expected revision {expected_revision}, current revision {current_revision}; refresh and retry")]
+    PromptSettingConflict {
+        id: String,
+        expected_revision: u64,
+        current_revision: u64,
+    },
     #[error("workflow alias `{alias}` is invalid: {message}")]
     InvalidWorkflowAlias {
         alias: String,

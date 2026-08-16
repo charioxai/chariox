@@ -32,6 +32,7 @@ export type ParsedSlashCommand =
   | { kind: "worktree"; raw: string; args: string[] }
   | { kind: "workflow"; raw: string; args: string[] }
   | { kind: "notifications"; raw: string; args: string[] }
+  | { kind: "settings"; raw: string; args: string[] }
   | { kind: "loop"; raw: string; prompt: string }
   | { kind: "goal"; raw: string; prompt: string }
   | {
@@ -76,6 +77,7 @@ export type SlashCommandHandlers = {
   onWorktree: (command: Extract<ParsedSlashCommand, { kind: "worktree" }>) => Promise<unknown> | unknown
   onWorkflow: (command: Extract<ParsedSlashCommand, { kind: "workflow" }>) => Promise<unknown> | unknown
   onNotifications?: (command: Extract<ParsedSlashCommand, { kind: "notifications" }>) => Promise<unknown> | unknown
+  onSettings?: (command: Extract<ParsedSlashCommand, { kind: "settings" }>) => Promise<unknown> | unknown
   onLoop: (command: Extract<ParsedSlashCommand, { kind: "loop" }>) => Promise<unknown> | unknown
   onGoal: (command: Extract<ParsedSlashCommand, { kind: "goal" }>) => Promise<unknown> | unknown
   onWait?: (command: Extract<ParsedSlashCommand, { kind: "wait" }>) => Promise<unknown> | unknown
@@ -248,6 +250,13 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
       args: trimmed.replace(/^\/notifications\s*/, "").trim().split(/\s+/).filter(Boolean),
     }
   }
+  if (trimmed === "/settings prompts" || trimmed.startsWith("/settings prompts ")) {
+    return {
+      kind: "settings",
+      raw: trimmed,
+      args: trimmed.replace(/^\/settings\s+/, "").trim().split(/\s+/).filter(Boolean),
+    }
+  }
   if (trimmed === "/loop" || trimmed.startsWith("/loop ")) {
     return {
       kind: "loop",
@@ -330,6 +339,9 @@ export function parseSlashCommand(input: string): ParsedSlashCommand | null {
 
 export function sharedShellCommandForSlashCommand(input: string): string | null {
   const command = input.trim()
+  if (command === "/settings prompts" || command.startsWith("/settings prompts ")) {
+    return command.slice(1)
+  }
   if (command === "/collab invites" || command === "/collab invites list") {
     return "session invites"
   }
@@ -466,6 +478,9 @@ export async function executeSlashCommand(
     case "notifications":
       await handlers.onNotifications?.(command)
       break
+    case "settings":
+      await handlers.onSettings?.(command)
+      break
     case "loop":
       await handlers.onLoop(command)
       break
@@ -522,6 +537,7 @@ export function shouldClearCommandCenterForSlashCommand(command: ParsedSlashComm
     case "worktree":
     case "workflow":
     case "notifications":
+    case "settings":
     case "loop":
     case "goal":
     case "wait":
