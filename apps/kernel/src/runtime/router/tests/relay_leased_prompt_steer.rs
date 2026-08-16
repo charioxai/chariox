@@ -178,6 +178,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
         workflow_run_id: "workflow-run-tools".to_string(),
         workflow_node_run_id: "workflow-node-tools".to_string(),
         delivery_token: "delivery-token-tools".to_string(),
+        event_reply_enabled: true,
     };
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let fresh_discovery_saw_reply = Arc::new(AtomicBool::new(false));

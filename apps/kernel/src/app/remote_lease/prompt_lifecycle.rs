@@ -183,6 +183,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &leased_agent,
             &required_mcps,
             &remote_extension_manifest,
+            workflow_context
+                .as_ref()
+                .is_some_and(|context| context.event_reply_enabled),
         )? {
             LeasedProviderRunMatch::Ready(provider_run_id) => {
                 self.app.mark_leased_provider_run(&provider_run_id);

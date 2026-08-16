@@ -98,6 +98,10 @@ pub struct RemoteWorkflowTurnContext {
     pub workflow_run_id: String,
     pub workflow_node_run_id: String,
     pub delivery_token: String,
+    /// Capability snapshot selected by the home workflow event binding.
+    /// Older peers default to disabled, preserving the safe behavior.
+    #[serde(default)]
+    pub event_reply_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

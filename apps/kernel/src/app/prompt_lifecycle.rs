@@ -56,6 +56,23 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
+        let event_reply_enabled = workflow_run
+            .publication_invocation()
+            .and_then(|invocation| invocation.hook_id.as_deref())
+            .and_then(|binding_id| {
+                self.app
+                    .sessions()
+                    .get_session(session_id)
+                    .ok()
+                    .map(|session| {
+                        session
+                            .workflow_event_binding(binding_id)
+                            .is_some_and(|binding| {
+                                matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"))
+                            })
+                    })
+            })
+            .unwrap_or(false);
         Ok(RemoteWorkflowTurnContext {
             home_kernel_id: self.app.config().daemon_id.clone(),
             home_session_id: session_id.to_string(),
@@ -63,6 +80,7 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
             workflow_run_id: workflow_run.id().to_string(),
             workflow_node_run_id: workflow_node_run_id.to_string(),
             delivery_token,
+            event_reply_enabled,
         })
     }
 }
