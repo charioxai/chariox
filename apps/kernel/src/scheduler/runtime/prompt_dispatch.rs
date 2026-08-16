@@ -38,6 +38,7 @@ pub(super) fn dispatch_workflow_prompt(
 ) -> Result<(), DaemonError> {
     let target_agent = app.agents().get_agent(target_agent_id)?;
     if let Some(remote_execution) = target_agent.remote_execution().cloned() {
+        app.ensure_remote_agent_binding_protocol(&remote_execution)?;
         app.mark_active_prompt_delivery(
             session_id,
             target_agent_id,

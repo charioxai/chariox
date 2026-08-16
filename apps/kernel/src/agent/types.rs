@@ -18,6 +18,15 @@ pub struct RemoteAgentBinding {
     pub relay_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub relay_token: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub relay_peer_protocol_version: Option<u32>,
+}
+
+impl RemoteAgentBinding {
+    pub(crate) fn relay_peer_protocol_compatible(&self) -> bool {
+        self.relay_peer_protocol_version
+            == Some(crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

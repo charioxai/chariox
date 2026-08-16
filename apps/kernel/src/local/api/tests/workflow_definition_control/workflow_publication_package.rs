@@ -298,6 +298,9 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
                     active_worker_provider_run_id: Some("provider-run-1".to_string()),
                     relay_url: Some("wss://relay.example.test".to_string()),
                     relay_token: Some("relay-secret-must-not-ship".to_string()),
+                    relay_peer_protocol_version: Some(
+                        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                    ),
                 },
             )
             .expect("agent should bind to remote execution");

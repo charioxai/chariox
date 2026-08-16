@@ -804,6 +804,14 @@ fn extract_prompt_manifest_entries(context: &str) -> (Option<&str>, Vec<PromptMa
     (Some(body), entries)
 }
 
+pub(crate) fn strip_prompt_manifest_entries(context: &str) -> String {
+    extract_prompt_manifest_entries(context)
+        .0
+        .unwrap_or(context)
+        .trim()
+        .to_string()
+}
+
 fn prompt_settings_error(message: &str, setting_id: &str) -> DaemonError {
     DaemonError::ProviderProtocol {
         provider_run_id: "prompt-settings".to_string(),
@@ -1531,6 +1539,19 @@ mod tests {
         assert!(!envelope
             .hidden_system_context
             .contains(PROMPT_MANIFEST_MARKER_PREFIX));
+    }
+
+    #[test]
+    fn native_hook_context_strips_internal_manifest_marker_but_keeps_schedule() {
+        let entry = PromptManifestEntry {
+            template_id: "runtime/scheduled-prompt".to_string(),
+            sha256: "abc".to_string(),
+        };
+        let context = attach_prompt_manifest_entry("Run the scheduled task.", &entry);
+        assert_eq!(
+            strip_prompt_manifest_entries(&context),
+            "Run the scheduled task."
+        );
     }
 
     #[test]

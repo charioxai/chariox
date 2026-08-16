@@ -211,6 +211,24 @@ async fn submit_remote_prompt_to_worker(
     remote_extension_manifest: crate::extension::RemoteExtensionManifest,
     unexpected_response_message: &'static str,
 ) -> Result<String, DaemonError> {
+    let agent = state.owned.agent_store.get_agent(&dispatch.agent_id)?;
+    let remote_execution = agent
+        .remote_execution()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "dispatch remote agent prompt",
+            message: format!("agent `{}` lost its remote binding", dispatch.agent_id),
+        })?;
+    if !remote_execution.relay_peer_protocol_compatible() {
+        return Err(DaemonError::LocalTransport {
+            operation: "dispatch remote agent prompt",
+            message: format!(
+                "remote worker `{}` has an incompatible or legacy relay peer protocol {:?}; rebind the remote agent before dispatch (current protocol {})",
+                remote_execution.worker_kernel_id,
+                remote_execution.relay_peer_protocol_version,
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
+        });
+    }
     let config = remote_dispatch_relay_config(state.config_snapshot().await, dispatch);
     let target = ClientTarget {
         daemon_id: Some(dispatch.worker_kernel_id.clone()),

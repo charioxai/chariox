@@ -1247,7 +1247,9 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 attachment_context,
             ])
         } else {
-            join_claude_context([native_hidden, attachment_context])
+            let scheduled_hidden =
+                crate::prompt_assembly::strip_prompt_manifest_entries(prompt.hidden_system_context);
+            join_claude_context([scheduled_hidden, native_hidden, attachment_context])
         };
         let _ = fs::write(context_file, hidden_context);
         let visible = join_claude_context([native_attachment_suffix, visible]);

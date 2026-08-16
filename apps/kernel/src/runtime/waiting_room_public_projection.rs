@@ -1278,6 +1278,9 @@ mod tests {
             active_worker_provider_run_id: None,
             relay_url: None,
             relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         }));
         session.set_agents(vec![agent]);
         let metaagent_events = MetaagentEventStore::default();
@@ -1342,6 +1345,9 @@ mod tests {
                 active_worker_provider_run_id: None,
                 relay_url: None,
                 relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             }));
             session.set_agents(vec![agent]);
             let mut summaries = waiting_room_session_summaries(

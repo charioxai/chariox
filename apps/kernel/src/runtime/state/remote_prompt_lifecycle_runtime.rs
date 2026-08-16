@@ -267,6 +267,7 @@ impl KernelRuntimeState {
             };
             let submit_result = self
                 .with_app_side_effect(|app| {
+                    app.ensure_remote_agent_binding_protocol(&remote_execution)?;
                     let relay_config = app.relay_config_for_remote_execution(&remote_execution);
                     app.block_on_relay_future(
                         crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
@@ -390,6 +391,9 @@ mod tests {
             active_worker_provider_run_id: active_run.map(str::to_string),
             relay_url: None,
             relay_token: None,
+            relay_peer_protocol_version: Some(
+                crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+            ),
         }
     }
 

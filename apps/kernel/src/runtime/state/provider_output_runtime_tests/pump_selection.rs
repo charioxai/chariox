@@ -244,6 +244,9 @@ async fn local_provider_launch_preserves_and_restores_projected_remote_predecess
                 active_worker_provider_run_id: Some("worker-run-1".to_string()),
                 relay_url: None,
                 relay_token: None,
+                relay_peer_protocol_version: Some(
+                    crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+                ),
             },
         )
         .expect("remote agent should bind");
