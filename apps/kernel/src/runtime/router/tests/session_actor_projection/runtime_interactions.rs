@@ -378,6 +378,10 @@ fn native_interaction_subscription_routers(
 
 #[tokio::test]
 async fn dispatched_native_provider_interaction_updates_subscription_projection() {
+    Box::pin(run_dispatched_native_provider_interaction_scenario()).await;
+}
+
+async fn run_dispatched_native_provider_interaction_scenario() {
     let (app, session_id, agent_id, attachment_id) =
         native_interaction_subscription_app("native-interaction-subscription");
     let router = Box::new(CommandRouter::with_interactive_capacity(app, 1));

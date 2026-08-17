@@ -33,6 +33,66 @@ struct CatalogCacheEntry {
 
 static CATALOG_CACHE: OnceLock<Mutex<BTreeMap<String, CatalogCacheEntry>>> = OnceLock::new();
 
+pub(crate) struct WorkflowEventBindingContract {
+    pub(crate) generator_id: String,
+    pub(crate) generator_version: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) connection_id: String,
+    pub(crate) event_type: String,
+    pub(crate) event_type_version: u32,
+    pub(crate) action_ids: Vec<String>,
+    pub(crate) reply_mode: Option<String>,
+}
+
+impl From<&crate::local::CreateWorkflowEventBindingRequest> for WorkflowEventBindingContract {
+    fn from(request: &crate::local::CreateWorkflowEventBindingRequest) -> Self {
+        Self {
+            generator_id: request.generator_id.clone(),
+            generator_version: request.generator_version.clone(),
+            manifest_digest: request.manifest_digest.clone(),
+            connection_id: request.connection_id.clone(),
+            event_type: request.event_type.clone(),
+            event_type_version: request.event_type_version,
+            action_ids: request.action_ids.clone(),
+            reply_mode: request.reply_mode.clone(),
+        }
+    }
+}
+
+impl From<&crate::session::WorkflowEventBinding> for WorkflowEventBindingContract {
+    fn from(binding: &crate::session::WorkflowEventBinding) -> Self {
+        Self {
+            generator_id: binding.generator_id.clone(),
+            generator_version: binding.generator_version.clone(),
+            manifest_digest: binding.manifest_digest.clone(),
+            connection_id: binding.connection_id.clone(),
+            event_type: binding.event_type.clone(),
+            event_type_version: binding.event_type_version,
+            action_ids: binding.action_ids.clone(),
+            reply_mode: binding.reply_mode.clone(),
+        }
+    }
+}
+
+impl WorkflowEventBindingContract {
+    pub(crate) async fn required_scopes(
+        &self,
+        config_projection: &DaemonConfigProjectionStore,
+    ) -> Result<Vec<String>, DaemonError> {
+        validate_event_binding_contract(
+            config_projection,
+            &self.generator_id,
+            &self.generator_version,
+            &self.manifest_digest,
+            &self.event_type,
+            self.event_type_version,
+            &self.action_ids,
+            self.reply_mode.as_deref(),
+        )
+        .await
+    }
+}
+
 pub(crate) async fn execute_event_catalog_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
@@ -1044,11 +1104,11 @@ fn project_event_connection_usage(
     )
 }
 
-pub(crate) fn workflow_event_binding_connection(
+pub(crate) fn workflow_event_binding_contract(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
     binding_id: &str,
-) -> Option<(String, String)> {
+) -> Option<WorkflowEventBindingContract> {
     runtime_state
         .list_session_snapshots()
         .into_iter()
@@ -1058,7 +1118,7 @@ pub(crate) fn workflow_event_binding_connection(
                 .workflow_event_bindings()
                 .iter()
                 .find(|binding| binding.id == binding_id)
-                .map(|binding| (binding.generator_id.clone(), binding.connection_id.clone()))
+                .map(WorkflowEventBindingContract::from)
         })
 }
 
