@@ -54,6 +54,28 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
 }
 
 #[test]
+fn runtime_tool_snapshot_policy_keeps_external_context_tools_out_of_large_writes() {
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+    ));
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+    ));
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::WORKFLOW_CONSOLE_WRITE_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
+    ));
+}
+
+#[test]
 fn event_context_idempotency_fingerprint_scopes_request_parameters() {
     let first = super::event_context_request_fingerprint("thread", 20, None, None);
     let same_request = super::event_context_request_fingerprint("thread", 20, None, None);
@@ -490,15 +512,13 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
         .owned
         .durable_state_store
         .load_subject_events_by_kind(session.id(), "session.updated", 10)
-        .expect("durable workflow runtime tool events should load");
-    let latest_event = durable_events
-        .last()
-        .expect("workflow runtime tool call should be durable before returning");
-    assert_eq!(latest_event.payload["reason"], "workflow_runtime_tool");
-    serde_json::from_value::<crate::session::RuntimeSession>(
-        latest_event.payload["session"].clone(),
-    )
-    .expect("durable workflow runtime session should deserialize");
+        .expect("durable session events should load");
+    assert!(
+        durable_events
+            .iter()
+            .all(|event| event.payload["reason"] != "workflow_runtime_tool"),
+        "read-only workflow tools must not append a full session snapshot"
+    );
     let outgoing = result.payload["outgoing_edges"]
         .as_array()
         .expect("outgoing edges should be an array");

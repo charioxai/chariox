@@ -6,6 +6,17 @@
 use super::*;
 use sha2::{Digest, Sha256};
 
+fn runtime_tool_requires_session_snapshot(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+            | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+            | crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_INTERMEDIATE_WORKFLOW_RUN_OUTPUT_TOOL
+            | crate::transport::runtime_tools::WORKFLOW_CONSOLE_WRITE_TOOL
+            | crate::transport::runtime_tools::WORKFLOW_CONSOLE_CLEAR_TOOL
+    )
+}
+
 fn event_context_request_fingerprint(
     kind: &str,
     limit: u32,
@@ -124,13 +135,20 @@ impl KernelRuntimeOwnedState {
                 &context.session_id,
                 &context.workflow_node_run_id,
                 crate::session::WorkflowRuntimeToolCallEvent::new(
-                    canonical_tool_name,
+                    canonical_tool_name.clone(),
                     arguments_json,
                     result_json,
                     ok,
                 ),
             );
-        self.persist_workflow_runtime_session(&context.session_id, "workflow_runtime_tool")?;
+        // Most runtime tools only read provider context or call an external service. Their
+        // in-memory tool receipt is included in the next workflow checkpoint, but writing the
+        // entire session after every one creates multi-megabyte durable events and can block the
+        // provider's terminal output path behind a large SQLite write. Persist immediately only
+        // for tools that change restart-critical workflow state.
+        if runtime_tool_requires_session_snapshot(&canonical_tool_name) {
+            self.persist_workflow_runtime_session(&context.session_id, "workflow_runtime_tool")?;
+        }
         result.map(|result| (result, dispatches))
     }
 
