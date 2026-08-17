@@ -284,3 +284,29 @@ test("workflow event attachment reports the canonical attach command in its usag
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /usage: workflow trigger event attach/)
 })
+
+test("workflow event attachment rejects an empty action capability list", async () => {
+  const result = await executeWorkflowEventPublicationCommand(
+    [
+      "attach",
+      "publication-1",
+      "github",
+      "pull_request.opened",
+      "--generator-version",
+      "1.0.0",
+      "--manifest-digest",
+      "sha256:abc",
+      "--connection",
+      "connection-1",
+      "--scope",
+      "repo:charioxai/chariox",
+      "--actions",
+      " , ",
+    ],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    { send: async () => ({}) },
+  )
+
+  assert.equal(result.ok, false)
+  assert.match(result.message ?? "", /--actions must contain at least one comma-separated action ID/)
+})
