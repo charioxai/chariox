@@ -44,6 +44,15 @@ Run the conformance tests with:
 cargo test -p chariox-event-protocol -p chariox-aegs-sdk -p chariox-aegs-dummy
 ```
 
+The SDK is intentionally developed in this repository as a workspace package:
+the local `chariox-event-protocol` path keeps protocol and SDK changes tested
+together. For a distributable release, publish the matching protocol crate
+before publishing `chariox-aegs-sdk`; the SDK dependency is versioned so an
+external provider can then depend on the public crates without this repository
+or any private AEDS/AEGS source. Until that release sequence is complete,
+external examples should use the public repository workspace (or a pinned
+source checkout) rather than an unpublished registry package.
+
 An AEGS must expose `GET /healthz`, `GET /readyz`, `GET /version`, and the
 capability-protected `PUT /v1/subscriptions/reconcile` endpoint. It must accept
 only authentic provider events, normalize a provider occurrence once, apply
