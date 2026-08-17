@@ -1040,6 +1040,19 @@ impl AegsServer {
                         return error(StatusCode::BAD_REQUEST, "invalid_callback", message)
                     }
                 };
+                // GitHub sends `setup_action=update` when an administrator changes an
+                // installation's repository or permission scope from GitHub settings. That
+                // administrative callback has no OAuth state and must not be treated as a
+                // connection authorization completion (nor should its one-time code be
+                // exchanged without an owner-bound pending authorization).
+                if query.get("setup_action").map(String::as_str) == Some("update")
+                    && !query.contains_key("state")
+                {
+                    return authorization_setup_updated_page(
+                        &self.producer_id,
+                        query.get("installation_id").map(String::as_str),
+                    );
+                }
                 let provider = Arc::clone(&self.provider);
                 match tokio::task::spawn_blocking(move || provider.complete_authorization(&query))
                     .await
@@ -1441,6 +1454,33 @@ fn authorization_complete_page(
         .expect("valid authorization response")
 }
 
+fn authorization_setup_updated_page(
+    generator_id: &str,
+    installation_id: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let generator = html_escape(generator_id);
+    let installation = installation_id
+        .map(html_escape)
+        .map(|value| format!("<p>Installation: <code>{value}</code></p>"))
+        .unwrap_or_default();
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Installation updated</title></head>\
+         <body><main><h1>Installation updated</h1><p>The {generator} installation was updated.\
+         Return to Chariox and reconnect or refresh this service so the kernel can verify the\
+         new permissions.</p>{installation}<p>You can close this window.</p></main></body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .header(
+            "content-security-policy",
+            "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        .body(Full::new(Bytes::from(html)))
+        .expect("valid installation update response")
+}
+
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1494,6 +1534,19 @@ mod tests {
             "connection-1",
             Some("https://example.test/return?value=%22"),
         );
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+    }
+
+    #[test]
+    fn setup_update_without_state_is_an_informational_success() {
+        let response = authorization_setup_updated_page("dev.arroba.github", Some("153623497"));
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response
