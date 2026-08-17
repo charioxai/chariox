@@ -452,7 +452,11 @@ pub(crate) fn workflow_event_capabilities_for_prompt_from_runtime(
             .input
             .get("reply_context")
             .is_some_and(|context| !context.is_null());
-    Ok((reply_enabled, context_enabled, !binding.action_ids.is_empty()))
+    Ok((
+        reply_enabled,
+        context_enabled,
+        !binding.action_ids.is_empty(),
+    ))
 }
 
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
@@ -662,7 +666,7 @@ mod tests {
         let capabilities =
             workflow_event_capabilities_for_prompt_from_runtime(&app, session.id(), &prompt)
                 .expect("binding capabilities should resolve");
-        assert_eq!(capabilities, (false, true));
+        assert_eq!(capabilities, (false, true, false));
         let provider_run_id = ensure_workflow_provider_run_for_prompt_from_runtime(
             &mut app,
             session.id(),

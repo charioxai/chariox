@@ -758,7 +758,11 @@ impl KernelRuntimeOwnedState {
             }
             (binding, invocation, workflow_run.id().to_string())
         };
-        if !binding.action_ids.iter().any(|enabled| enabled == action_id) {
+        if !binding
+            .action_ids
+            .iter()
+            .any(|enabled| enabled == action_id)
+        {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_event_action",
                 message: format!("event action `{action_id}` is not enabled for this subscription"),
@@ -771,6 +775,46 @@ impl KernelRuntimeOwnedState {
                 message: "replies are disabled for this event subscription".to_string(),
             });
         }
+        let action_input = if action_id == "notification.reply" {
+            let input = args
+                .input
+                .as_object()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "notification.reply input must be an object".to_string(),
+                })?;
+            let text = input
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && text.len() <= 40_000)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "notification.reply text must contain between 1 and 40000 characters"
+                        .to_string(),
+                })?;
+            if !matches!(configured_mode, "thread" | "channel") {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "event subscription has an invalid reply mode".to_string(),
+                });
+            }
+            let requested_mode = input
+                .get("mode")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or(configured_mode);
+            if requested_mode != configured_mode {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: format!(
+                        "reply mode `{requested_mode}` is not enabled; configured mode is `{configured_mode}`"
+                    ),
+                });
+            }
+            serde_json::json!({ "text": text, "mode": configured_mode })
+        } else {
+            args.input.clone()
+        };
         let reply_context = invocation
             .input
             .get("reply_context")
@@ -809,7 +853,7 @@ impl KernelRuntimeOwnedState {
             owner_id,
             connection_id: binding.connection_id,
             action_id: action_id.to_string(),
-            input: args.input,
+            input: action_input,
             context: reply_context,
             idempotency_key,
         };
