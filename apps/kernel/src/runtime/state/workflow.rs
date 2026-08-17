@@ -168,7 +168,11 @@ impl KernelRuntimeOwnedState {
                 .input
                 .get("reply_context")
                 .is_some_and(|context| !context.is_null());
-        Ok((reply_enabled, context_enabled, !binding.action_ids.is_empty()))
+        Ok((
+            reply_enabled,
+            context_enabled,
+            !binding.action_ids.is_empty(),
+        ))
     }
 
     pub(super) fn workflow_dispatch_claim_id(

@@ -70,7 +70,11 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
                         .input
                         .get("reply_context")
                         .is_some_and(|context| !context.is_null());
-                Some((reply_enabled, context_enabled, !binding.action_ids.is_empty()))
+                Some((
+                    reply_enabled,
+                    context_enabled,
+                    !binding.action_ids.is_empty(),
+                ))
             })
             .unwrap_or((false, false, false));
         Ok(RemoteWorkflowTurnContext {

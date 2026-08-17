@@ -564,7 +564,9 @@ pub fn ensure_workflow_provider_run_for_agent(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    ensure_workflow_provider_run_for_agent_with_event_reply(app, session_id, agent_id, false, false, false)
+    ensure_workflow_provider_run_for_agent_with_event_reply(
+        app, session_id, agent_id, false, false, false,
+    )
 }
 
 pub fn ensure_workflow_provider_run_for_agent_with_event_reply(

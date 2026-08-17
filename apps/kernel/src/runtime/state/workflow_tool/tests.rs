@@ -162,9 +162,9 @@ fn event_context_tool_is_discovered_without_reply_tool() {
     assert!(specs.iter().any(|spec| {
         spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
     }));
-    assert!(!specs.iter().any(|spec| {
-        spec.name == crate::transport::runtime_tools::EVENT_ACTION_TOOL_QUALIFIED
-    }));
+    assert!(!specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::EVENT_ACTION_TOOL_QUALIFIED }));
     assert!(!specs.iter().any(|spec| {
         spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
     }));

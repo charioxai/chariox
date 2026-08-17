@@ -482,14 +482,16 @@ fn validate_event_binding_detail(
         )));
     }
     for action_id in action_ids {
-        let Some(_action) = detail.actions.iter().find(|action| action.action_id == *action_id) else {
+        let Some(_action) = detail
+            .actions
+            .iter()
+            .find(|action| action.action_id == *action_id)
+        else {
             return Err(connection_error(format!(
                 "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
             )));
         };
-        if action_id == "notification.reply"
-            && !matches!(reply_mode, Some("thread" | "channel"))
-        {
+        if action_id == "notification.reply" && !matches!(reply_mode, Some("thread" | "channel")) {
             return Err(connection_error(
                 "notification.reply requires reply_mode thread or channel".to_string(),
             ));

@@ -214,7 +214,13 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
         let (event_reply_enabled, event_context_enabled, event_actions_enabled) = workflow_context
             .as_ref()
-            .map(|context| (context.event_reply_enabled, context.event_context_enabled, context.event_actions_enabled))
+            .map(|context| {
+                (
+                    context.event_reply_enabled,
+                    context.event_context_enabled,
+                    context.event_actions_enabled,
+                )
+            })
             .unwrap_or((false, false, false));
         let provider_run = match self.prepare_leased_provider_run_matches_mcps(
             &leased_agent,

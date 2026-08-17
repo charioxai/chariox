@@ -142,7 +142,11 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 run.workflow_event_context_enabled() == event_context_enabled;
             let actions_capability_matches =
                 run.workflow_event_actions_enabled() == event_actions_enabled;
-            if mcp_matches && reply_capability_matches && context_capability_matches && actions_capability_matches {
+            if mcp_matches
+                && reply_capability_matches
+                && context_capability_matches
+                && actions_capability_matches
+            {
                 if !remote_extension_manifest.is_empty() {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),

@@ -72,7 +72,9 @@ impl SessionService {
             .or_else(|| publication.queue_ref().map(str::to_string));
         let reply_mode = normalize_event_reply_mode(reply_mode)?;
         let action_ids = normalize_event_action_ids(action_ids)?;
-        if action_ids.iter().any(|action| action == "notification.reply")
+        if action_ids
+            .iter()
+            .any(|action| action == "notification.reply")
             && reply_mode == "disabled"
         {
             return Err(DaemonError::LocalTransport {

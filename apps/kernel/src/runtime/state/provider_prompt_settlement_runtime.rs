@@ -356,11 +356,13 @@ impl KernelRuntimeState {
                 crate::scheduler::runtime::is_workflow_prompt_attachment(
                     prompt.source_attachment_id(),
                 ) && (!provider_run.workflow_tools_enabled()
-                    || next_queued_workflow_event_capabilities.is_some_and(|(reply, context, actions)| {
-                        provider_run.workflow_event_reply_enabled() != reply
-                            || provider_run.workflow_event_context_enabled() != context
-                            || provider_run.workflow_event_actions_enabled() != actions
-                    }))
+                    || next_queued_workflow_event_capabilities.is_some_and(
+                        |(reply, context, actions)| {
+                            provider_run.workflow_event_reply_enabled() != reply
+                                || provider_run.workflow_event_context_enabled() != context
+                                || provider_run.workflow_event_actions_enabled() != actions
+                        },
+                    ))
             });
         let next_queued_prompt = (!defer_workflow_prompt_for_provider_switch)
             .then_some(next_queued_prompt_candidate)
