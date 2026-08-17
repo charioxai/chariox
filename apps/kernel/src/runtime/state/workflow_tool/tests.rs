@@ -54,6 +54,21 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
 }
 
 #[test]
+fn event_context_idempotency_fingerprint_scopes_request_parameters() {
+    let first = super::event_context_request_fingerprint("thread", 20, None, None);
+    let same_request = super::event_context_request_fingerprint("thread", 20, None, None);
+    let next_page = super::event_context_request_fingerprint("thread", 20, Some("cursor-2"), None);
+    let different_limit = super::event_context_request_fingerprint("thread", 50, None, None);
+    let different_users =
+        super::event_context_request_fingerprint("users", 20, None, Some(&[String::from("U123")]));
+
+    assert_eq!(first, same_request);
+    assert_ne!(first, next_page);
+    assert_ne!(first, different_limit);
+    assert_ne!(first, different_users);
+}
+
+#[test]
 fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

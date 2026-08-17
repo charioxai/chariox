@@ -4,6 +4,19 @@
 //! retries, and surface workflow-specific tool results back through the runtime state.
 
 use super::*;
+use sha2::{Digest, Sha256};
+
+fn event_context_request_fingerprint(
+    kind: &str,
+    limit: u32,
+    cursor: Option<&str>,
+    user_ids: Option<&[String]>,
+) -> String {
+    let request = (kind, limit, cursor, user_ids);
+    let encoded = serde_json::to_vec(&request)
+        .expect("event context request fingerprint input must be serializable");
+    format!("{:x}", Sha256::digest(encoded))
+}
 
 impl KernelRuntimeOwnedState {
     pub(super) fn dispatch_workflow_runtime_tool_call(
@@ -416,8 +429,14 @@ impl KernelRuntimeOwnedState {
             &daemon_id,
             &session_owner,
         );
+        let request_fingerprint = event_context_request_fingerprint(
+            &args.kind,
+            limit,
+            args.cursor.as_deref(),
+            args.user_ids.as_deref(),
+        );
         let idempotency_key = format!(
-            "chariox:{workflow_run_id}:{}:event-context:{}",
+            "chariox:{workflow_run_id}:{}:event-context:{}:{request_fingerprint}",
             context.workflow_node_run_id, args.kind
         );
         let mut input = serde_json::json!({"kind": args.kind, "limit": limit});
