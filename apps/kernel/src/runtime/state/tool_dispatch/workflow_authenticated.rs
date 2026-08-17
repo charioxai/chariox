@@ -69,10 +69,10 @@ impl KernelRuntimeState {
         }
         if canonical_tool_name == crate::transport::runtime_tools::EVENT_ACTION_TOOL
             && !event_reply_dispatch_snapshot_allows(
-                provider_run_allows_event_context,
+                provider_run_allows_event_reply,
                 leased_event_context
                     .as_ref()
-                    .map(|context| context.event_context_enabled),
+                    .map(|context| context.event_reply_enabled),
             )
         {
             return Err(DaemonError::LocalTransport {
