@@ -19,6 +19,7 @@ struct ReadyConnectionServer {
     revoked: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     scopes_reduced: Arc<AtomicBool>,
+    capability_issued: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -31,10 +32,12 @@ impl ReadyConnectionServer {
         let revoked = Arc::new(AtomicBool::new(false));
         let unavailable = Arc::new(AtomicBool::new(false));
         let scopes_reduced = Arc::new(AtomicBool::new(false));
+        let capability_issued = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread_revoked = Arc::clone(&revoked);
         let thread_unavailable = Arc::clone(&unavailable);
         let thread_scopes_reduced = Arc::clone(&scopes_reduced);
+        let thread_capability_issued = Arc::clone(&capability_issued);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -45,6 +48,8 @@ impl ReadyConnectionServer {
                             &thread_revoked,
                             &thread_unavailable,
                             &thread_scopes_reduced,
+                            &thread_capability_issued,
+                            address,
                         )
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -60,6 +65,7 @@ impl ReadyConnectionServer {
             revoked,
             unavailable,
             scopes_reduced,
+            capability_issued,
             thread: Some(thread),
         }
     }
@@ -90,6 +96,8 @@ fn serve_ready_connection(
     revoked: &AtomicBool,
     unavailable: &AtomicBool,
     scopes_reduced: &AtomicBool,
+    capability_issued: &AtomicBool,
+    address: std::net::SocketAddr,
 ) {
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
@@ -110,11 +118,20 @@ fn serve_ready_connection(
         return;
     }
     let request = String::from_utf8_lossy(&request);
-    let catalog_detail_request = request.starts_with("GET /v1/event-generators/dev.chariox.dummy?");
-    if !catalog_detail_request {
-        assert!(request
-            .to_ascii_lowercase()
-            .contains("authorization: bearer test-management-token"));
+    let catalog_detail_request = request
+        .starts_with("GET /v1/event-generators/dev.chariox.dummy HTTP/1.1")
+        || request.starts_with("GET /v1/event-generators/dev.chariox.dummy?");
+    let capability_request = request
+        .starts_with("POST /v1/event-generators/dev.chariox.dummy/management-capability HTTP/1.1");
+    if !catalog_detail_request && !capability_request {
+        assert!(
+            request
+                .to_ascii_lowercase()
+                .contains("authorization: bearer test-management-token")
+                || request
+                    .to_ascii_lowercase()
+                    .contains("authorization: bearer registry-issued-token")
+        );
     }
     if unavailable.load(Ordering::Relaxed) {
         let body = serde_json::json!({
@@ -147,6 +164,7 @@ fn serve_ready_connection(
             "installed_count": 0,
             "recommended": false,
             "availability": "available",
+            "management_url": format!("http://{address}"),
             "authorization": {"kind": "none"},
             "events": [{
                 "event_type": "dummy.test",
@@ -158,6 +176,30 @@ fn serve_ready_connection(
             }],
             "actions": [],
             "signature": {"key_id": "test", "algorithm": "ed25519", "value": "test"}
+        })
+        .to_string()
+    } else if capability_request {
+        assert!(request.contains("\"sessionToken\":\"cloud-session-token\""));
+        assert!(request.contains("\"generatorId\":\"dev.chariox.dummy\""));
+        assert!(request.contains("\"version\":\"1.0.0\""));
+        assert!(request.contains(&format!(
+            "\"manifestDigest\":\"{}\"",
+            crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
+        )));
+        assert!(request.contains(&format!("\"managementUrl\":\"http://{address}\"")));
+        capability_issued.store(true, Ordering::Relaxed);
+        serde_json::json!({
+            "token": "registry-issued-token",
+            "expiresAt": "2100-01-01T00:00:00Z"
+        })
+        .to_string()
+    } else if request.starts_with("POST /v1/authorizations HTTP/1.1") {
+        serde_json::json!({
+            "generator_id": "dev.chariox.dummy",
+            "status": "user_action_required",
+            "connection_id": "connection-dynamic",
+            "authorization_url": "https://example.test/authorize",
+            "expires_at_ms": 4_000_000_000_000_u64
         })
         .to_string()
     } else if request.starts_with("POST /v1/connections/query HTTP/1.1") {
@@ -215,6 +257,54 @@ fn serve_ready_connection(
         body
     )
     .unwrap();
+}
+
+#[test]
+fn kernel_installs_store_service_through_registry_issued_management_target() {
+    let server = ReadyConnectionServer::start();
+    let server_url = server.target().url;
+    let mut config = crate::DaemonConfig::for_tests();
+    config.event_registry_url = Some(server_url.clone());
+    config.event_generator_management_targets.clear();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: server_url,
+        email: "external@example.test".to_string(),
+        account_id: "account-external".to_string(),
+        user_id: "user-external".to_string(),
+        account_slug: "external".to_string(),
+        realm_id: "realm-external".to_string(),
+        relay_url: "wss://relay.example.test".to_string(),
+        issuer_id: "issuer-external".to_string(),
+        client_id: Some("client-external".to_string()),
+        client_alias: Some("external-client".to_string()),
+        machine_id: Some("machine-external".to_string()),
+        machine_alias: Some("external-machine".to_string()),
+        machine_credential: None,
+        cloud_session_token: Some("cloud-session-token".to_string()),
+        cloud_session_expires_at_ms: None,
+        token_expires_at_ms: None,
+    });
+    let harness = LocalRouterTestHarness::with_config(config);
+
+    let authorization = match harness
+        .dispatch(LocalDaemonRequest::InstallEventConnection(
+            crate::local::InstallEventConnectionRequest {
+                generator_id: "dev.chariox.dummy".to_string(),
+                return_url: Some("https://terminal.chariox.com/notifications".to_string()),
+            },
+        ))
+        .expect("Store metadata and a registry-issued capability should bootstrap installation")
+    {
+        LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } => authorization,
+        response => panic!("unexpected response: {response:?}"),
+    };
+
+    assert_eq!(authorization.generator_id, "dev.chariox.dummy");
+    assert_eq!(
+        authorization.connection_id.as_deref(),
+        Some("connection-dynamic")
+    );
+    assert!(server.capability_issued.load(Ordering::Relaxed));
 }
 
 fn http_request_complete(request: &[u8]) -> bool {
