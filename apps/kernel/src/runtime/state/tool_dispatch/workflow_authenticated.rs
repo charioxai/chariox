@@ -44,10 +44,10 @@ impl KernelRuntimeState {
         };
         if canonical_tool_name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
             && !event_reply_dispatch_snapshot_allows(
-                provider_run_allows_event_actions,
+                provider_run_allows_event_reply,
                 leased_event_context
                     .as_ref()
-                    .map(|context| context.event_actions_enabled),
+                    .map(|context| context.event_reply_enabled),
             )
         {
             return Err(DaemonError::LocalTransport {
@@ -72,10 +72,10 @@ impl KernelRuntimeState {
         }
         if canonical_tool_name == crate::transport::runtime_tools::EVENT_ACTION_TOOL
             && !event_reply_dispatch_snapshot_allows(
-                provider_run_allows_event_reply,
+                provider_run_allows_event_actions,
                 leased_event_context
                     .as_ref()
-                    .map(|context| context.event_reply_enabled),
+                    .map(|context| context.event_actions_enabled),
             )
         {
             return Err(DaemonError::LocalTransport {
