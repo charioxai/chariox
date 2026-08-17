@@ -79,17 +79,7 @@ impl WorkflowEventBindingContract {
         &self,
         config_projection: &DaemonConfigProjectionStore,
     ) -> Result<Vec<String>, DaemonError> {
-        validate_event_binding_contract(
-            config_projection,
-            &self.generator_id,
-            &self.generator_version,
-            &self.manifest_digest,
-            &self.event_type,
-            self.event_type_version,
-            &self.action_ids,
-            self.reply_mode.as_deref(),
-        )
-        .await
+        validate_event_binding_contract(config_projection, self).await
     }
 }
 
@@ -267,11 +257,7 @@ pub(crate) async fn resolve_event_generator_management_targets(
         let owner_ids = requested_owner_ids.to_vec();
         let capability = issue_event_generator_management_capability(
             profile,
-            &profile.account_id,
-            &profile.realm_id,
             &config.daemon_id,
-            profile.machine_id.as_deref(),
-            Some(&profile.user_id),
             &generator_id,
             &detail.summary.version,
             &detail.summary.manifest_digest,
@@ -470,19 +456,13 @@ pub(crate) async fn validate_event_connection(
 
 pub(crate) async fn validate_event_binding_contract(
     config_projection: &DaemonConfigProjectionStore,
-    generator_id: &str,
-    generator_version: &str,
-    manifest_digest: &str,
-    event_type: &str,
-    event_type_version: u32,
-    action_ids: &[String],
-    reply_mode: Option<&str>,
+    contract: &WorkflowEventBindingContract,
 ) -> Result<Vec<String>, DaemonError> {
     let registry_url = config_projection.snapshot().event_registry_url;
     let request =
         LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
-            generator_id: generator_id.to_string(),
-            version: Some(generator_version.to_string()),
+            generator_id: contract.generator_id.clone(),
+            version: Some(contract.generator_version.clone()),
         });
     let response = tokio::task::spawn_blocking(move || {
         if let Some(registry_url) = registry_url {
@@ -498,8 +478,14 @@ pub(crate) async fn validate_event_binding_contract(
             "event catalog returned an unexpected detail response".to_string(),
         ));
     };
-    validate_event_binding_detail(
-        &detail,
+    validate_event_binding_detail(&detail, contract)
+}
+
+fn validate_event_binding_detail(
+    detail: &EventGeneratorCatalogDetail,
+    contract: &WorkflowEventBindingContract,
+) -> Result<Vec<String>, DaemonError> {
+    let WorkflowEventBindingContract {
         generator_id,
         generator_version,
         manifest_digest,
@@ -507,26 +493,16 @@ pub(crate) async fn validate_event_binding_contract(
         event_type_version,
         action_ids,
         reply_mode,
-    )
-}
-
-fn validate_event_binding_detail(
-    detail: &EventGeneratorCatalogDetail,
-    generator_id: &str,
-    generator_version: &str,
-    manifest_digest: &str,
-    event_type: &str,
-    event_type_version: u32,
-    action_ids: &[String],
-    reply_mode: Option<&str>,
-) -> Result<Vec<String>, DaemonError> {
-    if detail.summary.generator_id != generator_id || detail.summary.version != generator_version {
+        ..
+    } = contract;
+    if detail.summary.generator_id != *generator_id || detail.summary.version != *generator_version
+    {
         return Err(connection_error(format!(
             "event catalog returned `{}`@`{}` for requested `{generator_id}@{generator_version}`",
             detail.summary.generator_id, detail.summary.version
         )));
     }
-    if detail.summary.manifest_digest != manifest_digest {
+    if detail.summary.manifest_digest != *manifest_digest {
         return Err(connection_error(format!(
             "event generator manifest changed; expected `{manifest_digest}`, catalog has `{}`",
             detail.summary.manifest_digest
@@ -535,7 +511,7 @@ fn validate_event_binding_detail(
     let Some(event) = detail
         .events
         .iter()
-        .find(|event| event.event_type == event_type && event.version == event_type_version)
+        .find(|event| event.event_type == *event_type && event.version == *event_type_version)
     else {
         return Err(connection_error(format!(
             "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
@@ -556,7 +532,9 @@ fn validate_event_binding_detail(
                 "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
             )));
         };
-        if action_id == "notification.reply" && !matches!(reply_mode, Some("thread" | "channel")) {
+        if action_id == "notification.reply"
+            && !matches!(reply_mode.as_deref(), Some("thread" | "channel"))
+        {
             return Err(connection_error(
                 "notification.reply requires reply_mode thread or channel".to_string(),
             ));
@@ -1851,6 +1829,24 @@ fn catalog_error(message: String) -> DaemonError {
 mod tests {
     use super::*;
 
+    fn binding_contract(
+        detail: &EventGeneratorCatalogDetail,
+        generator_id: &str,
+        event_type: &str,
+        action_ids: Vec<String>,
+    ) -> WorkflowEventBindingContract {
+        WorkflowEventBindingContract {
+            generator_id: generator_id.to_string(),
+            generator_version: detail.summary.version.clone(),
+            manifest_digest: detail.summary.manifest_digest.clone(),
+            connection_id: "connection-1".to_string(),
+            event_type: event_type.to_string(),
+            event_type_version: 1,
+            action_ids,
+            reply_mode: None,
+        }
+    }
+
     #[test]
     fn builtin_dummy_catalog_matches_publisher_manifest_fixture() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
@@ -1874,34 +1870,20 @@ mod tests {
     #[test]
     fn event_binding_contract_rejects_undeclared_event_type() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let error = validate_event_binding_detail(
-            &detail,
-            &detail.summary.generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            "dummy_typo",
-            1,
-            &[],
-            None,
-        )
-        .expect_err("undeclared event type must be rejected");
+        let contract =
+            binding_contract(&detail, &detail.summary.generator_id, "dummy_typo", vec![]);
+        let error = validate_event_binding_detail(&detail, &contract)
+            .expect_err("undeclared event type must be rejected");
         assert!(error.to_string().contains("is not declared"));
     }
 
     #[test]
     fn event_binding_contract_accepts_declared_event_type() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        validate_event_binding_detail(
-            &detail,
-            &detail.summary.generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            "dummy.test",
-            1,
-            &[],
-            None,
-        )
-        .expect("declared event type should be accepted");
+        let contract =
+            binding_contract(&detail, &detail.summary.generator_id, "dummy.test", vec![]);
+        validate_event_binding_detail(&detail, &contract)
+            .expect("declared event type should be accepted");
     }
 
     #[test]
@@ -1919,17 +1901,14 @@ mod tests {
             input_schema: serde_json::json!({"type": "object"}),
         }];
 
-        let required_scopes = validate_event_binding_detail(
+        let contract = binding_contract(
             &detail,
             &detail.summary.generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
             "dummy.test",
-            1,
-            &["dummy.acknowledge".to_string()],
-            None,
-        )
-        .expect("declared action should be accepted");
+            vec!["dummy.acknowledge".to_string()],
+        );
+        let required_scopes = validate_event_binding_detail(&detail, &contract)
+            .expect("declared action should be accepted");
 
         assert_eq!(required_scopes, vec!["actions:write", "events:read"]);
     }
@@ -1950,17 +1929,9 @@ mod tests {
     #[test]
     fn event_binding_contract_rejects_mismatched_generator_identity() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let error = validate_event_binding_detail(
-            &detail,
-            "dev.chariox.other",
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            "dummy.test",
-            1,
-            &[],
-            None,
-        )
-        .expect_err("mismatched catalog identity must be rejected");
+        let contract = binding_contract(&detail, "dev.chariox.other", "dummy.test", vec![]);
+        let error = validate_event_binding_detail(&detail, &contract)
+            .expect_err("mismatched catalog identity must be rejected");
         assert!(error.to_string().contains("event catalog returned"));
     }
 }

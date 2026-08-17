@@ -71,18 +71,12 @@ pub(crate) struct CloudRuntimeTokenResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CloudEventGeneratorManagementCapabilityResponse {
     pub(crate) token: String,
-    pub(crate) issuer: String,
-    pub(crate) key_id: String,
     pub(crate) expires_at: String,
 }
 
 pub(crate) async fn issue_event_generator_management_capability(
     profile: &PersistedCloudRelayProfile,
-    account_id: &str,
-    realm_id: &str,
     kernel_id: &str,
-    machine_id: Option<&str>,
-    user_id: Option<&str>,
     generator_id: &str,
     version: &str,
     manifest_digest: &str,
@@ -101,8 +95,8 @@ pub(crate) async fn issue_event_generator_management_capability(
         );
     }
     for (key, value) in [
-        ("accountId", account_id),
-        ("realmId", realm_id),
+        ("accountId", profile.account_id.as_str()),
+        ("realmId", profile.realm_id.as_str()),
         ("kernelId", kernel_id),
         ("generatorId", generator_id),
         ("version", version),
@@ -114,18 +108,16 @@ pub(crate) async fn issue_event_generator_management_capability(
             serde_json::Value::String(value.to_string()),
         );
     }
-    if let Some(machine_id) = machine_id {
+    if let Some(machine_id) = profile.machine_id.as_deref() {
         body.insert(
             "machineId".to_string(),
             serde_json::Value::String(machine_id.to_string()),
         );
     }
-    if let Some(user_id) = user_id {
-        body.insert(
-            "userId".to_string(),
-            serde_json::Value::String(user_id.to_string()),
-        );
-    }
+    body.insert(
+        "userId".to_string(),
+        serde_json::Value::String(profile.user_id.clone()),
+    );
     post_cloud_json_dynamic(
         profile.api_url.clone(),
         format!(

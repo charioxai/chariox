@@ -42,6 +42,7 @@ pub(crate) fn parse_public_key(value: &str) -> Result<VerifyingKey, String> {
         .map_err(|error| format!("invalid management public key: {error}"))
 }
 
+#[cfg(test)]
 pub(crate) fn verify_management_capability(
     token: &str,
     public_key: &VerifyingKey,

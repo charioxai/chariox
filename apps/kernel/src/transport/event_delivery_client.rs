@@ -444,7 +444,7 @@ async fn reconcile_aegs_subscriptions(
     }
     let kernel_owner_id = config.kernel_id.clone();
     let mut claims = runtime_state.event_generator_subscription_claims();
-    for (generator_id, _) in &generator_management_targets {
+    for generator_id in generator_management_targets.keys() {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
             generator_id: generator_id.clone(),

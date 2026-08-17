@@ -38,12 +38,15 @@ impl ReadyConnectionServer {
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((mut stream, _)) => serve_ready_connection(
-                        &mut stream,
-                        &thread_revoked,
-                        &thread_unavailable,
-                        &thread_scopes_reduced,
-                    ),
+                    Ok((mut stream, _)) => {
+                        stream.set_nonblocking(false).unwrap();
+                        serve_ready_connection(
+                            &mut stream,
+                            &thread_revoked,
+                            &thread_unavailable,
+                            &thread_scopes_reduced,
+                        )
+                    }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(Duration::from_millis(2));
                     }
@@ -88,22 +91,11 @@ fn serve_ready_connection(
     unavailable: &AtomicBool,
     scopes_reduced: &AtomicBool,
 ) {
-    stream
-        .set_read_timeout(Some(Duration::from_secs(2)))
-        .unwrap();
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
     loop {
         let read = match stream.read(&mut buffer) {
             Ok(read) => read,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-                ) =>
-            {
-                return;
-            }
             Err(error) => panic!("event connection test request read failed: {error}"),
         };
         if read == 0 {
