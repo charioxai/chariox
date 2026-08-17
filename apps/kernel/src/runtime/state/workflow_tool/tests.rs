@@ -91,6 +91,27 @@ fn event_context_idempotency_fingerprint_scopes_request_parameters() {
 }
 
 #[test]
+fn event_context_runtime_receipts_redact_provider_payloads() {
+    let result = crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "result": {
+                "messages": [{"text": "private conversation body"}],
+                "users": [{"id": "U123", "profile": "private profile"}]
+            }
+        }),
+    };
+    let receipt = super::workflow_runtime_tool_result_json(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
+        &result,
+    );
+
+    assert!(receipt.contains("\"redacted\":true"));
+    assert!(!receipt.contains("private conversation body"));
+    assert!(!receipt.contains("private profile"));
+}
+
+#[test]
 fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

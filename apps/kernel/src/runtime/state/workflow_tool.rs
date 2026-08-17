@@ -29,6 +29,31 @@ fn event_context_request_fingerprint(
     format!("{:x}", Sha256::digest(encoded))
 }
 
+fn workflow_runtime_tool_result_json(
+    tool_name: &str,
+    result: &crate::transport::runtime_tools::RuntimeToolResult,
+) -> String {
+    let payload = serde_json::to_vec(&result.payload)
+        .unwrap_or_else(|_| b"<unserializable runtime tool result>".to_vec());
+    if matches!(
+        tool_name,
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+    ) {
+        // Context is deliberately available to the active provider turn only. Keep a
+        // small audit receipt without copying conversation messages or profiles into the
+        // workflow turn envelope and, later, the durable session snapshot.
+        serde_json::json!({
+            "redacted": true,
+            "payload_bytes": payload.len(),
+            "payload_sha256": format!("{:x}", Sha256::digest(payload)),
+        })
+        .to_string()
+    } else {
+        String::from_utf8(payload)
+            .unwrap_or_else(|_| String::from("<unserializable runtime tool result>"))
+    }
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn dispatch_workflow_runtime_tool_call(
         &self,
@@ -121,10 +146,10 @@ impl KernelRuntimeOwnedState {
             }),
         };
         let result_json = match &result {
-            Ok(result) => Some(
-                serde_json::to_string(&result.payload)
-                    .unwrap_or_else(|_| String::from("<unserializable runtime tool result>")),
-            ),
+            Ok(result) => Some(workflow_runtime_tool_result_json(
+                &canonical_tool_name,
+                result,
+            )),
             Err(error) => Some(serde_json::json!({"error": error.to_string()}).to_string()),
         };
         let ok = result.as_ref().map(|entry| entry.ok).unwrap_or(false);
