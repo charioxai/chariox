@@ -6,7 +6,10 @@
 
 use std::collections::HashMap;
 
-use chariox_aegs_sdk::{AegsProvider, NormalizedEvent, WebhookInput, WebhookRoute};
+use chariox_aegs_sdk::{
+    verify_webhook_conformance, AegsProvider, NormalizedEvent, WebhookConformanceCase,
+    WebhookInput, WebhookRoute,
+};
 use serde_json::json;
 
 struct StarterProvider;
@@ -49,9 +52,25 @@ impl AegsProvider for StarterProvider {
 
 fn main() {
     let provider = StarterProvider;
-    let _ = provider;
-    let _headers = HashMap::<String, String>::new();
+    let mut headers = HashMap::<String, String>::new();
+    headers.insert("content-type".to_string(), "application/json".to_string());
+    let case = WebhookConformanceCase {
+        path: "/webhooks/starter/demo-connection".to_string(),
+        headers,
+        body: br#"{"id":"demo-occurrence"}"#.to_vec(),
+        now_ms: 1_735_689_600_000,
+        expected_event_type: "example.created".to_string(),
+        expected_connection_scope: "demo-connection".to_string(),
+    };
+
+    let event = verify_webhook_conformance(&provider, &case)
+        .expect("starter provider must pass the public webhook contract");
     println!(
-        "Implement authorization, signature verification, and webhook routing before deployment."
+        "starter AEGS conformance passed: {} ({})",
+        event.event_type, event.occurrence_id
+    );
+    println!(
+        "Next steps: replace the fixture normalization with provider signature verification,
+authorization, and webhook routing before deployment."
     );
 }

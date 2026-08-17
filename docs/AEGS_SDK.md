@@ -17,7 +17,18 @@ Copy [`packages/aegs-sdk/examples/starter_aegs.rs`](../packages/aegs-sdk/example
 into a provider repository, implement provider authorization and webhook
 normalization, then run the public contract suite before submitting the
 implementation. The starter is deliberately not a production adapter: it
-shows the boundary while making missing provider authentication explicit.
+shows the boundary while making missing provider authentication explicit. It
+also executes one deterministic local fixture through the same public
+`verify_webhook_conformance` harness used by provider tests:
+
+```sh
+cargo run -p chariox-aegs-sdk --example starter_aegs
+# starter AEGS conformance passed: example.created (demo-occurrence)
+```
+
+Replace the fixture and normalization with the provider's authenticated
+webhook path; do not treat this example as a substitute for signature
+verification or credential storage.
 
 Publisher manifests are signed locally. The SDK signs canonical unsigned JSON
 and records its digest in the envelope; it accepts only raw 32-byte Ed25519 keys in hexadecimal or
