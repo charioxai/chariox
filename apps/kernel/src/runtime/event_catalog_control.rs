@@ -168,6 +168,7 @@ async fn resolve_event_generator_management_targets(
             &profile.account_id,
             &profile.realm_id,
             &config.daemon_id,
+            &event_connection_owner_id(&config.daemon_id, caller_user_id),
             profile.machine_id.as_deref(),
             Some(&profile.user_id),
             &generator_id,
@@ -1086,13 +1087,23 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         ))
     })?;
     let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
-    let response = ureq::AgentBuilder::new()
+    let owner_id = serde_json::to_value(request).ok().and_then(|value| {
+        value
+            .get("owner_id")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    });
+    let mut http_request = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
         .build()
         .post(&format!("{}{path}", target.url))
-        .set("authorization", &format!("Bearer {}", target.token))
+        .set("authorization", &format!("Bearer {}", target.token));
+    if let Some(owner_id) = owner_id {
+        http_request = http_request.set("x-chariox-owner-id", &owner_id);
+    }
+    let response = http_request
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?

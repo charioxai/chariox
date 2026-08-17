@@ -401,6 +401,48 @@ impl AegsStore {
             .map_err(|error| error.to_string())
     }
 
+    pub fn all_for_owner(
+        &self,
+        generator_id: &str,
+        owner_id: &str,
+    ) -> Result<Vec<SubscriptionClaim>, String> {
+        let connection = self
+            .connection
+            .lock()
+            .map_err(|_| "AEGS subscription store lock was poisoned".to_string())?;
+        let mut statement = connection
+            .prepare(
+                "
+                SELECT binding_id, generator_id, connection_id, connection_scope,
+                       event_interest_key, event_type, event_type_version, filter_json,
+                       revision, active
+                FROM subscriptions
+                WHERE generator_id = ?1 AND owner_id = ?2
+                ORDER BY binding_id
+                ",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![generator_id, owner_id], |row| {
+                let filter_json: String = row.get(7)?;
+                Ok(SubscriptionClaim {
+                    binding_id: row.get(0)?,
+                    generator_id: row.get(1)?,
+                    connection_id: row.get(2)?,
+                    connection_scope: row.get(3)?,
+                    event_interest_key: row.get(4)?,
+                    event_type: row.get(5)?,
+                    event_type_version: row.get(6)?,
+                    filter: serde_json::from_str(&filter_json).unwrap_or(Value::Null),
+                    revision: row.get::<_, i64>(8)? as u64,
+                    active: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+
     /// Returns the active workflow trigger bindings attached to one provider connection.
     /// Providers use this read-only context to construct test events that still pass through
     /// ordinary subscription matching and AEDS delivery.

@@ -47,6 +47,11 @@ struct AegsServer {
     action_locks: ActionLockMap,
 }
 
+enum ManagementAuthorization {
+    Static,
+    Signed(crate::management_capability::ManagementCapabilityClaims),
+}
+
 type ActionLock = Arc<tokio::sync::Mutex<()>>;
 type ActionLockMap = Arc<std::sync::Mutex<HashMap<String, ActionLock>>>;
 
@@ -229,10 +234,15 @@ impl AegsServer {
                 Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
             },
             (Method::GET, "/v1/subscriptions") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
-                match self.store.all(&self.producer_id) {
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
+                let subscriptions = match management_owner(&request, &authorization) {
+                    Some(owner_id) => self.store.all_for_owner(&self.producer_id, &owner_id),
+                    None => self.store.all(&self.producer_id),
+                };
+                match subscriptions {
                     Ok(subscriptions) => json(
                         StatusCode::OK,
                         serde_json::json!({"subscriptions": subscriptions}),
@@ -243,9 +253,10 @@ impl AegsServer {
                 }
             }
             (Method::PUT, "/v1/subscriptions/reconcile") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -261,6 +272,10 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) = enforce_management_owner(&authorization, &reconcile.owner_id)
+                {
+                    return response;
+                }
                 if reconcile.generator_id != self.producer_id {
                     return error(
                         StatusCode::CONFLICT,
@@ -315,9 +330,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/actions") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -332,6 +348,9 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) = enforce_management_owner(&authorization, &action.owner_id) {
+                    return response;
+                }
                 if let Err(message) = action.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_action", message);
                 }
@@ -461,9 +480,10 @@ impl AegsServer {
                 json(StatusCode::ACCEPTED, response)
             }
             (Method::POST, "/v1/authorizations") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -479,6 +499,11 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &authorization.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = authorization.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_authorization", message);
                 }
@@ -531,9 +556,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/query") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -548,6 +574,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &query.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = query.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_connection_query", message);
                 }
@@ -616,9 +647,10 @@ impl AegsServer {
                 )
             }
             (Method::POST, "/v1/connections/inspect") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -634,6 +666,11 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &inspection.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = inspection.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -654,9 +691,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/refresh") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -671,6 +709,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &refresh.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = refresh.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -731,9 +774,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/test-event") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -748,6 +792,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &test.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = test.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_test_event", message);
                 }
@@ -808,9 +857,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/revoke") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -825,6 +875,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &revoke.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = revoke.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -883,9 +938,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/reconnect") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -901,6 +957,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &reconnect.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = reconnect.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -967,9 +1028,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/resources/query") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -984,6 +1046,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &query.owner_id)
+                {
+                    return response;
+                }
                 if let Err(message) = query.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_resource_query", message);
                 }
@@ -1328,7 +1395,7 @@ impl AegsServer {
     fn authorize_management(
         &self,
         request: &Request<Incoming>,
-    ) -> Result<(), Box<Response<Full<Bytes>>>> {
+    ) -> Result<ManagementAuthorization, Box<Response<Full<Bytes>>>> {
         let presented = request
             .headers()
             .get("authorization")
@@ -1339,7 +1406,7 @@ impl AegsServer {
             .as_deref()
             .is_some_and(|expected| Some(expected) == presented)
         {
-            return Ok(());
+            return Ok(ManagementAuthorization::Static);
         }
         if let Some(public_key) = self.management_public_key.as_ref() {
             let Some(presented) = presented else {
@@ -1349,7 +1416,7 @@ impl AegsServer {
                     "valid AEGS management capability required",
                 )));
             };
-            verify_management_capability(
+            let claims = verify_management_capability(
                 presented,
                 public_key,
                 &self.management_issuer,
@@ -1359,7 +1426,18 @@ impl AegsServer {
             .map_err(|message| {
                 Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized", message))
             })?;
-            return Ok(());
+            let presented_owner = request
+                .headers()
+                .get("x-chariox-owner-id")
+                .and_then(|value| value.to_str().ok());
+            if presented_owner != Some(claims.owner_id.as_str()) {
+                return Err(Box::new(error(
+                    StatusCode::FORBIDDEN,
+                    "management_owner_mismatch",
+                    "the management capability is not bound to the requested owner",
+                )));
+            }
+            return Ok(ManagementAuthorization::Signed(claims));
         }
         if self.management_token.is_none() && self.management_public_key.is_none() {
             return Err(Box::new(error(
@@ -1374,6 +1452,36 @@ impl AegsServer {
             "valid AEGS management capability required",
         )))
     }
+}
+
+fn management_owner(
+    request: &Request<Incoming>,
+    authorization: &ManagementAuthorization,
+) -> Option<String> {
+    match authorization {
+        ManagementAuthorization::Signed(claims) => Some(claims.owner_id.clone()),
+        ManagementAuthorization::Static => request
+            .headers()
+            .get("x-chariox-owner-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+    }
+}
+
+fn enforce_management_owner(
+    authorization: &ManagementAuthorization,
+    requested_owner: &str,
+) -> Result<(), Response<Full<Bytes>>> {
+    if let ManagementAuthorization::Signed(claims) = authorization {
+        if requested_owner != claims.owner_id {
+            return Err(error(
+                StatusCode::FORBIDDEN,
+                "management_owner_mismatch",
+                "the management capability is not bound to the requested owner",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn connection_status(status: &str, expires_at_ms: Option<u64>) -> AegsConnectionStatus {
@@ -1625,5 +1733,27 @@ mod tests {
         assert!(!action_receipt_is_durable("notification.context"));
         assert!(action_receipt_is_durable("notification.reply"));
         assert!(action_receipt_is_durable("custom.action"));
+    }
+
+    #[test]
+    fn signed_management_capability_cannot_cross_owner_boundary() {
+        let authorization = ManagementAuthorization::Signed(
+            crate::management_capability::ManagementCapabilityClaims {
+                issuer: "chariox-cloud".to_string(),
+                audience: "aegs-management".to_string(),
+                subject: "kernel-1".to_string(),
+                generator_id: "dev.chariox.slack".to_string(),
+                manifest_digest: "sha256:test".to_string(),
+                management_url: "https://aegs.example.test".to_string(),
+                user_id: "user-1".to_string(),
+                owner_id: "owner-1".to_string(),
+                issued_at: 100,
+                expires_at: 200,
+                token_id: "cap-1".to_string(),
+            },
+        );
+        assert!(enforce_management_owner(&authorization, "owner-1").is_ok());
+        let response = enforce_management_owner(&authorization, "owner-2").unwrap_err();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }
