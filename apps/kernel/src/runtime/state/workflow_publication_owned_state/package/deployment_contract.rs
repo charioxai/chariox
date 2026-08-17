@@ -73,6 +73,11 @@ pub(super) fn workflow_publication_deployment_contract_json(
 fn deployment_configuration(
     snapshot: &crate::local::WorkflowPublicationSnapshot,
 ) -> Vec<serde_json::Value> {
+    let allowed_providers = snapshot
+        .agents
+        .iter()
+        .map(|agent| agent.provider().to_string())
+        .collect::<std::collections::BTreeSet<_>>();
     snapshot
         .agents
         .iter()
@@ -92,6 +97,7 @@ fn deployment_configuration(
                 "secret": false,
                 "agent_id": agent.id(),
                 "node_ids": node_ids,
+                "allowed_providers": allowed_providers,
                 "captured": {
                     "provider": agent.provider(),
                     "model": agent.model(),

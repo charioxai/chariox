@@ -644,6 +644,10 @@ fn local_request_api_exports_agent_app_publication_package() {
     assert_eq!(provider_configuration["required"], serde_json::json!(true));
     assert_eq!(provider_configuration["secret"], serde_json::json!(false));
     assert_eq!(
+        provider_configuration["allowed_providers"],
+        serde_json::json!(["dev-stub"])
+    );
+    assert_eq!(
         provider_configuration["captured"],
         serde_json::json!({
             "provider": "dev-stub",

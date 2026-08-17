@@ -252,6 +252,12 @@
         "secret": { "const": false },
         "agent_id": { "$ref": "#/definitions/non_empty_string" },
         "node_ids": { "$ref": "#/definitions/string_array" },
+        "allowed_providers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/non_empty_string" }
+        },
         "captured": {
           "type": "object",
           "additionalProperties": false,
