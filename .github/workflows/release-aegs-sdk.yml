@@ -7,6 +7,11 @@ on:
         description: Type publish to release the matching protocol and SDK crates
         required: true
         type: string
+      fail_after_protocol:
+        description: Intentionally stop after protocol publication to drill resumability
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -33,18 +38,58 @@ jobs:
       - name: Verify publishable package metadata
         run: |
           cargo package -p chariox-event-protocol --locked --no-verify
+          cargo check -p chariox-aegs-sdk --locked
           test "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-event-protocol") | .version')" = \
             "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-aegs-sdk") | .dependencies[] | select(.name == "chariox-event-protocol") | .req | sub("^\\^"; "")')"
 
+      - name: Resolve release versions
+        id: versions
+        run: |
+          protocol_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-event-protocol") | .version')"
+          sdk_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-aegs-sdk") | .version')"
+          printf 'protocol=%s\nsdk=%s\n' "$protocol_version" "$sdk_version" >> "$GITHUB_OUTPUT"
+
+      - name: Check exact registry versions
+        id: registry
+        env:
+          PROTOCOL_VERSION: ${{ steps.versions.outputs.protocol }}
+          SDK_VERSION: ${{ steps.versions.outputs.sdk }}
+        run: |
+          crate_exists() {
+            curl --fail --silent --show-error \
+              --user-agent 'chariox-release/1.0 (https://github.com/charioxai/chariox)' \
+              "https://crates.io/api/v1/crates/$1/$2" >/dev/null
+          }
+          if crate_exists chariox-event-protocol "$PROTOCOL_VERSION"; then
+            echo 'protocol_exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'protocol_exists=false' >> "$GITHUB_OUTPUT"
+          fi
+          if crate_exists chariox-aegs-sdk "$SDK_VERSION"; then
+            echo 'sdk_exists=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'sdk_exists=false' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Publish the matching event protocol first
+        if: steps.registry.outputs.protocol_exists != 'true'
         run: cargo publish -p chariox-event-protocol --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
+      - name: Simulate an interrupted two-crate release
+        if: inputs.fail_after_protocol == true
+        run: |
+          echo 'Intentional failure: rerun without fail_after_protocol to resume safely.' >&2
+          exit 1
+
       - name: Wait for the protocol index to propagate
         run: |
-          for attempt in 1 2 3 4 5; do
-            if cargo search chariox-event-protocol --limit 1 | grep -q 'chariox-event-protocol'; then
+          protocol_version='${{ steps.versions.outputs.protocol }}'
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if curl --fail --silent --show-error \
+              --user-agent 'chariox-release/1.0 (https://github.com/charioxai/chariox)' \
+              "https://crates.io/api/v1/crates/chariox-event-protocol/$protocol_version" >/dev/null; then
               exit 0
             fi
             sleep 10
@@ -53,6 +98,7 @@ jobs:
           exit 1
 
       - name: Publish the SDK against the matching protocol
+        if: steps.registry.outputs.sdk_exists != 'true'
         run: cargo publish -p chariox-aegs-sdk --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

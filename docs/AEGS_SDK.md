@@ -66,11 +66,16 @@ source checkout) rather than an unpublished registry package.
 
 The repository contains a manual `Release public AEGS SDK` workflow for this
 ordered release. It checks out one immutable commit, verifies that the SDK's
-protocol requirement matches the protocol crate version, publishes
-`chariox-event-protocol`, waits for the registry index, and then publishes
-`chariox-aegs-sdk`. It requires the repository's `CARGO_REGISTRY_TOKEN` secret
-and runs only when an operator explicitly types `publish`; normal pushes and
-pull requests never publish packages.
+protocol requirement matches the protocol crate version, and queries the exact
+protocol and SDK versions through the crates.io API. It publishes only versions
+that are not already present, waits for the exact protocol version (not merely a
+current search result), and then publishes `chariox-aegs-sdk`. This makes a
+rerun safe after a failure between the two publishes. To exercise that recovery
+path, run it with `confirm=publish` and `fail_after_protocol=true`, then rerun
+with the flag disabled; the existing protocol version is skipped and the SDK
+continues. It requires the repository's `CARGO_REGISTRY_TOKEN` secret and runs
+only when an operator explicitly types `publish`; normal pushes and pull
+requests never publish packages.
 
 An AEGS must expose `GET /healthz`, `GET /readyz`, `GET /version`, and the
 capability-protected `PUT /v1/subscriptions/reconcile` endpoint. It must accept
