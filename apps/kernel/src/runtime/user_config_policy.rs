@@ -101,11 +101,7 @@ pub(crate) fn user_config_path_requires_daemon_restart(path: &str) -> bool {
 pub(crate) fn user_config_path_is_unwired(path: &str) -> bool {
     matches!(
         path,
-        "providers.default"
-            | "providers.model"
-            | "providers.account_profile"
-            | "providers.effort"
-            | "ui.theme"
+        "ui.theme"
             | "ui.multi_agent_response_layout"
             | "ui.max_agents_per_screen"
             | "relay.url"
@@ -154,11 +150,13 @@ mod tests {
 
     #[test]
     fn user_config_policy_identifies_unwired_paths() {
-        assert!(user_config_path_is_unwired("providers.default"));
         assert!(user_config_path_is_unwired("ui.worktree_aliases.repo"));
         assert!(user_config_path_is_unwired(
             "history.archive.archive_before_delete"
         ));
+        assert!(!user_config_path_is_unwired("providers.default"));
+        assert!(!user_config_path_is_unwired("providers.model"));
+        assert!(!user_config_path_is_unwired("providers.effort"));
         assert!(!user_config_path_is_unwired("relay.accept_remote_leases"));
         assert!(!user_config_path_is_unwired("mcp.servers"));
         assert!(!user_config_path_is_unwired("kernel.runtime_mcp_port"));

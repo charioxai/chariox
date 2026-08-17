@@ -60,11 +60,23 @@ export function derivePromptUsageState(options: PromptUsageStateOptions): Prompt
   )
 }
 
-export function formatPromptMetaLine(provider: string, model: string, effort: string) {
+export function formatPromptMetaLine(provider: string | null, model: string | null, effort: string | null) {
   return formatPromptMetaParts(provider, model, effort).map((part) => part.text).join(" • ")
 }
 
-export function formatPromptMetaParts(provider: string, model: string, effort: string): PromptMetaPart[] {
+export function formatPromptMetaParts(
+  provider: string | null,
+  model: string | null,
+  effort: string | null,
+): PromptMetaPart[] {
+  if (!provider) {
+    return [{
+      kind: "provider",
+      text: "No provider selected",
+      tone: "text",
+    }]
+  }
+
   const parts: PromptMetaPart[] = [
     {
       kind: "provider",
@@ -73,17 +85,17 @@ export function formatPromptMetaParts(provider: string, model: string, effort: s
     },
     {
       kind: "model",
-      text: formatModel(model),
-      tone: toneForModel(model),
+      text: formatModel(model ?? "default"),
+      tone: toneForModel(model ?? "default"),
     },
   ]
 
-  const effortLabel = formatEffort(effort)
+  const effortLabel = formatEffort(effort ?? "")
   if (effortLabel) {
     parts.push({
       kind: "variant",
       text: effortLabel,
-      tone: toneForVariant(effort),
+      tone: toneForVariant(effort ?? ""),
     })
   }
 

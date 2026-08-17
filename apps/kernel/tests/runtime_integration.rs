@@ -5,14 +5,15 @@ use std::time::Duration;
 use chariox_kernel::agent::CreateAgentRequest;
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
 use chariox_kernel::local::{
-    AttachToSessionRequest, EndSessionRequest, LaunchProviderRunRequest, LocalDaemonClient,
-    LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest, UpdateSessionConfigRequest,
+    AttachToSessionRequest, EndSessionRequest, GetUserConfigRequest, LaunchProviderRunRequest,
+    LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
+    UpdateSessionConfigRequest,
 };
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use chariox_kernel::session::{
-    CreateSessionRequest, PromptSubmissionOutcome, SessionStatus, WorkflowNodeRunStatus,
-    WorkflowRunStatus,
+    CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, SessionStatus,
+    WorkflowNodeRunStatus, WorkflowRunStatus,
 };
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
@@ -771,4 +772,78 @@ fn parked_provider_runs_should_not_produce_unexpected_exit_notices() {
         "parked runs should not produce 'ended unexpectedly' notices, but got: {:?}",
         notices.iter().map(|n| &n.message).collect::<Vec<_>>()
     );
+}
+
+#[test]
+fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-provider-launch-defaults-test-{}.toml",
+        std::process::id()
+    ));
+    let mut config = DaemonConfig::for_tests();
+    config.user_config_path = path.clone();
+    let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let client = LocalDaemonClient::new(app).expect("local daemon client should start");
+
+    match client
+        .send(LocalDaemonRequest::GetUserConfig(GetUserConfigRequest))
+        .expect("get user config should succeed")
+    {
+        LocalDaemonResponse::UserConfig { config, .. } => {
+            assert_eq!(config.providers.default, None, "fresh config.toml should have no provider default");
+            assert_eq!(config.providers.model, None);
+            assert_eq!(config.providers.effort, None);
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    let first_agent = match client
+        .send(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-provider-defaults", "worktree-provider-defaults")
+                .with_agent_defaults(SessionAgentDefaults {
+                    provider: "codex".to_string(),
+                    model: Some("gpt-5.1".to_string()),
+                    effort: Some("high".to_string()),
+                    account_profile: None,
+                    execution_mode: None,
+                    permission_level: None,
+                }),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { agent, .. } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(first_agent.provider(), "codex");
+    assert_eq!(first_agent.model(), Some("gpt-5.1"));
+
+    match client
+        .send(LocalDaemonRequest::GetUserConfig(GetUserConfigRequest))
+        .expect("get user config should succeed")
+    {
+        LocalDaemonResponse::UserConfig { config, .. } => {
+            assert_eq!(config.providers.default.as_deref(), Some("codex"));
+            assert_eq!(config.providers.model.as_deref(), Some("gpt-5.1"));
+            assert_eq!(config.providers.effort.as_deref(), Some("high"));
+        }
+        other => panic!("unexpected response: {other:?}"),
+    }
+
+    let second_agent = match client
+        .send(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+            "workspace-provider-defaults-2",
+            "worktree-provider-defaults-2",
+        )))
+        .expect("second session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { agent, .. } => agent,
+        other => panic!("unexpected response: {other:?}"),
+    };
+    assert_eq!(
+        second_agent.provider(), "codex",
+        "a session created without an explicit selection should inherit the persisted config.toml default"
+    );
+    assert_eq!(second_agent.model(), Some("gpt-5.1"));
+
+    let _ = std::fs::remove_file(&path);
 }

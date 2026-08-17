@@ -18,7 +18,6 @@ test("parseArgs applies terminal pairing links", () => {
 
   assert.deepEqual(parseArgs([`chariox-terminal-pair-v1.${payload}`]), {
     clientId: "terminal-1",
-    provider: "opencode",
     model: "default",
     accountProfile: "default",
     effort: "",

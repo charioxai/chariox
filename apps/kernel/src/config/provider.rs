@@ -19,8 +19,8 @@ pub struct UserProviderConfig {
 impl Default for UserProviderConfig {
     fn default() -> Self {
         Self {
-            default: Some("opencode".to_string()),
-            model: Some("default".to_string()),
+            default: None,
+            model: None,
             account_profile: Some("default".to_string()),
             effort: None,
             workspace_live_sync: WorkspaceLiveSyncConfig::default(),

@@ -48,7 +48,26 @@ export function createProviderPromptProjectionController(
       : options
   }
 
-  const currentProviderSelection = () => derivePromptProviderSelection(providerSelectionOptions())
+  // The CLI's cycling waiting room selector always highlights a concrete
+  // provider/model/effort (there is no blank dropdown state), so this
+  // adapter coerces the shared, nullable selection back to the CLI's
+  // sentinel-based defaults at the boundary. `deps.getDefaults()` is
+  // sourced from `config.toml` (falling back to "opencode" only when
+  // nothing has ever been configured), so this still prefers the
+  // persisted default over a hardcoded literal.
+  const currentProviderSelection = (): {
+    provider: string
+    model: string
+    effort: string
+  } => {
+    const selection = derivePromptProviderSelection(providerSelectionOptions())
+    const defaults = deps.getDefaults()
+    return {
+      provider: selection.provider ?? defaults.provider ?? "opencode",
+      model: selection.model ?? defaults.model,
+      effort: selection.effort ?? defaults.effort,
+    }
+  }
 
   return {
     currentProviderSelection,

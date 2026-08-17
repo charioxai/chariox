@@ -45,6 +45,7 @@ mod event_delivery_runtime_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
+mod provider_launch_defaults_owned_state;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
