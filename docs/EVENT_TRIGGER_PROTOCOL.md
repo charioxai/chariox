@@ -85,7 +85,15 @@ upstream webhook/subscription resources, and the mapping from an incoming provid
 event to an `event_interest_key`.
 
 The kernel reconciles each configured AEGS through its operator endpoint with a
-separate scoped management capability. `PUT /v1/subscriptions/reconcile` is
+separate scoped management capability. Hosted kernels obtain this capability from
+the Cloud API after authenticating their persisted Cloud session or machine
+credential; the registry-provided HTTPS management URL is checked against the
+published generator digest before a token is issued. The capability is a short-lived
+Ed25519-signed bearer token scoped to one generator, manifest digest, kernel identity,
+and management audience. AEGS SDK servers verify it locally with the configured
+Chariox Cloud public key, so provider credentials and publisher private keys never
+enter the kernel, AEDS, or catalog. Self-hosted deployments may continue using a
+static operator token. `PUT /v1/subscriptions/reconcile` is
 authoritative for one `owner_id` and `generator_id` pair and carries
 trigger-owned binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.

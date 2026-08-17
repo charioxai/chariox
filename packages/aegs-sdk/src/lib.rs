@@ -1,6 +1,7 @@
 mod auth;
 mod conformance;
 mod hooks;
+mod management_capability;
 mod manifest;
 mod oauth;
 mod provider;

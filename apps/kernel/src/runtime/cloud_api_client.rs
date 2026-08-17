@@ -67,6 +67,76 @@ pub(crate) struct CloudRuntimeTokenResponse {
     pub(crate) expires_at: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CloudEventGeneratorManagementCapabilityResponse {
+    pub(crate) token: String,
+    pub(crate) issuer: String,
+    pub(crate) key_id: String,
+    pub(crate) expires_at: String,
+}
+
+pub(crate) async fn issue_event_generator_management_capability(
+    profile: &PersistedCloudRelayProfile,
+    account_id: &str,
+    realm_id: &str,
+    kernel_id: &str,
+    machine_id: Option<&str>,
+    user_id: Option<&str>,
+    generator_id: &str,
+    version: &str,
+    manifest_digest: &str,
+    management_url: &str,
+) -> Result<CloudEventGeneratorManagementCapabilityResponse, DaemonError> {
+    let mut body = serde_json::Map::new();
+    if let Some(machine_credential) = profile.machine_credential.clone() {
+        body.insert(
+            "machineCredential".to_string(),
+            serde_json::Value::String(machine_credential),
+        );
+    } else if let Some(session_token) = profile.cloud_session_token.clone() {
+        body.insert(
+            "sessionToken".to_string(),
+            serde_json::Value::String(session_token),
+        );
+    }
+    for (key, value) in [
+        ("accountId", account_id),
+        ("realmId", realm_id),
+        ("kernelId", kernel_id),
+        ("generatorId", generator_id),
+        ("version", version),
+        ("manifestDigest", manifest_digest),
+        ("managementUrl", management_url),
+    ] {
+        body.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+    if let Some(machine_id) = machine_id {
+        body.insert(
+            "machineId".to_string(),
+            serde_json::Value::String(machine_id.to_string()),
+        );
+    }
+    if let Some(user_id) = user_id {
+        body.insert(
+            "userId".to_string(),
+            serde_json::Value::String(user_id.to_string()),
+        );
+    }
+    post_cloud_json_dynamic(
+        profile.api_url.clone(),
+        format!(
+            "/v1/event-generators/{}/management-capability",
+            cloud_url_component(generator_id)
+        ),
+        serde_json::Value::Object(body),
+    )
+    .await
+}
+
 pub(crate) async fn issue_cloud_runtime_token(
     profile: &PersistedCloudRelayProfile,
     subject: &str,

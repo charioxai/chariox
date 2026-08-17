@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use crate::management_capability::{parse_public_key, verify_management_capability};
 use crate::store::ActionReceiptLookupError;
 use crate::{
     baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
@@ -38,6 +39,8 @@ fn action_receipt_is_durable(action_id: &str) -> bool {
 struct AegsServer {
     producer_id: String,
     management_token: Option<String>,
+    management_public_key: Option<ed25519_dalek::VerifyingKey>,
+    management_issuer: String,
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
@@ -98,6 +101,15 @@ where
             "CHARIOX_AEGS_MANAGEMENT_TOKEN",
             "CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE",
         )?,
+        management_public_key: std::env::var("CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY")
+            .ok()
+            .map(|value| parse_public_key(&value))
+            .transpose()
+            .map_err(|error| format!("invalid CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY: {error}"))?,
+        management_issuer: std::env::var("CHARIOX_AEGS_MANAGEMENT_ISSUER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "chariox-cloud".to_string()),
         publisher: AedsPublisher::new(
             producer_id.clone(),
             read_secret(
@@ -1317,26 +1329,50 @@ impl AegsServer {
         &self,
         request: &Request<Incoming>,
     ) -> Result<(), Box<Response<Full<Bytes>>>> {
-        let Some(expected) = self.management_token.as_deref() else {
-            return Err(Box::new(error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "management_disabled",
-                "AEGS management token is not configured",
-            )));
-        };
         let presented = request
             .headers()
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
-        if presented != Some(expected) {
+        if self
+            .management_token
+            .as_deref()
+            .is_some_and(|expected| Some(expected) == presented)
+        {
+            return Ok(());
+        }
+        if let Some(public_key) = self.management_public_key.as_ref() {
+            let Some(presented) = presented else {
+                return Err(Box::new(error(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "valid AEGS management capability required",
+                )));
+            };
+            verify_management_capability(
+                presented,
+                public_key,
+                &self.management_issuer,
+                &self.producer_id,
+                now_ms() / 1_000,
+            )
+            .map_err(|message| {
+                Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized", message))
+            })?;
+            return Ok(());
+        }
+        if self.management_token.is_none() && self.management_public_key.is_none() {
             return Err(Box::new(error(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "valid AEGS management capability required",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "management_disabled",
+                "AEGS management token or signed capability key is not configured",
             )));
         }
-        Ok(())
+        Err(Box::new(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "valid AEGS management capability required",
+        )))
     }
 }
 

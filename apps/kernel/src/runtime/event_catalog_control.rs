@@ -14,6 +14,7 @@ use crate::local::{
     EventGeneratorEventDefinition, EventGeneratorEventPage, EventGeneratorParty,
     LocalDaemonRequest, LocalDaemonResponse, WorkflowEventBindingDependency,
 };
+use crate::runtime::cloud_api_client::issue_event_generator_management_capability;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -60,9 +61,16 @@ pub(crate) async fn execute_event_catalog_request(
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
     ) {
+        let management_targets = resolve_event_generator_management_targets(
+            runtime_state,
+            &config,
+            caller_user_id,
+            &request,
+        )
+        .await?;
         return execute_event_connection_request(
             runtime_state,
-            &config.event_generator_management_targets,
+            &management_targets,
             &config.daemon_id,
             caller_user_id,
             request,
@@ -74,7 +82,13 @@ pub(crate) async fn execute_event_catalog_request(
         LocalDaemonRequest::StartEventGeneratorAuthorization(_)
             | LocalDaemonRequest::ListEventGeneratorResources(_)
     ) {
-        let targets = config.event_generator_management_targets.clone();
+        let targets = resolve_event_generator_management_targets(
+            runtime_state,
+            &config,
+            caller_user_id,
+            &request,
+        )
+        .await?;
         let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
         return tokio::task::spawn_blocking(move || {
             aegs_management_request(&targets, &owner_id, &request)
@@ -98,6 +112,154 @@ pub(crate) async fn execute_event_catalog_request(
         operation: "query event generator catalog",
         message: error.to_string(),
     })?
+}
+
+async fn resolve_event_generator_management_targets(
+    runtime_state: &KernelRuntimeState,
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+    request: &LocalDaemonRequest,
+) -> Result<BTreeMap<String, crate::config::EventGeneratorManagementTarget>, DaemonError> {
+    let generator_ids =
+        event_generator_ids_from_management_request(runtime_state, caller_user_id, request)?;
+    let mut targets = config.event_generator_management_targets.clone();
+    if generator_ids.is_empty() {
+        // A generator-less list is limited to providers that already have a local connection.
+        // The kernel must not page the entire Store and mint capabilities for every provider
+        // merely to render an installed-connection list.
+        return Ok(targets);
+    }
+    let Some(profile) = config.cloud_relay.as_ref() else {
+        return Ok(targets);
+    };
+    let registry_url = config.event_registry_url.clone().ok_or_else(|| {
+        catalog_error("event generator management bootstrap requires a registry URL".to_string())
+    })?;
+    for generator_id in generator_ids {
+        if targets.contains_key(&generator_id) {
+            continue;
+        }
+        let detail_request = LocalDaemonRequest::GetEventGeneratorDetail(
+            crate::local::GetEventGeneratorDetailRequest {
+                generator_id: generator_id.clone(),
+                version: None,
+            },
+        );
+        let detail_registry_url = registry_url.clone();
+        let detail_response = tokio::task::spawn_blocking(move || {
+            cached_remote_catalog_request(&detail_registry_url, &detail_request)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "query event generator detail for management bootstrap",
+            message: error.to_string(),
+        })??;
+        let LocalDaemonResponse::EventGeneratorDetail { detail } = detail_response else {
+            return Err(catalog_error(
+                "event catalog returned an unexpected detail response for management bootstrap"
+                    .to_string(),
+            ));
+        };
+        let Some(management_url) = detail.summary.management_url.clone() else {
+            continue;
+        };
+        let capability = issue_event_generator_management_capability(
+            profile,
+            &profile.account_id,
+            &profile.realm_id,
+            &config.daemon_id,
+            profile.machine_id.as_deref(),
+            Some(&profile.user_id),
+            &generator_id,
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            &management_url,
+        )
+        .await?;
+        targets.insert(
+            generator_id,
+            crate::config::EventGeneratorManagementTarget {
+                url: management_url,
+                token: capability.token,
+            },
+        );
+    }
+    Ok(targets)
+}
+
+fn event_generator_ids_from_management_request(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: &LocalDaemonRequest,
+) -> Result<Vec<String>, DaemonError> {
+    let connection_generator = |connection_id: &str| {
+        runtime_state
+            .event_connection_registry()
+            .get(caller_user_id, connection_id)
+            .ok()
+            .flatten()
+            .map(|connection| connection.generator_id)
+    };
+    let authorization_generator = |authorization_id: &str| {
+        runtime_state
+            .event_connection_registry()
+            .authorization(caller_user_id, authorization_id)
+            .ok()
+            .flatten()
+            .map(|authorization| authorization.generator_id)
+    };
+    let generator_id = match request {
+        LocalDaemonRequest::StartEventGeneratorAuthorization(request) => {
+            Some(request.generator_id.clone())
+        }
+        LocalDaemonRequest::ListEventGeneratorResources(request) => {
+            Some(request.generator_id.clone())
+        }
+        LocalDaemonRequest::ListEventConnections(request) => request.generator_id.clone(),
+        LocalDaemonRequest::GetEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::InstallEventConnection(request) => Some(request.generator_id.clone()),
+        LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => {
+            authorization_generator(&request.authorization_id)
+        }
+        LocalDaemonRequest::RefreshEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::TestEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ReconnectEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ListEventConnectionResources(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ListEventConnectionDependencies(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::RemoveEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        _ => None,
+    };
+    if let Some(generator_id) = generator_id {
+        return Ok(vec![generator_id]);
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::ListEventConnections(request) if request.generator_id.is_none()
+    ) {
+        return Ok(runtime_state
+            .event_connection_registry()
+            .list(caller_user_id, None)?
+            .into_iter()
+            .map(|connection| connection.generator_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect());
+    }
+    Ok(Vec::new())
 }
 
 pub(crate) async fn validate_event_connection(
