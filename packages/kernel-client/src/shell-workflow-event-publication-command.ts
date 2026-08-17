@@ -310,6 +310,7 @@ function parseBindingOptions(args: string[]):
         filter?: unknown
         environmentId?: string
         queueRef?: string
+        replyMode?: "disabled" | "thread" | "channel"
         actionIds?: readonly string[]
       }
     }
@@ -345,12 +346,20 @@ function parseBindingOptions(args: string[]):
   }
   const environmentId = values.get("--environment")
   const queueRef = values.get("--queue")
+  const replyModeValue = values.get("--reply-mode")
+  if (replyModeValue !== undefined && !["disabled", "thread", "channel"].includes(replyModeValue)) {
+    return failure("--reply-mode must be one of: disabled, thread, channel")
+  }
+  const replyMode = replyModeValue as "disabled" | "thread" | "channel" | undefined
   const actionIds = values.get("--actions")
     ?.split(",")
     .map((value) => value.trim())
     .filter(Boolean)
   if (values.has("--actions") && (!actionIds || actionIds.length === 0)) {
     return failure("--actions must contain at least one comma-separated action ID")
+  }
+  if (actionIds?.includes("notification.reply") && replyMode !== "thread" && replyMode !== "channel") {
+    return failure("notification.reply requires --reply-mode thread or channel")
   }
   return {
     ok: true,
@@ -366,13 +375,14 @@ function parseBindingOptions(args: string[]):
       ...(filter === undefined ? {} : { filter }),
       ...(environmentId ? { environmentId } : {}),
       ...(queueRef ? { queueRef } : {}),
+      ...(replyMode ? { replyMode } : {}),
       ...(actionIds ? { actionIds } : {}),
     },
   }
 }
 
 function bindingUsage(): string {
-  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--actions <id,id,...>]"
+  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--reply-mode <disabled|thread|channel>] [--actions <id,id,...>]"
 }
 
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {

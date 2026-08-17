@@ -87,6 +87,8 @@ test("workflow event publication command browses a bounded catalog and binds an 
       "connection-1",
       "--scope",
       "repo:charioxai/chariox",
+      "--reply-mode",
+      "thread",
       "--filter-json",
       "{\"repository\":\"charioxai/chariox\"}",
       "--actions",
@@ -124,7 +126,7 @@ test("workflow event publication command browses a bounded catalog and binds an 
       filter: { repository: "charioxai/chariox" },
       environment_id: null,
       queue_ref: null,
-      reply_mode: null,
+      reply_mode: "thread",
       action_ids: ["notification.reply", "slack.reaction.add"],
     },
   })
@@ -309,4 +311,54 @@ test("workflow event attachment rejects an empty action capability list", async 
 
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /--actions must contain at least one comma-separated action ID/)
+})
+
+test("workflow event attachment requires a compatible reply mode for notification replies", async () => {
+  const withoutMode = await executeWorkflowEventPublicationCommand(
+    [
+      "attach",
+      "publication-1",
+      "github",
+      "pull_request.opened",
+      "--generator-version",
+      "1.0.0",
+      "--manifest-digest",
+      "sha256:abc",
+      "--connection",
+      "connection-1",
+      "--scope",
+      "repo:charioxai/chariox",
+      "--actions",
+      "notification.reply",
+    ],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    { send: async () => ({}) },
+  )
+  assert.equal(withoutMode.ok, false)
+  assert.match(withoutMode.message ?? "", /notification.reply requires --reply-mode thread or channel/)
+
+  const invalidMode = await executeWorkflowEventPublicationCommand(
+    [
+      "attach",
+      "publication-1",
+      "github",
+      "pull_request.opened",
+      "--generator-version",
+      "1.0.0",
+      "--manifest-digest",
+      "sha256:abc",
+      "--connection",
+      "connection-1",
+      "--scope",
+      "repo:charioxai/chariox",
+      "--reply-mode",
+      "disabled",
+      "--actions",
+      "notification.reply",
+    ],
+    createDefaultShellContext({ sessionId: "session-1" }),
+    { send: async () => ({}) },
+  )
+  assert.equal(invalidMode.ok, false)
+  assert.match(invalidMode.message ?? "", /notification.reply requires --reply-mode thread or channel/)
 })
