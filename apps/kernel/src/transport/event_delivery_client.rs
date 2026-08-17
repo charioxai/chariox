@@ -718,7 +718,7 @@ mod tests {
             environment_id: "environment-test".to_string(),
             generator_management_targets: BTreeMap::new(),
             config_projection: DaemonConfigProjectionStore::new(
-                crate::config::DaemonConfig::default(),
+                crate::config::DaemonConfig::for_tests(),
             ),
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -814,7 +814,7 @@ mod tests {
             environment_id: "environment-heartbeat-test".to_string(),
             generator_management_targets: BTreeMap::new(),
             config_projection: DaemonConfigProjectionStore::new(
-                crate::config::DaemonConfig::default(),
+                crate::config::DaemonConfig::for_tests(),
             ),
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
