@@ -21,7 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
-use crate::management_capability::{parse_public_key, verify_management_capability};
+use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
 use crate::store::ActionReceiptLookupError;
 use crate::{
     baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
@@ -41,6 +41,8 @@ struct AegsServer {
     management_token: Option<String>,
     management_public_key: Option<ed25519_dalek::VerifyingKey>,
     management_issuer: String,
+    management_url: Option<String>,
+    manifest_digest: Option<String>,
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
@@ -100,21 +102,38 @@ where
         )
         .into());
     }
+    let management_url = std::env::var("CHARIOX_AEGS_MANAGEMENT_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty());
+    let manifest_digest = std::env::var("CHARIOX_AEGS_MANIFEST_DIGEST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let management_public_key = std::env::var("CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY")
+        .ok()
+        .map(|value| parse_public_key(&value))
+        .transpose()
+        .map_err(|error| format!("invalid CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY: {error}"))?;
+    if management_public_key.is_some() && (management_url.is_none() || manifest_digest.is_none()) {
+        return Err(
+            "signed management capabilities require CHARIOX_AEGS_MANAGEMENT_URL and CHARIOX_AEGS_MANIFEST_DIGEST"
+                .into(),
+        );
+    }
     let server = AegsServer {
         producer_id: producer_id.clone(),
         management_token: read_secret(
             "CHARIOX_AEGS_MANAGEMENT_TOKEN",
             "CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE",
         )?,
-        management_public_key: std::env::var("CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY")
-            .ok()
-            .map(|value| parse_public_key(&value))
-            .transpose()
-            .map_err(|error| format!("invalid CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY: {error}"))?,
+        management_public_key,
         management_issuer: std::env::var("CHARIOX_AEGS_MANAGEMENT_ISSUER")
             .ok()
             .filter(|value| !value.trim().is_empty())
             .unwrap_or_else(|| "chariox-cloud".to_string()),
+        management_url,
+        manifest_digest,
         publisher: AedsPublisher::new(
             producer_id.clone(),
             read_secret(
@@ -286,8 +305,13 @@ impl AegsServer {
                         ),
                     );
                 }
-                match self.store.reconcile(
+                let allowed_connection_owners = match &authorization {
+                    ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
+                    ManagementAuthorization::Static => None,
+                };
+                match self.store.reconcile_scoped(
                     &reconcile.owner_id,
+                    allowed_connection_owners,
                     &reconcile.generator_id,
                     &reconcile.subscriptions,
                 ) {
@@ -1416,12 +1440,14 @@ impl AegsServer {
                     "valid AEGS management capability required",
                 )));
             };
-            let claims = verify_management_capability(
+            let claims = verify_management_capability_scoped(
                 presented,
                 public_key,
                 &self.management_issuer,
                 &self.producer_id,
                 now_ms() / 1_000,
+                self.management_url.as_deref(),
+                self.manifest_digest.as_deref(),
             )
             .map_err(|message| {
                 Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized", message))

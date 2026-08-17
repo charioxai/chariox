@@ -49,6 +49,26 @@ pub(crate) fn verify_management_capability(
     expected_generator_id: &str,
     now_seconds: u64,
 ) -> Result<ManagementCapabilityClaims, String> {
+    verify_management_capability_scoped(
+        token,
+        public_key,
+        expected_issuer,
+        expected_generator_id,
+        now_seconds,
+        None,
+        None,
+    )
+}
+
+pub(crate) fn verify_management_capability_scoped(
+    token: &str,
+    public_key: &VerifyingKey,
+    expected_issuer: &str,
+    expected_generator_id: &str,
+    now_seconds: u64,
+    expected_management_url: Option<&str>,
+    expected_manifest_digest: Option<&str>,
+) -> Result<ManagementCapabilityClaims, String> {
     let parts = token.split('.').collect::<Vec<_>>();
     if parts.len() != 3 {
         return Err("management capability must contain three segments".to_string());
@@ -86,6 +106,12 @@ pub(crate) fn verify_management_capability(
     }
     if claims.audience != "aegs-management" || claims.generator_id != expected_generator_id {
         return Err("management capability audience is not valid for this AEGS".to_string());
+    }
+    if expected_management_url.is_some_and(|expected| expected != claims.management_url) {
+        return Err("management capability endpoint scope is not trusted".to_string());
+    }
+    if expected_manifest_digest.is_some_and(|expected| expected != claims.manifest_digest) {
+        return Err("management capability manifest scope is not trusted".to_string());
     }
     if claims.expires_at <= now_seconds || claims.expires_at <= claims.issued_at {
         return Err("management capability is expired".to_string());
@@ -207,5 +233,42 @@ mod tests {
             150,
         );
         assert!(wrong_generator.is_err());
+    }
+
+    #[test]
+    fn enforces_management_endpoint_and_manifest_scopes() {
+        let signing_key = SigningKey::from_bytes(&[7; 32]);
+        assert!(verify_management_capability_scoped(
+            &token(&signing_key, 200),
+            &signing_key.verifying_key(),
+            "chariox-cloud",
+            "dev.chariox.slack",
+            150,
+            Some("https://aegs.example.test"),
+            Some("sha256:abc"),
+        )
+        .is_ok());
+        assert!(verify_management_capability_scoped(
+            &token(&signing_key, 200),
+            &signing_key.verifying_key(),
+            "chariox-cloud",
+            "dev.chariox.slack",
+            150,
+            Some("https://other.example.test"),
+            Some("sha256:abc"),
+        )
+        .unwrap_err()
+        .contains("endpoint scope"));
+        assert!(verify_management_capability_scoped(
+            &token(&signing_key, 200),
+            &signing_key.verifying_key(),
+            "chariox-cloud",
+            "dev.chariox.slack",
+            150,
+            Some("https://aegs.example.test"),
+            Some("sha256:other"),
+        )
+        .unwrap_err()
+        .contains("manifest scope"));
     }
 }

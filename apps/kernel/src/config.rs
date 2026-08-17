@@ -53,6 +53,14 @@ pub const DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS: u64 = 33;
 pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventGeneratorManagementTargetCredential {
+    pub url: String,
+    pub token: String,
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EventGeneratorManagementTarget {
     pub url: String,
     pub token: String,
@@ -65,6 +73,12 @@ pub struct EventGeneratorManagementTarget {
     /// not carry this restriction because their operator token is the policy.
     #[serde(default)]
     pub owner_ids: Option<Vec<String>>,
+    /// Registry-issued capabilities are cached independently per owner. A
+    /// generator can serve several kernel/user owners at once; retaining only
+    /// one token per generator would let concurrent resolutions overwrite one
+    /// another and cause intermittent 403s.
+    #[serde(default)]
+    pub owner_scoped: Option<BTreeMap<String, EventGeneratorManagementTargetCredential>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

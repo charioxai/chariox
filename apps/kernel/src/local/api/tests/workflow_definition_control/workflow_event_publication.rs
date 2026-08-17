@@ -60,6 +60,7 @@ impl ReadyConnectionServer {
             token: "test-management-token".to_string(),
             expires_at_ms: None,
             owner_ids: None,
+            owner_scoped: None,
         }
     }
 }

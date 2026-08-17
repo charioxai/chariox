@@ -220,6 +220,19 @@ impl AegsStore {
         generator_id: &str,
         claims: &[SubscriptionClaim],
     ) -> Result<Vec<String>, String> {
+        self.reconcile_scoped(owner_id, None, generator_id, claims)
+    }
+
+    /// Reconcile one owner's desired bindings while enforcing the owner scope
+    /// carried by a signed management capability. Static operator tokens pass
+    /// `None` and retain their intentionally global administrative behavior.
+    pub fn reconcile_scoped(
+        &self,
+        owner_id: &str,
+        allowed_connection_owners: Option<&[String]>,
+        generator_id: &str,
+        claims: &[SubscriptionClaim],
+    ) -> Result<Vec<String>, String> {
         if owner_id.trim().is_empty() {
             return Err("subscription reconciliation owner_id is required".to_string());
         }
@@ -239,6 +252,33 @@ impl AegsStore {
         let transaction = connection
             .transaction()
             .map_err(|error| error.to_string())?;
+        if let Some(allowed_connection_owners) = allowed_connection_owners {
+            for claim in claims {
+                let connection_owner = transaction
+                    .query_row(
+                        "SELECT owner_id FROM connections WHERE connection_id = ?1",
+                        params![claim.connection_id],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| {
+                        format!(
+                            "connection {} is not owned by an allowed management principal",
+                            claim.connection_id
+                        )
+                    })?;
+                if !allowed_connection_owners
+                    .iter()
+                    .any(|allowed| allowed == &connection_owner)
+                {
+                    return Err(format!(
+                        "connection {} belongs to an owner outside the management capability",
+                        claim.connection_id
+                    ));
+                }
+            }
+        }
         let claimed_binding_ids = claims
             .iter()
             .map(|claim| claim.binding_id.as_str())
@@ -283,7 +323,6 @@ impl AegsStore {
                         revision, active
                     ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
                     ON CONFLICT(binding_id) DO UPDATE SET
-                        owner_id = excluded.owner_id,
                         generator_id = excluded.generator_id,
                         connection_id = excluded.connection_id,
                         connection_scope = excluded.connection_scope,
@@ -294,9 +333,8 @@ impl AegsStore {
                         revision = excluded.revision,
                         active = excluded.active
                     WHERE
-                        (excluded.owner_id = subscriptions.owner_id
-                            AND excluded.revision >= subscriptions.revision)
-                        OR excluded.revision > subscriptions.revision
+                        excluded.owner_id = subscriptions.owner_id
+                        AND excluded.revision >= subscriptions.revision
                     ",
                     params![
                         claim.binding_id,
@@ -1330,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn reconciliation_is_authoritative_only_for_its_owner_and_fences_transfer_revision() {
+    fn reconciliation_is_authoritative_only_for_its_owner_and_rejects_binding_takeover() {
         let store = AegsStore::open(":memory:").unwrap();
         store
             .reconcile(
@@ -1369,19 +1407,14 @@ mod tests {
             .is_empty());
         assert_eq!(store.metrics().unwrap().active_subscriptions, 1);
 
-        assert_eq!(
-            store
-                .reconcile(
-                    "kernel-b",
-                    "dev.chariox.github",
-                    &[claim("binding-a", 3, true)],
-                )
-                .unwrap(),
-            vec!["binding-a"]
-        );
-        store
-            .reconcile("kernel-a", "dev.chariox.github", &[])
-            .unwrap();
+        assert!(store
+            .reconcile(
+                "kernel-b",
+                "dev.chariox.github",
+                &[claim("binding-a", 3, true)],
+            )
+            .unwrap()
+            .is_empty());
         assert!(store
             .matching(
                 "dev.chariox.github",
@@ -1392,9 +1425,75 @@ mod tests {
             .iter()
             .any(|subscription| {
                 subscription.binding_id == "binding-a"
-                    && subscription.revision == 3
+                    && subscription.revision == 2
                     && subscription.active
             }));
+    }
+
+    #[test]
+    fn scoped_reconciliation_rejects_foreign_connections_and_binding_takeover() {
+        let store = AegsStore::open(":memory:").unwrap();
+        store
+            .upsert_ready_connection(
+                "connection-a",
+                "owner-a",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        store
+            .upsert_ready_connection(
+                "connection-b",
+                "owner-b",
+                "github",
+                &serde_json::json!({}),
+                1,
+            )
+            .unwrap();
+        let mut owned = claim("binding-a", 1, true);
+        owned.connection_id = "connection-a".to_string();
+        assert_eq!(
+            store
+                .reconcile_scoped(
+                    "kernel-a",
+                    Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                    "dev.chariox.github",
+                    &[owned.clone()],
+                )
+                .unwrap(),
+            vec!["binding-a"]
+        );
+
+        let mut foreign = owned.clone();
+        foreign.connection_id = "connection-b".to_string();
+        assert!(store
+            .reconcile_scoped(
+                "kernel-a",
+                Some(&["owner-a".to_string(), "kernel-a".to_string()]),
+                "dev.chariox.github",
+                &[foreign],
+            )
+            .unwrap_err()
+            .contains("outside the management capability"));
+
+        let mut takeover = owned;
+        takeover.connection_id = "connection-b".to_string();
+        takeover.revision = 2;
+        assert!(store
+            .reconcile_scoped(
+                "kernel-b",
+                Some(&["owner-b".to_string(), "kernel-b".to_string()]),
+                "dev.chariox.github",
+                &[takeover],
+            )
+            .unwrap()
+            .is_empty());
+        let stored = store
+            .all_for_owner("dev.chariox.github", "kernel-a")
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(stored[0].connection_id, "connection-a");
     }
 
     #[test]

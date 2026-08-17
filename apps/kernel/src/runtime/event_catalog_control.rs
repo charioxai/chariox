@@ -157,14 +157,26 @@ pub(crate) async fn resolve_event_generator_management_targets(
     for generator_id in generator_ids {
         let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
         if targets.get(&generator_id).is_some_and(|target| {
-            target
-                .expires_at_ms
-                .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms)
-                && target.owner_ids.as_ref().is_none_or(|owners| {
-                    requested_owner_ids
-                        .iter()
-                        .all(|owner| owners.contains(owner))
-                })
+            requested_owner_ids.iter().all(|owner| {
+                let scoped_valid = target
+                    .owner_scoped
+                    .as_ref()
+                    .and_then(|scoped| scoped.get(owner))
+                    .is_some_and(|credential| {
+                        credential
+                            .expires_at_ms
+                            .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms)
+                    });
+                let legacy_valid = target.owner_scoped.is_none()
+                    && target
+                        .owner_ids
+                        .as_ref()
+                        .is_none_or(|owners| owners.contains(owner))
+                    && target
+                        .expires_at_ms
+                        .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms);
+                scoped_valid || legacy_valid
+            })
         }) {
             continue;
         }
@@ -198,7 +210,6 @@ pub(crate) async fn resolve_event_generator_management_targets(
             &profile.account_id,
             &profile.realm_id,
             &config.daemon_id,
-            &owner_ids,
             profile.machine_id.as_deref(),
             Some(&profile.user_id),
             &generator_id,
@@ -218,20 +229,29 @@ pub(crate) async fn resolve_event_generator_management_targets(
             .map_err(|_| {
                 catalog_error("management capability expiry is before the Unix epoch".to_string())
             })?;
-        targets.insert(
-            generator_id,
-            crate::config::EventGeneratorManagementTarget {
-                url: management_url,
-                token: capability.token,
-                expires_at_ms: Some(expires_at_ms),
-                owner_ids: Some(owner_ids),
-            },
-        );
-    }
-    if targets != config.event_generator_management_targets {
-        let mut updated = config.clone();
-        updated.event_generator_management_targets = targets.clone();
-        config_projection.update(updated);
+        let credential = crate::config::EventGeneratorManagementTargetCredential {
+            url: management_url.clone(),
+            token: capability.token.clone(),
+            expires_at_ms: Some(expires_at_ms),
+        };
+        let owner_scoped = requested_owner_ids
+            .iter()
+            .cloned()
+            .map(|owner| (owner, credential.clone()))
+            .collect();
+        let resolved_target = crate::config::EventGeneratorManagementTarget {
+            url: management_url,
+            token: capability.token,
+            expires_at_ms: Some(expires_at_ms),
+            owner_ids: Some(owner_ids),
+            owner_scoped: Some(owner_scoped),
+        };
+        config_projection.merge_event_generator_management_target(&generator_id, resolved_target);
+        // Read the merged projection so concurrent owner/generator resolutions
+        // are preserved in the map returned to this operation.
+        targets = config_projection
+            .snapshot()
+            .event_generator_management_targets;
     }
     Ok(targets)
 }
@@ -986,6 +1006,46 @@ fn encode_offset(offset: usize) -> String {
     format!("offset-{offset}")
 }
 
+/// Select the capability scoped to one request owner. Static administrator
+/// targets have no owner scope and are returned unchanged; registry-issued
+/// targets must have an exact owner entry so a concurrent user cannot reuse a
+/// different user's short-lived token.
+pub(crate) fn select_event_generator_management_target(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    generator_id: &str,
+    owner_id: &str,
+) -> Result<crate::config::EventGeneratorManagementTarget, DaemonError> {
+    let target = targets.get(generator_id).ok_or_else(|| {
+        catalog_error(format!(
+            "event generator `{generator_id}` has no configured management target"
+        ))
+    })?;
+    if let Some(scoped) = target.owner_scoped.as_ref() {
+        let credential = scoped.get(owner_id).ok_or_else(|| {
+            catalog_error(format!(
+                "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
+            ))
+        })?;
+        return Ok(crate::config::EventGeneratorManagementTarget {
+            url: credential.url.clone(),
+            token: credential.token.clone(),
+            expires_at_ms: credential.expires_at_ms,
+            owner_ids: Some(vec![owner_id.to_string()]),
+            owner_scoped: None,
+        });
+    }
+    if target
+        .owner_ids
+        .as_ref()
+        .is_some_and(|owners| !owners.iter().any(|owner| owner == owner_id))
+    {
+        return Err(catalog_error(format!(
+            "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
+        )));
+    }
+    Ok(target.clone())
+}
+
 fn aegs_management_request(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
@@ -1021,11 +1081,7 @@ fn aegs_management_request(
             ))
         }
     };
-    let target = targets.get(generator_id).ok_or_else(|| {
-        catalog_error(format!(
-            "event generator `{generator_id}` has no configured management target"
-        ))
-    })?;
+    let target = select_event_generator_management_target(targets, generator_id, owner_id)?;
     let url = format!("{}{path}", target.url);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
@@ -1035,6 +1091,7 @@ fn aegs_management_request(
     let response = agent
         .post(&url)
         .set("authorization", &format!("Bearer {}", target.token))
+        .set("x-chariox-owner-id", owner_id)
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?;
@@ -1194,18 +1251,17 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
     path: &str,
     request: &T,
 ) -> Result<R, DaemonError> {
-    let target = targets.get(generator_id).ok_or_else(|| {
-        catalog_error(format!(
-            "event generator `{generator_id}` has no configured management target"
-        ))
-    })?;
+    let owner_id = serde_json::to_value(request)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("owner_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| catalog_error("AEGS request is missing owner_id".to_string()))?;
+    let target = select_event_generator_management_target(targets, generator_id, &owner_id)?;
     let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
-    let owner_id = serde_json::to_value(request).ok().and_then(|value| {
-        value
-            .get("owner_id")
-            .and_then(serde_json::Value::as_str)
-            .map(str::to_string)
-    });
     let mut http_request = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
@@ -1213,9 +1269,7 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .build()
         .post(&format!("{}{path}", target.url))
         .set("authorization", &format!("Bearer {}", target.token));
-    if let Some(owner_id) = owner_id {
-        http_request = http_request.set("x-chariox-owner-id", &owner_id);
-    }
+    http_request = http_request.set("x-chariox-owner-id", &owner_id);
     let response = http_request
         .set("content-type", "application/json")
         .send_string(&body)

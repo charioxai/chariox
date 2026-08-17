@@ -81,7 +81,6 @@ pub(crate) async fn issue_event_generator_management_capability(
     account_id: &str,
     realm_id: &str,
     kernel_id: &str,
-    owner_ids: &[String],
     machine_id: Option<&str>,
     user_id: Option<&str>,
     generator_id: &str,
@@ -115,13 +114,6 @@ pub(crate) async fn issue_event_generator_management_capability(
             serde_json::Value::String(value.to_string()),
         );
     }
-    body.insert(
-        "ownerIds".to_string(),
-        serde_json::to_value(owner_ids).map_err(|error| DaemonError::LocalTransport {
-            operation: "encode event generator management capability owner IDs",
-            message: error.to_string(),
-        })?,
-    );
     if let Some(machine_id) = machine_id {
         body.insert(
             "machineId".to_string(),

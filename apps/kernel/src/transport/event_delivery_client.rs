@@ -408,7 +408,6 @@ async fn reconcile_aegs_subscriptions(
     runtime_state: &KernelRuntimeState,
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
-    let current_config = config.config_projection.snapshot();
     let mut generator_management_targets = config.generator_management_targets.clone();
     let generator_ids = runtime_state
         .event_generator_subscription_claims()
@@ -416,6 +415,7 @@ async fn reconcile_aegs_subscriptions(
         .cloned()
         .collect::<Vec<_>>();
     for generator_id in generator_ids {
+        let current_config = config.config_projection.snapshot();
         let request = crate::local::LocalDaemonRequest::ListEventConnections(
             crate::local::ListEventConnectionsRequest {
                 generator_id: Some(generator_id),
@@ -444,13 +444,19 @@ async fn reconcile_aegs_subscriptions(
     }
     let kernel_owner_id = config.kernel_id.clone();
     let mut claims = runtime_state.event_generator_subscription_claims();
-    for (generator_id, target) in &generator_management_targets {
+    for (generator_id, _) in &generator_management_targets {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
             generator_id: generator_id.clone(),
             subscriptions: claims.remove(generator_id).unwrap_or_default(),
         };
-        let target = target.clone();
+        let target =
+            crate::runtime::event_catalog_control::select_event_generator_management_target(
+                &generator_management_targets,
+                generator_id,
+                &request.owner_id,
+            )
+            .map_err(|error| error.to_string())?;
         let generator_id = generator_id.clone();
         let kernel_owner_id = kernel_owner_id.clone();
         tokio::task::spawn_blocking(move || {

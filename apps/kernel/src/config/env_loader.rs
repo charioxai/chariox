@@ -288,6 +288,7 @@ fn parse_event_generator_management_targets(
                     token,
                     expires_at_ms: None,
                     owner_ids: None,
+                    owner_scoped: None,
                 },
             )
             .is_some()
