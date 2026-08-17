@@ -173,7 +173,9 @@ fn validate_manifest_actions(value: Option<&Value>) -> Result<(), String> {
                     | "idempotent"
                     | "input_schema"
             ) {
-                return Err(format!("action.{key} is not allowed by the manifest contract"));
+                return Err(format!(
+                    "action.{key} is not allowed by the manifest contract"
+                ));
             }
         }
         let action_id = require_manifest_string(action.get("action_id"), "action.action_id")?;
