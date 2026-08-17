@@ -283,6 +283,10 @@ mod workflow_turn_admin_owned_state;
 mod workflow_turn_prompt_owned_state;
 
 impl KernelRuntimeState {
+    pub(crate) fn session_store(&self) -> &SessionStateStore {
+        &self.owned.session_store
+    }
+
     pub(crate) fn event_connection_registry(
         &self,
     ) -> &crate::event_connection::EventConnectionRegistry {

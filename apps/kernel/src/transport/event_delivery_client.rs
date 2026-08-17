@@ -13,9 +13,10 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::header::AUTHORIZATION;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub(crate) struct EventDeliveryClientConfig {
     pub url: Option<String>,
     pub token: Option<String>,
@@ -23,6 +24,7 @@ pub(crate) struct EventDeliveryClientConfig {
     pub environment_id: String,
     pub generator_management_targets:
         BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    pub config_projection: DaemonConfigProjectionStore,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -406,11 +408,43 @@ async fn reconcile_aegs_subscriptions(
     runtime_state: &KernelRuntimeState,
     config: &EventDeliveryClientConfig,
 ) -> Result<(), String> {
-    if config.generator_management_targets.is_empty() {
+    let current_config = config.config_projection.snapshot();
+    let mut generator_management_targets = config.generator_management_targets.clone();
+    let generator_ids = runtime_state
+        .event_generator_subscription_claims()
+        .keys()
+        .cloned()
+        .collect::<Vec<_>>();
+    for generator_id in generator_ids {
+        let request = crate::local::LocalDaemonRequest::ListEventConnections(
+            crate::local::ListEventConnectionsRequest {
+                generator_id: Some(generator_id),
+                cursor: None,
+                limit: 1,
+            },
+        );
+        let targets =
+            crate::runtime::event_catalog_control::resolve_event_generator_management_targets(
+                runtime_state,
+                &config.config_projection,
+                &current_config,
+                current_config
+                    .cloud_relay
+                    .as_ref()
+                    .map(|profile| profile.user_id.as_str())
+                    .unwrap_or("kernel"),
+                &request,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        generator_management_targets.extend(targets);
+    }
+    if generator_management_targets.is_empty() {
         return Ok(());
     }
+    let kernel_owner_id = config.kernel_id.clone();
     let mut claims = runtime_state.event_generator_subscription_claims();
-    for (generator_id, target) in &config.generator_management_targets {
+    for (generator_id, target) in &generator_management_targets {
         let request = chariox_event_protocol::AegsSubscriptionReconcileRequest {
             owner_id: config.kernel_id.clone(),
             generator_id: generator_id.clone(),
@@ -418,11 +452,13 @@ async fn reconcile_aegs_subscriptions(
         };
         let target = target.clone();
         let generator_id = generator_id.clone();
+        let kernel_owner_id = kernel_owner_id.clone();
         tokio::task::spawn_blocking(move || {
             let url = format!("{}/v1/subscriptions/reconcile", target.url);
             let encoded = serde_json::to_string(&request).map_err(|error| error.to_string())?;
             let response = ureq::put(&url)
                 .set("authorization", &format!("Bearer {}", target.token))
+                .set("x-chariox-owner-id", &kernel_owner_id)
                 .set("content-type", "application/json")
                 .send_string(&encoded)
                 .map_err(|error| {
@@ -681,6 +717,9 @@ mod tests {
             kernel_id: "kernel-test".to_string(),
             environment_id: "environment-test".to_string(),
             generator_management_targets: BTreeMap::new(),
+            config_projection: DaemonConfigProjectionStore::new(
+                crate::config::DaemonConfig::default(),
+            ),
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let connector = tokio::spawn(run_event_delivery_connector_with_queue(
@@ -774,6 +813,9 @@ mod tests {
             kernel_id: "kernel-heartbeat-test".to_string(),
             environment_id: "environment-heartbeat-test".to_string(),
             generator_management_targets: BTreeMap::new(),
+            config_projection: DaemonConfigProjectionStore::new(
+                crate::config::DaemonConfig::default(),
+            ),
         };
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let connector = tokio::spawn(run_event_delivery_connector_with_queue(

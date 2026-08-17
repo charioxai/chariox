@@ -56,6 +56,15 @@ pub const DEFAULT_RELAY_HEARTBEAT_MS: u64 = 5_000;
 pub struct EventGeneratorManagementTarget {
     pub url: String,
     pub token: String,
+    /// Signed capabilities are short-lived. Static administrator-provided
+    /// targets leave this unset; registry-issued targets are refreshed before
+    /// this instant so actions never use an expired capability.
+    #[serde(default)]
+    pub expires_at_ms: Option<u64>,
+    /// Owners authorized by a registry-issued capability. Static targets do
+    /// not carry this restriction because their operator token is the policy.
+    #[serde(default)]
+    pub owner_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

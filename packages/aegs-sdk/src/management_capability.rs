@@ -14,7 +14,7 @@ pub(crate) struct ManagementCapabilityClaims {
     pub(crate) generator_id: String,
     pub(crate) manifest_digest: String,
     pub(crate) management_url: String,
-    pub(crate) owner_id: String,
+    pub(crate) owner_ids: Vec<String>,
     pub(crate) user_id: String,
     pub(crate) issued_at: u64,
     pub(crate) expires_at: u64,
@@ -75,7 +75,7 @@ pub(crate) fn verify_management_capability(
         generator_id: required_string(&payload, "generator_id")?,
         manifest_digest: required_string(&payload, "manifest_digest")?,
         management_url: required_string(&payload, "management_url")?,
-        owner_id: required_string(&payload, "owner_id")?,
+        owner_ids: required_string_array(&payload, "owner_ids")?,
         user_id: required_string(&payload, "user_id")?,
         issued_at: required_u64(&payload, "iat")?,
         expires_at: required_u64(&payload, "exp")?,
@@ -119,6 +119,28 @@ fn required_u64(value: &Value, name: &str) -> Result<u64, String> {
         .ok_or_else(|| format!("management capability claim {name} is required"))
 }
 
+fn required_string_array(value: &Value, name: &str) -> Result<Vec<String>, String> {
+    let owners = value
+        .get(name)
+        .and_then(Value::as_array)
+        .ok_or_else(|| format!("management capability claim {name} is required"))?
+        .iter()
+        .map(|owner| {
+            owner
+                .as_str()
+                .filter(|owner| !owner.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| format!("management capability claim {name} must contain strings"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if owners.is_empty() {
+        return Err(format!(
+            "management capability claim {name} must not be empty"
+        ));
+    }
+    Ok(owners)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,7 +156,7 @@ mod tests {
                 "generator_id": "dev.chariox.slack",
                 "manifest_digest": "sha256:abc",
                 "management_url": "https://aegs.example.test",
-                "owner_id": "owner-1",
+                "owner_ids": ["owner-1", "kernel-1"],
                 "user_id": "user-1",
                 "iat": 100,
                 "exp": expires_at,
@@ -163,7 +185,7 @@ mod tests {
         .unwrap();
         assert_eq!(capability.subject, "kernel-1");
         assert_eq!(capability.manifest_digest, "sha256:abc");
-        assert_eq!(capability.owner_id, "owner-1");
+        assert_eq!(capability.owner_ids, ["owner-1", "kernel-1"]);
     }
 
     #[test]

@@ -130,6 +130,15 @@ impl KernelRuntimeState {
                     workflow_node_run_id,
                     requested_delivery_token,
                 )?;
+                if event_action_requested {
+                    crate::runtime::event_catalog_control::ensure_event_generator_management_target_for_workflow_run(
+                        self,
+                        &owned.config_projection,
+                        &context.session_id,
+                        &context.workflow_run_ref,
+                    )
+                    .await?;
+                }
                 let (result, dispatches) = owned.dispatch_workflow_runtime_tool_call(
                     canonical_tool_name.to_string(),
                     arguments,

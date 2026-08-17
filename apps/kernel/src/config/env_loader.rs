@@ -283,7 +283,12 @@ fn parse_event_generator_management_targets(
         if targets
             .insert(
                 generator_id.clone(),
-                super::EventGeneratorManagementTarget { url, token },
+                super::EventGeneratorManagementTarget {
+                    url,
+                    token,
+                    expires_at_ms: None,
+                    owner_ids: None,
+                },
             )
             .is_some()
         {

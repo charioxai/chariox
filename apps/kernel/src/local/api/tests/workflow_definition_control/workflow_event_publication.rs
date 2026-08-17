@@ -58,6 +58,8 @@ impl ReadyConnectionServer {
         crate::config::EventGeneratorManagementTarget {
             url: format!("http://{}", self.address),
             token: "test-management-token".to_string(),
+            expires_at_ms: None,
+            owner_ids: None,
         }
     }
 }

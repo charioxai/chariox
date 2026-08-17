@@ -52,17 +52,30 @@ pub(crate) async fn execute_event_catalog_request(
         request,
         LocalDaemonRequest::ListEventConnections(_)
             | LocalDaemonRequest::GetEventConnection(_)
-            | LocalDaemonRequest::InstallEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionDependencies(_)
+    ) {
+        return execute_event_connection_request(
+            runtime_state,
+            &BTreeMap::new(),
+            &config.daemon_id,
+            caller_user_id,
+            request,
+        )
+        .await;
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::InstallEventConnection(_)
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
-            | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
     ) {
         let management_targets = resolve_event_generator_management_targets(
             runtime_state,
+            config_projection,
             &config,
             caller_user_id,
             &request,
@@ -84,6 +97,7 @@ pub(crate) async fn execute_event_catalog_request(
     ) {
         let targets = resolve_event_generator_management_targets(
             runtime_state,
+            config_projection,
             &config,
             caller_user_id,
             &request,
@@ -114,8 +128,9 @@ pub(crate) async fn execute_event_catalog_request(
     })?
 }
 
-async fn resolve_event_generator_management_targets(
+pub(crate) async fn resolve_event_generator_management_targets(
     runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
     config: &crate::config::DaemonConfig,
     caller_user_id: &str,
     request: &LocalDaemonRequest,
@@ -135,8 +150,22 @@ async fn resolve_event_generator_management_targets(
     let registry_url = config.event_registry_url.clone().ok_or_else(|| {
         catalog_error("event generator management bootstrap requires a registry URL".to_string())
     })?;
+    let requested_owner_ids = [
+        config.daemon_id.clone(),
+        event_connection_owner_id(&config.daemon_id, caller_user_id),
+    ];
     for generator_id in generator_ids {
-        if targets.contains_key(&generator_id) {
+        let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
+        if targets.get(&generator_id).is_some_and(|target| {
+            target
+                .expires_at_ms
+                .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms)
+                && target.owner_ids.as_ref().is_none_or(|owners| {
+                    requested_owner_ids
+                        .iter()
+                        .all(|owner| owners.contains(owner))
+                })
+        }) {
             continue;
         }
         let detail_request = LocalDaemonRequest::GetEventGeneratorDetail(
@@ -163,12 +192,13 @@ async fn resolve_event_generator_management_targets(
         let Some(management_url) = detail.summary.management_url.clone() else {
             continue;
         };
+        let owner_ids = requested_owner_ids.to_vec();
         let capability = issue_event_generator_management_capability(
             profile,
             &profile.account_id,
             &profile.realm_id,
             &config.daemon_id,
-            &event_connection_owner_id(&config.daemon_id, caller_user_id),
+            &owner_ids,
             profile.machine_id.as_deref(),
             Some(&profile.user_id),
             &generator_id,
@@ -177,13 +207,31 @@ async fn resolve_event_generator_management_targets(
             &management_url,
         )
         .await?;
+        let expires_at_ms = chrono::DateTime::parse_from_rfc3339(&capability.expires_at)
+            .map_err(|error| {
+                catalog_error(format!(
+                    "cloud returned an invalid management capability expiry: {error}"
+                ))
+            })?
+            .timestamp_millis()
+            .try_into()
+            .map_err(|_| {
+                catalog_error("management capability expiry is before the Unix epoch".to_string())
+            })?;
         targets.insert(
             generator_id,
             crate::config::EventGeneratorManagementTarget {
                 url: management_url,
                 token: capability.token,
+                expires_at_ms: Some(expires_at_ms),
+                owner_ids: Some(owner_ids),
             },
         );
+    }
+    if targets != config.event_generator_management_targets {
+        let mut updated = config.clone();
+        updated.event_generator_management_targets = targets.clone();
+        config_projection.update(updated);
     }
     Ok(targets)
 }
@@ -272,7 +320,20 @@ pub(crate) async fn validate_event_connection(
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
     let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
-    let targets = config.event_generator_management_targets;
+    let target_request =
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some(generator_id.to_string()),
+            cursor: None,
+            limit: 1,
+        });
+    let targets = resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config,
+        caller_user_id,
+        &target_request,
+    )
+    .await?;
     let generator_id = generator_id.to_string();
     let connection_id = connection_id.to_string();
     let expected_generator_id = generator_id.clone();
@@ -421,6 +482,58 @@ pub(crate) async fn validate_registered_event_connection(
         connection_id,
     )
     .await
+}
+
+/// Ensure a workflow runtime action has a live management target before the
+/// synchronous action path reads the projection. This is deliberately shared
+/// by reply and event-context actions so registry-issued targets are resolved
+/// after a kernel restart as well as during connection/binding setup.
+pub(crate) async fn ensure_event_generator_management_target_for_workflow_run(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    session_id: &str,
+    workflow_run_ref: &str,
+) -> Result<(), DaemonError> {
+    let (generator_id, caller_user_id) = {
+        let session_store = runtime_state.session_store();
+        let session = session_store.read().get_session(session_id)?;
+        let workflow_run = session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+        let invocation = workflow_run.publication_invocation().ok_or_else(|| {
+            connection_error("event runtime action is missing its invocation".to_string())
+        })?;
+        let binding_id = invocation.hook_id.as_deref().ok_or_else(|| {
+            connection_error("event runtime action is missing its binding identity".to_string())
+        })?;
+        let binding = session
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == binding_id)
+            .ok_or_else(|| {
+                connection_error(format!("event binding `{binding_id}` was not found"))
+            })?;
+        (
+            binding.generator_id.clone(),
+            session.owner_user_id().to_string(),
+        )
+    };
+    let config = config_projection.snapshot();
+    let request =
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some(generator_id),
+            cursor: None,
+            limit: 1,
+        });
+    resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config,
+        &caller_user_id,
+        &request,
+    )
+    .await
+    .map(|_| ())
 }
 
 async fn execute_event_connection_request(

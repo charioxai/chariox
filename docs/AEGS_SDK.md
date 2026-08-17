@@ -94,7 +94,10 @@ the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
 this SDK, and run the same public conformance contracts. The only runnable AEGS
 kept here is `chariox-aegs-dummy` for deterministic local development.
 
-Reconciliation is authoritative only for the request's `owner_id`. An AEGS
+Reconciliation is authoritative only for the request's `owner_id`. A signed
+management capability may authorize the exact kernel owner and one or more
+kernel-user connection owners needed by the same kernel; the request header and
+body must still name one of those exact identities. An AEGS
 must not deactivate subscriptions owned by another kernel when one kernel
 reconciles an empty or partial set. A higher binding revision may transfer the
 same logical binding to a new owner; equal or older revisions from a different

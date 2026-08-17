@@ -1430,7 +1430,9 @@ impl AegsServer {
                 .headers()
                 .get("x-chariox-owner-id")
                 .and_then(|value| value.to_str().ok());
-            if presented_owner != Some(claims.owner_id.as_str()) {
+            if presented_owner
+                .is_none_or(|owner| !claims.owner_ids.iter().any(|allowed| allowed == owner))
+            {
                 return Err(Box::new(error(
                     StatusCode::FORBIDDEN,
                     "management_owner_mismatch",
@@ -1459,7 +1461,11 @@ fn management_owner(
     authorization: &ManagementAuthorization,
 ) -> Option<String> {
     match authorization {
-        ManagementAuthorization::Signed(claims) => Some(claims.owner_id.clone()),
+        ManagementAuthorization::Signed(_) => request
+            .headers()
+            .get("x-chariox-owner-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
         ManagementAuthorization::Static => request
             .headers()
             .get("x-chariox-owner-id")
@@ -1473,7 +1479,11 @@ fn enforce_management_owner(
     requested_owner: &str,
 ) -> Result<(), Response<Full<Bytes>>> {
     if let ManagementAuthorization::Signed(claims) = authorization {
-        if requested_owner != claims.owner_id {
+        if !claims
+            .owner_ids
+            .iter()
+            .any(|owner| owner == requested_owner)
+        {
             return Err(error(
                 StatusCode::FORBIDDEN,
                 "management_owner_mismatch",
@@ -1746,7 +1756,7 @@ mod tests {
                 manifest_digest: "sha256:test".to_string(),
                 management_url: "https://aegs.example.test".to_string(),
                 user_id: "user-1".to_string(),
-                owner_id: "owner-1".to_string(),
+                owner_ids: vec!["owner-1".to_string(), "kernel-1".to_string()],
                 issued_at: 100,
                 expires_at: 200,
                 token_id: "cap-1".to_string(),
