@@ -87,15 +87,17 @@ jobs:
         run: |
           protocol_version='${{ steps.versions.outputs.protocol }}'
           probe_dir="$(mktemp -d)"
+          mkdir -p "$probe_dir/src"
+          printf 'fn main() {}\n' > "$probe_dir/src/main.rs"
           cat > "$probe_dir/Cargo.toml" <<EOF
-[package]
-name = "chariox-protocol-index-probe"
-version = "0.0.0"
-edition = "2021"
+          [package]
+          name = "chariox-protocol-index-probe"
+          version = "0.0.0"
+          edition = "2021"
 
-[dependencies]
-chariox-event-protocol = "=$protocol_version"
-EOF
+          [dependencies]
+          chariox-event-protocol = "=$protocol_version"
+          EOF
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
             if cargo fetch --manifest-path "$probe_dir/Cargo.toml" --quiet; then
               exit 0
