@@ -155,8 +155,7 @@ pub fn unsigned_manifest_digest(manifest: &Value) -> Result<String, String> {
         .as_object_mut()
         .ok_or_else(|| "event generator manifest must be an object".to_string())?
         .remove("signature");
-    let bytes =
-        serde_json::to_vec(&canonical_json(&unsigned)).map_err(|error| error.to_string())?;
+    let bytes = serde_json_canonicalizer::to_vec(&unsigned).map_err(|error| error.to_string())?;
     Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
 }
 
@@ -230,7 +229,7 @@ fn without_signature(manifest: &Value) -> Result<Value, String> {
 }
 
 fn canonical_manifest_bytes(manifest: &Value) -> Result<Vec<u8>, String> {
-    serde_json::to_vec(&canonical_json(manifest)).map_err(|error| error.to_string())
+    serde_json_canonicalizer::to_vec(manifest).map_err(|error| error.to_string())
 }
 
 /// Parses a raw 32-byte Ed25519 private key from hexadecimal or base64 text.
@@ -260,22 +259,6 @@ fn require_manifest_string<'a>(value: Option<&'a Value>, field: &str) -> Result<
         .and_then(Value::as_str)
         .filter(|value| !value.trim().is_empty())
         .ok_or_else(|| format!("manifest {field} is required"))
-}
-
-fn canonical_json(value: &Value) -> Value {
-    match value {
-        Value::Array(values) => Value::Array(values.iter().map(canonical_json).collect()),
-        Value::Object(values) => {
-            let mut keys = values.keys().collect::<Vec<_>>();
-            keys.sort();
-            Value::Object(
-                keys.into_iter()
-                    .map(|key| (key.clone(), canonical_json(&values[key])))
-                    .collect(),
-            )
-        }
-        value => value.clone(),
-    }
 }
 
 #[cfg(test)]
@@ -373,5 +356,34 @@ mod tests {
         let base64 = BASE64.encode([7; 32]);
         assert_eq!(parse_signing_key(&hex).unwrap().to_bytes(), [7; 32]);
         assert_eq!(parse_signing_key(&base64).unwrap().to_bytes(), [7; 32]);
+    }
+
+    #[test]
+    fn uses_rfc8785_number_and_string_vectors() {
+        let value = serde_json::json!({
+            "\u{e9}": "\u{2028}",
+            "numbers": [1e-6, 1e23, -0.0],
+        });
+        let bytes = canonical_manifest_bytes(&value).unwrap();
+        assert_eq!(
+            String::from_utf8(bytes).unwrap(),
+            r#"{"numbers":[0.000001,1e+23,0],"é":" "}"#
+        );
+    }
+
+    #[test]
+    fn published_fixture_digest_is_interoperable() {
+        let manifest: Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            unsigned_manifest_digest(&manifest).unwrap(),
+            manifest
+                .pointer("/signature/digest")
+                .unwrap()
+                .as_str()
+                .unwrap()
+        );
     }
 }
