@@ -57,7 +57,7 @@ pub(super) fn workflow_publication_deployment_contract_json(
         "routes": [route],
         "provider_requirements": provider_requirements,
         "credential_slots": credential_slots,
-        "configuration": [],
+        "configuration": deployment_configuration(snapshot),
         "capabilities": capability_ceiling(agent_app, requirements, &provider_requirements, &network_destinations),
         "resources": resource_hints(snapshot, agent_app),
         "presentation": {
@@ -68,6 +68,38 @@ pub(super) fn workflow_publication_deployment_contract_json(
         },
         "signatures": [],
     }))
+}
+
+fn deployment_configuration(
+    snapshot: &crate::local::WorkflowPublicationSnapshot,
+) -> Vec<serde_json::Value> {
+    snapshot
+        .agents
+        .iter()
+        .map(|agent| {
+            let node_ids = snapshot
+                .workflow
+                .nodes()
+                .iter()
+                .filter(|node| node.agent_id() == agent.id())
+                .map(|node| node.id().to_string())
+                .collect::<Vec<_>>();
+            serde_json::json!({
+                "key": format!("provider_profile:{}", agent.id()),
+                "kind": "provider_profile",
+                "label": format!("Provider profile for {}", agent.id()),
+                "required": true,
+                "secret": false,
+                "agent_id": agent.id(),
+                "node_ids": node_ids,
+                "captured": {
+                    "provider": agent.provider(),
+                    "model": agent.model(),
+                    "effort": agent.effort(),
+                },
+            })
+        })
+        .collect()
 }
 
 fn deployment_route(

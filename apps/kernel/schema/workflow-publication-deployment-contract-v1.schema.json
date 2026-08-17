@@ -88,7 +88,7 @@
     },
     "configuration": {
       "type": "array",
-      "items": { "type": "object" }
+      "items": { "$ref": "#/definitions/configuration_field" }
     },
     "capabilities": {
       "type": "object",
@@ -239,6 +239,30 @@
           "else": { "required": ["integration"] }
         }
       ]
+    },
+    "configuration_field": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "kind", "label", "required", "secret", "agent_id", "node_ids", "captured"],
+      "properties": {
+        "key": { "$ref": "#/definitions/non_empty_string" },
+        "kind": { "const": "provider_profile" },
+        "label": { "$ref": "#/definitions/non_empty_string" },
+        "required": { "const": true },
+        "secret": { "const": false },
+        "agent_id": { "$ref": "#/definitions/non_empty_string" },
+        "node_ids": { "$ref": "#/definitions/string_array" },
+        "captured": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["provider", "model", "effort"],
+          "properties": {
+            "provider": { "$ref": "#/definitions/non_empty_string" },
+            "model": { "type": ["string", "null"] },
+            "effort": { "type": ["string", "null"] }
+          }
+        }
+      }
     },
     "network_policy": {
       "oneOf": [

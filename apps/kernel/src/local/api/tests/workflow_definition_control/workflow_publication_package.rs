@@ -629,6 +629,32 @@ fn local_request_api_exports_agent_app_publication_package() {
         deployment_contract["credential_slots"][0]["allowed_destination_ids"],
         serde_json::json!([])
     );
+    let provider_configuration = &deployment_contract["configuration"][0];
+    let configured_agent_id = provider_configuration["agent_id"]
+        .as_str()
+        .expect("provider configuration should name its immutable agent");
+    assert_eq!(
+        provider_configuration["key"],
+        serde_json::json!(format!("provider_profile:{configured_agent_id}"))
+    );
+    assert_eq!(
+        provider_configuration["kind"],
+        serde_json::json!("provider_profile")
+    );
+    assert_eq!(provider_configuration["required"], serde_json::json!(true));
+    assert_eq!(provider_configuration["secret"], serde_json::json!(false));
+    assert_eq!(
+        provider_configuration["captured"],
+        serde_json::json!({
+            "provider": "dev-stub",
+            "model": "default",
+            "effort": null,
+        })
+    );
+    assert_eq!(
+        provider_configuration["node_ids"],
+        deployment_contract["provider_requirements"][0]["node_ids"]
+    );
     assert_eq!(
         deployment_contract["capabilities"]["network"],
         serde_json::json!({
