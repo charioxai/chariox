@@ -331,12 +331,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
         Ok(agent)
     }
 
-    pub(crate) fn leased_workflow_event_reply_enabled_for_backing_prompt(
+    pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(
         &self,
         session_id: &str,
         agent_id: &str,
         backing_prompt_id: &str,
-    ) -> Option<bool> {
+    ) -> Option<(bool, bool)> {
         self.app
             .leased_workflow_turns
             .values()
@@ -351,7 +351,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
                                 && agent.backing_agent_id == agent_id
                         })
             })
-            .map(|binding| binding.context.event_reply_enabled)
+            .map(|binding| {
+                (
+                    binding.context.event_reply_enabled,
+                    binding.context.event_context_enabled,
+                )
+            })
     }
 
     pub(crate) fn activate_leased_workflow_prompt(

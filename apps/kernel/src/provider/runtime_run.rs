@@ -58,6 +58,10 @@ pub struct RuntimeProviderRun {
     /// the event binding and must not pollute ordinary workflow contexts.
     #[serde(skip)]
     workflow_event_reply_enabled: bool,
+    /// Capability snapshot for bounded provider event context. This is
+    /// independent from the event reply capability.
+    #[serde(skip)]
+    workflow_event_context_enabled: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     mcp_servers: Vec<CharioxMcpServerConfig>,
     #[serde(
@@ -132,6 +136,7 @@ impl RuntimeProviderRun {
                 .map(|binding| binding.auth_token.clone()),
             workflow_tools_enabled: false,
             workflow_event_reply_enabled: request.workflow_event_reply_enabled,
+            workflow_event_context_enabled: request.workflow_event_context_enabled,
             mcp_servers: request.mcp_servers.clone(),
             remote_extension_manifest: request.remote_extension_manifest.clone(),
             provider_config_overrides: request.provider_config_overrides.clone(),
@@ -193,6 +198,7 @@ impl RuntimeProviderRun {
                 .then(|| "inferred-managed-mcp".to_string()),
             workflow_tools_enabled: false,
             workflow_event_reply_enabled: false,
+            workflow_event_context_enabled: false,
             mcp_servers: Vec::new(),
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_config_overrides: BTreeMap::new(),
@@ -434,6 +440,10 @@ impl RuntimeProviderRun {
 
     pub fn workflow_event_reply_enabled(&self) -> bool {
         self.workflow_event_reply_enabled
+    }
+
+    pub fn workflow_event_context_enabled(&self) -> bool {
+        self.workflow_event_context_enabled
     }
 
     pub fn set_control_capabilities(&mut self, capabilities: Vec<ControlCapability>) {

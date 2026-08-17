@@ -113,6 +113,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         required_mcps: &[RequiredRemoteMcp],
         remote_extension_manifest: &crate::extension::RemoteExtensionManifest,
         event_reply_enabled: bool,
+        event_context_enabled: bool,
     ) -> Result<LeasedProviderRunMatch, DaemonError> {
         self.ensure_home_proxy_manifest_has_no_worker_collisions(
             leased_agent,
@@ -136,7 +137,9 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mcp_matches = provider_run_mcp_set_matches(run, required_mcps)?;
             let reply_capability_matches =
                 run.workflow_event_reply_enabled() == event_reply_enabled;
-            if mcp_matches && reply_capability_matches {
+            let context_capability_matches =
+                run.workflow_event_context_enabled() == event_context_enabled;
+            if mcp_matches && reply_capability_matches && context_capability_matches {
                 if !remote_extension_manifest.is_empty() {
                     let updated = self.app.providers.update_run_remote_extension_manifest(
                         run.id(),
@@ -163,7 +166,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 });
             }
             // Provider tools/list is a run-level snapshot. If only the
-            // event-reply capability differs, let a busy run finish its
+            // event capability differs, let a busy run finish its
             // already-admitted prompt and rotate it on the next idle boundary.
             // This preserves FIFO queueing without advertising a capability
             // change halfway through an active provider turn.
@@ -199,6 +202,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         .with_agent_id(&leased_agent.backing_agent_id)
         .with_owner_user_id(lease.owner_user_id)
         .with_workflow_event_reply(event_reply_enabled)
+        .with_workflow_event_context(event_context_enabled)
         .with_working_directory(std::path::PathBuf::from(
             self.app
                 .sessions

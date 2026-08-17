@@ -102,6 +102,10 @@ pub struct RemoteWorkflowTurnContext {
     /// Older peers default to disabled, preserving the safe behavior.
     #[serde(default)]
     pub event_reply_enabled: bool,
+    /// Whether this event run may request bounded provider context. This is
+    /// independent from reply mode and defaults off for older peers.
+    #[serde(default)]
+    pub event_context_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

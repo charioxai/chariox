@@ -128,6 +128,46 @@ fn event_context_runtime_receipts_redact_provider_payloads() {
 }
 
 #[test]
+fn event_context_tool_is_discovered_without_reply_tool() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "event-context-workspace",
+            "event-context-worktree",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id())
+            .with_workflow_event_context(true),
+        )
+        .expect("provider should launch");
+    app.providers()
+        .enable_workflow_tools(run.id())
+        .expect("workflow tools should be enabled");
+    let auth_token = run
+        .runtime_mcp_auth_token()
+        .expect("provider should expose runtime MCP auth")
+        .to_string();
+    let runtime = runtime_state_from_app(app);
+    let specs = runtime.runtime_tool_specs_for_auth_token(&auth_token);
+    assert!(specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
+    }));
+    assert!(!specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+    }));
+}
+
+#[test]
 fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

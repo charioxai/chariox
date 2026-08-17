@@ -484,6 +484,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_node_run_id: "node-first".to_string(),
                 delivery_token: "delivery-first".to_string(),
                 event_reply_enabled: true,
+                event_context_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: "session-leased-workflow-queue".to_string(),
@@ -527,6 +528,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
                 workflow_node_run_id: "node-second".to_string(),
                 delivery_token: "delivery-second".to_string(),
                 event_reply_enabled: false,
+                event_context_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: "session-leased-workflow-queue".to_string(),
@@ -674,6 +676,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
                 workflow_node_run_id: format!("{workflow_run_id}-node"),
                 delivery_token: format!("{workflow_run_id}-delivery"),
                 event_reply_enabled,
+                event_context_enabled: false,
             }),
             Some(crate::transport::relay_peer::RemoteGitTurnContext {
                 home_session_id: home_session_id.to_string(),

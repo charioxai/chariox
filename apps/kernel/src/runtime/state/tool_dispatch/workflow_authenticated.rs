@@ -11,6 +11,9 @@ impl KernelRuntimeState {
         let provider_run_allows_event_reply = provider_runs
             .iter()
             .any(|run| run.workflow_event_reply_enabled());
+        let provider_run_allows_event_context = provider_runs
+            .iter()
+            .any(|run| run.workflow_event_context_enabled());
         // Tool discovery is advisory. A provider can retain a tool name from
         // an earlier snapshot, and an event binding can be edited while that
         // provider turn is still running. Enforce the capability snapshot at
@@ -20,7 +23,7 @@ impl KernelRuntimeState {
             crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
                 | crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
         );
-        let leased_event_context = if event_action_requested && !provider_run_allows_event_reply {
+        let leased_event_context = if event_action_requested {
             let provider_run_ids = provider_runs
                 .iter()
                 .map(|run| run.id().to_string())
@@ -51,10 +54,10 @@ impl KernelRuntimeState {
         }
         if canonical_tool_name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
             && !event_reply_dispatch_snapshot_allows(
-                provider_run_allows_event_reply,
+                provider_run_allows_event_context,
                 leased_event_context
                     .as_ref()
-                    .map(|context| context.event_reply_enabled),
+                    .map(|context| context.event_context_enabled),
             )
         {
             return Err(DaemonError::LocalTransport {

@@ -429,6 +429,11 @@ pub struct LaunchProviderRequest {
     /// discover the event reply action for this run.
     #[serde(default, skip_serializing_if = "is_false")]
     pub workflow_event_reply_enabled: bool,
+    /// Workflow-only capability snapshot for bounded provider event context.
+    /// This is independent from reply mode: an event may permit context reads
+    /// while replies remain disabled.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub workflow_event_context_enabled: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -572,6 +577,7 @@ impl LaunchProviderRequest {
             client_interface: ProviderClientInterface::Chariox,
             external_provider_import: None,
             workflow_event_reply_enabled: false,
+            workflow_event_context_enabled: false,
         }
     }
 
@@ -693,6 +699,11 @@ impl LaunchProviderRequest {
 
     pub fn with_workflow_event_reply(mut self, enabled: bool) -> Self {
         self.workflow_event_reply_enabled = enabled;
+        self
+    }
+
+    pub fn with_workflow_event_context(mut self, enabled: bool) -> Self {
+        self.workflow_event_context_enabled = enabled;
         self
     }
 
