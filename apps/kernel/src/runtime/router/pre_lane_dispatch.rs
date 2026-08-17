@@ -8,7 +8,8 @@ use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::event_catalog_control::{
     execute_event_catalog_request, validate_event_binding_contract, validate_event_connection,
-    validate_registered_event_connection, workflow_event_binding_connection,
+    validate_event_connection_scopes, validate_registered_event_connection,
+    workflow_event_binding_connection,
 };
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
@@ -288,19 +289,22 @@ impl CommandRouter {
         if let Some((generator_id, connection_id, requires_registered_connection)) =
             connection_mutation
         {
-            if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
-                validate_event_binding_contract(
-                    &self.config_projection,
-                    &request.generator_id,
-                    &request.generator_version,
-                    &request.manifest_digest,
-                    &request.event_type,
-                    request.event_type_version,
-                    &request.action_ids,
-                    request.reply_mode.as_deref(),
-                )
-                .await?;
-            }
+            let required_scopes =
+                if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
+                    validate_event_binding_contract(
+                        &self.config_projection,
+                        &request.generator_id,
+                        &request.generator_version,
+                        &request.manifest_digest,
+                        &request.event_type,
+                        request.event_type_version,
+                        &request.action_ids,
+                        request.reply_mode.as_deref(),
+                    )
+                    .await?
+                } else {
+                    Vec::new()
+                };
             let _connection_guard = self
                 .event_connection_lanes
                 .lock(caller_user_id, &connection_id)
@@ -324,6 +328,12 @@ impl CommandRouter {
                 )
                 .await?;
             }
+            validate_event_connection_scopes(
+                &self.runtime_state,
+                caller_user_id,
+                &connection_id,
+                &required_scopes,
+            )?;
             let response = self
                 .workflow_runtime
                 .dispatch_workflow_command(command.clone(), request.clone())

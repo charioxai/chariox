@@ -2,7 +2,7 @@
 // Boxing only this module's results would introduce a second error contract for its callers.
 #![allow(clippy::result_large_err)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -417,7 +417,7 @@ pub(crate) async fn validate_event_binding_contract(
     event_type_version: u32,
     action_ids: &[String],
     reply_mode: Option<&str>,
-) -> Result<(), DaemonError> {
+) -> Result<Vec<String>, DaemonError> {
     let registry_url = config_projection.snapshot().event_registry_url;
     let request =
         LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
@@ -459,7 +459,7 @@ fn validate_event_binding_detail(
     event_type_version: u32,
     action_ids: &[String],
     reply_mode: Option<&str>,
-) -> Result<(), DaemonError> {
+) -> Result<Vec<String>, DaemonError> {
     if detail.summary.generator_id != generator_id || detail.summary.version != generator_version {
         return Err(connection_error(format!(
             "event catalog returned `{}`@`{}` for requested `{generator_id}@{generator_version}`",
@@ -472,17 +472,22 @@ fn validate_event_binding_detail(
             detail.summary.manifest_digest
         )));
     }
-    if !detail
+    let Some(event) = detail
         .events
         .iter()
-        .any(|event| event.event_type == event_type && event.version == event_type_version)
-    {
+        .find(|event| event.event_type == event_type && event.version == event_type_version)
+    else {
         return Err(connection_error(format!(
             "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
         )));
-    }
+    };
+    let mut required_scopes = event
+        .required_scopes
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
     for action_id in action_ids {
-        let Some(_action) = detail
+        let Some(action) = detail
             .actions
             .iter()
             .find(|action| action.action_id == *action_id)
@@ -496,8 +501,49 @@ fn validate_event_binding_detail(
                 "notification.reply requires reply_mode thread or channel".to_string(),
             ));
         }
+        required_scopes.extend(action.required_scopes.iter().cloned());
     }
-    Ok(())
+    Ok(required_scopes.into_iter().collect())
+}
+
+pub(crate) fn validate_event_connection_scopes(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    connection_id: &str,
+    required_scopes: &[String],
+) -> Result<(), DaemonError> {
+    if required_scopes.is_empty() {
+        return Ok(());
+    }
+    let connection = runtime_state
+        .event_connection_registry()
+        .get(caller_user_id, connection_id)?
+        .ok_or_else(|| connection_error("event connection was removed or is not installed"))?;
+    validate_granted_event_connection_scopes(connection_id, &connection.scopes, required_scopes)
+}
+
+fn validate_granted_event_connection_scopes(
+    connection_id: &str,
+    connection_scopes: &[crate::local::EventConnectionScope],
+    required_scopes: &[String],
+) -> Result<(), DaemonError> {
+    let granted_scopes = connection_scopes
+        .iter()
+        .filter(|scope| scope.granted)
+        .map(|scope| scope.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing_scopes = required_scopes
+        .iter()
+        .filter(|required| !granted_scopes.contains(required.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing_scopes.is_empty() {
+        return Ok(());
+    }
+    Err(connection_error(format!(
+        "event connection `{connection_id}` is missing required scopes: {}; reconnect it before attaching",
+        missing_scopes.join(", ")
+    )))
 }
 
 pub(crate) async fn validate_registered_event_connection(
@@ -1796,6 +1842,49 @@ mod tests {
             None,
         )
         .expect("declared event type should be accepted");
+    }
+
+    #[test]
+    fn event_binding_contract_returns_unique_event_and_action_scopes() {
+        let mut detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
+        detail.events[0].required_scopes = vec!["events:read".to_string()];
+        detail.actions = vec![crate::local::EventGeneratorActionDefinition {
+            action_id: "dummy.acknowledge".to_string(),
+            name: "Acknowledge".to_string(),
+            description: "Acknowledge the event".to_string(),
+            required_scopes: vec!["actions:write".to_string(), "events:read".to_string()],
+            target: "originating_resource".to_string(),
+            mutation: true,
+            idempotent: true,
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        let required_scopes = validate_event_binding_detail(
+            &detail,
+            &detail.summary.generator_id,
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            "dummy.test",
+            1,
+            &["dummy.acknowledge".to_string()],
+            None,
+        )
+        .expect("declared action should be accepted");
+
+        assert_eq!(required_scopes, vec!["actions:write", "events:read"]);
+    }
+
+    #[test]
+    fn event_binding_scope_validation_fails_closed_for_omitted_grants() {
+        let required_scopes = vec!["actions:write".to_string()];
+        let error = validate_granted_event_connection_scopes("connection-1", &[], &required_scopes)
+            .expect_err("omitted scopes must not grant a scope-bearing action");
+        assert!(error
+            .to_string()
+            .contains("missing required scopes: actions:write"));
+
+        validate_granted_event_connection_scopes("connection-1", &[], &[])
+            .expect("actions without required scopes remain available");
     }
 
     #[test]
