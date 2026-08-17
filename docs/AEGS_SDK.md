@@ -62,6 +62,15 @@ lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROT
 - reconnect and revoke/disconnect;
 - emit an authentic test occurrence through AEDS when supported.
 
+Mutation actions such as `notification.reply` are idempotent and are retained
+as durable action receipts so a retry cannot repeat the provider side effect.
+`event.context` (and the compatibility alias `notification.context`) is
+different: it is a bounded, read-only query. The SDK serializes concurrent
+requests by idempotency key, but deliberately does not persist the response or
+conversation data in `action_receipts`; a retry performs a fresh provider
+query. AEGS implementations must keep context responses bounded and must not
+turn this path into a general provider API proxy.
+
 Implement `AegsProvider::inspect_connection`, `refresh_connection`, and
 `test_event` for provider-specific behavior. The SDK supplies a conservative
 baseline inspection, but it intentionally does not claim that provider health
