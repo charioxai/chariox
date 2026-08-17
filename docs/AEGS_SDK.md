@@ -19,8 +19,8 @@ normalization, then run the public contract suite before submitting the
 implementation. The starter is deliberately not a production adapter: it
 shows the boundary while making missing provider authentication explicit.
 
-Publisher manifests are signed locally. The SDK signs the canonical unsigned
-manifest digest and accepts only raw 32-byte Ed25519 keys in hexadecimal or
+Publisher manifests are signed locally. The SDK signs canonical unsigned JSON
+and records its digest in the envelope; it accepts only raw 32-byte Ed25519 keys in hexadecimal or
 base64. Keep the key in a secret manager or a file with restricted permissions;
 never put it in a manifest, Cloud, AEDS, a kernel, or a command-line argument:
 

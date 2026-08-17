@@ -162,10 +162,10 @@ pub fn unsigned_manifest_digest(manifest: &Value) -> Result<String, String> {
 
 /// Signs the canonical unsigned manifest and returns a publisher-ready envelope.
 ///
-/// The signature covers the `sha256:<digest>` string, rather than a
-/// serialization chosen by a caller. This makes signing deterministic across
-/// SDK implementations and keeps registry verification independent of JSON
-/// key ordering. Publisher keys never leave the caller's process.
+/// The signature covers canonical unsigned JSON, rather than a serialization
+/// chosen by a caller. The digest is retained in the envelope as a cheap
+/// integrity check. This keeps registry verification independent of JSON key
+/// ordering. Publisher keys never leave the caller's process.
 pub fn sign_manifest(
     unsigned_manifest: &Value,
     key_id: impl Into<String>,
@@ -177,7 +177,8 @@ pub fn sign_manifest(
         .ok_or_else(|| "event generator manifest must be an object".to_string())?
         .remove("signature");
     let digest = unsigned_manifest_digest(&manifest)?;
-    let signature = signing_key.sign(digest.as_bytes());
+    let bytes = canonical_manifest_bytes(&manifest)?;
+    let signature = signing_key.sign(&bytes);
     manifest
         .as_object_mut()
         .expect("manifest object was checked above")
@@ -212,10 +213,24 @@ pub fn verify_manifest_signature(
     let signature = Signature::from_slice(&bytes).map_err(|error| {
         format!("manifest signature.value is not a valid ed25519 signature: {error}")
     })?;
+    let bytes = canonical_manifest_bytes(&without_signature(manifest)?)?;
     verifying_key
-        .verify_strict(digest.as_bytes(), &signature)
+        .verify_strict(&bytes, &signature)
         .map_err(|_| "manifest signature verification failed".to_string())?;
     Ok(digest)
+}
+
+fn without_signature(manifest: &Value) -> Result<Value, String> {
+    let mut unsigned = manifest.clone();
+    unsigned
+        .as_object_mut()
+        .ok_or_else(|| "event generator manifest must be an object".to_string())?
+        .remove("signature");
+    Ok(unsigned)
+}
+
+fn canonical_manifest_bytes(manifest: &Value) -> Result<Vec<u8>, String> {
+    serde_json::to_vec(&canonical_json(manifest)).map_err(|error| error.to_string())
 }
 
 /// Parses a raw 32-byte Ed25519 private key from hexadecimal or base64 text.
