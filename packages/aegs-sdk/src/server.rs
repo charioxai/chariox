@@ -28,6 +28,12 @@ use crate::{
     MAX_WEBHOOK_BYTES,
 };
 
+fn action_receipt_is_durable(action_id: &str) -> bool {
+    // Context lookups are bounded, read-only queries. Persisting their full provider response
+    // would retain conversation history and user profiles indefinitely in the AEGS database.
+    !matches!(action_id, "event.context" | "notification.context")
+}
+
 #[derive(Clone)]
 struct AegsServer {
     producer_id: String,
@@ -375,23 +381,26 @@ impl AegsServer {
                     &action.input,
                     &action.context,
                 );
-                match self.store.action_receipt(
-                    &action.owner_id,
-                    &action.connection_id,
-                    &action.idempotency_key,
-                    &request_fingerprint,
-                ) {
-                    Ok(Some(response)) => return json(StatusCode::OK, response),
-                    Ok(None) => {}
-                    Err(ActionReceiptLookupError::Conflict(message)) => {
-                        return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
-                    }
-                    Err(ActionReceiptLookupError::Storage(message)) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_receipt_lookup_failed",
-                            message,
-                        )
+                let durable_receipt = action_receipt_is_durable(&action.action_id);
+                if durable_receipt {
+                    match self.store.action_receipt(
+                        &action.owner_id,
+                        &action.connection_id,
+                        &action.idempotency_key,
+                        &request_fingerprint,
+                    ) {
+                        Ok(Some(response)) => return json(StatusCode::OK, response),
+                        Ok(None) => {}
+                        Err(ActionReceiptLookupError::Conflict(message)) => {
+                            return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
+                        }
+                        Err(ActionReceiptLookupError::Storage(message)) => {
+                            return error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "action_receipt_lookup_failed",
+                                message,
+                            )
+                        }
                     }
                 }
                 let provider = Arc::clone(&self.provider);
@@ -422,18 +431,20 @@ impl AegsServer {
                         "provider action response identity did not match the request",
                     );
                 }
-                if let Err(message) = self.store.record_action_receipt(
-                    &action.owner_id,
-                    &action.connection_id,
-                    &response,
-                    &request_fingerprint,
-                    now_ms(),
-                ) {
-                    return error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "action_receipt_failed",
-                        message,
-                    );
+                if durable_receipt {
+                    if let Err(message) = self.store.record_action_receipt(
+                        &action.owner_id,
+                        &action.connection_id,
+                        &response,
+                        &request_fingerprint,
+                        now_ms(),
+                    ) {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "action_receipt_failed",
+                            message,
+                        );
+                    }
                 }
                 json(StatusCode::ACCEPTED, response)
             }
@@ -1517,5 +1528,13 @@ mod tests {
         );
         assert_eq!(inspection.last_successful_health_check_at_ms, None);
         assert!(!inspection.test_event_supported);
+    }
+
+    #[test]
+    fn context_actions_do_not_persist_provider_responses() {
+        assert!(!action_receipt_is_durable("event.context"));
+        assert!(!action_receipt_is_durable("notification.context"));
+        assert!(action_receipt_is_durable("notification.reply"));
+        assert!(action_receipt_is_durable("custom.action"));
     }
 }
