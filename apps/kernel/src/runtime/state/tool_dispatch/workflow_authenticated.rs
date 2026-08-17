@@ -47,6 +47,15 @@ impl KernelRuntimeState {
                     .to_string(),
             });
         }
+        if canonical_tool_name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+            && !provider_run_allows_event_reply
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_workflow_runtime_tool_call",
+                message: "event_context is not enabled for the active workflow provider run"
+                    .to_string(),
+            });
+        }
         let requested_delivery_token = match canonical_tool_name {
             crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL => {
                 serde_json::from_value::<crate::transport::runtime_tools::AckWorkflowTurnArgs>(

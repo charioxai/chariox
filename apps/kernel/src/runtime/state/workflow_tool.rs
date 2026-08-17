@@ -88,6 +88,9 @@ impl KernelRuntimeOwnedState {
             crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL => {
                 self.workflow_reply_to_event_tool_result(&arguments, &context)
             }
+            crate::transport::runtime_tools::EVENT_CONTEXT_TOOL => {
+                self.workflow_event_context_tool_result(&arguments, &context)
+            }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
                 message: format!("unsupported runtime tool `{other}`"),
@@ -317,6 +320,144 @@ impl KernelRuntimeOwnedState {
                 "status": response.status,
                 "content_type": response.content_type,
                 "body": response.body,
+            }),
+        })
+    }
+
+    fn workflow_event_context_tool_result(
+        &self,
+        arguments: &serde_json::Value,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args = serde_json::from_value::<crate::transport::runtime_tools::EventContextArgs>(
+            arguments.clone(),
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_event_context",
+            message: format!("invalid tool arguments: {error}"),
+        })?;
+        if !matches!(
+            args.kind.as_str(),
+            "thread" | "surrounding" | "channel" | "participants" | "users"
+        ) {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_event_context",
+                message:
+                    "context kind must be thread, surrounding, channel, participants, or users"
+                        .to_string(),
+            });
+        }
+        let limit = args.limit.unwrap_or(20).clamp(1, 100);
+        if args.user_ids.as_ref().is_some_and(|ids| ids.len() > 25) {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_event_context",
+                message: "at most 25 user_ids may be requested at once".to_string(),
+            });
+        }
+        let (binding, workflow_run_id, reply_context) = {
+            let workflow_run = self
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+            let invocation = workflow_run
+                .publication_invocation()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_context",
+                    message: "event_context is only available for event-triggered workflow runs"
+                        .to_string(),
+                })?;
+            if invocation.transport != "event" {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_context",
+                    message: "event_context is only available for event-triggered workflow runs"
+                        .to_string(),
+                });
+            }
+            let binding_id =
+                invocation
+                    .hook_id
+                    .clone()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_event_context",
+                        message: "event invocation is missing its binding identity".to_string(),
+                    })?;
+            let binding = self
+                .session_store
+                .read()
+                .get_session(&context.session_id)?
+                .workflow_event_bindings()
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_context",
+                    message: format!("event binding `{binding_id}` was not found"),
+                })?;
+            let reply_context = invocation
+                .input
+                .get("reply_context")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_context",
+                    message: "this event does not provide provider context".to_string(),
+                })?;
+            (binding, workflow_run.id().to_string(), reply_context)
+        };
+        let daemon_id = self.config_projection.snapshot().daemon_id;
+        let session_owner = self
+            .session_store
+            .read()
+            .get_session(&context.session_id)?
+            .owner_user_id()
+            .to_string();
+        let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+            &daemon_id,
+            &session_owner,
+        );
+        let idempotency_key = format!(
+            "chariox:{workflow_run_id}:{}:event-context:{}",
+            context.workflow_node_run_id, args.kind
+        );
+        let mut input = serde_json::json!({"kind": args.kind, "limit": limit});
+        if let Some(cursor) = args.cursor {
+            input["cursor"] = serde_json::Value::String(cursor);
+        }
+        if let Some(user_ids) = args.user_ids {
+            input["user_ids"] =
+                serde_json::to_value(user_ids).map_err(|error| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_context",
+                    message: error.to_string(),
+                })?;
+        }
+        let request = chariox_event_protocol::AegsProviderActionRequest {
+            generator_id: binding.generator_id,
+            owner_id,
+            connection_id: binding.connection_id,
+            action_id: "event.context".to_string(),
+            input,
+            context: reply_context,
+            idempotency_key,
+        };
+        let response = crate::runtime::event_catalog_control::invoke_aegs_action(
+            &self
+                .config_projection
+                .snapshot()
+                .event_generator_management_targets,
+            &request,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_event_context",
+            message: error.to_string(),
+        })?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: response.accepted,
+            payload: serde_json::json!({
+                "action_id": response.action_id,
+                "accepted": response.accepted,
+                "idempotency_key": response.idempotency_key,
+                "result": response.result,
             }),
         })
     }

@@ -54,6 +54,19 @@ pub struct ReplyToEventArgs {
     pub delivery_token: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EventContextArgs {
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_ids: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub delivery_token: Option<String>,
+}
+
 pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
     vec![
         RuntimeToolSpec {
@@ -178,6 +191,22 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "additionalProperties": false
             }),
         },
+        RuntimeToolSpec {
+            name: EVENT_CONTEXT_TOOL_QUALIFIED.to_string(),
+            description: "Request bounded context from the provider that delivered the current event. The request is scoped to that event's workspace, channel, and thread; conversation history and participant profiles are not added unless you explicitly request them. This is only available for compatible event-triggered workflow runs.".to_string(),
+            input_schema: serde_json::json!({
+                "type": "object",
+                "required": ["kind"],
+                "properties": {
+                    "kind": {"type": "string", "enum": ["thread", "surrounding", "channel", "participants", "users"]},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+                    "cursor": {"type": "string"},
+                    "user_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 25},
+                    "delivery_token": {"type": "string"}
+                },
+                "additionalProperties": false
+            }),
+        },
     ]
 }
 
@@ -189,7 +218,9 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
 pub fn workflow_runtime_tool_specs_without_event_reply() -> Vec<RuntimeToolSpec> {
     workflow_runtime_tool_specs()
         .into_iter()
-        .filter(|spec| spec.name != REPLY_TO_EVENT_TOOL_QUALIFIED)
+        .filter(|spec| {
+            spec.name != REPLY_TO_EVENT_TOOL_QUALIFIED && spec.name != EVENT_CONTEXT_TOOL_QUALIFIED
+        })
         .collect()
 }
 
@@ -198,6 +229,13 @@ pub fn workflow_reply_to_event_tool_spec() -> RuntimeToolSpec {
         .into_iter()
         .find(|spec| spec.name == REPLY_TO_EVENT_TOOL_QUALIFIED)
         .expect("workflow runtime tool list must contain reply_to_event")
+}
+
+pub fn workflow_event_context_tool_spec() -> RuntimeToolSpec {
+    workflow_runtime_tool_specs()
+        .into_iter()
+        .find(|spec| spec.name == EVENT_CONTEXT_TOOL_QUALIFIED)
+        .expect("workflow runtime tool list must contain event_context")
 }
 
 pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
@@ -224,6 +262,11 @@ pub fn canonical_workflow_tool_name(tool_name: &str) -> Option<&'static str> {
         | "chariox_reply_to_event"
         | "mcp__chariox__reply_to_event"
         | "mcp__chariox__chariox_reply_to_event" => Some(REPLY_TO_EVENT_TOOL),
+        EVENT_CONTEXT_TOOL
+        | EVENT_CONTEXT_TOOL_QUALIFIED
+        | "chariox_event_context"
+        | "mcp__chariox__event_context"
+        | "mcp__chariox__chariox_event_context" => Some(EVENT_CONTEXT_TOOL),
         _ => None,
     }
 }
