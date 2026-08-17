@@ -1263,6 +1263,7 @@ fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
         installed_count: 0,
         recommended: true,
         availability: "available".to_string(),
+        management_url: None,
     }]
 }
 

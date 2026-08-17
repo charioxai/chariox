@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 262);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 263);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -219,6 +219,7 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
                     installed_count: 0,
                     recommended: true,
                     availability: "development_preview".to_string(),
+                    management_url: Some("https://aegs.example.test".to_string()),
                 }],
                 next_cursor: Some("opaque-next-catalog-cursor".to_string()),
                 categories: Vec::new(),
@@ -366,6 +367,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "e31537875badb14d4cc08b16b0b338c5f0f2d3bfc6870fb4912b6d171b7c1dc2"
+        "8d9778e257b53fa2ea9ab1a3aebee4ea1bdf755d5a2f40ab3269e67f379185bd"
     );
 }

@@ -174,6 +174,11 @@ pub struct EventGeneratorCatalogSummary {
     pub recommended: bool,
     #[serde(default = "default_event_generator_availability")]
     pub availability: String,
+    /// Trusted registry metadata for the provider management endpoint. This is
+    /// a route only; authentication is negotiated separately and never stored
+    /// in the catalog response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
