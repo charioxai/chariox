@@ -351,6 +351,18 @@ mod tests {
     }
 
     #[test]
+    fn rejects_tampered_signature_even_when_digest_is_unchanged() {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .unwrap();
+        manifest["signature"]["value"] = Value::String("not-a-signature".to_string());
+        let key = SigningKey::from_bytes(&[7; 32]);
+        assert!(verify_manifest_signature(&manifest, &key.verifying_key()).is_err());
+        assert!(validate_manifest_envelope(&manifest).is_ok());
+    }
+
+    #[test]
     fn parses_hex_and_base64_signing_keys() {
         let hex = "07".repeat(32);
         let base64 = BASE64.encode([7; 32]);

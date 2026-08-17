@@ -5,14 +5,17 @@
 
 use std::{env, fs, path::PathBuf, process::ExitCode};
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chariox_aegs_sdk::{
     parse_signing_key, sign_manifest, unsigned_manifest_digest, validate_manifest_envelope,
+    verify_manifest_signature,
 };
+use ed25519_dalek::VerifyingKey;
 use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chariox-aegs-manifest digest --input FILE\n  chariox-aegs-manifest validate --input FILE\n  chariox-aegs-manifest sign --input FILE --output FILE --key-id ID [--key-file FILE | --key-env NAME]"
+        "usage:\n  chariox-aegs-manifest digest --input FILE\n  chariox-aegs-manifest validate --input FILE\n  chariox-aegs-manifest verify --input FILE --public-key-file FILE\n  chariox-aegs-manifest sign --input FILE --output FILE --key-id ID [--key-file FILE | --key-env NAME]"
     );
     std::process::exit(2)
 }
@@ -43,7 +46,17 @@ fn run(args: &[String]) -> Result<(), String> {
     let manifest = read_json(&input)?;
     match command {
         "digest" => println!("{}", unsigned_manifest_digest(&manifest)?),
-        "validate" => println!("valid {}", validate_manifest_envelope(&manifest)?),
+        "validate" => println!("envelope-valid {}", validate_manifest_envelope(&manifest)?),
+        "verify" => {
+            let path = required_option(args, "--public-key-file");
+            let text = fs::read_to_string(&path)
+                .map_err(|error| format!("cannot read public key file {path}: {error}"))?;
+            let key = parse_verifying_key(&text)?;
+            println!(
+                "signature-valid {}",
+                verify_manifest_signature(&manifest, &key)?
+            );
+        }
         "sign" => {
             let output = required_option(args, "--output");
             let key_id = required_option(args, "--key-id");
@@ -67,6 +80,25 @@ fn run(args: &[String]) -> Result<(), String> {
         _ => usage(),
     }
     Ok(())
+}
+
+fn parse_verifying_key(value: &str) -> Result<VerifyingKey, String> {
+    let trimmed = value.trim();
+    let bytes = if trimmed.len() == 64 && trimmed.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        (0..trimmed.len())
+            .step_by(2)
+            .map(|index| u8::from_str_radix(&trimmed[index..index + 2], 16))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("invalid hexadecimal public key: {error}"))?
+    } else {
+        BASE64
+            .decode(trimmed)
+            .map_err(|error| format!("public key must be raw 32-byte hex or base64: {error}"))?
+    };
+    let bytes: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| "public key must contain exactly 32 bytes".to_string())?;
+    VerifyingKey::from_bytes(&bytes).map_err(|error| format!("invalid public key: {error}"))
 }
 
 fn main() -> ExitCode {
