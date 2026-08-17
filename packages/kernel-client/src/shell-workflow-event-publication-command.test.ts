@@ -89,6 +89,8 @@ test("workflow event publication command browses a bounded catalog and binds an 
       "repo:charioxai/chariox",
       "--filter-json",
       "{\"repository\":\"charioxai/chariox\"}",
+      "--actions",
+      "notification.reply,slack.reaction.add",
     ],
     context,
     client,
@@ -123,6 +125,7 @@ test("workflow event publication command browses a bounded catalog and binds an 
       environment_id: null,
       queue_ref: null,
       reply_mode: null,
+      action_ids: ["notification.reply", "slack.reaction.add"],
     },
   })
 })

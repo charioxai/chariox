@@ -310,6 +310,7 @@ function parseBindingOptions(args: string[]):
         filter?: unknown
         environmentId?: string
         queueRef?: string
+        actionIds?: readonly string[]
       }
     }
   | { ok: false; message: string } {
@@ -344,6 +345,13 @@ function parseBindingOptions(args: string[]):
   }
   const environmentId = values.get("--environment")
   const queueRef = values.get("--queue")
+  const actionIds = values.get("--actions")
+    ?.split(",")
+    .map((value) => value.trim())
+    .filter(Boolean)
+  if (values.has("--actions") && (!actionIds || actionIds.length === 0)) {
+    return failure("--actions must contain at least one comma-separated action ID")
+  }
   return {
     ok: true,
     publicationRef,
@@ -358,12 +366,13 @@ function parseBindingOptions(args: string[]):
       ...(filter === undefined ? {} : { filter }),
       ...(environmentId ? { environmentId } : {}),
       ...(queueRef ? { queueRef } : {}),
+      ...(actionIds ? { actionIds } : {}),
     },
   }
 }
 
 function bindingUsage(): string {
-  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>]"
+  return "usage: workflow trigger event attach <publication> <generator> <event-type> --generator-version <version> --manifest-digest <digest> --connection <id> --scope <scope> [--event-version <n>] [--filter-json <json>] [--environment <id>] [--queue <ref>] [--actions <id,id,...>]"
 }
 
 function formatCatalogPage(page: EventGeneratorCatalogPage): string {
