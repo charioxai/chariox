@@ -209,7 +209,7 @@ pub fn workflow_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "type": "object",
                 "required": ["kind"],
                 "properties": {
-                    "kind": {"type": "string", "enum": ["thread", "surrounding", "channel", "participants", "users"]},
+                    "kind": {"type": "string", "enum": ["thread", "surrounding", "channel", "participants", "users", "reactions"]},
                     "limit": {"type": "integer", "minimum": 1, "maximum": 100},
                     "cursor": {"type": "string"},
                     "user_ids": {"type": "array", "items": {"type": "string"}, "maxItems": 25},

@@ -404,12 +404,12 @@ impl KernelRuntimeOwnedState {
         })?;
         if !matches!(
             args.kind.as_str(),
-            "thread" | "surrounding" | "channel" | "participants" | "users"
+            "thread" | "surrounding" | "channel" | "participants" | "users" | "reactions"
         ) {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_event_context",
                 message:
-                    "context kind must be thread, surrounding, channel, participants, or users"
+                    "context kind must be thread, surrounding, channel, participants, users, or reactions"
                         .to_string(),
             });
         }
