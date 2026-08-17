@@ -1,0 +1,58 @@
+name: Release public AEGS SDK
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: Type publish to release the matching protocol and SDK crates
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.event.inputs.confirm == 'publish'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the requested source revision
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Verify source revision
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.88.0
+
+      - name: Verify publishable package metadata
+        run: |
+          cargo package -p chariox-event-protocol --locked --no-verify
+          test "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-event-protocol") | .version')" = \
+            "$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "chariox-aegs-sdk") | .dependencies[] | select(.name == "chariox-event-protocol") | .req | sub("^\\^"; "")')"
+
+      - name: Publish the matching event protocol first
+        run: cargo publish -p chariox-event-protocol --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: Wait for the protocol index to propagate
+        run: |
+          for attempt in 1 2 3 4 5; do
+            if cargo search chariox-event-protocol --limit 1 | grep -q 'chariox-event-protocol'; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'chariox-event-protocol was not visible in the registry index' >&2
+          exit 1
+
+      - name: Publish the SDK against the matching protocol
+        run: cargo publish -p chariox-aegs-sdk --locked
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

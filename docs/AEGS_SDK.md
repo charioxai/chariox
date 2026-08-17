@@ -64,6 +64,14 @@ or any private AEDS/AEGS source. Until that release sequence is complete,
 external examples should use the public repository workspace (or a pinned
 source checkout) rather than an unpublished registry package.
 
+The repository contains a manual `Release public AEGS SDK` workflow for this
+ordered release. It checks out one immutable commit, verifies that the SDK's
+protocol requirement matches the protocol crate version, publishes
+`chariox-event-protocol`, waits for the registry index, and then publishes
+`chariox-aegs-sdk`. It requires the repository's `CARGO_REGISTRY_TOKEN` secret
+and runs only when an operator explicitly types `publish`; normal pushes and
+pull requests never publish packages.
+
 An AEGS must expose `GET /healthz`, `GET /readyz`, `GET /version`, and the
 capability-protected `PUT /v1/subscriptions/reconcile` endpoint. It must accept
 only authentic provider events, normalize a provider occurrence once, apply
