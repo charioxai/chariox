@@ -57,6 +57,37 @@ test("derivePromptProviderSelection prefers a focused provider run then agent an
   )
 })
 
+test("derivePromptProviderSelection resolves to null fields when nothing is configured", () => {
+  assert.deepEqual(
+    derivePromptProviderSelection({
+      providerRun: null,
+      waitingRoomState: {},
+    }),
+    {
+      provider: null,
+      model: null,
+      effort: null,
+    },
+  )
+})
+
+test("derivePromptProviderSelection uses the configured default provider/model/effort", () => {
+  assert.deepEqual(
+    derivePromptProviderSelection({
+      providerRun: null,
+      waitingRoomState: {},
+      defaultProvider: "codex",
+      defaultModel: "gpt-5.1",
+      defaultEffort: "high",
+    }),
+    {
+      provider: "codex",
+      model: "gpt-5.1",
+      effort: "high",
+    },
+  )
+})
+
 test("providerRunForPromptSelection requires focused-agent ownership when a focused agent exists", () => {
   const run = providerRun({ agent_instance_id: "agent-a" })
 

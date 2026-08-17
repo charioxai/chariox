@@ -11,14 +11,19 @@ export type PromptProviderSelectionOptions = {
   readonly focusedAgent?: AgentInstance | null
   readonly waitingRoomState: PromptProviderSelectionWaitingRoomState
   readonly defaultProvider?: string | null
-  readonly defaultModel: string
-  readonly defaultEffort: string
+  readonly defaultModel?: string | null
+  readonly defaultEffort?: string | null
 }
 
+/**
+ * `null` means nothing is selected yet: no configured `config.toml` default,
+ * no waiting room selection, and no active provider run/agent to inherit
+ * from. Callers must treat a `null` field as "a session cannot be started."
+ */
 export type PromptProviderSelection = {
-  readonly provider: string
-  readonly model: string
-  readonly effort: string
+  readonly provider: string | null
+  readonly model: string | null
+  readonly effort: string | null
 }
 
 export type ProviderModelContextCatalog = {
@@ -45,15 +50,17 @@ export function derivePromptProviderSelection(
       ?? normalizePromptProvider(options.focusedAgent?.provider)
       ?? options.waitingRoomState.providerId
       ?? options.defaultProvider
-      ?? "opencode",
+      ?? null,
     model: providerRun?.model
       ?? options.focusedAgent?.model
       ?? options.waitingRoomState.modelId
-      ?? options.defaultModel,
+      ?? options.defaultModel
+      ?? null,
     effort: providerRun?.variant
       ?? options.focusedAgent?.effort
       ?? options.waitingRoomState.effort
-      ?? options.defaultEffort,
+      ?? options.defaultEffort
+      ?? null,
   }
 }
 

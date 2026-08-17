@@ -23,6 +23,11 @@ import type { LocalIpcClient } from "./ipc.js"
 
 type BootstrapDeps = {
   logger?: CharioxLogger | null
+  getConfiguredProviderLaunchDefaults?: (client: LocalIpcClient) => Promise<{
+    provider?: string
+    model?: string
+    effort?: string
+  }>
   listSessions: (client: LocalIpcClient) => Promise<RuntimeSession[]>
   getProviderCatalog: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCatalog>
   getProviderCommandCatalogs: (client: LocalIpcClient, logger?: CharioxLogger | null) => Promise<ProviderCommandCatalogs>
@@ -75,6 +80,19 @@ export async function bootstrapSession(
 ): Promise<BootstrapState> {
   let createdSession = false
   let session: RuntimeSession | null = null
+
+  if (!options.provider || options.model === "default" || !options.effort.trim()) {
+    const configured = await deps.getConfiguredProviderLaunchDefaults?.(client) ?? {}
+    if (!options.provider && configured.provider) {
+      options.provider = configured.provider
+    }
+    if (options.model === "default" && configured.model) {
+      options.model = configured.model
+    }
+    if (!options.effort.trim() && configured.effort) {
+      options.effort = configured.effort
+    }
+  }
 
   const sessions = await deps.listSessions(client)
   const decision = decideBootstrapAction(options, sessions, workspace, worktree)

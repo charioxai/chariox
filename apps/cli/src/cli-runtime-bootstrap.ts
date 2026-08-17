@@ -43,6 +43,7 @@ import {
   resolveMaxAgentsPerScreen,
   type CharioxPreferences,
 } from "./preferences.js"
+import { getUserConfig } from "./config-api.js"
 import {
   bootstrapSession,
 } from "./session-bootstrap.js"
@@ -293,6 +294,20 @@ async function bootstrapAttachedSessionWithRuntimeDeps(
 ): Promise<BootstrapState> {
   return bootstrapSession(client, options, workspace, worktree, preferences, {
     logger: logger ?? null,
+    getConfiguredProviderLaunchDefaults: async (ipcClient) => {
+      const { config } = await getUserConfig(ipcClient)
+      const result: { provider?: string, model?: string, effort?: string } = {}
+      if (config.providers?.default) {
+        result.provider = config.providers.default
+      }
+      if (config.providers?.model) {
+        result.model = config.providers.model
+      }
+      if (config.providers?.effort) {
+        result.effort = config.providers.effort
+      }
+      return result
+    },
     listSessions,
     getProviderCatalog,
     getProviderCommandCatalogs,

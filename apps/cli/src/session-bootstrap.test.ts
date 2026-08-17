@@ -5,7 +5,7 @@ import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { fallbackProviderCommandCatalogs } from "./provider-command-catalog.js"
 import { bootstrapSession } from "./session-bootstrap.js"
 import { hydrateSessionHistoryOutlineAgentEntries } from "@chariox/kernel-client/session-history-transcript"
-import type { RuntimeSession } from "./cli-types.js"
+import type { CliOptions, RuntimeSession } from "./cli-types.js"
 
 function terminalCatalog() {
   return {
@@ -49,6 +49,49 @@ test("bootstrapSession returns waiting-room bootstrap when no session should att
   assert.deepEqual(bootstrap.sessions, [])
   assert.equal(bootstrap.providerCatalog, catalog)
   assert.deepEqual(bootstrap.providerCommandCatalogs, fallbackProviderCommandCatalogs())
+})
+
+test("bootstrapSession seeds provider/model/effort from the kernel config.toml default when unset", async () => {
+  const catalog = fallbackProviderCatalog()
+  const options: CliOptions = {
+    clientId: "cli-1",
+    model: "default",
+    accountProfile: "default",
+    effort: "",
+  }
+
+  await bootstrapSession(
+    {} as never,
+    options,
+    "/workspace",
+    "/workspace",
+    {},
+    {
+      getConfiguredProviderLaunchDefaults: async () => ({
+        provider: "codex",
+        model: "gpt-5.1",
+        effort: "high",
+      }),
+      listSessions: async () => [],
+      getProviderCatalog: async () => catalog,
+      getProviderCommandCatalogs: async () => fallbackProviderCommandCatalogs(),
+      getTerminalCommandCatalog: async () => terminalCatalog(),
+      createSession: async () => { throw new Error("should not create") },
+      resolveSession: async () => { throw new Error("should not resolve") },
+      attachToSession: async () => { throw new Error("should not attach") },
+      getSessionState: async () => { throw new Error("should not fetch") },
+      launchProviderRun: async () => { throw new Error("should not launch") },
+      tryGetProviderRun: async () => { throw new Error("should not lookup") },
+      catchUpAttachedSession: async () => undefined,
+      getSessionHistoryOutline: async () => ({ agents: [] }),
+      resolveVisibleAgentId: () => null,
+      prepareHistoryOutlineAgent: () => [],
+    },
+  )
+
+  assert.equal(options.provider, "codex")
+  assert.equal(options.model, "gpt-5.1")
+  assert.equal(options.effort, "high")
 })
 
 test("bootstrapSession attaches, launches, and hydrates history for the visible agent", async () => {

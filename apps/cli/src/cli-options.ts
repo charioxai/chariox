@@ -12,7 +12,6 @@ import { describeCliError } from "./runtime.js"
 export function parseArgs(args: string[]): CliOptions {
   const options: CliOptions = {
     clientId: `chariox-cli-${process.pid}`,
-    provider: "opencode",
     model: "default",
     accountProfile: "default",
     effort: "",

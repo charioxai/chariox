@@ -32,6 +32,15 @@ pub(crate) async fn dispatch_interactive_command(
     command: KernelCommand,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    if let LocalDaemonRequest::CreateSession(mut inner) = request {
+        inner.agent_defaults = runtime_state
+            .resolve_session_agent_defaults(inner.agent_defaults)
+            .await?;
+        return session_runtime
+            .dispatch_session_command(command, LocalDaemonRequest::CreateSession(inner))
+            .await;
+    }
+
     if SessionActor::is_session_interactive_command(&request) {
         return session_runtime
             .dispatch_session_command(command, request)
