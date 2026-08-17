@@ -130,6 +130,7 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
             return Err(format!("duplicate manifest event {event_type}@{version}"));
         }
     }
+    validate_manifest_actions(object.get("actions"))?;
     let signature = object
         .get("signature")
         .and_then(Value::as_object)
@@ -147,6 +148,86 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
         ));
     }
     Ok(computed_digest)
+}
+
+fn validate_manifest_actions(value: Option<&Value>) -> Result<(), String> {
+    let Some(value) = value else { return Ok(()) };
+    let actions = value
+        .as_array()
+        .filter(|actions| actions.len() <= 100)
+        .ok_or_else(|| "manifest actions must contain between 0 and 100 items".to_string())?;
+    let mut action_ids = BTreeSet::new();
+    for action in actions {
+        let action = action
+            .as_object()
+            .ok_or_else(|| "manifest action must be an object".to_string())?;
+        for key in action.keys() {
+            if !matches!(
+                key.as_str(),
+                "action_id"
+                    | "name"
+                    | "description"
+                    | "required_scopes"
+                    | "target"
+                    | "mutation"
+                    | "idempotent"
+                    | "input_schema"
+            ) {
+                return Err(format!("action.{key} is not allowed by the manifest contract"));
+            }
+        }
+        let action_id = require_manifest_string(action.get("action_id"), "action.action_id")?;
+        if action_id.len() > 200 {
+            return Err("action.action_id exceeds 200 characters".to_string());
+        }
+        if !action_ids.insert(action_id.to_string()) {
+            return Err(format!("duplicate manifest action {action_id}"));
+        }
+        let name = require_manifest_string(action.get("name"), "action.name")?;
+        if name.len() > 200 {
+            return Err("action.name exceeds 200 characters".to_string());
+        }
+        let description = require_manifest_string(action.get("description"), "action.description")?;
+        if description.len() > 1000 {
+            return Err("action.description exceeds 1000 characters".to_string());
+        }
+        let target = require_manifest_string(action.get("target"), "action.target")?;
+        if !matches!(
+            target,
+            "originating_event" | "originating_channel" | "explicit_resource"
+        ) {
+            return Err("action.target is not supported".to_string());
+        }
+        if !action.get("mutation").is_some_and(Value::is_boolean) {
+            return Err("action.mutation must be boolean".to_string());
+        }
+        if !action.get("idempotent").is_some_and(Value::is_boolean) {
+            return Err("action.idempotent must be boolean".to_string());
+        }
+        let scopes = action
+            .get("required_scopes")
+            .and_then(Value::as_array)
+            .filter(|scopes| scopes.len() <= 50)
+            .ok_or_else(|| {
+                "action.required_scopes must be an array of at most 50 strings".to_string()
+            })?;
+        for scope in scopes {
+            if !scope.is_string() || scope.as_str().is_some_and(|scope| scope.trim().is_empty()) {
+                return Err("action.required_scopes must contain non-empty strings".to_string());
+            }
+        }
+        let input_schema = action
+            .get("input_schema")
+            .and_then(Value::as_object)
+            .ok_or_else(|| "action.input_schema must be an object".to_string())?;
+        if input_schema.get("type").and_then(Value::as_str) != Some("object")
+            || input_schema.get("additionalProperties") != Some(&Value::Bool(false))
+            || input_schema.len() > 20
+        {
+            return Err("action.input_schema must be a bounded closed object schema".to_string());
+        }
+    }
+    Ok(())
 }
 
 pub fn unsigned_manifest_digest(manifest: &Value) -> Result<String, String> {
@@ -348,6 +429,55 @@ mod tests {
             verify_manifest_signature(&signed, &signing_key.verifying_key()).unwrap(),
             unsigned_manifest_digest(&signed).unwrap()
         );
+    }
+
+    #[test]
+    fn validates_bounded_workflow_action_metadata() {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .unwrap();
+        manifest.as_object_mut().unwrap().remove("signature");
+        manifest["actions"] = serde_json::json!([{
+            "action_id": "notification.reply",
+            "name": "Reply",
+            "description": "Reply to the originating event.",
+            "required_scopes": ["chat:write"],
+            "target": "originating_event",
+            "mutation": true,
+            "idempotent": true,
+            "input_schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["text"],
+                "properties": {"text": {"type": "string", "maxLength": 40000}}
+            }
+        }]);
+        let signed =
+            sign_manifest(&manifest, "test.key", &SigningKey::from_bytes(&[7; 32])).unwrap();
+        assert!(validate_manifest_envelope(&signed).is_ok());
+    }
+
+    #[test]
+    fn rejects_open_ended_workflow_action_schema() {
+        let mut manifest: Value = serde_json::from_str(include_str!(
+            "../../../docs/fixtures/event-generators/dummy/manifest.json"
+        ))
+        .unwrap();
+        manifest.as_object_mut().unwrap().remove("signature");
+        manifest["actions"] = serde_json::json!([{
+            "action_id": "unsafe.proxy",
+            "name": "Proxy",
+            "description": "Proxy arbitrary provider methods.",
+            "required_scopes": [],
+            "target": "explicit_resource",
+            "mutation": true,
+            "idempotent": false,
+            "input_schema": {"type": "object", "additionalProperties": true}
+        }]);
+        assert!(validate_manifest_envelope(&manifest)
+            .unwrap_err()
+            .contains("closed object schema"));
     }
 
     #[test]
