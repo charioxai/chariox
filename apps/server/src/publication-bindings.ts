@@ -3,6 +3,10 @@ import { createInterface } from "node:readline/promises"
 import process from "node:process"
 
 import { getProviderCatalogRequest } from "@chariox/kernel-client/ipc-requests"
+import {
+  workflowPublicationAllowedProviders,
+  type WorkflowPublicationDeploymentContract,
+} from "@chariox/kernel-client/workflow-publication-deployment-contract"
 
 import type {
   KernelLookupClient,
@@ -22,6 +26,7 @@ export async function resolvePublicationProviderModelBindings(
   bindingsPath: string,
   client: KernelLookupClient,
   options: {
+    deploymentContract?: WorkflowPublicationDeploymentContract
     promptReplacement?: ProviderModelBindingPrompt | false
   } = {},
 ) {
@@ -31,7 +36,14 @@ export async function resolvePublicationProviderModelBindings(
   for (const agent of snapshot.agents ?? []) {
     const binding = bindingForAgent(bindings, snapshot, agent)
     const selected = binding.replacement ?? binding.captured
-    const selectedProfile = availableProviderProfile(catalog, selected)
+    const allowedProviders = new Set(options.deploymentContract
+      ? workflowPublicationAllowedProviders(options.deploymentContract, agent.id, binding.captured.provider)
+      : [binding.captured.provider])
+    if (!allowedProviders.has(selected.provider)) {
+      throw new Error(`publication provider is not permitted for agent ${agent.id}: ${selected.provider}`)
+    }
+    const allowedCatalog = providerCatalogForAllowedProviders(catalog, allowedProviders)
+    const selectedProfile = availableProviderProfile(allowedCatalog, selected)
     if (selectedProfile) {
       applyAgentProfile(agent, selectedProfile)
       continue
@@ -43,9 +55,12 @@ export async function resolvePublicationProviderModelBindings(
     const replacement = await promptReplacement({
       agent_id: agent.id,
       captured: binding.captured,
-      available: catalog,
+      available: allowedCatalog,
     })
-    const replacementProfile = availableProviderProfile(catalog, replacement)
+    if (!allowedProviders.has(replacement.provider)) {
+      throw new Error(`publication provider replacement is not permitted for agent ${agent.id}: ${replacement.provider}`)
+    }
+    const replacementProfile = availableProviderProfile(allowedCatalog, replacement)
     if (!replacementProfile) {
       throw new Error(`publication provider/model replacement is unavailable for agent ${agent.id}: ${profileLabel(replacement)}`)
     }
@@ -57,6 +72,18 @@ export async function resolvePublicationProviderModelBindings(
     await writeFile(bindingsPath, `${JSON.stringify(bindings, null, 2)}\n`)
   }
   return { snapshot, bindings, changed }
+}
+
+function providerCatalogForAllowedProviders(
+  catalog: ProviderCatalogIndex,
+  allowedProviders: ReadonlySet<string>,
+): ProviderCatalogIndex {
+  const providers = new Map<string, Set<string>>()
+  for (const provider of allowedProviders) {
+    const models = providerFamilyModels(catalog, provider)
+    if (models) providers.set(provider, models)
+  }
+  return { providers }
 }
 
 export type ProviderCatalogIndex = {

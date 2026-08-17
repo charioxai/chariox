@@ -189,7 +189,65 @@ export function validateWorkflowPublicationDeploymentContract(
   objectRecord(contract.presentation, "deployment contract presentation")
   requireArray(contract.signatures, "deployment contract signatures")
   assertNoSecretPayloadFields(contract)
-  return contract as unknown as WorkflowPublicationDeploymentContract
+  const validated = contract as unknown as WorkflowPublicationDeploymentContract
+  validateWorkflowPublicationProviderPolicy(validated)
+  return validated
+}
+
+export function workflowPublicationAllowedProviders(
+  contract: WorkflowPublicationDeploymentContract,
+  agentId: string,
+  capturedProvider?: string,
+): readonly string[] {
+  const matches = contract.configuration.filter((candidate) => {
+    const field = objectRecord(candidate, "deployment contract configuration field")
+    return field.kind === "provider_profile" && field.agent_id === agentId
+  })
+  if (matches.length !== 1) {
+    throw new Error(`deployment contract must declare exactly one provider profile for agent ${agentId}`)
+  }
+  const field = objectRecord(matches[0], `deployment contract provider profile ${agentId}`)
+  const captured = objectRecord(field.captured, `deployment contract captured provider profile ${agentId}`)
+  const capturedValue = requireString(captured.provider, `deployment contract captured provider ${agentId}`).trim()
+  if (capturedProvider !== undefined && capturedValue !== capturedProvider.trim()) {
+    throw new Error(`deployment contract captured provider does not match bindings for agent ${agentId}`)
+  }
+  const declared = field.allowed_providers === undefined
+    ? [capturedValue]
+    : requireArray(field.allowed_providers, `deployment contract allowed providers ${agentId}`)
+      .map((provider) => requireString(provider, `deployment contract allowed provider ${agentId}`).trim())
+  if (declared.length === 0 || new Set(declared).size !== declared.length || !declared.includes(capturedValue)) {
+    throw new Error(`deployment contract allowed providers are invalid for agent ${agentId}`)
+  }
+  const packagedFamilies = new Set(contract.provider_requirements.map((candidate, index) => {
+    const requirement = objectRecord(candidate, `deployment contract provider requirement ${index}`)
+    return providerFamily(requireString(requirement.provider, `deployment contract provider requirement ${index}`).trim())
+  }))
+  if (declared.some((provider) => !packagedFamilies.has(providerFamily(provider)))) {
+    throw new Error(`deployment contract allowed providers exceed packaged requirements for agent ${agentId}`)
+  }
+  return declared
+}
+
+function validateWorkflowPublicationProviderPolicy(contract: WorkflowPublicationDeploymentContract): void {
+  const agentIds = contract.configuration.map((candidate, index) => {
+    const field = objectRecord(candidate, `deployment contract configuration field ${index}`)
+    if (field.kind !== "provider_profile") {
+      throw new Error(`deployment contract configuration field ${index} is unsupported`)
+    }
+    return requireString(field.agent_id, `deployment contract configuration agent ${index}`).trim()
+  })
+  if (new Set(agentIds).size !== agentIds.length) {
+    throw new Error("deployment contract provider profile agents must be unique")
+  }
+  for (const agentId of agentIds) workflowPublicationAllowedProviders(contract, agentId)
+}
+
+function providerFamily(provider: string): string {
+  const value = provider.trim().toLowerCase()
+  if (value === "default") return "opencode"
+  if (value === "claude-headless" || value === "claude-p") return "claude"
+  return value
 }
 
 export function workflowPublicationDeploymentNetworkPolicy(

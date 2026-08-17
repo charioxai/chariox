@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   assertWorkflowPublicationDeploymentRuntimeCompatibility,
   resolveWorkflowPublicationDeploymentContract,
+  workflowPublicationAllowedProviders,
   workflowPublicationDeploymentContractPath,
   workflowPublicationDeploymentNetworkPolicy,
 } from "./workflow-publication-deployment-contract.js"
@@ -165,6 +166,54 @@ test("publication deployment contract rejects missing and obsolete egress polici
     package_version: 3,
     deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
   }, contract), /network policy fields are invalid/)
+})
+
+test("publication deployment contract binds allowed providers to packaged requirements", () => {
+  const contract = fixture()
+  contract.provider_requirements = [
+    { slot_id: "provider:codex", provider: "codex" },
+    { slot_id: "provider:claude", provider: "claude" },
+  ]
+  contract.credential_slots = [
+    { slot_id: "provider:codex", allowed_destination_ids: [] },
+    { slot_id: "provider:claude", allowed_destination_ids: [] },
+  ]
+  contract.capabilities = {
+    network: {
+      policy_version: 1,
+      default_action: "deny",
+      destinations: [],
+      provider_access: [
+        { slot_id: "provider:codex", bundle_kind: "platform_managed", bundle_id: "codex-official-v1" },
+        { slot_id: "provider:claude", bundle_kind: "platform_managed", bundle_id: "claude-official-v1" },
+      ],
+    },
+  }
+  contract.configuration = [{
+    kind: "provider_profile",
+    agent_id: "agent-1",
+    allowed_providers: ["codex", "claude"],
+    captured: { provider: "codex" },
+  }]
+  const resolved = resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, contract)
+  assert.deepEqual(workflowPublicationAllowedProviders(resolved.contract, "agent-1", "codex"), ["codex", "claude"])
+
+  const excludedCaptured = structuredClone(contract)
+  ;(excludedCaptured.configuration as Array<Record<string, unknown>>)[0]!.allowed_providers = ["claude"]
+  assert.throws(() => resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, excludedCaptured), /allowed providers are invalid/)
+
+  const unpackaged = structuredClone(contract)
+  ;(unpackaged.configuration as Array<Record<string, unknown>>)[0]!.allowed_providers = ["codex", "opencode"]
+  assert.throws(() => resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, unpackaged), /exceed packaged requirements/)
 })
 
 function fixture(minimumLocalDaemonProtocolVersion = 240): Record<string, unknown> {

@@ -120,7 +120,10 @@ export async function loadPublicationPackageConfig(
     )
     if (options.validateProviderBindings !== false) {
       const bindingsPath = join(root, publicationPackage.default_bindings_path ?? "bindings.local.json")
-      const bindingOptions: { promptReplacement?: ProviderModelBindingPrompt | false } = {}
+      const bindingOptions: {
+        deploymentContract: typeof deploymentContract.contract
+        promptReplacement?: ProviderModelBindingPrompt | false
+      } = { deploymentContract: deploymentContract.contract }
       if (options.promptProviderModelReplacement !== undefined) {
         bindingOptions.promptReplacement = options.promptProviderModelReplacement
       }
