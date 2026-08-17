@@ -12,7 +12,7 @@ RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.88-bookworm AS rust-builder
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=261
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=264
 WORKDIR /opt/chariox
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -32,7 +32,7 @@ LABEL org.opencontainers.image.description="Standalone Chariox kernel plus workf
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.4.1
 ARG CHARIOX_CLAUDE_VERSION=2.1.207
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=261
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=264
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"
