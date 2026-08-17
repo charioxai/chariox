@@ -22,6 +22,7 @@ impl KernelRuntimeState {
             canonical_tool_name,
             crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
                 | crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+                | crate::transport::runtime_tools::EVENT_ACTION_TOOL
         );
         let leased_event_context = if event_action_requested {
             let provider_run_ids = provider_runs
@@ -63,6 +64,20 @@ impl KernelRuntimeState {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch_authenticated_workflow_runtime_tool_call",
                 message: "event_context is not enabled for the active workflow provider run"
+                    .to_string(),
+            });
+        }
+        if canonical_tool_name == crate::transport::runtime_tools::EVENT_ACTION_TOOL
+            && !event_reply_dispatch_snapshot_allows(
+                provider_run_allows_event_context,
+                leased_event_context
+                    .as_ref()
+                    .map(|context| context.event_context_enabled),
+            )
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "dispatch_authenticated_workflow_runtime_tool_call",
+                message: "event_action is not enabled for the active workflow provider run"
                     .to_string(),
             });
         }
@@ -108,6 +123,11 @@ impl KernelRuntimeState {
             .and_then(|args| args.delivery_token),
             crate::transport::runtime_tools::EVENT_CONTEXT_TOOL => serde_json::from_value::<
                 crate::transport::runtime_tools::EventContextArgs,
+            >(arguments.clone())
+            .ok()
+            .and_then(|args| args.delivery_token),
+            crate::transport::runtime_tools::EVENT_ACTION_TOOL => serde_json::from_value::<
+                crate::transport::runtime_tools::EventActionArgs,
             >(arguments.clone())
             .ok()
             .and_then(|args| args.delivery_token),

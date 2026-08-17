@@ -29,6 +29,12 @@ fn event_context_request_fingerprint(
     format!("{:x}", Sha256::digest(encoded))
 }
 
+fn event_action_request_fingerprint(action_id: &str, input: &serde_json::Value) -> String {
+    let encoded = serde_json::to_vec(&(action_id, input))
+        .expect("event action fingerprint input must be serializable");
+    format!("{:x}", Sha256::digest(encoded))
+}
+
 fn workflow_runtime_tool_result_json(
     tool_name: &str,
     result: &crate::transport::runtime_tools::RuntimeToolResult,
@@ -38,6 +44,7 @@ fn workflow_runtime_tool_result_json(
     if matches!(
         tool_name,
         crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+            | crate::transport::runtime_tools::EVENT_ACTION_TOOL
     ) {
         // Context is deliberately available to the active provider turn only. Keep a
         // small audit receipt without copying conversation messages or profiles into the
@@ -139,6 +146,9 @@ impl KernelRuntimeOwnedState {
             }
             crate::transport::runtime_tools::EVENT_CONTEXT_TOOL => {
                 self.workflow_event_context_tool_result(&arguments, &context)
+            }
+            crate::transport::runtime_tools::EVENT_ACTION_TOOL => {
+                self.workflow_event_action_tool_result(&arguments, &context)
             }
             other => Err(DaemonError::LocalTransport {
                 operation: "dispatch_runtime_tool_call",
@@ -655,6 +665,150 @@ impl KernelRuntimeOwnedState {
         )
         .map_err(|error| DaemonError::LocalTransport {
             operation: "runtime_tool_reply_to_event",
+            message: error.to_string(),
+        })?;
+        Ok(crate::transport::runtime_tools::RuntimeToolResult {
+            ok: response.accepted,
+            payload: serde_json::json!({
+                "action_id": response.action_id,
+                "accepted": response.accepted,
+                "idempotency_key": response.idempotency_key,
+                "result": response.result,
+            }),
+        })
+    }
+
+    fn workflow_event_action_tool_result(
+        &self,
+        arguments: &serde_json::Value,
+        context: &crate::transport::runtime_tools::WorkflowRuntimeToolContext,
+    ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
+        let args = serde_json::from_value::<crate::transport::runtime_tools::EventActionArgs>(
+            arguments.clone(),
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_event_action",
+            message: format!("invalid tool arguments: {error}"),
+        })?;
+        let action_id = args.action_id.trim();
+        if action_id.is_empty() || action_id.len() > 256 {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_event_action",
+                message: "action_id must contain between 1 and 256 characters".to_string(),
+            });
+        }
+        if !args.input.is_object() {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_event_action",
+                message: "event_action input must be a JSON object".to_string(),
+            });
+        }
+        let (binding, invocation, workflow_run_id) = {
+            let workflow_run = self
+                .session_store
+                .read()
+                .resolve_workflow_run_ref(&context.session_id, &context.workflow_run_ref)?;
+            let invocation = workflow_run
+                .publication_invocation()
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "event_action is only available for event-triggered workflow runs"
+                        .to_string(),
+                })?;
+            if invocation.transport != "event" {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "event_action is only available for event-triggered workflow runs"
+                        .to_string(),
+                });
+            }
+            let binding_id =
+                invocation
+                    .hook_id
+                    .clone()
+                    .ok_or_else(|| DaemonError::LocalTransport {
+                        operation: "runtime_tool_event_action",
+                        message: "event invocation is missing its binding identity".to_string(),
+                    })?;
+            let binding = self
+                .session_store
+                .read()
+                .get_session(&context.session_id)?
+                .workflow_event_bindings()
+                .iter()
+                .find(|binding| binding.id == binding_id)
+                .cloned()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: format!("event binding `{binding_id}` was not found"),
+                })?;
+            // Validate that the event carries provider context before allowing
+            // any reverse action; the provider receives the exact context below.
+            if invocation
+                .input
+                .get("reply_context")
+                .filter(|value| !value.is_null())
+                .is_none()
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_event_action",
+                    message: "this event does not provide provider context".to_string(),
+                });
+            }
+            (binding, invocation, workflow_run.id().to_string())
+        };
+        let reply_context = invocation
+            .input
+            .get("reply_context")
+            .filter(|value| !value.is_null())
+            .cloned()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "runtime_tool_event_action",
+                message: "this event does not provide provider context".to_string(),
+            })?;
+        let daemon_id = self.config_projection.snapshot().daemon_id;
+        let session_owner = self
+            .session_store
+            .read()
+            .get_session(&context.session_id)?
+            .owner_user_id()
+            .to_string();
+        let owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+            &daemon_id,
+            &session_owner,
+        );
+        let idempotency_key = args.idempotency_key.unwrap_or_else(|| {
+            let fingerprint = event_action_request_fingerprint(action_id, &args.input);
+            format!(
+                "chariox:{workflow_run_id}:{}:event-action:{fingerprint}",
+                context.workflow_node_run_id
+            )
+        });
+        if idempotency_key.trim().is_empty() || idempotency_key.len() > 512 {
+            return Err(DaemonError::LocalTransport {
+                operation: "runtime_tool_event_action",
+                message: "idempotency_key must contain between 1 and 512 characters".to_string(),
+            });
+        }
+        let request = chariox_event_protocol::AegsProviderActionRequest {
+            generator_id: binding.generator_id,
+            owner_id,
+            connection_id: binding.connection_id,
+            action_id: action_id.to_string(),
+            input: args.input,
+            context: reply_context,
+            idempotency_key,
+        };
+        let response = crate::runtime::event_catalog_control::invoke_aegs_action(
+            &self
+                .config_projection
+                .snapshot()
+                .event_generator_management_targets,
+            &request,
+        )
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "runtime_tool_event_action",
             message: error.to_string(),
         })?;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {

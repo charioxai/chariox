@@ -115,6 +115,7 @@ impl KernelRuntimeState {
                 .any(|run| run.workflow_event_context_enabled())
             {
                 specs.push(crate::transport::runtime_tools::workflow_event_context_tool_spec());
+                specs.push(crate::transport::runtime_tools::workflow_event_action_tool_spec());
             }
         }
         specs
