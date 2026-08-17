@@ -693,6 +693,18 @@ mod tests {
         assert!(!provider_run.workflow_event_reply_enabled());
         assert!(provider_run.workflow_event_context_enabled());
         assert!(provider_run.workflow_event_actions_enabled());
+        let ordinary_provider_run_again_id = ensure_workflow_provider_run_from_runtime(
+            &mut app,
+            session.id(),
+            agent.id(),
+        )
+        .expect("ordinary provider run should replace the action-enabled run");
+        assert_ne!(ordinary_provider_run_again_id, provider_run_id);
+        assert!(!app
+            .providers()
+            .get_run(&ordinary_provider_run_again_id)
+            .expect("replacement ordinary provider run should resolve")
+            .workflow_event_actions_enabled());
     }
 
     #[test]
