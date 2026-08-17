@@ -109,6 +109,22 @@ fn event_context_runtime_receipts_redact_provider_payloads() {
     assert!(receipt.contains("\"redacted\":true"));
     assert!(!receipt.contains("private conversation body"));
     assert!(!receipt.contains("private profile"));
+
+    let mut envelope = crate::session::WorkflowTurnEnvelope::new(
+        "workflow-ack:test",
+        "mention".to_string(),
+        None,
+        None,
+    );
+    envelope.add_runtime_tool_call(crate::session::WorkflowRuntimeToolCallEvent::new(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
+        "{\"kind\":\"thread\"}",
+        Some(receipt),
+        true,
+    ));
+    let snapshot = serde_json::to_string(&envelope).expect("turn envelope should serialize");
+    assert!(!snapshot.contains("private conversation body"));
+    assert!(!snapshot.contains("private profile"));
 }
 
 #[test]
