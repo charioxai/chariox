@@ -71,6 +71,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/extension sync-status\s+show home-proxy manifest sync and recovery for an agent/)
   assert.match(output, /\/extension sync-retry\s+retry home-proxy manifest projection after worker reconnect/)
   assert.match(output, /\/extension audit\s+show home extension audit events and denials for an agent/)
+  assert.match(output, /\/notifications \.\.\.\s+discover, install, inspect, reconnect, and remove notification services/)
   assert.match(output, /\/agent spawn \[a\] \[m\] \[--dir d\] \[--worktree d --branch b\] \[--machine r\|--kernel k\|--slice off\|new\|s\] \[--slice-display headless\|headed\] spawn a local, remote, or slice agent/)
   assert.match(output, /\/slice state \[s\]\s+show saved slice state and restart requirements/)
   assert.match(output, /\/slice save-state \[s\]\s+save slice state after shutdown or agent restart/)

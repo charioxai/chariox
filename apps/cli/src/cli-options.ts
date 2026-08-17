@@ -272,6 +272,7 @@ function printUsage() {
     "  /config schema        show config key metadata",
     "  /config set <p> <v>   update the Chariox user config",
     "  /config workspace-live-sync off|managed|tracked set global workspace live sync policy",
+    "  /notifications ...     discover, install, inspect, reconnect, and remove notification services",
     "  /cloud                open Chariox Cloud terminal",
     "  /cloud link           link this machine to Chariox Cloud",
     "  /cloud status         show Cloud and relay status",
