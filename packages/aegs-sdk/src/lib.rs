@@ -12,7 +12,10 @@ pub use chariox_event_protocol::{AegsProviderActionRequest, AegsProviderActionRe
 pub use conformance::{
     verify_provider_contract, verify_webhook_conformance, WebhookConformanceCase,
 };
-pub use manifest::{unsigned_manifest_digest, validate_manifest_envelope, PublishEventBuilder};
+pub use manifest::{
+    parse_signing_key, sign_manifest, unsigned_manifest_digest, validate_manifest_envelope,
+    verify_manifest_signature, PublishEventBuilder,
+};
 pub use oauth::{
     OAuthAuthorization, OAuthConfig, OAuthCredential, OAuthDefaults, OAuthTokenProtocol,
 };

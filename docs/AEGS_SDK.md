@@ -11,6 +11,33 @@ implementations. It provides:
 - a durable authoritative subscription store;
 - metadata-filter matching and replay-window helpers.
 
+## Start a provider
+
+Copy [`packages/aegs-sdk/examples/starter_aegs.rs`](../packages/aegs-sdk/examples/starter_aegs.rs)
+into a provider repository, implement provider authorization and webhook
+normalization, then run the public contract suite before submitting the
+implementation. The starter is deliberately not a production adapter: it
+shows the boundary while making missing provider authentication explicit.
+
+Publisher manifests are signed locally. The SDK signs the canonical unsigned
+manifest digest and accepts only raw 32-byte Ed25519 keys in hexadecimal or
+base64. Keep the key in a secret manager or a file with restricted permissions;
+never put it in a manifest, Cloud, AEDS, a kernel, or a command-line argument:
+
+```sh
+export CHARIOX_AEGS_SIGNING_KEY='...raw-key-in-base64...'
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  sign --input manifest.json --output manifest.signed.json \
+  --key-id com.example.publisher.2026-01
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  validate --input manifest.signed.json
+```
+
+The registry verifies the declared digest and the signature against the
+publisher key registered for the publisher namespace. A signed version is
+immutable: changing event definitions, scopes, endpoints, or display metadata
+requires a new version and digest.
+
 Run the conformance tests with:
 
 ```sh
