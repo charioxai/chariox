@@ -667,12 +667,9 @@ mod tests {
             workflow_event_capabilities_for_prompt_from_runtime(&app, session.id(), &prompt)
                 .expect("binding capabilities should resolve");
         assert_eq!(capabilities, (false, true, true));
-        let ordinary_provider_run_id = ensure_workflow_provider_run_from_runtime(
-            &mut app,
-            session.id(),
-            agent.id(),
-        )
-        .expect("ordinary provider run should launch before the event run");
+        let ordinary_provider_run_id =
+            ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+                .expect("ordinary provider run should launch before the event run");
         let ordinary_provider_run = app
             .providers()
             .get_run(&ordinary_provider_run_id)
@@ -693,12 +690,9 @@ mod tests {
         assert!(!provider_run.workflow_event_reply_enabled());
         assert!(provider_run.workflow_event_context_enabled());
         assert!(provider_run.workflow_event_actions_enabled());
-        let ordinary_provider_run_again_id = ensure_workflow_provider_run_from_runtime(
-            &mut app,
-            session.id(),
-            agent.id(),
-        )
-        .expect("ordinary provider run should replace the action-enabled run");
+        let ordinary_provider_run_again_id =
+            ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+                .expect("ordinary provider run should replace the action-enabled run");
         assert_ne!(ordinary_provider_run_again_id, provider_run_id);
         assert!(!app
             .providers()
