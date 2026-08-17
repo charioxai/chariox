@@ -54,12 +54,14 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         event_reply_enabled: bool,
         event_context_enabled: bool,
+        event_actions_enabled: bool,
     ) -> Result<String, DaemonError> {
         let existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
         if let Some(run) = existing_run.as_ref() {
             if run.workflow_tools_enabled()
                 && run.workflow_event_reply_enabled() == event_reply_enabled
                 && run.workflow_event_context_enabled() == event_context_enabled
+                && run.workflow_event_actions_enabled() == event_actions_enabled
             {
                 if run.state() == crate::provider::ProviderRunState::Parked {
                     let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
@@ -121,7 +123,8 @@ impl KernelRuntimeOwnedState {
         )?;
         request = request
             .with_workflow_event_reply(event_reply_enabled)
-            .with_workflow_event_context(event_context_enabled);
+            .with_workflow_event_context(event_context_enabled)
+            .with_workflow_event_actions(event_actions_enabled);
         let started = self.start_provider_launch(request)?;
         // The owned workflow admission path is synchronous, so it cannot use the async app
         // launch helper. Enable the workflow tool surface before the detached launch is spawned;
@@ -138,26 +141,26 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
-    ) -> Result<(bool, bool), DaemonError> {
+    ) -> Result<(bool, bool, bool), DaemonError> {
         let Some(workflow_run_id) = prompt.workflow_run_id() else {
-            return Ok((false, false));
+            return Ok((false, false, false));
         };
         let workflow_run = self
             .session_store
             .read()
             .resolve_workflow_run_ref(session_id, workflow_run_id)?;
         let Some(invocation) = workflow_run.publication_invocation() else {
-            return Ok((false, false));
+            return Ok((false, false, false));
         };
         if invocation.transport != "event" {
-            return Ok((false, false));
+            return Ok((false, false, false));
         }
         let Some(binding_id) = invocation.hook_id.as_deref() else {
-            return Ok((false, false));
+            return Ok((false, false, false));
         };
         let session = self.session_store.read().get_session(session_id)?;
         let Some(binding) = session.workflow_event_binding(binding_id) else {
-            return Ok((false, false));
+            return Ok((false, false, false));
         };
         let reply_enabled = matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"));
         let context_enabled = binding.active()
@@ -165,7 +168,7 @@ impl KernelRuntimeOwnedState {
                 .input
                 .get("reply_context")
                 .is_some_and(|context| !context.is_null());
-        Ok((reply_enabled, context_enabled))
+        Ok((reply_enabled, context_enabled, !binding.action_ids.is_empty()))
     }
 
     pub(super) fn workflow_dispatch_claim_id(
@@ -213,13 +216,14 @@ impl KernelRuntimeOwnedState {
             .agent_store
             .get_agent(prepared.prompt.target_agent_id())?;
         if target_agent.remote_execution().is_none() {
-            let (event_reply_enabled, event_context_enabled) = self
+            let (event_reply_enabled, event_context_enabled, event_actions_enabled) = self
                 .workflow_event_capabilities_for_prompt(&prepared.session_id, &prepared.prompt)?;
             self.workflow_ensure_provider_run(
                 &prepared.session_id,
                 prepared.prompt.target_agent_id(),
                 event_reply_enabled,
                 event_context_enabled,
+                event_actions_enabled,
             )?;
         }
         let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
@@ -303,7 +307,7 @@ impl KernelRuntimeOwnedState {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
-        let (event_reply_enabled, event_context_enabled) =
+        let (event_reply_enabled, event_context_enabled, event_actions_enabled) =
             self.workflow_event_capabilities_for_prompt(session_id, prompt)?;
         Ok(crate::execution_lease::RemoteWorkflowTurnContext {
             home_kernel_id: self.config_projection.snapshot().daemon_id,
@@ -314,6 +318,7 @@ impl KernelRuntimeOwnedState {
             delivery_token,
             event_reply_enabled,
             event_context_enabled,
+            event_actions_enabled,
         })
     }
 

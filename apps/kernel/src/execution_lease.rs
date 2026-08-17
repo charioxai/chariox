@@ -106,6 +106,9 @@ pub struct RemoteWorkflowTurnContext {
     /// independent from reply mode and defaults off for older peers.
     #[serde(default)]
     pub event_context_enabled: bool,
+    /// Whether this event run has at least one catalog-validated action.
+    #[serde(default)]
+    pub event_actions_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

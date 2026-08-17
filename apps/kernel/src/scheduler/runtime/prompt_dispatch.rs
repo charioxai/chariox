@@ -169,6 +169,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     agent_id: &str,
     event_reply_enabled: bool,
     event_context_enabled: bool,
+    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
     match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
         Ok(provider_run_id) => {
@@ -200,6 +201,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                 agent_id,
                 event_reply_enabled,
                 event_context_enabled,
+                event_actions_enabled,
             )?;
             let provider_run = app.start_workflow_provider_launch(request)?;
             Ok(provider_run.id().to_string())
@@ -211,6 +213,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
                 agent_id,
                 event_reply_enabled,
                 event_context_enabled,
+                event_actions_enabled,
             )?;
             let provider_run = app.start_workflow_provider_launch(request)?;
             Ok(provider_run.id().to_string())
@@ -225,6 +228,7 @@ fn workflow_provider_request(
     agent_id: &str,
     event_reply_enabled: bool,
     event_context_enabled: bool,
+    event_actions_enabled: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
     let agent = app.agents().get_agent(agent_id)?;
     let provider = crate::provider::provider_id_for_launch(agent.provider());
@@ -240,6 +244,7 @@ fn workflow_provider_request(
     )
     .with_workflow_event_reply(event_reply_enabled)
     .with_workflow_event_context(event_context_enabled)
+    .with_workflow_event_actions(event_actions_enabled)
     .with_agent_id(agent.id().to_string())
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)

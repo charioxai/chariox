@@ -29,6 +29,13 @@ count, recommended placement, and the resulting `manifest_digest`—are delibera
 outside the signed payload and are rejected if embedded in a publisher manifest.
 The registry supplies and authenticates those catalog fields separately.
 
+An optional signed `actions` array declares bounded workflow capabilities. Each
+action has an opaque `action_id`, required scopes, a target policy, mutation and
+idempotency flags, and a closed object input schema. A workflow binding copies
+only the action IDs explicitly selected by the user after catalog validation;
+the kernel exposes the generic event-action tool only for that allow-list.
+Provider context alone never grants a mutation.
+
 ## Identities
 
 - `generator_id` identifies a publisher-scoped AEGS implementation. It does not

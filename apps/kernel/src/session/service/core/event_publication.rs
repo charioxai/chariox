@@ -21,6 +21,7 @@ impl SessionService {
         environment_id: Option<String>,
         queue_ref: Option<String>,
         reply_mode: Option<String>,
+        action_ids: Vec<String>,
     ) -> Result<WorkflowEventBinding, DaemonError> {
         let publication = self.resolve_workflow_publication_ref(session_id, publication_ref)?;
         if publication.kind() != WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
@@ -70,6 +71,15 @@ impl SessionService {
             .filter(|value| !value.is_empty())
             .or_else(|| publication.queue_ref().map(str::to_string));
         let reply_mode = normalize_event_reply_mode(reply_mode)?;
+        let action_ids = normalize_event_action_ids(action_ids)?;
+        if action_ids.iter().any(|action| action == "notification.reply")
+            && reply_mode == "disabled"
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "create workflow event binding",
+                message: "notification.reply requires reply_mode thread or channel".to_string(),
+            });
+        }
         self.resolve_workflow_prompt_queue_ref(
             session_id,
             publication.workflow_id(),
@@ -97,7 +107,9 @@ impl SessionService {
                     && existing.endpoint_id == publication.endpoint_id()
                     && existing.queue_ref == queue_ref
                 {
-                    if existing.reply_mode.as_deref() == Some(reply_mode.as_str()) {
+                    if existing.reply_mode.as_deref() == Some(reply_mode.as_str())
+                        && existing.action_ids == action_ids
+                    {
                         return Ok(existing.clone());
                     }
                     let binding = self
@@ -112,6 +124,7 @@ impl SessionService {
                             ),
                         })?;
                     binding.reply_mode = Some(reply_mode.clone());
+                    binding.action_ids = action_ids.clone();
                     binding.revision = binding.revision.saturating_add(1);
                     binding.updated_at_ms = unix_epoch_ms();
                     return Ok(binding.clone());
@@ -136,6 +149,7 @@ impl SessionService {
             endpoint_id: publication.endpoint_id().to_string(),
             queue_ref,
             reply_mode: Some(reply_mode),
+            action_ids,
             revision: 1,
             status: WorkflowEventBindingStatus::Active,
             created_at_ms: now,
@@ -363,4 +377,31 @@ fn normalize_event_reply_mode(value: Option<String>) -> Result<String, DaemonErr
             message: "reply_mode must be `disabled`, `thread`, or `channel`".to_string(),
         })
     }
+}
+
+fn normalize_event_action_ids(value: Vec<String>) -> Result<Vec<String>, DaemonError> {
+    if value.len() > 100 {
+        return Err(DaemonError::LocalTransport {
+            operation: "create workflow event binding",
+            message: "at most 100 event actions may be enabled".to_string(),
+        });
+    }
+    let mut normalized = Vec::with_capacity(value.len());
+    for action in value {
+        let action = action.trim();
+        if action.is_empty() || action.len() > 256 {
+            return Err(DaemonError::LocalTransport {
+                operation: "create workflow event binding",
+                message: "event action IDs must contain between 1 and 256 characters".to_string(),
+            });
+        }
+        if normalized.iter().any(|existing| existing == action) {
+            return Err(DaemonError::LocalTransport {
+                operation: "create workflow event binding",
+                message: format!("event action `{action}` is listed more than once"),
+            });
+        }
+        normalized.push(action.to_string());
+    }
+    Ok(normalized)
 }

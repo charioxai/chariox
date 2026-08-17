@@ -296,6 +296,8 @@ impl CommandRouter {
                     &request.manifest_digest,
                     &request.event_type,
                     request.event_type_version,
+                    &request.action_ids,
+                    request.reply_mode.as_deref(),
                 )
                 .await?;
             }

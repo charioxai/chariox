@@ -224,6 +224,7 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         environment_id: Some("environment-local".to_string()),
         queue_ref: Some("default".to_string()),
         reply_mode: None,
+        action_ids: Vec::new(),
     };
     let binding = match harness
         .dispatch(LocalDaemonRequest::CreateWorkflowEventBinding(
@@ -672,6 +673,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
                     reply_mode: None,
+                    action_ids: Vec::new(),
                 },
             ))
             .expect("event binding should be created")
@@ -798,6 +800,7 @@ fn confirmed_event_connection_removal_tombstones_dependent_bindings_before_revoc
                     environment_id: Some("environment-removal".to_string()),
                     queue_ref: Some("default".to_string()),
                     reply_mode: None,
+                    action_ids: Vec::new(),
                 },
             ))
             .expect_err("a revoked connection must reject a fresh attachment");

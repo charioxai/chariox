@@ -758,17 +758,17 @@ impl KernelRuntimeOwnedState {
             }
             (binding, invocation, workflow_run.id().to_string())
         };
-        let configured_mode = binding.reply_mode.as_deref().unwrap_or("disabled");
-        if configured_mode == "disabled" {
+        if !binding.action_ids.iter().any(|enabled| enabled == action_id) {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_event_action",
-                message: "reverse actions are disabled for this event subscription".to_string(),
+                message: format!("event action `{action_id}` is not enabled for this subscription"),
             });
         }
-        if action_id != "notification.reply" {
+        let configured_mode = binding.reply_mode.as_deref().unwrap_or("disabled");
+        if action_id == "notification.reply" && configured_mode == "disabled" {
             return Err(DaemonError::LocalTransport {
                 operation: "runtime_tool_event_action",
-                message: "this event subscription has no explicitly enabled action".to_string(),
+                message: "replies are disabled for this event subscription".to_string(),
             });
         }
         let reply_context = invocation

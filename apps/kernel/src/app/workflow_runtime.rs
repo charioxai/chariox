@@ -19,6 +19,7 @@ impl WorkflowProgression {
         agent_id: &str,
         event_reply_enabled: bool,
         event_context_enabled: bool,
+        event_actions_enabled: bool,
     ) -> Result<String, DaemonError> {
         crate::scheduler::runtime::ensure_workflow_provider_run_for_agent_with_event_reply(
             app,
@@ -26,6 +27,7 @@ impl WorkflowProgression {
             agent_id,
             event_reply_enabled,
             event_context_enabled,
+            event_actions_enabled,
         )
     }
 
@@ -43,7 +45,7 @@ impl WorkflowProgression {
             if agent.remote_execution().is_some() {
                 continue;
             }
-            Self::ensure_provider_run(app, session_id, node.agent_id(), false, false)?;
+            Self::ensure_provider_run(app, session_id, node.agent_id(), false, false, false)?;
         }
         Ok(())
     }
@@ -381,7 +383,7 @@ pub(crate) fn ensure_workflow_provider_run_from_runtime(
     session_id: &str,
     agent_id: &str,
 ) -> Result<String, DaemonError> {
-    WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false, false)
+    WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false, false, false)
 }
 
 pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
@@ -390,7 +392,7 @@ pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
     agent_id: &str,
     prompt: &PromptQueueItem,
 ) -> Result<String, DaemonError> {
-    let (event_reply_enabled, event_context_enabled) =
+    let (event_reply_enabled, event_context_enabled, event_actions_enabled) =
         workflow_event_capabilities_for_prompt_from_runtime(app, session_id, prompt)?;
     ensure_workflow_provider_run_with_event_capabilities_from_runtime(
         app,
@@ -398,6 +400,7 @@ pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
         agent_id,
         event_reply_enabled,
         event_context_enabled,
+        event_actions_enabled,
     )
 }
 
@@ -407,6 +410,7 @@ pub(crate) fn ensure_workflow_provider_run_with_event_capabilities_from_runtime(
     agent_id: &str,
     event_reply_enabled: bool,
     event_context_enabled: bool,
+    event_actions_enabled: bool,
 ) -> Result<String, DaemonError> {
     WorkflowProgression::ensure_provider_run(
         app,
@@ -414,6 +418,7 @@ pub(crate) fn ensure_workflow_provider_run_with_event_capabilities_from_runtime(
         agent_id,
         event_reply_enabled,
         event_context_enabled,
+        event_actions_enabled,
     )
 }
 
@@ -421,25 +426,25 @@ pub(crate) fn workflow_event_capabilities_for_prompt_from_runtime(
     app: &DaemonApp,
     session_id: &str,
     prompt: &PromptQueueItem,
-) -> Result<(bool, bool), DaemonError> {
+) -> Result<(bool, bool, bool), DaemonError> {
     let Some(workflow_run_id) = prompt.workflow_run_id() else {
-        return Ok((false, false));
+        return Ok((false, false, false));
     };
     let workflow_run = app
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)?;
     let Some(invocation) = workflow_run.publication_invocation() else {
-        return Ok((false, false));
+        return Ok((false, false, false));
     };
     if invocation.transport != "event" {
-        return Ok((false, false));
+        return Ok((false, false, false));
     }
     let Some(binding_id) = invocation.hook_id.as_deref() else {
-        return Ok((false, false));
+        return Ok((false, false, false));
     };
     let session = app.sessions().get_session(session_id)?;
     let Some(binding) = session.workflow_event_binding(binding_id) else {
-        return Ok((false, false));
+        return Ok((false, false, false));
     };
     let reply_enabled = matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"));
     let context_enabled = binding.active()
@@ -447,7 +452,7 @@ pub(crate) fn workflow_event_capabilities_for_prompt_from_runtime(
             .input
             .get("reply_context")
             .is_some_and(|context| !context.is_null());
-    Ok((reply_enabled, context_enabled))
+    Ok((reply_enabled, context_enabled, !binding.action_ids.is_empty()))
 }
 
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
@@ -604,6 +609,7 @@ mod tests {
                 None,
                 Some("default".to_string()),
                 Some("disabled".to_string()),
+                Vec::new(),
             )
             .expect("event binding should be created");
         let invocation = crate::session::WorkflowPublicationInvocationEnvelope {

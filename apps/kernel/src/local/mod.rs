@@ -48,7 +48,7 @@ pub use api::{
     EventConnectedResource, EventConnection, EventConnectionAuthorization,
     EventConnectionLifecycleState, EventConnectionPage, EventConnectionScope,
     EventConnectionStatus, EventDeliveryStatus, EventGeneratorAuthorizationFlow,
-    EventGeneratorCatalogDetail, EventGeneratorCatalogPage, EventGeneratorCatalogSummary,
+    EventGeneratorActionDefinition, EventGeneratorCatalogDetail, EventGeneratorCatalogPage, EventGeneratorCatalogSummary,
     EventGeneratorEventDefinition, EventGeneratorEventPage, EventGeneratorParty,
     EventGeneratorResource, EventGeneratorResourcePage, ExportDebugBundleRequest,
     ExportWorkflowCodeArtifactRequest, ExportWorkflowCodePackageRequest,

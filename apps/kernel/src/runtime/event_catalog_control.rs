@@ -415,6 +415,8 @@ pub(crate) async fn validate_event_binding_contract(
     manifest_digest: &str,
     event_type: &str,
     event_type_version: u32,
+    action_ids: &[String],
+    reply_mode: Option<&str>,
 ) -> Result<(), DaemonError> {
     let registry_url = config_projection.snapshot().event_registry_url;
     let request =
@@ -443,6 +445,8 @@ pub(crate) async fn validate_event_binding_contract(
         manifest_digest,
         event_type,
         event_type_version,
+        action_ids,
+        reply_mode,
     )
 }
 
@@ -453,6 +457,8 @@ fn validate_event_binding_detail(
     manifest_digest: &str,
     event_type: &str,
     event_type_version: u32,
+    action_ids: &[String],
+    reply_mode: Option<&str>,
 ) -> Result<(), DaemonError> {
     if detail.summary.generator_id != generator_id || detail.summary.version != generator_version {
         return Err(connection_error(format!(
@@ -474,6 +480,20 @@ fn validate_event_binding_detail(
         return Err(connection_error(format!(
             "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
         )));
+    }
+    for action_id in action_ids {
+        let Some(_action) = detail.actions.iter().find(|action| action.action_id == *action_id) else {
+            return Err(connection_error(format!(
+                "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
+            )));
+        };
+        if action_id == "notification.reply"
+            && !matches!(reply_mode, Some("thread" | "channel"))
+        {
+            return Err(connection_error(
+                "notification.reply requires reply_mode thread or channel".to_string(),
+            ));
+        }
     }
     Ok(())
 }
@@ -1632,6 +1652,7 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             }),
             required_scopes: Vec::new(),
         }],
+        actions: Vec::new(),
         signature: serde_json::json!({
             "key_id": "dev.chariox.fixture.2026-08-v3",
             "algorithm": "ed25519",
@@ -1752,6 +1773,8 @@ mod tests {
             &detail.summary.manifest_digest,
             "dummy_typo",
             1,
+            &[],
+            None,
         )
         .expect_err("undeclared event type must be rejected");
         assert!(error.to_string().contains("is not declared"));
@@ -1767,6 +1790,8 @@ mod tests {
             &detail.summary.manifest_digest,
             "dummy.test",
             1,
+            &[],
+            None,
         )
         .expect("declared event type should be accepted");
     }
@@ -1781,6 +1806,8 @@ mod tests {
             &detail.summary.manifest_digest,
             "dummy.test",
             1,
+            &[],
+            None,
         )
         .expect_err("mismatched catalog identity must be rejected");
         assert!(error.to_string().contains("event catalog returned"));

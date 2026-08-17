@@ -436,7 +436,7 @@ impl KernelRuntimeState {
             return Ok(None);
         }
 
-        let (event_reply_enabled, event_context_enabled) = self
+        let (event_reply_enabled, event_context_enabled, event_actions_enabled) = self
             .owned
             .workflow_event_capabilities_for_prompt(session_id, &prompt)?;
         let provider_run_id = self.owned.workflow_ensure_provider_run(
@@ -444,6 +444,7 @@ impl KernelRuntimeState {
             agent_id,
             event_reply_enabled,
             event_context_enabled,
+            event_actions_enabled,
         )?;
         let provider_run = self
             .owned

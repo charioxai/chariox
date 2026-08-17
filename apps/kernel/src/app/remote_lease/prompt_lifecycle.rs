@@ -212,16 +212,17 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     .set_workspace_live_sync_mode(&leased_agent.backing_session_id, mode)?;
             }
         }
-        let (event_reply_enabled, event_context_enabled) = workflow_context
+        let (event_reply_enabled, event_context_enabled, event_actions_enabled) = workflow_context
             .as_ref()
-            .map(|context| (context.event_reply_enabled, context.event_context_enabled))
-            .unwrap_or((false, false));
+            .map(|context| (context.event_reply_enabled, context.event_context_enabled, context.event_actions_enabled))
+            .unwrap_or((false, false, false));
         let provider_run = match self.prepare_leased_provider_run_matches_mcps(
             &leased_agent,
             &required_mcps,
             &remote_extension_manifest,
             event_reply_enabled,
             event_context_enabled,
+            event_actions_enabled,
         )? {
             LeasedProviderRunMatch::Ready(provider_run_id) => {
                 self.app.mark_leased_provider_run(&provider_run_id);

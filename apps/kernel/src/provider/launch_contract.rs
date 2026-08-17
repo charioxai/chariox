@@ -434,6 +434,9 @@ pub struct LaunchProviderRequest {
     /// while replies remain disabled.
     #[serde(default, skip_serializing_if = "is_false")]
     pub workflow_event_context_enabled: bool,
+    /// Workflow-only capability snapshot for explicitly enabled provider actions.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub workflow_event_actions_enabled: bool,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -578,6 +581,7 @@ impl LaunchProviderRequest {
             external_provider_import: None,
             workflow_event_reply_enabled: false,
             workflow_event_context_enabled: false,
+            workflow_event_actions_enabled: false,
         }
     }
 
@@ -704,6 +708,11 @@ impl LaunchProviderRequest {
 
     pub fn with_workflow_event_context(mut self, enabled: bool) -> Self {
         self.workflow_event_context_enabled = enabled;
+        self
+    }
+
+    pub fn with_workflow_event_actions(mut self, enabled: bool) -> Self {
+        self.workflow_event_actions_enabled = enabled;
         self
     }
 

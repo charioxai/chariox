@@ -44,6 +44,7 @@ impl KernelRuntimeOwnedState {
             request.environment_id,
             request.queue_ref,
             request.reply_mode,
+            request.action_ids,
         )?;
         Ok(LocalDaemonResponse::WorkflowEventBindingCreated {
             binding,
