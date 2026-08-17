@@ -117,8 +117,8 @@ pub fn validate_manifest_envelope(manifest: &Value) -> Result<String, String> {
         let version = event
             .get("version")
             .and_then(Value::as_u64)
-            .filter(|version| *version > 0)
-            .ok_or_else(|| "event.version must be greater than zero".to_string())?;
+            .filter(|version| *version > 0 && *version <= u32::MAX as u64)
+            .ok_or_else(|| "event.version must be a positive u32".to_string())?;
         require_manifest_string(event.get("name"), "event.name")?;
         if !event
             .get("filter_schema")
