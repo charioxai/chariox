@@ -68,9 +68,10 @@ The repository contains a manual `Release public AEGS SDK` workflow for this
 ordered release. It checks out one immutable commit, verifies that the SDK's
 protocol requirement matches the protocol crate version, and queries the exact
 protocol and SDK versions through the crates.io API. It publishes only versions
-that are not already present, waits for the exact protocol version (not merely a
-current search result), and then publishes `chariox-aegs-sdk`. This makes a
-rerun safe after a failure between the two publishes. To exercise that recovery
+that are not already present, then resolves the exact protocol version through
+Cargo's index before publishing `chariox-aegs-sdk`; it does not rely on a REST
+record or an unrelated search result. This makes a rerun safe after a failure
+between the two publishes. To exercise that recovery
 path, run it with `confirm=publish` and `fail_after_protocol=true`, then rerun
 with the flag disabled; the existing protocol version is skipped and the SDK
 continues. It requires the repository's `CARGO_REGISTRY_TOKEN` secret and runs

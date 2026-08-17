@@ -86,10 +86,18 @@ jobs:
       - name: Wait for the protocol index to propagate
         run: |
           protocol_version='${{ steps.versions.outputs.protocol }}'
+          probe_dir="$(mktemp -d)"
+          cat > "$probe_dir/Cargo.toml" <<EOF
+[package]
+name = "chariox-protocol-index-probe"
+version = "0.0.0"
+edition = "2021"
+
+[dependencies]
+chariox-event-protocol = "=$protocol_version"
+EOF
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
-            if curl --fail --silent --show-error \
-              --user-agent 'chariox-release/1.0 (https://github.com/charioxai/chariox)' \
-              "https://crates.io/api/v1/crates/chariox-event-protocol/$protocol_version" >/dev/null; then
+            if cargo fetch --manifest-path "$probe_dir/Cargo.toml" --quiet; then
               exit 0
             fi
             sleep 10
