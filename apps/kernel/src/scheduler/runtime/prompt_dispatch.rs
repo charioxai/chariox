@@ -181,6 +181,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
             if run.workflow_tools_enabled()
                 && run.workflow_event_reply_enabled() == event_reply_enabled
                 && run.workflow_event_context_enabled() == event_context_enabled
+                && run.workflow_event_actions_enabled() == event_actions_enabled
             {
                 app.sessions_mut()
                     .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;

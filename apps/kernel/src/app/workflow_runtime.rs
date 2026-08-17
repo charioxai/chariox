@@ -613,7 +613,7 @@ mod tests {
                 None,
                 Some("default".to_string()),
                 Some("disabled".to_string()),
-                Vec::new(),
+                vec!["slack.message.permalink".to_string()],
             )
             .expect("event binding should be created");
         let invocation = crate::session::WorkflowPublicationInvocationEnvelope {
@@ -666,7 +666,18 @@ mod tests {
         let capabilities =
             workflow_event_capabilities_for_prompt_from_runtime(&app, session.id(), &prompt)
                 .expect("binding capabilities should resolve");
-        assert_eq!(capabilities, (false, true, false));
+        assert_eq!(capabilities, (false, true, true));
+        let ordinary_provider_run_id = ensure_workflow_provider_run_from_runtime(
+            &mut app,
+            session.id(),
+            agent.id(),
+        )
+        .expect("ordinary provider run should launch before the event run");
+        let ordinary_provider_run = app
+            .providers()
+            .get_run(&ordinary_provider_run_id)
+            .expect("ordinary provider run should resolve");
+        assert!(!ordinary_provider_run.workflow_event_actions_enabled());
         let provider_run_id = ensure_workflow_provider_run_for_prompt_from_runtime(
             &mut app,
             session.id(),
@@ -674,12 +685,14 @@ mod tests {
             &prompt,
         )
         .expect("event provider should launch");
+        assert_ne!(provider_run_id, ordinary_provider_run_id);
         let provider_run = app
             .providers()
             .get_run(&provider_run_id)
             .expect("event provider should resolve");
         assert!(!provider_run.workflow_event_reply_enabled());
         assert!(provider_run.workflow_event_context_enabled());
+        assert!(provider_run.workflow_event_actions_enabled());
     }
 
     #[test]
