@@ -1351,6 +1351,19 @@ fn claude_headless_prompt_waiting_in_composer_detects_direct_prompt_text() {
 }
 
 #[test]
+fn claude_headless_composer_detects_current_cycle_footer_only_with_prompt_glyph() {
+    assert!(claude_headless_composer_visible(
+        "──────────────── ❯ ──────────────── ⏵⏵ mode (shift+tab to cycle)"
+    ));
+    assert!(!claude_headless_composer_visible(
+        "The documentation says shift+tab to cycle through modes."
+    ));
+    assert!(!claude_headless_composer_visible(
+        "❯ stale composer frame followed much later by reviewer prose: The documentation says shift+tab to cycle through modes."
+    ));
+}
+
+#[test]
 fn claude_headless_bypass_confirmation_detects_clipped_rendered_choice() {
     let rendered = "WARNING:Claude CoderunninginBypassPermissionsmode \
         Byproceeding,youacceptallresponsibilityforactionstaken \

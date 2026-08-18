@@ -465,12 +465,17 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
     let compact = normalized_lower.replace(' ', "");
+    let modern_idle_composer = compact.split('❯').skip(1).any(|after_prompt_glyph| {
+        let footer = after_prompt_glyph.chars().take(256).collect::<String>();
+        footer.contains("⏵⏵") && footer.contains("shift+tabtocycle")
+    });
     (normalized_lower.contains("try \"write a test for")
         || compact.contains("try\"writeatestfor")
         || normalized_lower.contains("bypass permissions on")
         || compact.contains("bypasspermissionson")
         || normalized_lower.contains("for shortcuts")
-        || compact.contains("forshortcuts"))
+        || compact.contains("forshortcuts")
+        || modern_idle_composer)
         && !(claude_headless_workspace_trust_visible(&normalized)
             || claude_headless_bypass_confirmation_visible(&normalized))
 }
