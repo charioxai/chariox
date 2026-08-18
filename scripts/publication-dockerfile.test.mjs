@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import { readFile } from "node:fs/promises"
+import { spawnSync } from "node:child_process"
 import { test } from "node:test"
 
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
@@ -77,6 +78,29 @@ test("publication network installs are integrity-locked and snapshot-bound", () 
     assert.match(entry.resolved ?? "", /^https:\/\/registry\.npmjs\.org\//, `${path} needs a registry artifact`)
     assert.match(entry.integrity ?? "", /^sha512-/, `${path} needs SHA-512 integrity`)
   }
+})
+
+test("embedded toolchain SBOM removes volatile identity and time fields", () => {
+  const script = new URL("../docker/publication/toolchain/canonicalize-sbom.mjs", import.meta.url)
+  const generate = (serialNumber, timestamp) => spawnSync(
+    process.execPath,
+    [script.pathname],
+    {
+      encoding: "utf8",
+      input: JSON.stringify({
+        serialNumber,
+        metadata: { timestamp, component: { version: "1", name: "toolchain" } },
+        components: [{ version: "0.144.0", name: "codex" }],
+        bomFormat: "CycloneDX",
+      }),
+    },
+  )
+  const first = generate("urn:uuid:first", "2026-08-18T00:00:00.000Z")
+  const second = generate("urn:uuid:second", "2027-01-01T00:00:00.000Z")
+  assert.equal(first.status, 0, first.stderr)
+  assert.equal(second.status, 0, second.stderr)
+  assert.equal(first.stdout, second.stdout)
+  assert.doesNotMatch(first.stdout, /serialNumber|timestamp|uuid/)
 })
 
 test("publication image labels the protocol version verified against its kernel", () => {

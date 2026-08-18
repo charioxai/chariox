@@ -3,8 +3,9 @@
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-toolchain
 WORKDIR /opt/chariox-toolchain
 COPY docker/publication/toolchain/package.json docker/publication/toolchain/package-lock.json ./
+COPY docker/publication/toolchain/canonicalize-sbom.mjs ./
 RUN npm ci --omit=dev \
-  && npm sbom --sbom-format cyclonedx > toolchain-sbom.cdx.json \
+  && npm sbom --sbom-format cyclonedx | node canonicalize-sbom.mjs > toolchain-sbom.cdx.json \
   && test "$(node_modules/.bin/pnpm --version)" = "9.15.0" \
   && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.0" \
   && test "$(node_modules/.bin/opencode --version)" = "1.4.1" \
