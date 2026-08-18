@@ -18,8 +18,8 @@ test("slice command list renders lifecycle scope and provider auth details", asy
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
         providers: ["codex", "claude"],
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "test" },
-          { provider: "claude", state: "authenticated", email: "user@example.com", organization_name: "Team", subscription_type: "pro", source: "test" },
+          { provider: "codex", account_profile: "work", state: "configured", account_id: "acct-1", source: "test" },
+          { provider: "claude", account_profile: "default", state: "authenticated", email: "user@example.com", organization_name: "Team", subscription_type: "pro", source: "test" },
         ],
       }),
     ],
@@ -80,15 +80,15 @@ test("slice command list renders concrete stale-auth recovery hints", async () =
         id: "slice-1",
         name: "linux-a",
         providers: ["codex"],
-        provider_auth: [{ provider: "codex", state: "not_configured", source: "slice" }],
+        provider_auth: [{ provider: "codex", account_profile: "default", state: "not_configured", source: "slice" }],
       }),
       slice({
         id: "slice-2",
         name: "linux-b",
         providers: ["codex", "opencode:openai"],
         provider_auth: [
-          { provider: "codex", state: "not_configured", source: "slice" },
-          { provider: "opencode:openai", state: "unknown", source: "slice" },
+          { provider: "codex", account_profile: "default", state: "not_configured", source: "slice" },
+          { provider: "opencode:openai", account_profile: "default", state: "unknown", source: "slice" },
         ],
       }),
     ],
@@ -287,7 +287,7 @@ test("slice command doctor requires provider auth for every advertised provider"
         worktree_id: "/repo/wt",
         providers: ["codex", "opencode:openai"],
         provider_auth: [
-          { provider: "codex", state: "authenticated", email: "codex@example.com", source: "test" },
+          { provider: "codex", account_profile: "default", state: "authenticated", email: "codex@example.com", source: "test" },
         ],
       }),
     ],
@@ -506,20 +506,6 @@ test("slice command auth login starts provider login in focused agent slice", as
   assert.equal(harness.footers.at(-1)?.message, "slice auth login codex: started")
 })
 
-test("slice command auth alias sets and clears provider aliases", async () => {
-  const harness = sliceHarness()
-
-  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "work", "account"))
-  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "clear"))
-
-  assert.deepEqual(harness.aliasedAuth, [
-    { sliceRef: "slice-1", provider: "codex", alias: "work account" },
-    { sliceRef: "slice-1", provider: "codex", alias: null },
-  ])
-  assert.equal(harness.footers.at(-2)?.message, "slice auth alias codex: work account")
-  assert.equal(harness.footers.at(-1)?.message, "slice auth alias codex: cleared")
-})
-
 test("slice command stop blocks slices with attached agents", async () => {
   const harness = sliceHarness({
     slices: [slice({
@@ -571,7 +557,6 @@ function sliceHarness(options: {
   const importedAuth: Array<{ sliceRef: string; provider: string }> = []
   const removedAuth: Array<{ sliceRef: string; provider: string }> = []
   const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
-  const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
   const stoppedSlices: string[] = []
   const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
@@ -634,10 +619,6 @@ function sliceHarness(options: {
           message: "Open https://auth.example and enter ABCD-EFGH",
         },
       }
-    },
-    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
-      aliasedAuth.push({ sliceRef, provider, alias })
-      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, alias }
     },
     getSliceDisplayEndpoint: async (sliceRef) => {
       displayEndpointRefs.push(sliceRef)
@@ -726,7 +707,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

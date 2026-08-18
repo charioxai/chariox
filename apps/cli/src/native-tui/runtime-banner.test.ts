@@ -418,8 +418,8 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     worker_machine_id: "hetzner",
     provider_auth: [{
       provider: "codex",
+      account_profile: "work",
       state: "authenticated",
-      alias: "work",
       email: "work@example.com",
       source: "slice",
     }],

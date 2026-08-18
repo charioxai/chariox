@@ -19,7 +19,7 @@ test("slice formatter projects provider account identities", () => {
         provider: "codex",
         state: "authenticated",
         email: "dev@example.com",
-        alias: "daily",
+        account_profile: "daily",
       }],
     }),
     "codex=daily (dev@example.com)",
@@ -50,7 +50,7 @@ test("slice formatter resolves backend provider account labels", () => {
 test("provider account formatter resolves backend labels without a slice", () => {
   assert.equal(
     formatProviderAccountForBackend(
-      [{ provider: "codex", state: "configured", alias: "worker-codex" }],
+      [{ provider: "codex", account_profile: "worker-codex", state: "configured" }],
       "codex",
       ["codex"],
     ),
@@ -110,7 +110,7 @@ test("slice formatter summarizes partial provider auth status", () => {
   assert.equal(
     formatSliceProviderAuthStatus({
       providers: ["codex", "opencode"],
-      provider_auth: [{ provider: "codex", state: "configured", alias: "daily" }],
+      provider_auth: [{ provider: "codex", account_profile: "daily", state: "configured" }],
     }),
     "auth codex=daily (account unknown); missing opencode",
   )

@@ -8,6 +8,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
+use base64::Engine as _;
 use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +16,51 @@ use crate::error::DaemonError;
 
 const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
+const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountMaterializationFile {
+    pub relative_path: String,
+    pub contents_base64: String,
+}
+
+impl std::fmt::Debug for ProviderAccountMaterializationFile {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderAccountMaterializationFile")
+            .field("relative_path", &self.relative_path)
+            .field("contents_base64", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountReplicaMetadata {
+    pub owner_user_id: String,
+    pub provider: String,
+    pub profile_id: String,
+    pub label: String,
+    pub origin: ProviderAccountProfileOrigin,
+    pub is_default: bool,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountMaterialization {
+    pub profile: ProviderAccountReplicaMetadata,
+    pub files: Vec<ProviderAccountMaterializationFile>,
+    pub generated_at_ms: u64,
+}
+
+impl std::fmt::Debug for ProviderAccountMaterialization {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderAccountMaterialization")
+            .field("profile", &self.profile)
+            .field("file_count", &self.files.len())
+            .field("generated_at_ms", &self.generated_at_ms)
+            .finish()
+    }
+}
 
 /// Ambient credential variables must never override the provider-native state
 /// selected by an account profile. OpenCode supports many upstreams, so its
@@ -107,6 +153,31 @@ pub enum ProviderAccountUsageMeterState {
     Unknown,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountMaterializationTargetKind {
+    Worker,
+    Slice,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderAccountMaterializationState {
+    Materialized,
+    Stale,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderAccountMaterializationStatus {
+    pub target_kind: ProviderAccountMaterializationTargetKind,
+    pub target_ref: String,
+    pub state: ProviderAccountMaterializationState,
+    pub observed_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ProviderAccountUsageMeter {
     pub meter_id: String,
@@ -186,6 +257,8 @@ pub struct ProviderAccountProfile {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_validated_at_ms: Option<u64>,
     pub usage: ProviderAccountUsageSnapshot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub materializations: Vec<ProviderAccountMaterializationStatus>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,6 +414,8 @@ struct StoredProviderAccountProfile {
     #[serde(flatten)]
     public: ProviderAccountProfile,
     locator: ProviderAccountLocator,
+    #[serde(default)]
+    materialized_replica: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -422,6 +497,7 @@ impl ProviderAccountProfileRegistry {
             document.profiles.push(StoredProviderAccountProfile {
                 public: profile,
                 locator,
+                materialized_replica: false,
             });
             changed = true;
         }
@@ -529,6 +605,29 @@ impl ProviderAccountProfileRegistry {
         Ok(result)
     }
 
+    pub(crate) fn update_materialization_status(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        status: ProviderAccountMaterializationStatus,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        if let Some(existing) = profile.public.materializations.iter_mut().find(|existing| {
+            existing.target_kind == status.target_kind && existing.target_ref == status.target_ref
+        }) {
+            *existing = status;
+        } else {
+            profile.public.materializations.push(status);
+        }
+        let result = profile.public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
     pub(crate) fn resolve_environment(
         &self,
         owner_user_id: &str,
@@ -579,6 +678,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            materialized_replica: false,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -612,6 +712,7 @@ impl ProviderAccountProfileRegistry {
         document.profiles.push(StoredProviderAccountProfile {
             public: profile.clone(),
             locator,
+            materialized_replica: false,
         });
         self.persist_locked(&document)?;
         Ok(profile)
@@ -724,6 +825,148 @@ impl ProviderAccountProfileRegistry {
         Ok(removed.public)
     }
 
+    pub(crate) fn export_materialization(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountMaterialization, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+        let mut files = Vec::new();
+        match &stored.locator {
+            ProviderAccountLocator::Codex { codex_home } => {
+                collect_optional_file(codex_home, "auth.json", "auth.json", &mut files)?;
+                collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
+            }
+            ProviderAccountLocator::Claude { claude_config_dir } => {
+                for name in [".credentials.json", "settings.json", "stats-cache.json"] {
+                    collect_optional_file(claude_config_dir, name, name, &mut files)?;
+                }
+                if stored.public.origin == ProviderAccountProfileOrigin::Default
+                    && !files
+                        .iter()
+                        .any(|file| file.relative_path == ".credentials.json")
+                {
+                    collect_default_claude_keychain_credentials(&mut files)?;
+                }
+            }
+            ProviderAccountLocator::Opencode {
+                xdg_data_home,
+                xdg_config_home,
+                xdg_state_home,
+                opencode_config_dir,
+                ..
+            } => {
+                collect_optional_tree(
+                    &xdg_data_home.join("opencode"),
+                    "data/opencode",
+                    &mut files,
+                )?;
+                collect_optional_tree(
+                    &xdg_config_home.join("opencode"),
+                    "config/opencode",
+                    &mut files,
+                )?;
+                collect_optional_tree(
+                    &xdg_state_home.join("opencode"),
+                    "state/opencode",
+                    &mut files,
+                )?;
+                if opencode_config_dir != &xdg_config_home.join("opencode") {
+                    collect_optional_tree(opencode_config_dir, "opencode-config", &mut files)?;
+                }
+            }
+        }
+        Ok(ProviderAccountMaterialization {
+            profile: ProviderAccountReplicaMetadata {
+                owner_user_id: stored.public.owner_user_id.clone(),
+                provider: stored.public.provider.clone(),
+                profile_id: stored.public.profile_id.clone(),
+                label: stored.public.label.clone(),
+                origin: stored.public.origin,
+                is_default: stored.public.is_default,
+            },
+            files,
+            generated_at_ms: crate::session::unix_epoch_ms(),
+        })
+    }
+
+    pub(crate) fn materialize_replica(
+        &self,
+        owner_user_id: &str,
+        materialization: &ProviderAccountMaterialization,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        if materialization.profile.owner_user_id != owner_user_id {
+            return Err(registry_error(
+                "materialize account profile",
+                "materialization owner does not match the execution lease owner",
+            ));
+        }
+        let provider = normalize_provider(&materialization.profile.provider)?;
+        let profile_id = validate_profile_id(&materialization.profile.profile_id)?;
+        let managed_root = self
+            .path
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("provider-accounts")
+            .join(safe_path_component(owner_user_id))
+            .join(provider)
+            .join(profile_id);
+        let locator = ProviderAccountLocator::managed(provider, &managed_root)?;
+        create_private_roots(&locator)?;
+        for file in &materialization.files {
+            let destination = materialization_destination(&locator, &file.relative_path)?;
+            let contents = base64::engine::general_purpose::STANDARD
+                .decode(&file.contents_base64)
+                .map_err(|error| {
+                    registry_error("materialize account profile", error.to_string())
+                })?;
+            atomic_write_private(&destination, &contents)?;
+        }
+        if let ProviderAccountLocator::Codex { codex_home } = &locator {
+            enforce_codex_file_credentials(codex_home)?;
+        }
+
+        let mut document = self.write_document()?;
+        if let Some(existing) = document.profiles.iter_mut().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == provider
+                && stored.public.profile_id == profile_id
+        }) {
+            existing.public.label = materialization.profile.label.clone();
+            existing.public.origin = materialization.profile.origin;
+            existing.public.is_default = materialization.profile.is_default;
+            existing.public.auth_state = ProviderAccountAuthState::Unknown;
+            existing.public.identity_summary = None;
+            existing.public.plan = None;
+            existing.public.detected_provider_version = None;
+            existing.public.last_validated_at_ms = None;
+            existing.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
+            existing.locator = locator;
+            existing.materialized_replica = true;
+            let result = existing.public.clone();
+            self.persist_locked(&document)?;
+            return Ok(result);
+        }
+        let public = new_public_profile(
+            owner_user_id,
+            provider,
+            profile_id,
+            &materialization.profile.label,
+            materialization.profile.origin,
+            materialization.profile.is_default,
+        );
+        document.profiles.push(StoredProviderAccountProfile {
+            public: public.clone(),
+            locator,
+            materialized_replica: true,
+        });
+        self.persist_locked(&document)?;
+        Ok(public)
+    }
+
     fn read_document(
         &self,
     ) -> Result<std::sync::RwLockReadGuard<'_, RegistryDocument>, DaemonError> {
@@ -768,6 +1011,7 @@ fn new_public_profile(
         detected_provider_version: None,
         last_validated_at_ms: None,
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
+        materializations: Vec::new(),
     }
 }
 
@@ -865,6 +1109,10 @@ fn safe_path_component(value: &str) -> String {
     }
 }
 
+pub(crate) fn account_owner_path_component(owner_user_id: &str) -> String {
+    safe_path_component(owner_user_id)
+}
+
 fn resolve_stored_profile<'a>(
     document: &'a RegistryDocument,
     owner_user_id: &str,
@@ -932,9 +1180,224 @@ fn create_private_roots(locator: &ProviderAccountLocator) -> Result<(), DaemonEr
     Ok(())
 }
 
+fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
+    let profile_id = profile_id.trim();
+    if profile_id.is_empty()
+        || profile_id != safe_path_component(profile_id)
+        || profile_id.chars().count() > 120
+    {
+        return Err(registry_error(
+            "validate account profile",
+            "profile id is not a safe stable identifier",
+        ));
+    }
+    Ok(profile_id)
+}
+
+fn collect_optional_file(
+    root: &Path,
+    source_relative_path: &str,
+    transfer_relative_path: &str,
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    let source = root.join(source_relative_path);
+    let metadata = match fs::symlink_metadata(&source) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(registry_error("export account profile", error.to_string())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(registry_error(
+            "export account profile",
+            format!("credential file `{source_relative_path}` must be a regular file"),
+        ));
+    }
+    let contents = fs::read(&source).map_err(registry_io("export account profile"))?;
+    let existing_bytes = files
+        .iter()
+        .map(|file| file.contents_base64.len().saturating_mul(3) / 4)
+        .sum::<usize>();
+    if existing_bytes.saturating_add(contents.len()) > MAX_MATERIALIZATION_BYTES {
+        return Err(registry_error(
+            "export account profile",
+            "provider account materialization exceeds the 64 MiB safety limit",
+        ));
+    }
+    files.push(ProviderAccountMaterializationFile {
+        relative_path: transfer_relative_path.to_string(),
+        contents_base64: base64::engine::general_purpose::STANDARD.encode(contents),
+    });
+    Ok(())
+}
+
+fn collect_optional_tree(
+    root: &Path,
+    transfer_prefix: &str,
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    let metadata = match fs::symlink_metadata(root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(registry_error("export account profile", error.to_string())),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(registry_error(
+            "export account profile",
+            "provider account materialization root must be a regular directory",
+        ));
+    }
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let mut entries = fs::read_dir(&directory)
+            .map_err(registry_io("export account profile"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(registry_io("export account profile"))?;
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            let path = entry.path();
+            let metadata =
+                fs::symlink_metadata(&path).map_err(registry_io("export account profile"))?;
+            if metadata.file_type().is_symlink() {
+                return Err(registry_error(
+                    "export account profile",
+                    "symlinks are not allowed in transferred provider profile data",
+                ));
+            }
+            if metadata.is_dir() {
+                pending.push(path);
+                continue;
+            }
+            if !metadata.is_file() {
+                continue;
+            }
+            let relative = path
+                .strip_prefix(root)
+                .map_err(|error| registry_error("export account profile", error.to_string()))?;
+            let transfer_relative = Path::new(transfer_prefix).join(relative);
+            collect_optional_file(
+                root,
+                &relative.to_string_lossy(),
+                &transfer_relative.to_string_lossy(),
+                files,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn collect_default_claude_keychain_credentials(
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    let output = std::process::Command::new("security")
+        .args([
+            "find-generic-password",
+            "-s",
+            "Claude Code-credentials",
+            "-w",
+        ])
+        .output()
+        .map_err(registry_io("export Claude Keychain credentials"))?;
+    if !output.status.success() || output.stdout.is_empty() {
+        return Ok(());
+    }
+    if output.stdout.len() > MAX_MATERIALIZATION_BYTES {
+        return Err(registry_error(
+            "export Claude Keychain credentials",
+            "Claude Keychain credential exceeds the materialization safety limit",
+        ));
+    }
+    files.push(ProviderAccountMaterializationFile {
+        relative_path: ".credentials.json".to_string(),
+        contents_base64: base64::engine::general_purpose::STANDARD.encode(output.stdout),
+    });
+    Ok(())
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_default_claude_keychain_credentials(
+    _files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+fn materialization_destination(
+    locator: &ProviderAccountLocator,
+    relative_path: &str,
+) -> Result<PathBuf, DaemonError> {
+    let relative = Path::new(relative_path);
+    if relative.is_absolute()
+        || relative
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(registry_error(
+            "materialize account profile",
+            "provider account materialization contains an unsafe relative path",
+        ));
+    }
+    match locator {
+        ProviderAccountLocator::Codex { codex_home } => Ok(codex_home.join(relative)),
+        ProviderAccountLocator::Claude { claude_config_dir } => {
+            Ok(claude_config_dir.join(relative))
+        }
+        ProviderAccountLocator::Opencode {
+            xdg_data_home,
+            xdg_config_home,
+            xdg_state_home,
+            opencode_config_dir,
+            ..
+        } => {
+            let mut components = relative.components();
+            let root = match components
+                .next()
+                .and_then(|component| component.as_os_str().to_str())
+            {
+                Some("data") => xdg_data_home,
+                Some("config") => xdg_config_home,
+                Some("state") => xdg_state_home,
+                Some("opencode-config") => opencode_config_dir,
+                _ => {
+                    return Err(registry_error(
+                        "materialize account profile",
+                        "OpenCode materialization path has an unknown root",
+                    ))
+                }
+            };
+            Ok(root.join(components.as_path()))
+        }
+    }
+}
+
 fn enforce_codex_file_credentials(codex_home: &Path) -> Result<(), DaemonError> {
     let config_path = codex_home.join("config.toml");
-    let config = "cli_auth_credentials_store = \"file\"\n";
+    let existing = match fs::read_to_string(&config_path) {
+        Ok(existing) => existing,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => {
+            return Err(registry_error(
+                "configure Codex account profile",
+                error.to_string(),
+            ))
+        }
+    };
+    let mut replaced = false;
+    let mut lines = existing
+        .lines()
+        .map(|line| {
+            if line.trim_start().starts_with("cli_auth_credentials_store") {
+                replaced = true;
+                "cli_auth_credentials_store = \"file\"".to_string()
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>();
+    if !replaced {
+        lines.insert(0, "cli_auth_credentials_store = \"file\"".to_string());
+    }
+    let mut config = lines.join("\n");
+    config.push('\n');
     atomic_write_private(&config_path, config.as_bytes())
 }
 
@@ -1112,6 +1575,69 @@ mod tests {
         assert!(projected.get("locator").is_none());
         assert!(!projected.to_string().contains("CODEX_HOME"));
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn codex_file_mode_preserves_existing_configuration() {
+        let (root, registry) = fixture();
+        let profile = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        let codex_home = Path::new(&environment["CODEX_HOME"]);
+        fs::write(
+            codex_home.join("config.toml"),
+            "model = \"gpt-5.5\"\ncli_auth_credentials_store = \"keyring\"\n",
+        )
+        .unwrap();
+
+        enforce_codex_file_credentials(codex_home).unwrap();
+
+        let config = fs::read_to_string(codex_home.join("config.toml")).unwrap();
+        assert!(config.contains("model = \"gpt-5.5\""));
+        assert!(config.contains("cli_auth_credentials_store = \"file\""));
+        assert!(!config.contains("keyring"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn account_materialization_is_profile_specific_and_secret_debug_is_redacted() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        fs::write(
+            Path::new(&source_environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"token":"never-log-this"}"#,
+        )
+        .unwrap();
+        let materialization = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        assert!(!format!("{materialization:?}").contains("never-log-this"));
+
+        let (target_root, target) = fixture();
+        let materialized = target
+            .materialize_replica("owner-a", &materialization)
+            .unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        assert_ne!(
+            source_environment["CODEX_HOME"],
+            target_environment["CODEX_HOME"]
+        );
+        assert_eq!(
+            fs::read_to_string(Path::new(&target_environment["CODEX_HOME"]).join("auth.json"))
+                .unwrap(),
+            r#"{"token":"never-log-this"}"#
+        );
+        assert!(target
+            .materialize_replica("owner-b", &materialization)
+            .is_err());
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
     }
 
     #[test]

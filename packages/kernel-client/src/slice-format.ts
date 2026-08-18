@@ -2,6 +2,7 @@ export type SliceAuthProviderSeparator = ":" | " " | "="
 
 export type SliceProviderAuthLike = {
   readonly provider: string
+  readonly account_profile?: string | null
   readonly state: string
   readonly auth_type?: string | null
   readonly account_id?: string | null
@@ -9,7 +10,6 @@ export type SliceProviderAuthLike = {
   readonly organization_id?: string | null
   readonly organization_name?: string | null
   readonly subscription_type?: string | null
-  readonly alias?: string | null
 }
 
 export type SliceRecordLike = {
@@ -121,7 +121,7 @@ export function formatProviderAccountForBackend(
   }
   const account = (accounts ?? []).find((entry) => sliceProviderMatches(entry.provider, providerId))
   if (account) {
-    return account.alias?.trim()
+    return account.account_profile?.trim()
       || account.email?.trim()
       || shortAccountId(account.account_id)
       || fallbackSliceAuthIdentity(account.state)
@@ -166,8 +166,9 @@ export function formatSliceAuthIdentity(entry: SliceProviderAuthLike): string {
     || entry.account_id
     || entry.auth_type
     || fallbackSliceAuthIdentity(entry.state)
-  if (entry.alias && entry.alias !== identity) {
-    return `${entry.alias} (${identity})`
+  const profile = entry.account_profile?.trim()
+  if (profile && profile !== identity) {
+    return `${profile} (${identity})`
   }
   return identity
 }

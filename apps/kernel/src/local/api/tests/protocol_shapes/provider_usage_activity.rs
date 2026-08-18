@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let request = LocalDaemonRequest::CreateProviderAccountProfile(
         crate::local::api::CreateProviderAccountProfileRequest {
@@ -47,6 +47,17 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
                 source: "codex_app_server".to_string(),
                 management_url: Some("https://chatgpt.com/codex/settings/usage".to_string()),
             },
+            materializations: vec![
+                crate::account_profile::ProviderAccountMaterializationStatus {
+                    target_kind:
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+                    target_ref: "slice-1".to_string(),
+                    state:
+                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                    observed_at_ms: 1_235,
+                    last_error: None,
+                },
+            ],
         },
     };
 
@@ -69,13 +80,13 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "e82346cd3c46552403aafcbbb6c00ace8700683295c4a40128910bc50e95c696"
+        "3f3645ac565c990dc83c8bae1a024ed3cd5c501da5858f6570d9768f485ae720"
     );
 }
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -155,7 +166,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -767,7 +778,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -822,7 +833,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -872,7 +883,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -929,7 +940,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 266);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

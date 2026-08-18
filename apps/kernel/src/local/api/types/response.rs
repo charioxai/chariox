@@ -140,7 +140,6 @@ pub enum LocalDaemonResponse {
     SliceProviderAuthImported { slice: SliceRecord, provider: String, status: String, },
     SliceProviderAuthRemoved { slice: SliceRecord, provider: String, status: String, },
     SliceProviderLoginStarted { slice: SliceRecord, login: SliceProviderLoginStart, },
-    SliceProviderAuthAliasSet { slice: SliceRecord, provider: String, alias: Option<String>, },
     SliceDisplayEndpoint { endpoint: SliceDisplayEndpoint, },
     SliceLogs { slice: SliceRecord, entries: Vec<SliceLogEntry>, },
     SliceStateSaved { slice: SliceRecord, state: crate::slice::SliceSavedStateRecord, },

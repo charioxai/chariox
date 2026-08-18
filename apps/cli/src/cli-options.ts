@@ -266,7 +266,6 @@ function printUsage() {
     "  /slice auth import    copy this machine's provider credentials into the slice",
     "  /slice auth remove    remove slice-local provider credentials and account summary",
     "  /slice auth login     start provider login inside the slice for a different account",
-    "  /slice auth alias     set a Chariox display alias for the slice account",
     "  /config show          show the Chariox user config",
     "  /config keys          list settable config keys",
     "  /config schema        show config key metadata",

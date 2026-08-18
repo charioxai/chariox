@@ -324,6 +324,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
         display_url: None,
         provider_auth: vec![crate::slice_provider_auth::SliceProviderAuthSummary {
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
             state: crate::slice_provider_auth::SliceProviderAuthState::Authenticated,
             auth_type: Some("forged".to_string()),
             account_id: Some("forged-account".to_string()),
@@ -331,7 +332,6 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: Some("forged".to_string()),
             source: "client".to_string(),
         }],
         from_saved_state: None,
@@ -414,6 +414,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         LocalDaemonRequest::ImportSliceProviderAuth(crate::local::ImportSliceProviderAuthRequest {
             slice_ref: slice.id.clone(),
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
         });
     let import_command =
         KernelCommand::from_local_request("cmd-import-ssh-slice-auth", None, None, &import_request);
@@ -453,6 +454,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         LocalDaemonRequest::RemoveSliceProviderAuth(crate::local::RemoveSliceProviderAuthRequest {
             slice_ref: slice.id.clone(),
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
         });
     let remove_command =
         KernelCommand::from_local_request("cmd-remove-ssh-slice-auth", None, None, &remove_request);

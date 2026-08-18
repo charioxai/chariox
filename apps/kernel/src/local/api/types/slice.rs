@@ -100,26 +100,21 @@ pub struct ListSliceAuditRequest {
 pub struct ImportSliceProviderAuthRequest {
     pub slice_ref: String,
     pub provider: String,
+    pub account_profile: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RemoveSliceProviderAuthRequest {
     pub slice_ref: String,
     pub provider: String,
+    pub account_profile: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartSliceProviderLoginRequest {
     pub slice_ref: String,
     pub provider: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SetSliceProviderAuthAliasRequest {
-    pub slice_ref: String,
-    pub provider: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
+    pub account_profile: String,
 }
 
 fn default_slice_os() -> String {

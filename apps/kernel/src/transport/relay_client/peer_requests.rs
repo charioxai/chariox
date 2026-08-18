@@ -835,6 +835,26 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::EnsureRemoteProviderAccount {
+            context,
+            materialization,
+        } => {
+            let ensured = router
+                .relay_ensure_remote_provider_account(context, materialization)
+                .await;
+            match ensured {
+                Ok(profile) => RelayPeerResponse::RemoteProviderAccountEnsured {
+                    provider: profile.provider,
+                    account_profile: profile.profile_id,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::CheckRemoteMcpAvailability {
             context,
             required_mcps,

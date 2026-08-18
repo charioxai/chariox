@@ -15,6 +15,7 @@ mod native_provider;
 mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;
+mod provider_account;
 mod provider_run;
 mod relay_context;
 mod skill_sync;

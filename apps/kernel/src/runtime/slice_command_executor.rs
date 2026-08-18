@@ -5,8 +5,7 @@ mod provider_auth;
 use crate::error::DaemonError;
 use crate::local::{
     ImportSliceProviderAuthRequest, LocalDaemonRequest, LocalDaemonResponse,
-    RemoveSliceProviderAuthRequest, SetSliceProviderAuthAliasRequest,
-    StartSliceProviderLoginRequest,
+    RemoveSliceProviderAuthRequest, StartSliceProviderLoginRequest,
 };
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -23,7 +22,7 @@ use lifecycle::{
     execute_save_slice_state_request, execute_start_slice_request, execute_stop_slice_request,
 };
 use provider_auth::{
-    merge_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
+    merge_profile_scoped_provider_auth, normalized_slice_provider, scoped_provider_auth_summaries,
     slice_auth_summary_matches_provider,
 };
 
@@ -31,6 +30,7 @@ pub(crate) async fn execute_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
+    owner_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -54,19 +54,31 @@ pub(crate) async fn execute_slice_request(
                 .await
         }
         LocalDaemonRequest::ImportSliceProviderAuth(request) => {
-            execute_import_slice_provider_auth_request(runtime_state, config_projection, request)
-                .await
+            execute_import_slice_provider_auth_request(
+                runtime_state,
+                config_projection,
+                owner_user_id,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::RemoveSliceProviderAuth(request) => {
-            execute_remove_slice_provider_auth_request(runtime_state, config_projection, request)
-                .await
+            execute_remove_slice_provider_auth_request(
+                runtime_state,
+                config_projection,
+                owner_user_id,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::StartSliceProviderLogin(request) => {
-            execute_start_slice_provider_login_request(runtime_state, config_projection, request)
-                .await
-        }
-        LocalDaemonRequest::SetSliceProviderAuthAlias(request) => {
-            execute_set_slice_provider_auth_alias_request(runtime_state, request).await
+            execute_start_slice_provider_login_request(
+                runtime_state,
+                config_projection,
+                owner_user_id,
+                request,
+            )
+            .await
         }
         LocalDaemonRequest::GetSliceDisplayEndpoint(request) => {
             execute_get_slice_display_endpoint_request(
@@ -105,12 +117,19 @@ pub(crate) async fn execute_slice_request(
 pub(crate) async fn execute_import_slice_provider_auth_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    owner_user_id: &str,
     request: ImportSliceProviderAuthRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.import")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     let provider = normalized_slice_provider(&request.provider)?;
+    let provider_account = resolve_local_docker_provider_account(
+        runtime_state,
+        owner_user_id,
+        &provider,
+        &request.account_profile,
+    )?;
     runtime_state.record_slice_audit_event(
         &slice,
         "auth.import",
@@ -123,12 +142,14 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
         let resolved_slice = slice.clone();
         let provider_for_action = provider.clone();
+        let provider_account_for_action = provider_account.clone();
         let import_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
                 crate::slice::LocalDockerSliceAction::ImportProviderAuth,
                 None,
                 Some(&provider_for_action),
+                Some(&provider_account_for_action),
                 &docker_options,
             )
         })
@@ -147,8 +168,11 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
             );
             return Err(error);
         }
-        let verified_provider_auth =
-            crate::slice::inspect_local_docker_slice_provider_auth(&slice, &provider)?;
+        let verified_provider_auth = crate::slice::inspect_local_docker_slice_provider_auth(
+            &slice,
+            &provider,
+            Some(&provider_account),
+        )?;
         if provider != "all" && verified_provider_auth.is_empty() {
             let message = format!(
                 "{provider} credentials were not found in slice `{}` after import",
@@ -169,7 +193,15 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
         let imported_provider_auth = std::env::var_os("HOME")
             .map(std::path::PathBuf::from)
             .map(|home| crate::slice_provider_auth::inspect_home_provider_auth(&home))
-            .map(|summaries| scoped_provider_auth_summaries(&provider, summaries))
+            .map(|summaries| {
+                scoped_provider_auth_summaries(&provider, summaries)
+                    .into_iter()
+                    .map(|mut summary| {
+                        summary.account_profile = provider_account.profile_id.clone();
+                        summary
+                    })
+                    .collect::<Vec<_>>()
+            })
             .unwrap_or_default();
         let imported_provider_auth = crate::slice_provider_auth::merge_provider_auth_summaries(
             imported_provider_auth
@@ -177,8 +209,12 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
                 .chain(verified_provider_auth)
                 .collect(),
         );
-        let provider_auth =
-            merge_scoped_provider_auth(slice.provider_auth, &provider, imported_provider_auth);
+        let provider_auth = merge_profile_scoped_provider_auth(
+            slice.provider_auth,
+            &provider,
+            &provider_account.profile_id,
+            imported_provider_auth,
+        );
         let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
         runtime_state.record_slice_audit_event(
             &slice,
@@ -213,12 +249,19 @@ pub(crate) async fn execute_import_slice_provider_auth_request(
 pub(crate) async fn execute_remove_slice_provider_auth_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    owner_user_id: &str,
     request: RemoveSliceProviderAuthRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation =
         runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.remove")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
     let provider = normalized_slice_provider(&request.provider)?;
+    let provider_account = resolve_local_docker_provider_account(
+        runtime_state,
+        owner_user_id,
+        &provider,
+        &request.account_profile,
+    )?;
     runtime_state.record_slice_audit_event(
         &slice,
         "auth.remove",
@@ -231,12 +274,14 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
             crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
         let resolved_slice = slice.clone();
         let provider_for_action = provider.clone();
+        let provider_account_for_action = provider_account.clone();
         let remove_result = tokio::task::spawn_blocking(move || {
             crate::slice::run_local_docker_slice_action(
                 &resolved_slice,
                 crate::slice::LocalDockerSliceAction::RemoveProviderAuth,
                 None,
                 Some(&provider_for_action),
+                Some(&provider_account_for_action),
                 &docker_options,
             )
         })
@@ -258,7 +303,10 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
         let provider_auth = slice
             .provider_auth
             .into_iter()
-            .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, &provider))
+            .filter(|summary| {
+                !slice_auth_summary_matches_provider(&summary.provider, &provider)
+                    || summary.account_profile != provider_account.profile_id
+            })
             .collect::<Vec<_>>();
         let slice = runtime_state.set_slice_provider_auth(&request.slice_ref, provider_auth)?;
         runtime_state.record_slice_audit_event(
@@ -294,10 +342,17 @@ pub(crate) async fn execute_remove_slice_provider_auth_request(
 pub(crate) async fn execute_start_slice_provider_login_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    owner_user_id: &str,
     request: StartSliceProviderLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.auth.login")?;
     let slice = runtime_state.resolve_slice(&request.slice_ref)?;
+    let provider_account = resolve_local_docker_provider_account(
+        runtime_state,
+        owner_user_id,
+        &request.provider,
+        &request.account_profile,
+    )?;
     runtime_state.record_slice_audit_event(
         &slice,
         "auth.login",
@@ -326,10 +381,12 @@ pub(crate) async fn execute_start_slice_provider_login_request(
         crate::slice::LocalDockerSliceOptions::from_config(&config_projection.snapshot());
     let resolved_slice = slice.clone();
     let provider = request.provider.clone();
+    let provider_account_for_login = provider_account.clone();
     let login_result = tokio::task::spawn_blocking(move || {
         crate::slice::start_local_docker_slice_provider_login(
             &resolved_slice,
             &provider,
+            &provider_account_for_login,
             &docker_options,
         )
     })
@@ -361,26 +418,18 @@ pub(crate) async fn execute_start_slice_provider_login_request(
     Ok(LocalDaemonResponse::SliceProviderLoginStarted { slice, login })
 }
 
-pub(crate) async fn execute_set_slice_provider_auth_alias_request(
+fn resolve_local_docker_provider_account(
     runtime_state: &KernelRuntimeState,
-    request: SetSliceProviderAuthAliasRequest,
-) -> Result<LocalDaemonResponse, DaemonError> {
-    let slice = runtime_state.set_slice_provider_auth_alias(
-        &request.slice_ref,
-        &request.provider,
-        request.alias.as_deref(),
-    )?;
-    runtime_state.record_slice_audit_event(
-        &slice,
-        "auth.alias",
-        "completed",
-        Some(&request.provider),
-        None,
-    )?;
-    Ok(LocalDaemonResponse::SliceProviderAuthAliasSet {
-        slice,
-        provider: request.provider,
-        alias: request.alias,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Result<crate::slice::LocalDockerProviderAccount, DaemonError> {
+    let registry = runtime_state.provider_account_profile_registry();
+    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    Ok(crate::slice::LocalDockerProviderAccount {
+        owner_path_component: crate::account_profile::account_owner_path_component(owner_user_id),
+        profile_id: profile.profile_id.clone(),
+        environment: registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?,
     })
 }
 
@@ -388,13 +437,10 @@ pub(crate) async fn execute_set_slice_provider_auth_alias_request(
 mod tests {
     use super::*;
 
-    fn auth(
-        provider: &str,
-        account: &str,
-        alias: Option<&str>,
-    ) -> crate::slice_provider_auth::SliceProviderAuthSummary {
+    fn auth(provider: &str, account: &str) -> crate::slice_provider_auth::SliceProviderAuthSummary {
         crate::slice_provider_auth::SliceProviderAuthSummary {
             provider: provider.to_string(),
+            account_profile: "default".to_string(),
             state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
             auth_type: Some("test".to_string()),
             account_id: Some(account.to_string()),
@@ -402,7 +448,6 @@ mod tests {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: alias.map(str::to_string),
             source: "test".to_string(),
         }
     }
@@ -410,10 +455,10 @@ mod tests {
     #[test]
     fn scoped_provider_auth_import_filters_requested_provider() {
         let summaries = vec![
-            auth("codex", "codex-1", None),
-            auth("opencode:openai", "openai-1", None),
-            auth("opencode:opencode", "opencode-1", None),
-            auth("claude", "claude-1", None),
+            auth("codex", "codex-1"),
+            auth("opencode:openai", "openai-1"),
+            auth("opencode:opencode", "opencode-1"),
+            auth("claude", "claude-1"),
         ];
 
         let codex = scoped_provider_auth_summaries("codex", summaries.clone());
@@ -437,42 +482,21 @@ mod tests {
         let all = scoped_provider_auth_summaries(
             "all",
             vec![
-                auth("codex", "codex-1", None),
-                auth("opencode:openai", "openai-1", None),
-                auth("claude", "claude-1", None),
+                auth("codex", "codex-1"),
+                auth("opencode:openai", "openai-1"),
+                auth("claude", "claude-1"),
             ],
         );
         assert_eq!(all.len(), 3);
     }
 
     #[test]
-    fn scoped_provider_auth_merge_preserves_other_providers_and_aliases() {
-        let existing = vec![
-            auth("codex", "old-codex", Some("Work")),
-            auth("claude", "claude-1", Some("Claude")),
-        ];
-        let imported = vec![auth("codex", "new-codex", None)];
-
-        let merged = merge_scoped_provider_auth(existing, "codex", imported);
-
-        assert_eq!(merged.len(), 2);
-        let codex = merged.iter().find(|auth| auth.provider == "codex").unwrap();
-        let claude = merged
-            .iter()
-            .find(|auth| auth.provider == "claude")
-            .unwrap();
-        assert_eq!(codex.account_id.as_deref(), Some("new-codex"));
-        assert_eq!(codex.alias.as_deref(), Some("Work"));
-        assert_eq!(claude.account_id.as_deref(), Some("claude-1"));
-    }
-
-    #[test]
     fn scoped_provider_auth_remove_matches_provider_families() {
         let existing = vec![
-            auth("codex", "codex-1", None),
-            auth("opencode:openai", "openai-1", None),
-            auth("opencode:opencode", "opencode-1", None),
-            auth("claude", "claude-1", None),
+            auth("codex", "codex-1"),
+            auth("opencode:openai", "openai-1"),
+            auth("opencode:opencode", "opencode-1"),
+            auth("claude", "claude-1"),
         ];
 
         let remaining = existing

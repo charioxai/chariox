@@ -168,7 +168,6 @@ impl CommandRouter {
             | LocalDaemonRequest::ImportSliceProviderAuth(_)
             | LocalDaemonRequest::RemoveSliceProviderAuth(_)
             | LocalDaemonRequest::StartSliceProviderLogin(_)
-            | LocalDaemonRequest::SetSliceProviderAuthAlias(_)
             | LocalDaemonRequest::GetSliceDisplayEndpoint(_)
             | LocalDaemonRequest::GetSliceLogs(_)
             | LocalDaemonRequest::ListSliceAudit(_)
@@ -176,10 +175,12 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)) => {
+                let caller_user_id = command_caller_user_id(&command);
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
+                    &caller_user_id,
                     request,
                 )
                 .await

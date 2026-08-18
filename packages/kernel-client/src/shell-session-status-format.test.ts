@@ -82,7 +82,7 @@ test("formatSessionRuntimeStatus renders home authority, placement, sync, and re
       provider_auth: [{
         provider: "opencode",
         state: "authenticated",
-        alias: "daily",
+        account_profile: "daily",
         email: "daily@example.com",
         source: "test",
       }],

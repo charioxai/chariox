@@ -79,6 +79,9 @@ SLICE_OPENCODE_PROVIDER="${CHARIOX_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${CHARIOX_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
 SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
+SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
+SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
+SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -90,6 +93,10 @@ fail() {
   printf '[slice-linux] error: %s\n' "$*" >&2
   exit 1
 }
+
+if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
+  fail "slice account owner/profile contains an unsafe path component"
+fi
 
 run_with_timeout() {
   local seconds="$1"
@@ -721,50 +728,49 @@ remove_provider_auth() {
 }
 
 import_codex_auth() {
-  copy_provider_auth_file "$SLICE_CODEX_AUTH" "/home/slice/.codex/auth.json" "Codex"
+  copy_provider_auth_file "$SLICE_CODEX_AUTH" "$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json" "Codex"
 }
 
 remove_codex_auth() {
-  exec_slice bash -lc "rm -f /home/slice/.codex/auth.json"
+  exec_slice bash -lc "rm -f '$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex/auth.json'"
   log "removed Codex auth from slice"
 }
 
 import_opencode_auth() {
-  copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "/home/slice/.local/share/opencode/auth.json" "OpenCode"
+  copy_provider_auth_file "$SLICE_OPENCODE_AUTH" "$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data/opencode/auth.json" "OpenCode"
 }
 
 remove_opencode_auth() {
-  exec_slice bash -lc "rm -f /home/slice/.local/share/opencode/auth.json"
+  exec_slice bash -lc "rm -rf '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data/opencode' '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config/opencode' '$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/state/opencode'"
   log "removed OpenCode auth from slice"
 }
 
 import_claude_auth() {
-  copy_provider_auth_file "$SLICE_CLAUDE_JSON" "/home/slice/.claude.json" "Claude metadata"
-  copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "/home/slice/.claude/settings.json" "Claude settings"
-  copy_provider_auth_file "$SLICE_CLAUDE_STATS" "/home/slice/.claude/stats-cache.json" "Claude stats"
+  local claude_root="$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude"
+  copy_provider_auth_file "$SLICE_CLAUDE_SETTINGS" "$claude_root/settings.json" "Claude settings"
+  copy_provider_auth_file "$SLICE_CLAUDE_STATS" "$claude_root/stats-cache.json" "Claude stats"
   local imported_credentials=0
-  if command -v security >/dev/null 2>&1; then
+  if [[ "$SLICE_ACCOUNT_PROFILE" == "default" ]] && command -v security >/dev/null 2>&1; then
     local credentials_tmp
     credentials_tmp="$(mktemp "${TMPDIR:-/tmp}/chariox-claude-credentials.XXXXXX")"
     chmod 600 "$credentials_tmp"
     if security find-generic-password -s "$SLICE_CLAUDE_KEYCHAIN_SERVICE" -w >"$credentials_tmp" 2>/dev/null; then
-      copy_provider_auth_file "$credentials_tmp" "/home/slice/.claude/.credentials.json" "Claude Keychain credentials"
+      copy_provider_auth_file "$credentials_tmp" "$claude_root/.credentials.json" "Claude Keychain credentials"
       imported_credentials=1
     fi
     rm -f "$credentials_tmp"
   fi
   if [[ "$imported_credentials" != "1" && -f "$SLICE_CLAUDE_CREDENTIALS" ]]; then
-    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "/home/slice/.claude/.credentials.json" "Claude credentials"
+    copy_provider_auth_file "$SLICE_CLAUDE_CREDENTIALS" "$claude_root/.credentials.json" "Claude credentials"
     imported_credentials=1
   fi
   if [[ "$imported_credentials" != "1" ]]; then
     log "Claude credentials not found at $SLICE_CLAUDE_CREDENTIALS; skipping"
   fi
-  trust_claude_slice_workspace
 }
 
 remove_claude_auth() {
-  exec_slice bash -lc "rm -f /home/slice/.claude.json /home/slice/.claude/settings.json /home/slice/.claude/stats-cache.json /home/slice/.claude/.credentials.json"
+  exec_slice bash -lc "rm -rf '$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude'"
   log "removed Claude auth from slice"
 }
 
@@ -842,13 +848,13 @@ print_provider_auth_status() {
 provider_login_command() {
   case "$SLICE_LOGIN_PROVIDER" in
     codex)
-      printf '%s\n' "codex login --device-auth"
+      printf '%s\n' "CODEX_HOME='$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex' codex login --device-auth"
       ;;
     opencode|opencode:openai)
-      printf '%s\n' "opencode providers login -p openai -m '$SLICE_OPENCODE_LOGIN_METHOD'"
+      printf '%s\n' "XDG_DATA_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data' XDG_CONFIG_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config' XDG_STATE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/state' XDG_CACHE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/cache' OPENCODE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config/opencode' opencode providers login -p openai -m '$SLICE_OPENCODE_LOGIN_METHOD'"
       ;;
     claude|claude:claudeai)
-      printf '%s\n' "claude auth login --claudeai && node -e 'const fs=require(\"fs\");const file=\"/home/slice/.claude.json\";let data={};try{data=JSON.parse(fs.readFileSync(file,\"utf8\"))}catch{}data.hasCompletedOnboarding=true;fs.writeFileSync(file,JSON.stringify(data,null,2));fs.chmodSync(file,0o600)'"
+      printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login --claudeai"
       ;;
     github)
       printf '%s\n' "gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"

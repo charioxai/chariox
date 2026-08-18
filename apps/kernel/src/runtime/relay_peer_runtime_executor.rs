@@ -294,6 +294,16 @@ pub(crate) async fn ensure_relay_remote_skill_packages(
         .await
 }
 
+pub(crate) async fn ensure_relay_remote_provider_account(
+    runtime_state: &KernelRuntimeState,
+    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+    materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    runtime_state
+        .ensure_relay_remote_provider_account(context, materialization)
+        .await
+}
+
 pub(crate) async fn check_relay_remote_mcp_availability(
     runtime_state: &KernelRuntimeState,
     context: RemoteMcpCheckContext,

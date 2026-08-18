@@ -152,7 +152,7 @@ Behavior:
 passed locally. The drill covered headed slice creation and display endpoint
 projection, provider auth import summaries for Codex/OpenCode/Claude, Codex
 device-login start, OpenCode auth removal while preserving other providers,
-TUI `/slice auth alias` and status rendering, waiting-room delete confirmation,
+TUI provider-account profile status rendering, waiting-room delete confirmation,
 independent provider accounts across two slices, worktree-scoped session and
 agent slice rejection, reuse by multiple agents and sessions, attached-slice
 delete blocking, and cleanup of the drill containers and temp root.

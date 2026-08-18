@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 16 adds the independent `event_context_enabled` capability to
-/// remote workflow turn contexts. Older workers default it off.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 17;
+/// Version 18 adds profile-specific provider-account materialization over the
+/// existing encrypted home-worker peer channel.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 18;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -42,6 +42,14 @@ pub struct RemoteSkillSyncContext {
     pub home_session_id: String,
     pub home_agent_id: String,
     pub leased_agent_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteProviderAccountSyncContext {
+    pub home_kernel_id: String,
+    pub home_session_id: String,
+    pub home_agent_id: String,
+    pub execution_lease_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -430,6 +438,10 @@ pub enum RelayPeerRequest {
         context: RemoteSkillSyncContext,
         packages: Vec<CharioxSkillPackage>,
     },
+    EnsureRemoteProviderAccount {
+        context: RemoteProviderAccountSyncContext,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    },
     CheckRemoteMcpAvailability {
         context: RemoteMcpCheckContext,
         required_mcps: Vec<RequiredRemoteMcp>,
@@ -560,6 +572,10 @@ pub enum RelayPeerResponse {
     },
     RemoteSkillPackagesEnsured {
         materialized: Vec<RemoteSkillMaterialization>,
+    },
+    RemoteProviderAccountEnsured {
+        provider: String,
+        account_profile: String,
     },
     RemoteMcpAvailabilityChecked {
         results: Vec<RemoteMcpAvailability>,

@@ -157,7 +157,6 @@ import {
   removeSliceProviderAuth,
   resetSliceState,
   saveSliceState,
-  setSliceProviderAuthAlias,
   startSliceProviderLogin,
   startSlice,
   stopSlice,
@@ -541,23 +540,18 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return slice
     },
-    importSliceProviderAuth: async (sliceRef, provider) => {
-      const result = await importSliceProviderAuth(client, sliceRef, provider)
+    importSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await importSliceProviderAuth(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },
-    removeSliceProviderAuth: async (sliceRef, provider) => {
-      const result = await removeSliceProviderAuth(client, sliceRef, provider)
+    removeSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await removeSliceProviderAuth(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },
-    startSliceProviderLogin: async (sliceRef, provider) => {
-      const result = await startSliceProviderLogin(client, sliceRef, provider)
-      setSlicesState(await listSlices(client))
-      return result
-    },
-    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
-      const result = await setSliceProviderAuthAlias(client, sliceRef, provider, alias)
+    startSliceProviderLogin: async (sliceRef, provider, accountProfile) => {
+      const result = await startSliceProviderLogin(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },

@@ -322,6 +322,19 @@ impl CommandRouter {
         .await
     }
 
+    pub(crate) async fn relay_ensure_remote_provider_account(
+        &self,
+        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+        relay_peer_runtime::ensure_relay_remote_provider_account(
+            &self.runtime_state,
+            context,
+            materialization,
+        )
+        .await
+    }
+
     pub(crate) async fn relay_check_remote_mcp_availability(
         &self,
         context: crate::transport::relay_peer::RemoteMcpCheckContext,
