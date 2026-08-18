@@ -65,7 +65,9 @@ struct WorkflowPublicationState {
     workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_event_bindings: Vec<WorkflowEventBinding>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // Delivery receipts are normalized in durable_event_delivery_receipts. Keep legacy
+    // deserialization for migration, but never duplicate the receipt cache into session payloads.
+    #[serde(default, skip_serializing)]
     workflow_event_delivery_receipts: BTreeMap<String, WorkflowEventDeliveryReceipt>,
 }
 

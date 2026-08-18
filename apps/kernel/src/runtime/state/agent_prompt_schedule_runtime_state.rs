@@ -197,11 +197,12 @@ impl KernelRuntimeOwnedState {
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         let session = self.session_snapshot(session_id)?;
+        let durable_session = session.durable_runtime_snapshot();
         self.durable_state_store.append_event(
             "session.updated",
             Some(session_id.to_string()),
             serde_json::json!({
-                "session": &session,
+                "session": &durable_session,
                 "reason": reason,
             }),
         )?;

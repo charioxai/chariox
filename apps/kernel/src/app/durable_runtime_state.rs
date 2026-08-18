@@ -183,7 +183,7 @@ impl RestoredExternalProviderAttachmentState {
                     self.restore_agent_if_session_live(agent);
                 }
             }
-            "session.updated" => {
+            "session.updated" | "workflow.runtime.updated" => {
                 if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
                     event,
                     "session",
@@ -298,7 +298,7 @@ impl DaemonApp {
         loop {
             let events = self
                 .durable_state
-                .load_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
+                .load_restore_events_after_batch(replay_cursor, DURABLE_EVENT_REPLAY_BATCH_SIZE)?;
             if events.is_empty() {
                 break;
             }
@@ -311,6 +311,7 @@ impl DaemonApp {
         let replay_ms = replay_started.elapsed().as_millis();
         diagnostics.log_summary();
         let reconciliation_started = Instant::now();
+        self.restore_normalized_workflow_runtime_state()?;
         self.reconcile_restored_default_project_workspaces()?;
         self.remove_restored_projects_without_visible_sessions()?;
         self.reconcile_restored_duplicate_project_names()?;
@@ -327,6 +328,67 @@ impl DaemonApp {
                 "replay_ms": replay_ms,
                 "reconciliation_ms": reconciliation_started.elapsed().as_millis(),
                 "total_ms": restore_started.elapsed().as_millis(),
+            }),
+        );
+        Ok(())
+    }
+
+    fn restore_normalized_workflow_runtime_state(&mut self) -> Result<(), DaemonError> {
+        let restored_sessions = self.sessions.list_all_sessions();
+        self.durable_state
+            .migrate_legacy_workflow_runtime(&self.config.daemon_id, &restored_sessions)?;
+
+        let mut active_runs_by_session = BTreeMap::<String, Vec<_>>::new();
+        for (session_id, workflow_run) in self
+            .durable_state
+            .load_active_workflow_runs(&self.config.daemon_id)?
+        {
+            active_runs_by_session
+                .entry(session_id)
+                .or_default()
+                .push(workflow_run);
+        }
+        let mut receipts_by_session = BTreeMap::<String, Vec<_>>::new();
+        for (session_id, receipt) in self.durable_state.load_active_delivery_receipts(
+            &self.config.daemon_id,
+            crate::session::unix_epoch_ms(),
+        )? {
+            receipts_by_session
+                .entry(session_id)
+                .or_default()
+                .push(receipt);
+        }
+
+        let mut archived_run_count = 0usize;
+        let mut normalized_session_ids = Vec::new();
+        {
+            let mut sessions = self.sessions.write();
+            for session in restored_sessions {
+                let session_id = session.id().to_string();
+                archived_run_count += sessions.archive_terminal_workflow_runs(&session_id)?.len();
+                sessions.restore_active_workflow_runs(
+                    &session_id,
+                    active_runs_by_session
+                        .remove(&session_id)
+                        .unwrap_or_default(),
+                )?;
+                sessions.restore_workflow_event_delivery_receipts(
+                    &session_id,
+                    receipts_by_session.remove(&session_id).unwrap_or_default(),
+                )?;
+                normalized_session_ids.push(session_id);
+            }
+        }
+        for session_id in normalized_session_ids {
+            if let Ok(session) = self.sessions.get_session(&session_id) {
+                self.update_session_projection(session);
+            }
+        }
+        crate::logging::info_with_fields(
+            "durable_state.restore",
+            "normalized workflow runtime state",
+            serde_json::json!({
+                "archived_workflow_run_count": archived_run_count,
             }),
         );
         Ok(())
@@ -951,7 +1013,7 @@ impl DaemonApp {
                 self.prompt_state_owner.restore_session_state(&session);
                 self.update_session_projection(session);
             }
-            "session.updated" => {
+            "session.updated" | "workflow.runtime.updated" => {
                 if durable_payload_entity_belongs_to_other_owner(
                     &event,
                     "session",

@@ -793,7 +793,7 @@ mod tests {
     }
 
     #[test]
-    fn app_workflow_completion_persists_terminal_session_snapshot() {
+    fn app_workflow_completion_archives_terminal_run_outside_hot_session() {
         let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
             .expect("daemon bootstrap should succeed");
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -880,10 +880,10 @@ mod tests {
         complete_workflow_prompt_from_runtime(&mut app, session.id(), &prompt, None)
             .expect("workflow prompt should complete");
 
-        let durable_session = app
+        let durable_event = app
             .durable_state_store()
-            .load_events_by_kind("session.updated")
-            .expect("durable session events should load")
+            .load_events_by_kind("workflow.runtime.updated")
+            .expect("durable workflow events should load")
             .into_iter()
             .rev()
             .find(|event| {
@@ -894,13 +894,15 @@ mod tests {
                         .and_then(serde_json::Value::as_str)
                         == Some("workflow_prompt_completed")
             })
-            .and_then(|event| event.payload.get("session").cloned())
-            .map(serde_json::from_value::<crate::session::RuntimeSession>)
-            .transpose()
-            .expect("durable workflow session should decode")
-            .expect("workflow completion should persist its session");
-        let durable_run = durable_session
-            .workflow_run(workflow_run.id())
+            .expect("workflow completion should persist its runtime transition");
+        let hot_session: crate::session::RuntimeSession =
+            serde_json::from_value(durable_event.payload["session"].clone())
+                .expect("hot workflow session should decode");
+        assert!(hot_session.workflow_run(workflow_run.id()).is_none());
+        let durable_run = app
+            .durable_state_store()
+            .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+            .expect("durable workflow run should resolve")
             .expect("durable workflow run should exist");
         assert_eq!(
             durable_run.status(),

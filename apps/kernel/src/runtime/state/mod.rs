@@ -543,7 +543,18 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         reason: &'static str,
     ) -> Result<(), DaemonError> {
-        let session = session.clone();
+        if kind == "session.deleted" {
+            self.owned
+                .durable_state_store
+                .persist_session_deleted(session, reason)?;
+            return Ok(());
+        }
+        if kind == "session.updated" && reason == "workflow" {
+            self.owned
+                .persist_workflow_runtime_session(session.id(), reason)?;
+            return Ok(());
+        }
+        let session = session.durable_runtime_snapshot();
         self.owned.durable_state_store.append_event(
             kind,
             Some(session.id().to_string()),

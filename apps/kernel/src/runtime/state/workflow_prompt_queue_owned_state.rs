@@ -499,6 +499,7 @@ impl KernelRuntimeOwnedState {
                     continue;
                 }
             };
+            let session = session.durable_runtime_snapshot();
             if let Err(error) = self.durable_state_store.append_event(
                 "session.updated",
                 Some(session_id.clone()),

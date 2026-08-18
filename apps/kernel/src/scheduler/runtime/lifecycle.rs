@@ -6,14 +6,13 @@ fn persist_workflow_session_state(
     reason: &'static str,
 ) -> Result<(), DaemonError> {
     let session = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
-    app.durable_state_store().append_event(
-        "session.updated",
-        Some(session_id.to_string()),
-        serde_json::json!({
-            "session": &session,
-            "reason": reason,
-        }),
-    )?;
+    app.durable_state_store()
+        .persist_workflow_runtime_transition(&session, reason)?;
+    app.sessions_mut()
+        .archive_terminal_workflow_runs(session_id)?;
+    if let Ok(hot_session) = app.sessions().get_session(session_id) {
+        app.update_session_projection(hot_session);
+    }
     Ok(())
 }
 

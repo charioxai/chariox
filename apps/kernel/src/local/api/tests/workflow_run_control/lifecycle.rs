@@ -631,11 +631,24 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
             .expect("session should remain available")
     });
     assert!(advanced.workflow_queued_prompts().is_empty());
-    assert_eq!(advanced.workflow_runs().len(), 2);
+    assert_eq!(advanced.workflow_runs().len(), 1);
     assert_eq!(
-        advanced.workflow_runs()[1].status(),
+        advanced.workflow_runs()[0].status(),
         WorkflowRunStatus::Running
     );
+    let persisted_runs = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            crate::local::ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: None,
+            },
+        ))
+        .expect("workflow run history should remain queryable")
+    {
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        _ => panic!("unexpected workflow run history response"),
+    };
+    assert_eq!(persisted_runs.len(), 2);
 }
 
 fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {

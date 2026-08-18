@@ -17,6 +17,12 @@ pub enum WorkflowRunStatus {
     Stopped,
 }
 
+impl WorkflowRunStatus {
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Stopped)
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WorkflowNodeRunStatus {
     Created,

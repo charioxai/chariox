@@ -39,10 +39,54 @@ impl KernelRuntimeOwnedState {
         request: crate::local::ListWorkflowRunsRequest,
         controlled_by_metaagent_id: Option<&str>,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let workflow_runs = self
-            .session_store
-            .read()
-            .list_workflow_runs(&request.session_id, request.workflow_ref.as_deref())?;
+        let session = self.session_store.read().get_session(&request.session_id)?;
+        let workflow_id = request
+            .workflow_ref
+            .as_deref()
+            .map(|workflow_ref| {
+                self.session_store
+                    .read()
+                    .resolve_workflow_ref(&request.session_id, workflow_ref)
+                    .map(|workflow| workflow.id().to_string())
+            })
+            .transpose()?;
+        let mut workflow_runs = session
+            .workflow_runs()
+            .iter()
+            .filter(|run| {
+                workflow_id
+                    .as_deref()
+                    .is_none_or(|workflow_id| run.workflow_id() == workflow_id)
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut cursor: Option<(u64, String)> = None;
+        loop {
+            let page = self.durable_state_store.list_workflow_runs_page(
+                session.host_daemon_id(),
+                session.id(),
+                workflow_id.as_deref(),
+                cursor
+                    .as_ref()
+                    .map(|(created_at_ms, run_id)| (*created_at_ms, run_id.as_str())),
+                500,
+            )?;
+            for stored_run in page.workflow_runs {
+                if let Some(index) = workflow_runs
+                    .iter()
+                    .position(|current| current.id() == stored_run.id())
+                {
+                    workflow_runs[index] = stored_run;
+                } else {
+                    workflow_runs.push(stored_run);
+                }
+            }
+            let Some(next_cursor) = page.next_cursor else {
+                break;
+            };
+            cursor = Some(next_cursor);
+        }
+        workflow_runs.sort_by_key(|run| (run.created_at_ms(), run.id().to_string()));
         let workflow_runs = match controlled_by_metaagent_id {
             Some(metaagent_id) => {
                 let sessions = self.session_store.read();
@@ -66,11 +110,21 @@ impl KernelRuntimeOwnedState {
         &self,
         request: crate::local::GetWorkflowRunRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        Ok(LocalDaemonResponse::WorkflowRun {
-            workflow_run: self
-                .session_store
-                .read()
-                .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)?,
-        })
+        let session = self.session_store.read().get_session(&request.session_id)?;
+        let workflow_run = self
+            .session_store
+            .read()
+            .resolve_workflow_run_ref(&request.session_id, &request.workflow_run_ref)
+            .ok()
+            .or(self.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                session.id(),
+                &request.workflow_run_ref,
+            )?)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: request.session_id.clone(),
+                workflow_run_id: request.workflow_run_ref.clone(),
+            })?;
+        Ok(LocalDaemonResponse::WorkflowRun { workflow_run })
     }
 }
