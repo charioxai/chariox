@@ -61,12 +61,14 @@ pub(crate) fn classify_provider_terminal_failure_text(
         || normalized.contains("invalid model")
         || normalized.contains("model_not_found")
         || normalized.contains("model not found")
-        || (normalized.contains("model") && normalized.contains("does not exist"))
-        || (normalized.contains("model") && normalized.contains("not supported"))
-        || (normalized.contains("model")
-            && (normalized.contains("http 400")
-                || normalized.contains("status 400")
-                || normalized.contains("400 bad request")));
+        || normalized.contains("model does not exist")
+        || normalized.contains("model is not supported")
+        || normalized.lines().any(|line| {
+            line.contains("model")
+                && (line.contains("http 400")
+                    || line.contains("status 400")
+                    || line.contains("400 bad request"))
+        });
     if !fatal_model_error {
         return None;
     }
@@ -174,6 +176,14 @@ mod tests {
         assert!(
             classify_provider_terminal_failure_text("codex", "normal assistant output").is_none()
         );
+    }
+
+    #[test]
+    fn classifier_ignores_reviewer_prose_about_unsupported_findings_and_schema_models() {
+        let review = "Two reviewer findings are not supported by the code at this exact head.\n\
+            The merge has conflicts in packages/db/prisma/models.prisma and schema.prisma.";
+
+        assert!(classify_provider_terminal_failure_text("claude", review).is_none());
     }
 
     #[test]
