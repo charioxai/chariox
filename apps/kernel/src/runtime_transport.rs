@@ -503,17 +503,7 @@ async fn run_kernel_websocket_server_on_listener_with_auth<F>(
 where
     F: Future<Output = ()>,
 {
-    listener
-        .set_nonblocking(true)
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "configure kernel websocket listener",
-            message: error.to_string(),
-        })?;
-    let listener =
-        TcpListener::from_std(listener).map_err(|error| DaemonError::LocalTransport {
-            operation: "adopt kernel websocket listener",
-            message: error.to_string(),
-        })?;
+    let listener = adopt_std_listener(listener, "kernel websocket")?;
     let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
         app,
         crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
@@ -522,9 +512,73 @@ where
         .await
 }
 
+#[cfg(test)]
+async fn run_kernel_websocket_server_on_listeners_with_auth<F>(
+    app: Arc<Mutex<DaemonApp>>,
+    listener: StdTcpListener,
+    mcp_listener: StdTcpListener,
+    local_auth_token: Option<Arc<str>>,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    let listener = adopt_std_listener(listener, "kernel websocket")?;
+    let mcp_listener = adopt_std_listener(mcp_listener, "runtime mcp")?;
+    let router = Arc::new(CommandRouter::with_interactive_capacity_from_app(
+        app,
+        crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
+    ));
+    run_kernel_websocket_server_with_bound_listeners(
+        router,
+        listener,
+        mcp_listener,
+        local_auth_token,
+        shutdown,
+    )
+    .await
+}
+
+fn adopt_std_listener(
+    listener: StdTcpListener,
+    listener_name: &'static str,
+) -> Result<TcpListener, DaemonError> {
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "configure pre-bound listener",
+            message: format!("{listener_name}: {error}"),
+        })?;
+    TcpListener::from_std(listener).map_err(|error| DaemonError::LocalTransport {
+        operation: "adopt pre-bound listener",
+        message: format!("{listener_name}: {error}"),
+    })
+}
+
 async fn run_kernel_websocket_server_with_bound_listener<F>(
     router: Arc<CommandRouter>,
     listener: TcpListener,
+    local_auth_token: Option<Arc<str>>,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    let mcp_listener = crate::transport::mcp_server::bind_mcp_http_server(&router).await?;
+    run_kernel_websocket_server_with_bound_listeners(
+        router,
+        listener,
+        mcp_listener,
+        local_auth_token,
+        shutdown,
+    )
+    .await
+}
+
+async fn run_kernel_websocket_server_with_bound_listeners<F>(
+    router: Arc<CommandRouter>,
+    listener: TcpListener,
+    mcp_listener: TcpListener,
     local_auth_token: Option<Arc<str>>,
     shutdown: F,
 ) -> Result<(), DaemonError>
@@ -586,7 +640,6 @@ where
     // a kernel restart; starting it before this listener is bound creates a
     // race where required MCP initialization fails and the provider run is
     // stranded before its first turn.
-    let mcp_listener = crate::transport::mcp_server::bind_mcp_http_server(&router).await?;
     let mcp_router = Arc::clone(&router);
     let mcp_task = tokio::spawn(async move {
         let _ =
