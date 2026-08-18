@@ -163,6 +163,64 @@ impl KernelRuntimeOwnedState {
         Ok(prompt)
     }
 
+    pub(super) fn compare_and_mark_active_prompt_recovery_phase(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        expected_phase: crate::session::DurablePromptDeliveryPhase,
+        next_phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .compare_and_mark_active_prompt_recovery_phase(
+                &session,
+                agent_id,
+                prompt_id,
+                operation_id,
+                expected_phase,
+                next_phase,
+            )?;
+        if prompt.is_some() {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            if let Err(error) = self.mirror_prompt_owner_agent_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            ) {
+                // The durable append is the commit boundary for this transition. Restore the
+                // owner state only while it still contains our Accepted phase; a concurrent
+                // delivery acknowledgement must win. Then repair the in-memory session mirror
+                // from whichever owner state is current without attempting a second durable
+                // write. The failed transaction left the durable phase at `expected_phase`.
+                let _ = self
+                    .prompt_state_owner
+                    .compare_and_mark_active_prompt_recovery_phase(
+                        &session,
+                        agent_id,
+                        prompt_id,
+                        operation_id,
+                        next_phase,
+                        expected_phase,
+                    );
+                let (active_prompt, queued_prompts) =
+                    self.prompt_state_owner.state_parts(&session, agent_id);
+                self.session_store.mirror_agent_prompt_state(
+                    session_id,
+                    agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                return Err(error);
+            }
+        }
+        Ok(prompt)
+    }
+
     pub(super) fn mirror_prompt_owner_session_state(
         &self,
         session_id: &str,

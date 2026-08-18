@@ -135,12 +135,8 @@ fn claude_recovery_uses_the_configured_transcript_without_merging_fallback_roots
     env::set_var("HOME", &isolated_home);
 
     let sessions = discover_external_provider_sessions(Some("claude"));
-    let matched = find_external_provider_prompt_recovery_match(
-        "claude",
-        prompt,
-        worktree.to_str(),
-        None,
-    );
+    let matched =
+        find_external_provider_prompt_recovery_match("claude", prompt, worktree.to_str(), None);
 
     match previous_config {
         Some(value) => env::set_var("CLAUDE_CONFIG_DIR", value),

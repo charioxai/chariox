@@ -532,7 +532,10 @@ mod tests {
             .get_run(&dispatches.starting_provider_runs[0])
             .expect("replacement run should resolve");
         assert_eq!(replacement.agent_instance_id(), Some(agent_id.as_str()));
-        assert_eq!(replacement.state(), crate::provider::ProviderRunState::Starting);
+        assert_eq!(
+            replacement.state(),
+            crate::provider::ProviderRunState::Starting
+        );
         let session = runtime
             .owned
             .session_store
@@ -1537,10 +1540,10 @@ mod tests {
         assert_eq!(active_prompt.prompt(), queued_prompt.prompt());
         let tracking = runtime.owned.provider_process_tracking.snapshot();
         assert!(!tracking.run_processes.contains_key(provider_run.id()));
-        assert!(tracking
-            .processes
-            .values()
-            .all(|process| !process.owner_provider_run_ids.iter().any(|id| id == provider_run.id())));
+        assert!(tracking.processes.values().all(|process| !process
+            .owner_provider_run_ids
+            .iter()
+            .any(|id| id == provider_run.id())));
     }
 
     #[tokio::test]
@@ -1549,11 +1552,7 @@ mod tests {
             runtime_with_claude_headless_active_prompt().await;
         runtime
             .owned
-            .complete_local_prompt_without_advance(
-                &session_id,
-                &agent_id,
-                Some(provider_run.id()),
-            )
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(provider_run.id()))
             .expect("original prompt should settle");
         let replacement = runtime
             .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
@@ -2090,10 +2089,8 @@ impl KernelRuntimeState {
                 })
                 .await
                 .unwrap_or((false, None));
-            self.owned.remove_provider_process_tracking_for_run(
-                &dispatch.provider_run_id,
-                process_key,
-            );
+            self.owned
+                .remove_provider_process_tracking_for_run(&dispatch.provider_run_id, process_key);
         }
         let mut restart_provider_for_queued_prompt = false;
         {

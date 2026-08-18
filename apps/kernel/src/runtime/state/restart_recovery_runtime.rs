@@ -36,6 +36,18 @@ enum UncertainLocalRecoveryOutcome {
 }
 
 type DurableRestartRecoveryTarget = (String, String, String);
+type DurableRestartDispatchTarget = (String, String, String, String);
+const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
+
+fn should_rearm_unobserved_dispatches(
+    attempt: u32,
+    transcript_recovery_pending: usize,
+    pending_dispatch_targets: usize,
+) -> bool {
+    transcript_recovery_pending > 0
+        && pending_dispatch_targets > 0
+        && attempt >= TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH
+}
 
 impl KernelRuntimeState {
     pub(crate) fn spawn_durable_restart_recovery(&self) {
@@ -43,12 +55,14 @@ impl KernelRuntimeState {
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
         let recovery_targets = self.durable_restart_recovery_targets();
+        let dispatch_targets = self.durable_restart_dispatch_targets(&recovery_targets);
         let queued_recovery_targets = self.durable_restart_queued_recovery_targets();
         crate::logging::info_with_fields(
             "durable_state.recovery",
             "captured durable restart recovery targets",
             serde_json::json!({
                 "active_prompt_targets": recovery_targets.len(),
+                "unobserved_dispatch_targets": dispatch_targets.len(),
                 "queued_publication_targets": queued_recovery_targets.len(),
             }),
         );
@@ -56,13 +70,47 @@ impl KernelRuntimeState {
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
+            let mut pending_dispatch_targets = dispatch_targets;
             let summary = loop {
-                let summary = state
+                let mut summary = state
                     .recover_durable_runtime_after_restart_targets(
                         &recovery_targets,
                         &queued_recovery_targets,
                     )
                     .await;
+                if should_rearm_unobserved_dispatches(
+                    attempt,
+                    summary.transcript_recovery_pending,
+                    pending_dispatch_targets.len(),
+                ) {
+                    match state
+                        .rearm_unobserved_restart_recovery_dispatches(&mut pending_dispatch_targets)
+                    {
+                        Ok(rearmed) if rearmed > 0 => {
+                            crate::logging::warn_with_fields(
+                                "durable_state.recovery",
+                                "rearmed unobserved restart recovery dispatches",
+                                serde_json::json!({
+                                    "rearmed_prompt_count": rearmed,
+                                    "observation_attempts": attempt.saturating_add(1),
+                                }),
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(error) => {
+                            summary.failed_reconciliations =
+                                summary.failed_reconciliations.saturating_add(1);
+                            crate::logging::error_with_fields(
+                                "durable_state.recovery",
+                                "failed to durably rearm unobserved restart recovery dispatch",
+                                serde_json::json!({
+                                    "error": error.to_string(),
+                                    "observation_attempts": attempt.saturating_add(1),
+                                }),
+                            );
+                        }
+                    }
+                }
                 if (summary.transcript_recovery_pending == 0 && summary.failed_reconciliations == 0)
                     || attempt >= 299
                 {
@@ -88,6 +136,57 @@ impl KernelRuntimeState {
                 }),
             );
         });
+    }
+
+    fn rearm_unobserved_restart_recovery_dispatches(
+        &self,
+        dispatch_targets: &mut BTreeSet<DurableRestartDispatchTarget>,
+    ) -> Result<usize, DaemonError> {
+        let mut rearmed = 0;
+        let candidates = dispatch_targets.iter().cloned().collect::<Vec<_>>();
+        for (session_id, agent_id, prompt_id, operation_id) in candidates {
+            let transition = self.owned.compare_and_mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+                crate::session::DurablePromptDeliveryPhase::Accepted,
+            )?;
+            dispatch_targets.remove(&(session_id, agent_id, prompt_id, operation_id));
+            if transition.is_some() {
+                rearmed += 1;
+            }
+        }
+        Ok(rearmed)
+    }
+
+    fn durable_restart_dispatch_targets(
+        &self,
+        recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
+    ) -> BTreeSet<DurableRestartDispatchTarget> {
+        recovery_targets
+            .iter()
+            .filter_map(|(session_id, agent_id, prompt_id)| {
+                let session = self.owned.session_store.get_session(session_id).ok()?;
+                let prompt = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent_id)?;
+                if prompt.id() != prompt_id
+                    || prompt.durable_recovery_phase()
+                        != Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+                {
+                    return None;
+                }
+                Some((
+                    session_id.clone(),
+                    agent_id.clone(),
+                    prompt_id.clone(),
+                    prompt.durable_recovery_operation_id()?.to_string(),
+                ))
+            })
+            .collect()
     }
 
     pub(crate) async fn recover_durable_runtime_after_restart(
@@ -1309,6 +1408,305 @@ mod tests {
             prompt.durable_recovery_phase(),
             Some(crate::session::DurablePromptDeliveryPhase::Accepted)
         );
+    }
+
+    #[test]
+    fn restart_recovery_rearms_only_on_the_tenth_pending_observation() {
+        assert!(!should_rearm_unobserved_dispatches(8, 1, 1));
+        assert!(should_rearm_unobserved_dispatches(9, 1, 1));
+        assert!(should_rearm_unobserved_dispatches(10, 1, 1));
+        assert!(!should_rearm_unobserved_dispatches(9, 0, 1));
+        assert!(!should_rearm_unobserved_dispatches(9, 1, 0));
+    }
+
+    #[test]
+    fn restart_recovery_rearms_unobserved_dispatch_with_the_same_operation() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("rearm should persist"),
+            1
+        );
+        assert!(dispatch_targets.is_empty(), "successful target must retire");
+
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_operation_id(),
+            Some(operation_id.as_str())
+        );
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Accepted)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_does_not_rearm_an_operation_dispatched_after_startup() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        assert!(dispatch_targets.is_empty());
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("startup recovery should dispatch");
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("empty startup target set should be a no-op"),
+            0
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_does_not_downgrade_a_delivered_operation() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+            )
+            .expect("delivery acknowledgement should win");
+
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("delivered acknowledgement should be a no-op"),
+            0
+        );
+        assert!(dispatch_targets.is_empty(), "delivered target must retire");
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("active prompt should remain available");
+        assert_eq!(
+            prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+        );
+    }
+
+    #[test]
+    fn restart_recovery_rolls_back_rearm_when_durable_append_fails() {
+        let (runtime, session_id, agent_id, prompt_id) =
+            runtime_with_active_prompt(crate::session::DurablePromptDeliveryPhase::Delivered);
+        let recovery = runtime
+            .owned
+            .begin_active_prompt_recovery(&session_id, &agent_id, &prompt_id)
+            .expect("recovery operation should begin");
+        let operation_id = recovery
+            .durable_recovery_operation_id()
+            .expect("recovery operation id should exist")
+            .to_string();
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("recovery operation should enter dispatching");
+        let recovery_targets = runtime.durable_restart_recovery_targets();
+        let mut dispatch_targets = runtime.durable_restart_dispatch_targets(&recovery_targets);
+        let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
+        let connection = rusqlite::Connection::open(&durable_path)
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_restart_recovery_rearm
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'session.prompt_state.updated'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected restart recovery persistence failure');
+                 END;",
+            )
+            .expect("failure trigger should install");
+
+        let result = runtime.rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets);
+
+        connection
+            .execute_batch("DROP TRIGGER fail_restart_recovery_rearm;")
+            .expect("failure trigger should be removed");
+        assert!(result.is_err(), "failed persistence must propagate");
+        assert_eq!(
+            dispatch_targets.len(),
+            1,
+            "failed target must remain eligible for a later retry"
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should load");
+        let owner_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("owner prompt should remain active");
+        let mirrored_prompt = session
+            .active_prompt_for_agent(&agent_id)
+            .expect("session mirror should remain active");
+        assert_eq!(
+            owner_prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+        assert_eq!(
+            mirrored_prompt.durable_recovery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching)
+        );
+
+        let mut last_payload = runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .expect("durable events should load")
+            .into_iter()
+            .filter(|event| {
+                event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+                    && event.subject_id.as_deref() == Some(session_id.as_str())
+            })
+            .last()
+            .map(|event| {
+                serde_json::from_value::<
+                        crate::durable_prompt_state::DurablePromptStateEventPayload,
+                    >(event.payload)
+                    .expect("durable prompt payload should decode")
+            })
+            .expect("durable prompt event should exist");
+        last_payload.restore_private_states();
+        assert_eq!(
+            last_payload
+                .active_prompt
+                .as_ref()
+                .and_then(crate::session::PromptQueueItem::durable_recovery_phase),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+            "failed rearm must leave the durable operation undispatched"
+        );
+
+        assert!(should_rearm_unobserved_dispatches(
+            TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH + 1,
+            1,
+            dispatch_targets.len(),
+        ));
+        assert_eq!(
+            runtime
+                .rearm_unobserved_restart_recovery_dispatches(&mut dispatch_targets)
+                .expect("rearm should retry after durable storage recovers"),
+            1
+        );
+        assert!(
+            dispatch_targets.is_empty(),
+            "successful retry must retire the frozen target"
+        );
+        runtime
+            .owned
+            .mark_active_prompt_recovery_phase(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                &operation_id,
+                crate::session::DurablePromptDeliveryPhase::Dispatching,
+            )
+            .expect("redispatch should return the same operation to dispatching");
+        assert!(!should_rearm_unobserved_dispatches(
+            TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH + 2,
+            1,
+            dispatch_targets.len(),
+        ));
     }
 
     #[tokio::test]

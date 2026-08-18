@@ -380,8 +380,7 @@ fn claude_roots() -> Vec<PathBuf> {
     deduplicate_paths(roots)
 }
 
-fn discover_claude_external_sessions_by_root_precedence(
-) -> Vec<ExternalProviderSessionRecord> {
+fn discover_claude_external_sessions_by_root_precedence() -> Vec<ExternalProviderSessionRecord> {
     let mut by_id = BTreeMap::<String, ExternalProviderSessionRecord>::new();
     for root in claude_roots() {
         for session in deduplicate_external_sessions(discover_claude_external_sessions(&root)) {

@@ -440,6 +440,38 @@ impl PromptStateOwner {
         Ok(active.clone())
     }
 
+    pub(crate) fn compare_and_mark_active_prompt_recovery_phase(
+        &self,
+        session: &RuntimeSession,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        expected_phase: crate::session::DurablePromptDeliveryPhase,
+        next_phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<Option<PromptQueueItem>, DaemonError> {
+        let mut owner = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let active = owner
+            .ensure_agent_state(session, agent_id)
+            .active_prompt
+            .as_mut()
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session.id().to_string(),
+            })?;
+        if active.id() != prompt_id
+            || active.durable_recovery_operation_id() != Some(operation_id)
+            || active.durable_recovery_phase() != Some(expected_phase)
+        {
+            return Ok(None);
+        }
+        if !active.mark_durable_recovery_phase(operation_id, next_phase) {
+            return Ok(None);
+        }
+        Ok(Some(active.clone()))
+    }
+
     pub(crate) fn finalize_active_prompt_cancellation(
         &self,
         session: &RuntimeSession,

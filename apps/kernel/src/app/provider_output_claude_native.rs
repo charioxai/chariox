@@ -182,10 +182,7 @@ fn acknowledge_claude_headless_dispatch_from_hook_events(
                 observed_prompt,
             )
         {
-            write_claude_native_marker(
-                context_file,
-                &format!("accepted:{dispatch_prompt_id}"),
-            );
+            write_claude_native_marker(context_file, &format!("accepted:{dispatch_prompt_id}"));
             return;
         }
     }

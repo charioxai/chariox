@@ -822,16 +822,21 @@ fn write_publication_caller_claims_config(
         "environment_id": binding.environment_id,
         "public_key_pem": binding.caller_claims_public_key_pem,
     }))
-    .map_err(|error| publication_runtime_error(
-        "start workflow publication runtime",
-        format!("failed to serialize caller claims config: {error}"),
-    ))?;
+    .map_err(|error| {
+        publication_runtime_error(
+            "start workflow publication runtime",
+            format!("failed to serialize caller claims config: {error}"),
+        )
+    })?;
     for _ in 0..8 {
         let mut suffix = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut suffix);
         let path = std::env::temp_dir().join(format!(
             "chariox-publication-caller-claims-{}.json",
-            suffix.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+            suffix
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>(),
         ));
         let mut options = OpenOptions::new();
         options.write(true).create_new(true);
@@ -872,7 +877,9 @@ fn validate_caller_claims_public_key(value: &str) -> Result<(), DaemonError> {
             .filter(|der| {
                 der.len() == 44
                     && der[..12]
-                        == [0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00]
+                        == [
+                            0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
+                        ]
                     && base64::engine::general_purpose::STANDARD.encode(der) == *encoded
             })
     });
@@ -1379,8 +1386,7 @@ mod tests {
         launched_publication_runtime_message, launched_publication_runtime_status,
         publication_local_url, publication_runtime_port, validate_publication_runtime_bind_address,
         validated_deployment_binding, write_publication_caller_claims_config,
-        WorkflowPublicationRuntimeProcessStore,
-        DEFAULT_PUBLICATION_RUNTIME_PORT,
+        WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;

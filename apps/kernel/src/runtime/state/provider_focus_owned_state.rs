@@ -291,11 +291,9 @@ impl KernelRuntimeOwnedState {
         else {
             return Ok(false);
         };
-        Ok(prompt
-            .durable_delivery_provider_run_id()
-            .map_or_else(
-                || session.active_provider_run_id() == Some(provider_run.id()),
-                |delivery_run_id| delivery_run_id == provider_run.id(),
-            ))
+        Ok(prompt.durable_delivery_provider_run_id().map_or_else(
+            || session.active_provider_run_id() == Some(provider_run.id()),
+            |delivery_run_id| delivery_run_id == provider_run.id(),
+        ))
     }
 }
