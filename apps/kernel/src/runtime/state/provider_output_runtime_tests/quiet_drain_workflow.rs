@@ -1,5 +1,87 @@
 use super::*;
 
+fn submit_delivered_prompt_fixture(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    provider_run: &crate::provider::RuntimeProviderRun,
+    prompt: crate::session::PromptQueueItem,
+) -> crate::session::PromptQueueItem {
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session_id, prompt, false)
+        .expect("prompt fixture should start")
+    else {
+        panic!("prompt fixture should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session_id,
+        agent_id,
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run.id().to_string()),
+        provider_run.provider_session_id().map(str::to_string),
+    )
+    .expect("prompt fixture should be delivered");
+    crate::transport::flow_control::note_prompt_started(app, provider_run.id());
+    prompt
+}
+
+fn promote_queued_prompt_fixture(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    completed_provider_run_id: &str,
+) -> (
+    crate::session::PromptQueueItem,
+    crate::provider::RuntimeProviderRun,
+) {
+    let provider_run = runtime
+        .owned
+        .provider_store
+        .get_latest_run_for_agent(session_id, agent_id)
+        .filter(|run| run.id() != completed_provider_run_id)
+        .expect("correction should reserve a replacement provider run");
+    assert_eq!(
+        provider_run.state(),
+        crate::provider::ProviderRunState::Starting
+    );
+    let provider_run = runtime
+        .owned
+        .provider_store
+        .mark_run_running(provider_run.id())
+        .expect("replacement provider fixture should start");
+    runtime
+        .owned
+        .provider_run_projection
+        .update(provider_run.clone());
+    let dispatch = runtime
+        .owned
+        .advance_next_queued_prompt_dispatch(session_id, agent_id, provider_run.id())
+        .expect("queued correction should be promotable")
+        .expect("queued correction should exist");
+    let prompt = runtime
+        .owned
+        .mark_active_prompt_delivery(
+            session_id,
+            agent_id,
+            &dispatch.prompt_id,
+            crate::session::DurablePromptDeliveryPhase::Delivered,
+            Some(provider_run.id().to_string()),
+            provider_run.provider_session_id().map(str::to_string),
+        )
+        .expect("queued correction should be delivered");
+    runtime.owned.note_prompt_started(provider_run.id());
+    let snapshot = runtime
+        .owned
+        .session_snapshot(session_id)
+        .expect("session snapshot should exist");
+    let active_prompt = snapshot
+        .active_prompt_for_agent(agent_id)
+        .expect("promoted correction should be active");
+    assert_eq!(active_prompt.id(), prompt.id());
+    (prompt, provider_run)
+}
+
 #[tokio::test]
 async fn provider_message_completion_without_prompt_completed_settles_after_quiet_drain() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -149,12 +231,7 @@ async fn codex_completion_output_does_not_settle_before_authoritative_turn_compl
         "complete only after turn/completed",
         crate::session::PromptStatus::Queued,
     );
-    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
-        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("prompt should start")
-    else {
-        panic!("prompt should start immediately");
-    };
+    let prompt = submit_delivered_prompt_fixture(&mut app, session.id(), agent.id(), &run, prompt);
     let active_prompt_id = prompt.id().to_string();
     let queued_prompt = crate::session::PromptQueueItem::new(
         "prompt-codex-terminal-gate-next",
@@ -484,9 +561,7 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
         crate::session::PromptStatus::Queued,
     )
     .with_workflow_context(workflow_run.id(), &node_run_id);
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("workflow prompt should start");
-    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    submit_delivered_prompt_fixture(&mut app, session.id(), first_agent.id(), &run, prompt);
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -745,9 +820,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
         crate::session::PromptStatus::Queued,
     )
     .with_workflow_context(workflow_run.id(), &first_node_run_id);
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("workflow prompt should start");
-    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    submit_delivered_prompt_fixture(&mut app, session.id(), agent.id(), &run, prompt);
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -786,6 +859,8 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
         .await
         .expect("quiet drain should settle and schedule a correction");
 
+    let (_, correction_run) =
+        promote_queued_prompt_fixture(&runtime, session.id(), agent.id(), run.id());
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
@@ -848,7 +923,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
     runtime
         .apply_owned_structured_output_batch(
             session.id(),
-            run.id(),
+            correction_run.id(),
             Vec::new(),
             crate::provider::ProviderPromptSignalBatch {
                 chunks: vec![crate::provider::ProviderPromptChunk {
@@ -868,7 +943,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
         .await
         .expect("corrective structured output should begin settling");
     runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), true, false, false)
+        .settle_owned_provider_prompt(session.id(), correction_run.id(), true, false, false)
         .await
         .expect("corrective workflow completion should request settlement");
     tokio::time::sleep(std::time::Duration::from_millis(
@@ -876,7 +951,7 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
     ))
     .await;
     runtime
-        .settle_owned_provider_prompt(session.id(), run.id(), false, false, true)
+        .settle_owned_provider_prompt(session.id(), correction_run.id(), false, false, true)
         .await
         .expect("corrective workflow prompt should settle after output drains");
 
@@ -1059,9 +1134,13 @@ async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
         crate::session::PromptStatus::Queued,
     )
     .with_workflow_context(workflow_run.id(), &first_node_run_id);
-    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
-        .expect("classifier prompt should start");
-    crate::transport::flow_control::note_prompt_started(&mut app, provider_run.id());
+    submit_delivered_prompt_fixture(
+        &mut app,
+        session.id(),
+        classifier_agent.id(),
+        &provider_run,
+        prompt,
+    );
 
     let output = format!(
         "```json\n{{\"summary\":\"classified\",\"workflow_handoffs\":[{{\"edge_id\":\"{}\",\"output\":{{\"message\":{{\"wrong\":true}}}}}}],\"output\":{{\"message\":\"plain classifier note\"}}}}\n```",
@@ -1103,6 +1182,12 @@ async fn runtime_owned_invalid_handoff_schedules_one_classifier_correction() {
         .await
         .expect("invalid handoff should settle into correction");
 
+    promote_queued_prompt_fixture(
+        &runtime,
+        session.id(),
+        classifier_agent.id(),
+        provider_run.id(),
+    );
     let session_state = runtime
         .owned
         .session_snapshot(session.id())
