@@ -29,6 +29,142 @@ fn external_provider_filters_normalize_provider_ids() {
 }
 
 #[test]
+fn claude_roots_include_the_config_dir_used_by_the_claude_process() {
+    let _guard = crate::env_lock::lock();
+    let temp = temp_dir("claude-config-discovery-root");
+    let config_root = temp.path().join("config");
+    let legacy_root = temp.path().join("legacy");
+    let home_root = temp.path().join("home");
+    let previous_config = env::var_os("CLAUDE_CONFIG_DIR");
+    let previous_home = env::var_os("CLAUDE_HOME");
+    let previous_user_home = env::var_os("HOME");
+    env::set_var("CLAUDE_CONFIG_DIR", &config_root);
+    env::set_var("CLAUDE_HOME", &legacy_root);
+    env::set_var("HOME", &home_root);
+
+    let roots = claude_roots();
+
+    match previous_config {
+        Some(value) => env::set_var("CLAUDE_CONFIG_DIR", value),
+        None => env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    match previous_home {
+        Some(value) => env::set_var("CLAUDE_HOME", value),
+        None => env::remove_var("CLAUDE_HOME"),
+    }
+    match previous_user_home {
+        Some(value) => env::set_var("HOME", value),
+        None => env::remove_var("HOME"),
+    }
+
+    assert_eq!(
+        roots,
+        vec![config_root, legacy_root, home_root.join(".claude")]
+    );
+}
+
+#[test]
+fn claude_recovery_uses_the_configured_transcript_without_merging_fallback_roots() {
+    let _guard = crate::env_lock::lock();
+    let temp = temp_dir("claude-config-recovery-root");
+    let config_root = temp.path().join("config");
+    let legacy_root = temp.path().join("legacy");
+    let isolated_home = temp.path().join("home");
+    let worktree = temp.path().join("reviewer-workspace");
+    let stale_worktree = temp.path().join("stale-reviewer-workspace");
+    let session_id = "claude-config-recovery-session";
+    let prompt = "Review the exact pull request revision.";
+    let config_project = config_root.join("projects").join("-reviewer-workspace");
+    let legacy_project = legacy_root.join("projects").join("-reviewer-workspace");
+    fs::create_dir_all(&config_project).unwrap();
+    fs::create_dir_all(&legacy_project).unwrap();
+    let config_transcript = [
+        serde_json::json!({
+            "type": "user",
+            "uuid": "config-user",
+            "message": {"role": "user", "content": [{"text": prompt}]},
+            "sessionId": session_id,
+            "cwd": worktree,
+            "timestamp": "2026-08-18T10:00:00.000Z"
+        }),
+        serde_json::json!({
+            "type": "assistant",
+            "uuid": "config-assistant",
+            "message": {
+                "role": "assistant",
+                "stop_reason": "end_turn",
+                "content": [{"text": "The revision is ready."}]
+            },
+            "sessionId": session_id,
+            "cwd": worktree,
+            "timestamp": "2026-08-18T10:00:01.000Z"
+        }),
+    ]
+    .into_iter()
+    .map(|value| serde_json::to_string(&value).unwrap())
+    .collect::<Vec<_>>()
+    .join("\n");
+    fs::write(
+        config_project.join(format!("{session_id}.jsonl")),
+        format!("{config_transcript}\n"),
+    )
+    .unwrap();
+    let legacy_transcript = serde_json::json!({
+        "type": "user",
+        "uuid": "legacy-user",
+        "message": {"role": "user", "content": [{"text": prompt}]},
+        "sessionId": session_id,
+        "cwd": stale_worktree,
+        "timestamp": "2026-08-18T10:00:02.000Z"
+    });
+    fs::write(
+        legacy_project.join(format!("{session_id}.jsonl")),
+        format!("{}\n", serde_json::to_string(&legacy_transcript).unwrap()),
+    )
+    .unwrap();
+    fs::File::open(legacy_project.join(format!("{session_id}.jsonl")))
+        .unwrap()
+        .set_modified(UNIX_EPOCH + std::time::Duration::from_secs(2_000_000_000))
+        .unwrap();
+
+    let previous_config = env::var_os("CLAUDE_CONFIG_DIR");
+    let previous_legacy = env::var_os("CLAUDE_HOME");
+    let previous_home = env::var_os("HOME");
+    env::set_var("CLAUDE_CONFIG_DIR", &config_root);
+    env::set_var("CLAUDE_HOME", &legacy_root);
+    env::set_var("HOME", &isolated_home);
+
+    let sessions = discover_external_provider_sessions(Some("claude"));
+    let matched = find_external_provider_prompt_recovery_match(
+        "claude",
+        prompt,
+        worktree.to_str(),
+        None,
+    );
+
+    match previous_config {
+        Some(value) => env::set_var("CLAUDE_CONFIG_DIR", value),
+        None => env::remove_var("CLAUDE_CONFIG_DIR"),
+    }
+    match previous_legacy {
+        Some(value) => env::set_var("CLAUDE_HOME", value),
+        None => env::remove_var("CLAUDE_HOME"),
+    }
+    match previous_home {
+        Some(value) => env::set_var("HOME", value),
+        None => env::remove_var("HOME"),
+    }
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].worktree_path.as_deref(), worktree.to_str());
+    let matched = matched.expect("configured Claude transcript should recover the prompt");
+    assert_eq!(matched.provider_session_id, session_id);
+    assert!(matched.original_prompt_observed);
+    assert!(matched.provider_activity_after_anchor);
+    assert!(matched.settled_after_anchor);
+}
+
+#[test]
 fn observed_turn_model_derives_history_kind_and_external_keys() {
     let user = ObservedExternalProviderTurn {
         role: ObservedExternalProviderTurnRole::User,
