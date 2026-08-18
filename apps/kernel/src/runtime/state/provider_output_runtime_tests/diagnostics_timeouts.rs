@@ -638,6 +638,101 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
 }
 
 #[tokio::test]
+async fn provider_inactivity_timeout_retires_managed_process() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-managed-timeout",
+            "worktree-managed-timeout",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-managed-timeout",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("managed provider should launch");
+    let pid = app
+        .pty()
+        .process_id(run.id())
+        .expect("managed provider process should resolve")
+        .expect("managed provider should have a pid");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "start, emit output, then stall\n",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(run.id().to_string()),
+        None,
+    )
+    .expect("prompt should bind to the managed provider");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+    crate::transport::flow_control::note_prompt_response_content(&mut app, run.id());
+    app.active_turns.mark_streaming(run.id());
+    app.prompt_activity
+        .write()
+        .get_mut(run.id())
+        .expect("prompt activity should exist")
+        .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .pump_owned_provider_output(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            true,
+        )
+        .await
+        .expect("provider output pump should reap inactive provider turn");
+
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(run.id())
+            .expect("provider run should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Ended,
+    );
+    assert!(
+        !crate::runtime::process_health::process_running(pid),
+        "terminal timeout must stop the managed provider child"
+    );
+    let tracking = runtime.owned.provider_process_tracking.snapshot();
+    assert!(tracking.run_processes.is_empty());
+    assert!(tracking.processes.is_empty());
+}
+
+#[tokio::test]
 async fn meta_mode_activation_registers_pending_provider_reload_when_agent_busy() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

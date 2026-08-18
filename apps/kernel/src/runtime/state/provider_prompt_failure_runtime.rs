@@ -25,7 +25,8 @@ impl KernelRuntimeState {
             .forward_leased_workflow_provider_failure(provider_run_id, message)
             .await?
         {
-            self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
+            self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+                .await;
             return Ok(());
         }
 
@@ -45,7 +46,8 @@ impl KernelRuntimeState {
         if project_failure_output {
             owned.record_provider_failure_output(session_id, provider_run_id, &agent_id, message);
         }
-        self.end_owned_provider_run_after_terminal_failure(session_id, provider_run_id);
+        self.retire_owned_provider_run_after_terminal_failure(session_id, provider_run_id)
+            .await;
         let _ = self.inject_metaagent_turn_failure_event(
             session_id,
             &agent_id,
@@ -168,20 +170,30 @@ impl KernelRuntimeState {
         );
     }
 
-    fn end_owned_provider_run_after_terminal_failure(
+    async fn retire_owned_provider_run_after_terminal_failure(
         &self,
         session_id: &str,
         provider_run_id: &str,
     ) {
         let owned = &self.owned;
-        let Ok(outcome) = owned
+        if let Ok(outcome) = owned
             .provider_store
             .terminate_run_provider_only(session_id, provider_run_id)
-        else {
-            return;
-        };
-        let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
-        owned.provider_run_projection.update(outcome.into_run());
+        {
+            let _ = owned.clear_active_provider_run_session_pointer(session_id, outcome.run().id());
+            owned.provider_run_projection.update(outcome.into_run());
+        }
+        let (_, process_key) = self
+            .with_app_side_effect(|app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id)
+            })
+            .await
+            .unwrap_or((false, None));
+        owned.remove_provider_process_tracking_for_run(provider_run_id, process_key);
+        owned
+            .connector_adapter_processes
+            .shutdown_run(provider_run_id)
+            .await;
     }
 
     async fn forward_leased_workflow_provider_failure(
