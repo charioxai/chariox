@@ -3,8 +3,216 @@
 use super::*;
 
 const LIVE_WORKFLOW_ORPHAN_GRACE_PERIOD_MS: u64 = 5_000;
+const EVENT_PROVIDER_RETRY_DELAYS_MS: [u64; 3] = [30 * 60_000, 2 * 60 * 60_000, 8 * 60 * 60_000];
+
+#[derive(Clone)]
+struct WorkflowEventRetryPlan {
+    session_id: String,
+    source_run_id: String,
+    source_created_at_ms: u64,
+    due_at_ms: u64,
+    workflow_id: String,
+    endpoint_id: String,
+    prompt: Option<String>,
+    queue_ref: Option<String>,
+    invocation: crate::session::WorkflowPublicationInvocationEnvelope,
+}
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_collect_due_event_retry_dispatches(
+        &self,
+        now_ms: u64,
+    ) -> WorkflowPromptDispatches {
+        let mut plans = Vec::new();
+        for session in self.session_store.read().list_sessions() {
+            let mut runs_by_invocation =
+                BTreeMap::<String, Vec<&crate::session::WorkflowRun>>::new();
+            for run in session.workflow_runs() {
+                let Some(invocation) = run
+                    .publication_invocation()
+                    .filter(|invocation| invocation.transport == "event")
+                else {
+                    continue;
+                };
+                runs_by_invocation
+                    .entry(invocation.invocation_id.clone())
+                    .or_default()
+                    .push(run);
+            }
+            for runs in runs_by_invocation.values_mut() {
+                runs.sort_by_key(|run| run.created_at_ms());
+                let Some(latest) = runs.last().copied() else {
+                    continue;
+                };
+                let Some(delay_ms) =
+                    EVENT_PROVIDER_RETRY_DELAYS_MS.get(runs.len().saturating_sub(1))
+                else {
+                    continue;
+                };
+                if latest.status() != crate::session::WorkflowRunStatus::Failed {
+                    continue;
+                }
+                let Some(resource_failure) = latest.failure_events().iter().rev().find(|event| {
+                    event.kind() == crate::session::WorkflowFailureKind::ProviderFailure
+                        && crate::provider::provider_text_reports_resource_limit(event.message())
+                }) else {
+                    continue;
+                };
+                if resource_failure.timestamp_ms().saturating_add(*delay_ms) > now_ms {
+                    continue;
+                }
+                let Some(invocation) = latest.publication_invocation().cloned() else {
+                    continue;
+                };
+                if !workflow_event_retry_binding_active(&session, &invocation) {
+                    continue;
+                }
+                let already_queued = session.workflow_queued_prompts().iter().any(|prompt| {
+                    prompt
+                        .publication_invocation()
+                        .is_some_and(|queued| queued.invocation_id == invocation.invocation_id)
+                });
+                if already_queued {
+                    continue;
+                }
+                plans.push(WorkflowEventRetryPlan {
+                    session_id: session.id().to_string(),
+                    source_run_id: latest.id().to_string(),
+                    source_created_at_ms: latest.created_at_ms(),
+                    due_at_ms: resource_failure.timestamp_ms().saturating_add(*delay_ms),
+                    workflow_id: latest.workflow_id().to_string(),
+                    endpoint_id: latest.endpoint_id().to_string(),
+                    prompt: latest.invocation_prompt().map(str::to_string),
+                    queue_ref: latest.queue_ref().map(str::to_string),
+                    invocation,
+                });
+            }
+        }
+        plans.sort_by(|left, right| {
+            left.due_at_ms
+                .cmp(&right.due_at_ms)
+                .then_with(|| left.source_created_at_ms.cmp(&right.source_created_at_ms))
+                .then_with(|| {
+                    left.invocation
+                        .invocation_id
+                        .cmp(&right.invocation.invocation_id)
+                })
+        });
+
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for plan in plans {
+            let queued = {
+                let mut sessions = self.session_store.write();
+                let current = match sessions.get_session(&plan.session_id) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "failed to inspect event provider retry",
+                            serde_json::json!({
+                                "session_id": plan.session_id,
+                                "delivery_id": plan.invocation.invocation_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        continue;
+                    }
+                };
+                let still_latest = current
+                    .workflow_runs()
+                    .iter()
+                    .rev()
+                    .find(|run| {
+                        run.publication_invocation().is_some_and(|invocation| {
+                            invocation.invocation_id == plan.invocation.invocation_id
+                        })
+                    })
+                    .is_some_and(|run| run.id() == plan.source_run_id);
+                let already_queued = current.workflow_queued_prompts().iter().any(|prompt| {
+                    prompt.publication_invocation().is_some_and(|invocation| {
+                        invocation.invocation_id == plan.invocation.invocation_id
+                    })
+                });
+                if !still_latest
+                    || already_queued
+                    || !workflow_event_retry_binding_active(&current, &plan.invocation)
+                {
+                    continue;
+                }
+                sessions.enqueue_workflow_prompt_with_publication_invocation(
+                    &plan.session_id,
+                    &plan.workflow_id,
+                    &plan.endpoint_id,
+                    plan.prompt,
+                    plan.queue_ref.as_deref(),
+                    crate::session::WorkflowQueuedPromptSource::Event,
+                    None,
+                    Some(plan.invocation.clone()),
+                )
+            };
+            match queued {
+                Ok(queued) => {
+                    self.record_notice(
+                        &plan.session_id,
+                        None,
+                        self.attachment_store
+                            .list_session_attachment_ids(&plan.session_id),
+                        format!(
+                            "Retrying event delivery `{}` after provider resource exhaustion.",
+                            plan.invocation.invocation_id
+                        ),
+                    );
+                    if let Err(error) = self.persist_workflow_runtime_session(
+                        &plan.session_id,
+                        "workflow_event_provider_retry_queued",
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "failed to persist queued event provider retry",
+                            serde_json::json!({
+                                "session_id": plan.session_id,
+                                "queued_prompt_id": queued.id(),
+                                "delivery_id": plan.invocation.invocation_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                        let _ = self
+                            .session_store
+                            .write()
+                            .remove_queued_workflow_prompt(&plan.session_id, queued.id());
+                        continue;
+                    }
+                    dispatches
+                        .extend(self.workflow_maybe_start_next_queued_prompt(&plan.session_id));
+                    if let Err(error) = self.persist_workflow_runtime_session(
+                        &plan.session_id,
+                        "workflow_event_provider_retry_started",
+                    ) {
+                        crate::logging::warn_with_fields(
+                            "daemon.event_delivery",
+                            "failed to persist started event provider retry",
+                            serde_json::json!({
+                                "session_id": plan.session_id,
+                                "delivery_id": plan.invocation.invocation_id,
+                                "error": error.to_string(),
+                            }),
+                        );
+                    }
+                }
+                Err(error) => crate::logging::warn_with_fields(
+                    "daemon.event_delivery",
+                    "failed to queue event provider retry",
+                    serde_json::json!({
+                        "session_id": plan.session_id,
+                        "delivery_id": plan.invocation.invocation_id,
+                        "error": error.to_string(),
+                    }),
+                ),
+            }
+        }
+        dispatches
+    }
+
     fn workflow_reconcile_live_orphans(&self, session_id: &str) {
         let reconciled = self
             .session_store
@@ -518,6 +726,25 @@ impl KernelRuntimeOwnedState {
             }
         }
     }
+}
+
+fn workflow_event_retry_binding_active(
+    session: &crate::session::RuntimeSession,
+    invocation: &crate::session::WorkflowPublicationInvocationEnvelope,
+) -> bool {
+    let Some(binding) = invocation
+        .hook_id
+        .as_deref()
+        .and_then(|binding_id| session.workflow_event_binding(binding_id))
+    else {
+        return false;
+    };
+    binding.active()
+        && binding.publication_id == invocation.publication_id
+        && binding.endpoint_id == invocation.endpoint_id
+        && session.workflow_publications().iter().any(|publication| {
+            publication.id() == invocation.publication_id && publication.enabled()
+        })
 }
 
 fn workflow_watchdog_failure_is_terminal(error: &DaemonError) -> bool {

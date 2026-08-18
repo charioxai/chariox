@@ -42,7 +42,7 @@ pub(crate) fn classify_provider_terminal_failure_text(
         return Some(failure);
     }
     let normalized = text.to_lowercase();
-    if provider_text_reports_resource_limit(&normalized) {
+    if provider_normalized_text_reports_resource_limit(&normalized) {
         return Some(format!(
             "Provider reported a resource limit: {}",
             compact_provider_error_snippet(text)
@@ -86,7 +86,7 @@ pub(crate) fn classify_provider_substitutable_failure_text(
         return None;
     }
     let normalized = text.to_lowercase();
-    if !provider_text_reports_resource_limit(&normalized) {
+    if !provider_normalized_text_reports_resource_limit(&normalized) {
         return None;
     }
     Some(format!(
@@ -95,7 +95,11 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     ))
 }
 
-fn provider_text_reports_resource_limit(normalized: &str) -> bool {
+pub(crate) fn provider_text_reports_resource_limit(text: &str) -> bool {
+    provider_normalized_text_reports_resource_limit(&text.to_lowercase())
+}
+
+fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
     let quota_or_billing = normalized.contains("insufficient_quota")
         || normalized.contains("quota exceeded")
         || normalized.contains("exceeded your current quota")

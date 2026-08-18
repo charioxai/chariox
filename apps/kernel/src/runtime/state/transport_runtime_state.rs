@@ -106,9 +106,13 @@ impl KernelRuntimeState {
                 ),
             }
         }
-        let watchdog_dispatches = self
+        let mut watchdog_dispatches = self
             .owned
             .workflow_collect_due_watchdog_dispatches(crate::session::unix_epoch_ms());
+        watchdog_dispatches.extend(
+            self.owned
+                .workflow_collect_due_event_retry_dispatches(crate::session::unix_epoch_ms()),
+        );
         self.spawn_workflow_prompt_dispatches(watchdog_dispatches);
         self.dispatch_due_agent_prompt_schedules(crate::session::unix_epoch_ms())
             .await;
