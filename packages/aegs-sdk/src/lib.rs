@@ -1,5 +1,6 @@
 mod auth;
 mod conformance;
+mod conformance_attestation;
 mod hooks;
 mod management_capability;
 mod manifest;
@@ -12,6 +13,9 @@ mod store;
 pub use chariox_event_protocol::{AegsProviderActionRequest, AegsProviderActionResponse};
 pub use conformance::{
     verify_provider_contract, verify_webhook_conformance, WebhookConformanceCase,
+};
+pub use conformance_attestation::{
+    create_conformance_attestation, AegsConformanceAttestation, AEGS_CONFORMANCE_SUITE,
 };
 pub use manifest::{
     parse_signing_key, sign_manifest, unsigned_manifest_digest, validate_manifest_envelope,

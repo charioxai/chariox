@@ -1,4 +1,4 @@
-use chariox_aegs_sdk::CreateAuthorizationRequest;
+use chariox_aegs_sdk::{AegsConformanceAttestation, CreateAuthorizationRequest};
 
 #[test]
 fn create_authorization_request_is_public() {
@@ -13,4 +13,19 @@ fn create_authorization_request_is_public() {
     };
 
     assert_eq!(request.connection_id, "connection");
+}
+
+#[test]
+fn conformance_attestation_is_public() {
+    let attestation = AegsConformanceAttestation {
+        suite: "chariox-aegs-conformance-v1".to_string(),
+        result: "passed".to_string(),
+        manifest_digest: "sha256:manifest".to_string(),
+        report_digest: "sha256:report".to_string(),
+        event_protocol_version: 3,
+        management_protocol_version: 4,
+        completed_at_ms: 1,
+    };
+
+    assert_eq!(attestation.management_protocol_version, 4);
 }

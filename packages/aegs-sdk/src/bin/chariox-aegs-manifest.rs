@@ -3,19 +3,24 @@
 //! Private keys are read from a file or `CHARIOX_AEGS_SIGNING_KEY`; they are
 //! never accepted as command-line arguments and are never printed.
 
-use std::{env, fs, path::PathBuf, process::ExitCode};
+use std::{
+    env, fs,
+    path::PathBuf,
+    process::ExitCode,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use chariox_aegs_sdk::{
-    parse_signing_key, sign_manifest, unsigned_manifest_digest, validate_manifest_envelope,
-    verify_manifest_signature,
+    create_conformance_attestation, parse_signing_key, sign_manifest, unsigned_manifest_digest,
+    validate_manifest_envelope, verify_manifest_signature,
 };
 use ed25519_dalek::VerifyingKey;
 use serde_json::Value;
 
 fn usage() -> ! {
     eprintln!(
-        "usage:\n  chariox-aegs-manifest digest --input FILE\n  chariox-aegs-manifest validate --input FILE\n  chariox-aegs-manifest verify --input FILE --public-key-file FILE\n  chariox-aegs-manifest sign --input FILE --output FILE --key-id ID [--key-file FILE | --key-env NAME]"
+        "usage:\n  chariox-aegs-manifest digest --input FILE\n  chariox-aegs-manifest validate --input FILE\n  chariox-aegs-manifest verify --input FILE --public-key-file FILE\n  chariox-aegs-manifest sign --input FILE --output FILE --key-id ID [--key-file FILE | --key-env NAME]\n  chariox-aegs-manifest attest --input REPORT --manifest FILE --output FILE [--completed-at-ms MS]"
     );
     std::process::exit(2)
 }
@@ -43,6 +48,29 @@ fn read_json(path: &str) -> Result<Value, String> {
 fn run(args: &[String]) -> Result<(), String> {
     let command = args.get(1).map(String::as_str).unwrap_or_else(|| usage());
     let input = required_option(args, "--input");
+    if command == "attest" {
+        let report = fs::read(&input)
+            .map_err(|error| format!("cannot read conformance report {input}: {error}"))?;
+        let manifest_path = required_option(args, "--manifest");
+        let manifest = read_json(&manifest_path)?;
+        let completed_at_ms = option(args, "--completed-at-ms")
+            .map(|value| {
+                value
+                    .parse::<u64>()
+                    .map_err(|error| format!("invalid --completed-at-ms value: {error}"))
+            })
+            .transpose()?
+            .unwrap_or_else(now_ms);
+        let attestation = create_conformance_attestation(&report, &manifest, completed_at_ms)?;
+        let output = PathBuf::from(required_option(args, "--output"));
+        fs::write(
+            &output,
+            serde_json::to_vec_pretty(&attestation).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("cannot write {}: {error}", output.display()))?;
+        println!("attested {}", output.display());
+        return Ok(());
+    }
     let manifest = read_json(&input)?;
     match command {
         "digest" => println!("{}", unsigned_manifest_digest(&manifest)?),
@@ -80,6 +108,13 @@ fn run(args: &[String]) -> Result<(), String> {
         _ => usage(),
     }
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 fn parse_verifying_key(value: &str) -> Result<VerifyingKey, String> {

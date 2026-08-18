@@ -44,10 +44,63 @@ cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
   validate --input manifest.signed.json
 ```
 
+After the provider tests pass, record the exact public conformance report and
+bind it to the signed manifest. A passing report has this bounded shape:
+
+```json
+{
+  "suite": "chariox-aegs-conformance-v1",
+  "passed": true,
+  "checks": ["identity", "signature", "normalization", "lifecycle"]
+}
+```
+
+Create the Store attestation locally:
+
+```sh
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  attest --input conformance-report.json \
+  --manifest manifest.signed.json \
+  --output conformance-attestation.json
+```
+
+The attestation records the exact report and manifest SHA-256 digests, the
+event and management protocol versions, and the completion time. A failed,
+empty, malformed, stale, future-dated, wrong-protocol, or wrong-manifest
+attestation is rejected. Keep the report with the provider's release evidence;
+Cloud stores its digest and the bounded attestation, not provider credentials
+or private signing material.
+
 The registry verifies the declared digest and the signature against the
 publisher key registered for the publisher namespace. A signed version is
 immutable: changing event definitions, scopes, endpoints, or display metadata
 requires a new version and digest.
+
+## Submit to the Chariox Store
+
+Store ingestion is a durable lifecycle, not a Cloud deployment or client
+release:
+
+1. A registry reviewer registers the publisher's Ed25519 public key and
+   namespace once. Key IDs are immutable; rotation uses a new key ID.
+2. The publisher submits the signed manifest, publisher/operator identity, and
+   HTTPS management URL. The registry verifies the namespace, public-key
+   binding, signature, schema, events, scopes, actions, and response bounds and
+   creates a `DRAFT`.
+3. The publisher submits the manifest-bound conformance attestation. The draft
+   moves through `SUBMITTED` and either `VALIDATION_FAILED` or
+   `AWAITING_REVIEW`. A failed draft may be corrected and resubmitted.
+4. A human reviewer may move a validated submission to `APPROVED`, then
+   `PUBLISHED`. Published entries appear through search, categories, and
+   paginated browsing without restarting Cloud, a kernel, or a client.
+5. A published version may be `DEPRECATED`. Updating signed content requires a
+   new immutable version; installations pinned to an older version never
+   silently upgrade.
+
+Submission and reviewer credentials are separate. A publisher can create and
+submit drafts but cannot approve or publish them. The registry never receives
+the private publisher key. The exact HTTP routes and operator commands are
+documented in the Cloud registry guide.
 
 Run the conformance tests with:
 
@@ -83,6 +136,18 @@ capability-protected `PUT /v1/subscriptions/reconcile` endpoint. It must accept
 only authentic provider events, normalize a provider occurrence once, apply
 the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
+
+Before a submission can await review, Cloud resolves the complete management
+hostname answer set, rejects any non-public destination, pins the verified
+socket address, and checks these unauthenticated release surfaces:
+
+- `/healthz` returns `{"status":"ok"}`;
+- `/readyz` returns `{"status":"ready"}`;
+- `/version` identifies `component=chariox-aegs`, the exact generator ID, and
+  management protocol version 4.
+
+Redirects are not followed. Private or loopback targets are self-hosted
+administrator configuration and cannot enter the public Store.
 
 The event-delivery wire contract is version 3. AEDS and every producer that sends
 reply-capable events must use the same protocol revision so the opaque provider
@@ -152,3 +217,10 @@ Every implementation should call `verify_provider_contract` from its tests.
 Provider webhook fixtures can additionally use `verify_webhook_conformance` to
 prove deterministic occurrence identity, bounded canonical fields, route
 ownership, event type, and connection scope.
+
+Common submission failures are actionable: an unknown/revoked key requires
+publisher registration or rotation; a digest/signature error requires signing
+the canonical unsigned manifest again; `VALIDATION_FAILED` reports the bounded
+attestation or management-surface error; protocol mismatches require the
+matching public SDK; and a non-public management target must be installed as an
+explicit self-hosted target instead of submitted to the Store.
