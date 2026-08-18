@@ -2,6 +2,8 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
+use crate::DaemonConfig;
+
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Instant as TokioInstant};
 use tokio_tungstenite::{
@@ -12,6 +14,20 @@ use tokio_tungstenite::{
         Error as WebSocketError,
     },
 };
+
+fn daemon_config_with_available_runtime_mcp_port() -> DaemonConfig {
+    let listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("temporary runtime MCP listener should bind");
+    let port = listener
+        .local_addr()
+        .expect("temporary runtime MCP listener should have an address")
+        .port();
+    drop(listener);
+
+    let mut config = DaemonConfig::for_tests();
+    config.runtime_mcp_port = port;
+    config
+}
 
 #[test]
 fn process_admission_scales_with_cpu_inside_bounded_limits() {
@@ -194,7 +210,8 @@ async fn kernel_websocket_replies_to_ping_frames() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot"),
+        DaemonApp::bootstrap(daemon_config_with_available_runtime_mcp_port())
+            .expect("daemon should boot"),
     ));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
@@ -241,7 +258,8 @@ async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon should boot"),
+        DaemonApp::bootstrap(daemon_config_with_available_runtime_mcp_port())
+            .expect("daemon should boot"),
     ));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
