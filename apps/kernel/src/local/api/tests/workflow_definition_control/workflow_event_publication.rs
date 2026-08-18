@@ -260,7 +260,7 @@ fn serve_ready_connection(
 }
 
 #[test]
-fn kernel_installs_store_service_through_registry_issued_management_target() {
+fn kernel_rejects_insecure_registry_issued_management_target_after_capability_issue() {
     let server = ReadyConnectionServer::start();
     let server_url = server.target().url;
     let mut config = crate::DaemonConfig::for_tests();
@@ -286,23 +286,20 @@ fn kernel_installs_store_service_through_registry_issued_management_target() {
     });
     let harness = LocalRouterTestHarness::with_config(config);
 
-    let authorization = match harness
+    let error = harness
         .dispatch(LocalDaemonRequest::InstallEventConnection(
             crate::local::InstallEventConnectionRequest {
                 generator_id: "dev.chariox.dummy".to_string(),
                 return_url: Some("https://terminal.chariox.com/notifications".to_string()),
             },
         ))
-        .expect("Store metadata and a registry-issued capability should bootstrap installation")
-    {
-        LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } => authorization,
-        response => panic!("unexpected response: {response:?}"),
-    };
+        .expect_err("registry-issued plaintext management targets must be rejected");
 
-    assert_eq!(authorization.generator_id, "dev.chariox.dummy");
-    assert_eq!(
-        authorization.connection_id.as_deref(),
-        Some("connection-dynamic")
+    assert!(
+        error
+            .to_string()
+            .contains("Insecure request attempted with https_only set"),
+        "unexpected error: {error}"
     );
     assert!(server.capability_issued.load(Ordering::Relaxed));
 }
