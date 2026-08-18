@@ -154,6 +154,43 @@ fn claude_headless_dispatch_matches_prompt(
         && claude_headless_prompt_matches(&retry.visible_prompt, observed_prompt)
 }
 
+fn acknowledge_claude_headless_dispatch_from_hook_events(
+    context_file: &str,
+    events_file: &str,
+    dispatch_prompt_id: &str,
+) {
+    let raw = fs::read_to_string(events_file).unwrap_or_default();
+    for line in raw.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if event.get("hook_event_name").and_then(Value::as_str) != Some("UserPromptSubmit") {
+            continue;
+        }
+        let Some(observed_prompt) = event
+            .get("prompt")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|prompt| !prompt.is_empty())
+        else {
+            continue;
+        };
+        if !claude_native_prompt_is_internal_control(observed_prompt)
+            && claude_headless_dispatch_matches_prompt(
+                context_file,
+                dispatch_prompt_id,
+                observed_prompt,
+            )
+        {
+            write_claude_native_marker(
+                context_file,
+                &format!("accepted:{dispatch_prompt_id}"),
+            );
+            return;
+        }
+    }
+}
+
 fn acknowledge_claude_headless_steering_enqueue(
     context_file: &str,
     active_prompt_id: Option<&str>,
@@ -917,6 +954,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
             &prompt,
         )?;
+        if provider_run.provider() == "claude-headless" {
+            if let Some(events_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_EVENTS") {
+                // Workflow dispatch does not have a terminal client polling
+                // provider output. Observe the exact UserPromptSubmit hook
+                // here as well so successful headless injection does not rely
+                // on an unrelated output-pump request. Leave the event file
+                // intact for the normal bridge to drain transcript and Stop.
+                acknowledge_claude_headless_dispatch_from_hook_events(
+                    context_file,
+                    events_file,
+                    prompt.id,
+                );
+            }
+        }
         // Native TUI injection completes once Enter reaches the provider. A
         // headless run must additionally acknowledge UserPromptSubmit; an
         // `injected` marker only proves that bytes were written to the PTY and

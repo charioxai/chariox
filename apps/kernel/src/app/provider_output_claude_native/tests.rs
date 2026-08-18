@@ -575,7 +575,9 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
     ));
     fs::create_dir_all(&root).expect("test root should be created");
     let context_file = root.join("hidden-context.txt");
+    let events_file = root.join("events.jsonl");
     fs::write(&context_file, "").expect("context file should be created");
+    fs::write(&events_file, "").expect("events file should be created");
     let context_file = context_file.display().to_string();
     let request = crate::provider::LaunchProviderRequest::new(
         "session-1",
@@ -595,10 +597,16 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
             pty_target: None,
             pty_program: None,
             pty_args: Vec::new(),
-            pty_env: std::collections::BTreeMap::from([(
-                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
-                context_file.clone(),
-            )]),
+            pty_env: std::collections::BTreeMap::from([
+                (
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                    context_file.clone(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
+                    events_file.display().to_string(),
+                ),
+            ]),
             pty_env_remove: Vec::new(),
             working_directory: None,
             structured_endpoint: None,
@@ -635,11 +643,32 @@ fn claude_headless_dispatch_waits_for_user_prompt_submit_acknowledgement() {
         .expect("injected prompt should remain pending");
     assert_eq!(injected, ClaudeNativeDispatchAttempt::AwaitingInjection);
 
-    write_claude_native_marker(&context_file, &format!("accepted:{prompt_id}"));
+    fs::write(
+        &events_file,
+        [
+            serde_json::json!({
+                "hook_event_name": "Stop",
+            })
+            .to_string(),
+            serde_json::json!({
+                "hook_event_name": "UserPromptSubmit",
+                "prompt": "Explain the lifecycle briefly.",
+            })
+            .to_string(),
+        ]
+        .join("\n"),
+    )
+    .expect("hook events should be written");
     let accepted = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process_prompt_dispatch_attempt("session-1", run.id(), &run, &dispatch)
-        .expect("acknowledged prompt should complete dispatch");
+        .expect("hook-acknowledged prompt should complete dispatch");
     assert_eq!(accepted, ClaudeNativeDispatchAttempt::Completed);
+    assert!(
+        fs::read_to_string(&events_file)
+            .expect("events should remain available to the normal output bridge")
+            .contains("Stop"),
+        "dispatch acknowledgement must not consume later lifecycle events"
+    );
 
     let _ = fs::remove_dir_all(root);
 }
