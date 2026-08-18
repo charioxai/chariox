@@ -139,12 +139,15 @@ export type ProviderAuthStatus = {
   provider: string
   auth_state: string
   account_profile: string | null
+  identity_summary?: string | null
+  plan?: string | null
   login_hint: string | null
   detected_version: string | null
 }
 
 export type ProviderLoginStart = {
   provider: string
+  account_profile?: string
   login_kind: string
   login_id: string | null
   auth_url: string | null
@@ -164,6 +167,54 @@ export type SliceProviderLoginStart = {
 
 export type ProviderLogoutResult = {
   provider: string
+  account_profile: string
+}
+
+export type ProviderAccountUsageAvailability = "available" | "partial" | "unavailable" | "stale" | "error"
+export type ProviderAccountUsageMeterKind = "rolling_limit" | "credit_balance" | "spend_limit" | "token_usage" | "local_cost" | "other"
+export type ProviderAccountUsageMeterScope = "account" | "workspace" | "model" | "upstream_provider" | "plan"
+export type ProviderAccountUsageMeterState = "healthy" | "warning" | "exhausted" | "unknown"
+
+export type ProviderAccountUsageMeter = {
+  meter_id: string
+  label: string
+  kind: ProviderAccountUsageMeterKind
+  scope: ProviderAccountUsageMeterScope
+  used_percent?: number | null
+  used?: number | null
+  remaining?: number | null
+  total?: number | null
+  unit?: string | null
+  window_duration_minutes?: number | null
+  resets_at_ms?: number | null
+  state: ProviderAccountUsageMeterState
+  source: string
+  observed_at_ms: number
+}
+
+export type ProviderAccountUsageSnapshot = {
+  profile_id: string
+  provider: string
+  availability: ProviderAccountUsageAvailability
+  meters?: ProviderAccountUsageMeter[]
+  observed_at_ms?: number | null
+  source: string
+  management_url?: string | null
+}
+
+export type ProviderAccountProfile = {
+  owner_user_id: string
+  provider: string
+  profile_id: string
+  label: string
+  origin: "default" | "chariox_created" | "linked"
+  is_default: boolean
+  auth_state: "unknown" | "not_configured" | "authenticated" | "expired" | "error"
+  identity_summary?: string | null
+  plan?: string | null
+  detected_provider_version?: string | null
+  last_validated_at_ms?: number | null
+  usage: ProviderAccountUsageSnapshot
 }
 
 export type PromptAttachmentPart = {

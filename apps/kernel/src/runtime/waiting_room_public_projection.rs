@@ -488,7 +488,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         &terminals,
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 11,
+        schema_version: 12,
         inventory_version,
         structural_version,
         activity_revision,
@@ -503,6 +503,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         remote_kernels,
         terminals,
         launch_target,
+        provider_accounts: Vec::new(),
     })
 }
 
@@ -890,6 +891,8 @@ fn waiting_room_public_agent_summaries(
                 created_at_ms: agent.created_at_ms(),
                 last_prompt_sent_at_ms: agent.last_prompt_sent_at_ms(),
                 provider: agent.primary_provider().to_string(),
+                account_profile: agent.account_profile().unwrap_or("default").to_string(),
+                account_label: None,
                 model: agent.primary_model().map(ToOwned::to_owned),
                 variant: agent.primary_effort().map(ToOwned::to_owned),
                 mode: effective_config.mode.as_str().to_string(),

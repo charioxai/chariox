@@ -576,6 +576,7 @@ async fn provider_auth_status_does_not_use_generic_app_fallback_inner() {
     let app_guard = app.lock().await;
     let auth_request = LocalDaemonRequest::GetProviderAuthStatus(GetProviderAuthStatusRequest {
         provider: "unsupported-provider".to_string(),
+        account_profile: "default".to_string(),
     });
     let auth_command = KernelCommand::from_local_request(
         "cmd-provider-auth-no-fallback",

@@ -344,6 +344,7 @@ impl DaemonApp {
                 RelayPeerRequest::SpawnLeasedAgent {
                     lease_id: lease.id.clone(),
                     provider: agent.provider().to_string(),
+                    account_profile: agent.provider_account_profile().to_string(),
                     model: agent.model().map(ToOwned::to_owned),
                     effort: agent.effort().map(ToOwned::to_owned),
                     execution_mode: Some(effective_config.mode),

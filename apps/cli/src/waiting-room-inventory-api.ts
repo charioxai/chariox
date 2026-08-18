@@ -6,6 +6,7 @@ import type {
   WaitingRoomRemoteMachineView,
   WaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot,
+  ProviderAccountProfile,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { getWaitingRoomPublicSnapshotRequest } from "./ipc-requests.js"
@@ -37,6 +38,7 @@ export type WaitingRoomInventory = {
   externalProviderSessions?: ExternalProviderSessionRecord[]
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
+  providerAccounts?: ProviderAccountProfile[]
 }
 
 export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<WaitingRoomInventory> {
@@ -75,5 +77,6 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     externalProviderSessions: externalProviderSessions.sessions,
     externalProviderSessionsHasMore: externalProviderSessions.hasMore,
     externalProviderSessionsNextCursor: externalProviderSessions.nextCursor,
+    providerAccounts: payload.provider_accounts ?? [],
   }
 }

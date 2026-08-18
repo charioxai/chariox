@@ -261,6 +261,7 @@ fn workspace_link_mutations_preserve_spawned_agents_in_session_projection_inner(
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session_id.clone(),
             alias: Some("reviewer".to_string()),
             provider: Some("codex".to_string()),

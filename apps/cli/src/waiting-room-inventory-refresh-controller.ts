@@ -4,7 +4,7 @@ import {
 } from "@chariox/kernel-client/external-provider-sessions"
 import type { RelayStatusView, TerminalView } from "./relay-api.js"
 import type { SessionListEntry } from "./sessions.js"
-import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
+import type { ExternalProviderSessionRecord, ProviderAccountProfile, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
 import type { LocalKernelPresence } from "./local-kernel-presence.js"
 import { waitingRoomRemoteKernelCanDelete } from "./waiting-room-remote-rows.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
@@ -44,6 +44,7 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setRemoteKernels: (kernels: RemoteKernelView[]) => void
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
+  setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
@@ -151,6 +152,7 @@ export function createWaitingRoomInventoryRefreshController(
     )))
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
+    options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
     options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),

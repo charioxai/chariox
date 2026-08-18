@@ -44,6 +44,22 @@ impl DaemonApp {
         } else {
             request = request.with_owner_user_id(session.owner_user_id().to_string());
         }
+        if crate::provider::canonical_provider_family(&request.provider)
+            .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
+        {
+            let profile = self.provider_account_profiles.get(
+                &request.owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            )?;
+            let provider_account_env = self.provider_account_profiles.resolve_environment(
+                &request.owner_user_id,
+                &request.provider,
+                &profile.profile_id,
+            )?;
+            request.account_profile = profile.profile_id;
+            request = request.with_provider_account_env(provider_account_env);
+        }
         if request.resume_state.is_none() {
             if let Some(agent) = agent.as_ref() {
                 let resume_state = sanitize_resume_state_for_launch(&request, agent);
@@ -85,6 +101,15 @@ impl DaemonApp {
         }
         if request.provider_env_remove.is_empty() {
             request = request.with_provider_env_remove(default_provider_env_remove(&self.config));
+        }
+        for name in crate::account_profile::provider_auth_env_vars(&request.provider) {
+            if !request
+                .provider_env_remove
+                .iter()
+                .any(|existing| existing == name)
+            {
+                request.provider_env_remove.push((*name).to_string());
+            }
         }
         if request.mcp_servers.is_empty() {
             if let Some(agent) = agent.as_ref() {

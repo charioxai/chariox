@@ -240,6 +240,7 @@ mod tests {
             .create_leased_agent(
                 &lease.id,
                 "dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -350,6 +351,7 @@ mod tests {
             .create_leased_agent(
                 &lease.id,
                 "dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -428,6 +430,7 @@ mod tests {
             .create_leased_agent(
                 &lease.id,
                 "dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,

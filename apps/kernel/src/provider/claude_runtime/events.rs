@@ -23,6 +23,7 @@ pub(super) fn apply_claude_message(
         "stream_event" => apply_stream_event(provider_run_id, state, &value, batch),
         "assistant" => apply_assistant_message(provider_run_id, state, &value, batch),
         "result" => apply_result_message(state, &value, batch),
+        "rate_limit_event" => apply_rate_limit_event(&value, batch),
         _ => {}
     }
 }
@@ -56,6 +57,10 @@ fn apply_stream_event(
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or_default();
+    if event_kind == "rate_limit_event" {
+        apply_rate_limit_event(event, batch);
+        return;
+    }
     if event_kind == "message_start" {
         if let Some(model) = event
             .get("message")
@@ -117,6 +122,94 @@ fn apply_stream_event(
             batch.resolved_usage = Some(usage);
         }
     }
+}
+
+fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) {
+    use crate::account_profile::{
+        ProviderAccountUsageAvailability, ProviderAccountUsageMeter, ProviderAccountUsageMeterKind,
+        ProviderAccountUsageMeterScope, ProviderAccountUsageMeterState,
+        ProviderAccountUsageSnapshot,
+    };
+
+    let info = value
+        .get("rate_limit_info")
+        .or_else(|| value.get("rateLimitInfo"))
+        .unwrap_or(value);
+    let observed_at_ms = unix_epoch_ms();
+    let limit_type = string_field(info, "rate_limit_type")
+        .or_else(|| string_field(info, "rateLimitType"))
+        .unwrap_or_else(|| "account".to_string());
+    let utilization = info
+        .get("utilization")
+        .and_then(Value::as_f64)
+        .map(|value| if value <= 1.0 { value * 100.0 } else { value });
+    let status = string_field(info, "status").unwrap_or_else(|| "unknown".to_string());
+    let overage_status =
+        string_field(info, "overage_status").or_else(|| string_field(info, "overageStatus"));
+    let exhausted = status.eq_ignore_ascii_case("rejected")
+        || status.eq_ignore_ascii_case("exhausted")
+        || overage_status
+            .as_deref()
+            .is_some_and(|status| status.eq_ignore_ascii_case("exhausted"));
+    let state = if exhausted || utilization.is_some_and(|value| value >= 100.0) {
+        ProviderAccountUsageMeterState::Exhausted
+    } else if utilization.is_some_and(|value| value >= 80.0) {
+        ProviderAccountUsageMeterState::Warning
+    } else if utilization.is_some() || status.eq_ignore_ascii_case("allowed") {
+        ProviderAccountUsageMeterState::Healthy
+    } else {
+        ProviderAccountUsageMeterState::Unknown
+    };
+    let window_duration_minutes = match limit_type.as_str() {
+        "five_hour" | "five-hour" => Some(5 * 60),
+        "seven_day" | "seven-day" => Some(7 * 24 * 60),
+        _ => info
+            .get("window_duration_minutes")
+            .or_else(|| info.get("windowDurationMinutes"))
+            .and_then(Value::as_u64),
+    };
+    let resets_at_ms = info
+        .get("resets_at")
+        .or_else(|| info.get("resetsAt"))
+        .and_then(Value::as_u64)
+        .map(|value| {
+            if value < 10_000_000_000 {
+                value * 1_000
+            } else {
+                value
+            }
+        });
+    let scope = if limit_type.to_ascii_lowercase().contains("model") {
+        ProviderAccountUsageMeterScope::Model
+    } else {
+        ProviderAccountUsageMeterScope::Account
+    };
+    batch.account_usage = Some(ProviderAccountUsageSnapshot {
+        // The run-owning kernel replaces this placeholder with the selected
+        // stable profile ID before persisting it.
+        profile_id: String::new(),
+        provider: "claude".to_string(),
+        availability: ProviderAccountUsageAvailability::Available,
+        meters: vec![ProviderAccountUsageMeter {
+            meter_id: format!("rate_limit/{limit_type}"),
+            label: limit_type.replace(['_', '-'], " "),
+            kind: ProviderAccountUsageMeterKind::RollingLimit,
+            scope,
+            used_percent: utilization,
+            used: None,
+            remaining: None,
+            total: None,
+            unit: None,
+            window_duration_minutes,
+            resets_at_ms,
+            state,
+            source: "claude.rate_limit_event".to_string(),
+            observed_at_ms,
+        }],
+        observed_at_ms: Some(observed_at_ms),
+        source: "claude.rate_limit_event".to_string(),
+        management_url: Some("https://claude.ai/settings/usage".to_string()),
+    });
 }
 
 fn apply_assistant_message(

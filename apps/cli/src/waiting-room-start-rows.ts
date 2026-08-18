@@ -8,6 +8,7 @@ import {
   formatSliceBackendProviderAccount,
 } from "@chariox/kernel-client/slice-format"
 import type { SliceRecord } from "./cli-types.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -25,6 +26,7 @@ export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
   model: CatalogModelOption | null
   effort: string
+  accountProfile?: ProviderAccountProfile | null
   slice?: SliceRecord | null
   providerCatalogFallback?: boolean
 }
@@ -123,6 +125,16 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
     {
+      id: "account",
+      title: "Account",
+      value: formatAccountValue(choice.accountProfile ?? null),
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "account",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
       id: "model",
       title: "Model",
       value: choice.model ? formatWaitingRoomModelValue(choice.model, options.modelOptions, choice.providerCatalogFallback) : "No models available",
@@ -211,6 +223,30 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
   ]
+}
+
+function formatAccountValue(profile: ProviderAccountProfile | null): string {
+  if (!profile) {
+    return "Default (not discovered)"
+  }
+  const identity = profile.identity_summary ? ` · ${profile.identity_summary}` : ""
+  const usage = compactUsage(profile)
+  return `${profile.label}${identity}${usage ? ` · ${usage}` : ""}`
+}
+
+function compactUsage(profile: ProviderAccountProfile): string | null {
+  const meters = profile.usage.meters ?? []
+  const meter = meters.find((candidate) => candidate.state === "exhausted") ?? meters[0]
+  if (!meter) {
+    return profile.usage.availability === "unavailable" ? "usage not observed" : null
+  }
+  if (meter.used_percent !== undefined && meter.used_percent !== null) {
+    return `${Math.round(meter.used_percent)}% used`
+  }
+  if (meter.remaining !== undefined && meter.remaining !== null) {
+    return `${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining`
+  }
+  return meter.label
 }
 
 function formatTitleCase(value: string) {

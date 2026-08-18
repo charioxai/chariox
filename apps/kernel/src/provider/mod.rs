@@ -28,10 +28,12 @@ mod workspace_write_fence;
 pub(crate) use catalog_process::ProviderCatalogEndpoint;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
-pub(crate) use codex::lease_codex_catalog_endpoint;
 pub use codex::{
     codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
     resolve_codex_executable,
+};
+pub(crate) use codex::{
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, lease_codex_catalog_endpoint,
 };
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,

@@ -34,6 +34,7 @@ async fn leased_prompt_steer_delivers_once_and_resets_for_the_next_turn() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("default".to_string()),
             None,
             None,
@@ -160,6 +161,7 @@ async fn leased_provider_tool_list_exposes_event_reply_for_fresh_and_reused_disc
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,

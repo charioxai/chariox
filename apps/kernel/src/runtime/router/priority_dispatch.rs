@@ -22,6 +22,7 @@ use crate::runtime::metaagent_event_control::execute_metaagent_event_request;
 use crate::runtime::native_interaction_bridge::execute_native_provider_interaction_request;
 use crate::runtime::pairing_invite_executor::execute_pairing_request;
 use crate::runtime::prompt_settings_executor::execute_prompt_settings_request;
+use crate::runtime::provider_account_control::execute_provider_account_request;
 use crate::runtime::provider_auth_control::execute_provider_auth_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_launch_executor::{
@@ -138,9 +139,11 @@ impl CommandRouter {
             }
             request @ (LocalDaemonRequest::GetProviderRun(_)
             | LocalDaemonRequest::UpdateProviderRunSelection(_)) => {
+                let caller_user_id = command_caller_user_id(&command);
                 execute_provider_run_request(
                     &self.runtime_state,
                     &self.provider_catalog_projection,
+                    &caller_user_id,
                     request,
                 )
                 .await
@@ -455,12 +458,28 @@ impl CommandRouter {
             }
             request @ (LocalDaemonRequest::GetProviderAuthStatus(_)
             | LocalDaemonRequest::StartProviderLogin(_)) => {
-                execute_provider_auth_request(request).await
+                let caller_user_id = command_caller_user_id(&command);
+                execute_provider_auth_request(&self.runtime_state, &caller_user_id, request).await
+            }
+            request @ (LocalDaemonRequest::ListProviderAccountProfiles(_)
+            | LocalDaemonRequest::GetProviderAccountProfile(_)
+            | LocalDaemonRequest::CreateProviderAccountProfile(_)
+            | LocalDaemonRequest::LinkProviderAccountProfile(_)
+            | LocalDaemonRequest::RenameProviderAccountProfile(_)
+            | LocalDaemonRequest::SetDefaultProviderAccountProfile(_)
+            | LocalDaemonRequest::RefreshProviderAccountProfile(_)
+            | LocalDaemonRequest::RemoveProviderAccountProfile(_)
+            | LocalDaemonRequest::DeleteProviderAccountProfileData(_)) => {
+                let caller_user_id = command_caller_user_id(&command);
+                execute_provider_account_request(&self.runtime_state, &caller_user_id, request)
+                    .await
             }
             request @ LocalDaemonRequest::LogoutProvider(_) => {
+                let caller_user_id = command_caller_user_id(&command);
                 execute_provider_run_request(
                     &self.runtime_state,
                     &self.provider_catalog_projection,
+                    &caller_user_id,
                     request,
                 )
                 .await

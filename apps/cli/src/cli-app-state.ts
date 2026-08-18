@@ -117,6 +117,7 @@ export function createCliAppState(options: {
   const [relayStatusState, setRelayStatusState] = createSignal<RelayStatusView | null>(null)
   const [remoteMachinesState, setRemoteMachinesState] = createSignal<RemoteMachineView[]>([])
   const [remoteKernelsState, setRemoteKernelsState] = createSignal<RemoteKernelView[]>([])
+  const [providerAccountsState, setProviderAccountsState] = createSignal<import("./cli-types.js").ProviderAccountProfile[]>([])
   const [slicesState, setSlicesState] = createSignal<SliceRecord[]>([])
   const [terminalsState, setTerminalsState] = createSignal<TerminalView[]>([])
   const [externalProviderSessionsState, setExternalProviderSessionsState] = createSignal<ExternalProviderSessionRecord[]>([])
@@ -244,6 +245,8 @@ export function createCliAppState(options: {
     setRemoteMachinesState,
     remoteKernelsState,
     setRemoteKernelsState,
+    providerAccountsState,
+    setProviderAccountsState,
     slicesState,
     setSlicesState,
     terminalsState,

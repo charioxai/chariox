@@ -593,6 +593,7 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         RelayPeerRequest::SpawnLeasedAgent {
             lease_id: lease.id.clone(),
             provider: "opencode".to_string(),
+            account_profile: "work".to_string(),
             model: Some("kimi2.5".to_string()),
             effort: Some("medium".to_string()),
             execution_mode: None,

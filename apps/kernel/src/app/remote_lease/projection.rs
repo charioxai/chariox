@@ -1443,6 +1443,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -1521,6 +1522,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("sonnet".to_string()),
                 None,
                 None,
@@ -1632,6 +1634,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("sonnet".to_string()),
                 None,
                 None,
@@ -1769,6 +1772,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -1886,6 +1890,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -2015,6 +2020,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -2074,6 +2080,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -2185,6 +2192,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,
@@ -2260,6 +2268,7 @@ mod explicit_completion_tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("default".to_string()),
                 None,
                 None,

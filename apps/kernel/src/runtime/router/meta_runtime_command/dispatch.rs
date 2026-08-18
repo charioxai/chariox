@@ -557,6 +557,7 @@ impl CommandRouter {
             provider: spawn
                 .provider
                 .or_else(|| Some(metaagent.provider().to_string())),
+            account_profile: metaagent.account_profile().map(str::to_string),
             model: spawn
                 .model
                 .or_else(|| metaagent.model().map(str::to_string)),

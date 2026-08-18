@@ -76,6 +76,16 @@ export function waitingRoomRows(
     ...waitingRoomSliceRows(state, remote, titleWidth),
     ...waitingRoomTerminalRows(state, remote, titleWidth),
     {
+      id: "provider-accounts",
+      title: "Provider Accounts",
+      value: `${remote.providerAccounts?.length ?? 0} profiles · Press Enter`,
+      titleWidth,
+      indent: 0,
+      focused: state.focus === "provider-accounts",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
       id: "theme",
       title: "Theme",
       value: themeLabel(state.themeId, themeRegistry),

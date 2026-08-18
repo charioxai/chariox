@@ -327,6 +327,7 @@ export type WaitingRoomInventorySnapshot = {
     directory?: string | null
     worktree_label?: string | null
   } | null
+  provider_accounts?: import("./kernel-types-provider.js").ProviderAccountProfile[]
 }
 
 export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {

@@ -80,6 +80,8 @@ export type CliWaitingRoomCompositionDeps = {
   setRemoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   setRemoteKernelsState: AnyFn
+  providerAccountsState: AnyFn
+  setProviderAccountsState: AnyFn
   terminalsState: AnyFn
   setTerminalsState: AnyFn
   slicesState: AnyFn
@@ -137,6 +139,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -189,6 +192,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
+    setProviderAccounts: deps.setProviderAccountsState,
     setTerminals: deps.setTerminalsState,
     setSlices: deps.setSlicesState,
     setExternalProviderSessions: deps.setExternalProviderSessionsState,
@@ -276,6 +280,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -289,7 +294,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getProviderCatalog: deps.providerCatalogState,
     getCurrentProvider: () => deps.options.provider ?? "opencode",
     getCurrentModel: () => deps.options.model,
-    getAccountProfile: () => deps.options.accountProfile,
+    getAccountProfile: () => deps.waitingRoomState().accountProfileId,
     handleCloudCommand: () => deps.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] }),
     setPromptText: deps.setPromptText,
     focusPrompt: deps.focusPrompt,
@@ -372,6 +377,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),

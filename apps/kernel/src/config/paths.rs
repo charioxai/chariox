@@ -56,6 +56,13 @@ impl DaemonConfig {
             })
     }
 
+    pub fn account_profile_registry_path(&self) -> PathBuf {
+        self.durable_state_path()
+            .parent()
+            .map(|root| root.join("provider-accounts.json"))
+            .unwrap_or_else(|| default_config_dir().join("provider-accounts.json"))
+    }
+
     pub fn workflow_runtime_artifact_root(&self) -> PathBuf {
         self.durable_state_path()
             .parent()

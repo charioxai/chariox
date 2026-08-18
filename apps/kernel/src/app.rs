@@ -139,6 +139,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
@@ -224,6 +225,17 @@ impl DaemonApp {
             }),
         );
 
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )?;
+        let provider_home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        provider_account_profiles
+            .migrate_effective_defaults(crate::session::DEFAULT_LOCAL_USER_ID, &provider_home)?;
+
         let mut app = Self {
             agents: AgentServiceStore::new(AgentService::new()),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
@@ -241,6 +253,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             metaagent_trace_subscriptions:
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
@@ -363,6 +376,12 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn provider_account_profile_registry(
+        &self,
+    ) -> crate::account_profile::ProviderAccountProfileRegistry {
+        self.provider_account_profiles.clone()
     }
 
     pub(crate) fn metaagent_event_store(

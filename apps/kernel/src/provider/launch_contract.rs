@@ -407,6 +407,11 @@ pub struct LaunchProviderRequest {
     pub provider_config_overrides: BTreeMap<String, Value>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub provider_env_remove: Vec<String>,
+    /// Host-local account-root environment resolved from `account_profile`.
+    /// It is never serialized across client or relay boundaries; each
+    /// execution kernel resolves the stable profile id against its registry.
+    #[serde(skip)]
+    pub(crate) provider_account_env: BTreeMap<String, String>,
     #[serde(
         default,
         skip_serializing_if = "ProviderWriteAccessMode::is_unrestricted"
@@ -572,6 +577,7 @@ impl LaunchProviderRequest {
             remote_extension_manifest: crate::extension::RemoteExtensionManifest::default(),
             provider_config_overrides: BTreeMap::new(),
             provider_env_remove: Vec::new(),
+            provider_account_env: BTreeMap::new(),
             write_access_mode: ProviderWriteAccessMode::Unrestricted,
             execution_mode: None,
             permission_level: None,
@@ -643,6 +649,14 @@ impl LaunchProviderRequest {
 
     pub fn with_provider_env_remove(mut self, env_remove: Vec<String>) -> Self {
         self.provider_env_remove = env_remove;
+        self
+    }
+
+    pub(crate) fn with_provider_account_env(
+        mut self,
+        environment: BTreeMap<String, String>,
+    ) -> Self {
+        self.provider_account_env = environment;
         self
     }
 

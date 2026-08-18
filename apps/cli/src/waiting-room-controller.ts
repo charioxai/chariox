@@ -30,6 +30,7 @@ import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiti
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
+  accountProfile?: string
   model: string
   effort: string
   ownerMachineRef?: string | null
@@ -263,6 +264,7 @@ export function deriveWaitingRoomActivationDecision(options: {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
   const launch = {
     provider: choice.providerId ?? options.currentProvider,
+    accountProfile: choice.accountProfile?.profile_id ?? options.state.accountProfileId ?? "default",
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
     ownerMachineRef: choice.machineRef,
@@ -333,6 +335,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   }
   const launch = {
     provider: choice.providerId ?? options.currentProvider,
+    accountProfile: choice.accountProfile?.profile_id ?? options.state.accountProfileId ?? "default",
     model: choice.model?.id ?? options.currentModel,
     effort: choice.effort,
     ownerMachineRef: choice.machineRef,
@@ -397,6 +400,24 @@ export function deriveWaitingRoomControlActivationDecision(options: {
         message: options.remote?.collaborationBackend === "cloud"
           ? "Open Chariox Cloud for saved collaborators before starting. After session start, use /cloud invite create."
           : "Create the session first, then use /relay invite create. Chariox Cloud adds saved collaborators and pre-session invites.",
+      }
+    case "account": {
+      const account = remote.providerAccounts?.find((profile) => (
+        profile.provider === options.state.providerId
+        && profile.profile_id === options.state.accountProfileId
+      ))
+      return {
+        action: "info",
+        message: account
+          ? `${account.provider}/${account.label}: ${account.auth_state}; usage ${account.usage.availability}`
+          : "No discovered account is selected. Open Provider Accounts to add or link one.",
+      }
+    }
+    case "provider-accounts":
+      return {
+        action: "stage-command",
+        command: "/provider accounts",
+        message: "Provider Accounts ready; add an action or press Enter to list profiles",
       }
     case "machine": {
       const machine = remote.machines?.[options.state.machineIndex]

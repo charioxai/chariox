@@ -47,28 +47,67 @@ export function getProviderCommandCatalogsRequest() {
   return { GetProviderCommandCatalogs: null }
 }
 
-export function getProviderAuthStatusRequest(provider: string) {
+export function getProviderAuthStatusRequest(provider: string, accountProfile = "default") {
   return {
     GetProviderAuthStatus: {
       provider,
+      account_profile: accountProfile,
     },
   }
 }
 
-export function startProviderLoginRequest(provider: string) {
+export function startProviderLoginRequest(provider: string, accountProfile = "default") {
   return {
     StartProviderLogin: {
       provider,
+      account_profile: accountProfile,
     },
   }
 }
 
-export function logoutProviderRequest(provider: string) {
+export function logoutProviderRequest(provider: string, accountProfile = "default") {
   return {
     LogoutProvider: {
       provider,
+      account_profile: accountProfile,
     },
   }
+}
+
+export function listProviderAccountProfilesRequest(provider?: string | null) {
+  return { ListProviderAccountProfiles: { provider: provider ?? null } }
+}
+
+export function getProviderAccountProfileRequest(provider: string, accountProfile: string) {
+  return { GetProviderAccountProfile: { provider, account_profile: accountProfile } }
+}
+
+export function createProviderAccountProfileRequest(provider: string, label: string) {
+  return { CreateProviderAccountProfile: { provider, label } }
+}
+
+export function linkProviderAccountProfileRequest(provider: string, label: string, path: string) {
+  return { LinkProviderAccountProfile: { provider, label, path } }
+}
+
+export function renameProviderAccountProfileRequest(provider: string, accountProfile: string, label: string) {
+  return { RenameProviderAccountProfile: { provider, account_profile: accountProfile, label } }
+}
+
+export function setDefaultProviderAccountProfileRequest(provider: string, accountProfile: string) {
+  return { SetDefaultProviderAccountProfile: { provider, account_profile: accountProfile } }
+}
+
+export function refreshProviderAccountProfileRequest(provider: string, accountProfile: string) {
+  return { RefreshProviderAccountProfile: { provider, account_profile: accountProfile } }
+}
+
+export function removeProviderAccountProfileRequest(provider: string, accountProfile: string) {
+  return { RemoveProviderAccountProfile: { provider, account_profile: accountProfile } }
+}
+
+export function deleteProviderAccountProfileDataRequest(provider: string, accountProfile: string, confirmationProfileId: string) {
+  return { DeleteProviderAccountProfileData: { provider, account_profile: accountProfile, confirmation_profile_id: confirmationProfileId } }
 }
 
 export function launchProviderRunRequest(

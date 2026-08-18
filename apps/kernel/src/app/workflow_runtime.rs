@@ -479,18 +479,27 @@ mod tests {
                 "worktree-1",
             ))
             .expect("session should be created");
+        let profile = app
+            .provider_account_profile_registry()
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Workflow test",
+            )
+            .expect("test account profile should be registered");
         let agent = crate::app::KernelSessionService::new(&mut app)
             .spawn_agent(
                 crate::agent::CreateAgentRequest::new(session.id(), "codex")
-                    .with_account_profile("profile-b"),
+                    .with_account_profile(&profile.profile_id),
             )
             .expect("workflow-capable agent should be created");
         app.agents
-            .set_agent_runtime_profile(
+            .set_agent_runtime_profile_with_account_profile(
                 agent.id(),
-                "default",
+                "codex",
                 None,
                 None,
+                Some(profile.profile_id.clone()),
                 crate::provider::ProviderResumeState::from_codex_thread_id("thread-1"),
             )
             .expect("agent runtime profile should be set");
@@ -540,7 +549,7 @@ mod tests {
             .providers()
             .get_run(&run_id)
             .expect("workflow prompt should launch a provider run");
-        assert_eq!(run.account_profile(), "profile-b");
+        assert_eq!(run.account_profile(), profile.profile_id);
     }
 
     #[test]

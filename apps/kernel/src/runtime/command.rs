@@ -323,6 +323,7 @@ mod tests {
             None,
             None,
             &LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                account_profile: None,
                 session_id: "session-1".to_string(),
                 alias: Some("reviewer".to_string()),
                 provider: Some("claude-code".to_string()),

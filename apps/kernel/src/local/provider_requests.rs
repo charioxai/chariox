@@ -8,9 +8,8 @@ use chariox_relay::protocol::ClientTarget;
 
 use super::api::{
     ApproveRemoteMachineRequest, ConfigureRelayRequest, ForgetRemoteMachineRequest,
-    GetProviderAuthStatusRequest, LaunchProviderRunRequest, ListRemoteMachineKernelsRequest,
-    LocalDaemonResponse, LogoutProviderRequest, RelayStatus, RenameRemoteMachineRequest,
-    StartProviderLoginRequest,
+    LaunchProviderRunRequest, ListRemoteMachineKernelsRequest, LocalDaemonResponse, RelayStatus,
+    RenameRemoteMachineRequest,
 };
 
 mod blocking;
@@ -20,7 +19,8 @@ mod remote_machines;
 use blocking::block_on_relay_query;
 pub(crate) use catalog::{
     load_provider_catalog, logout_provider_response, provider_auth_status_response,
-    provider_command_catalogs_response, start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
+    provider_command_catalogs_response, refresh_provider_account_profile_response,
+    start_provider_login_response, PROVIDER_CATALOG_CACHE_TTL,
 };
 pub(crate) use remote_machines::{
     forgotten_machine_record, record_for_machine_id, remote_machine_records,
@@ -202,52 +202,6 @@ impl DaemonApp {
         self.provider_catalog_cache.clear();
         let machine = record_for_machine_id(machine, live, &config.host_machine_id)?;
         Ok(LocalDaemonResponse::RemoteMachineRenamed { machine })
-    }
-
-    pub(super) fn provider_auth_status_response_for_app(
-        &mut self,
-        request: GetProviderAuthStatusRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        match crate::provider::canonical_provider_family(&request.provider) {
-            Some("codex" | "claude") => provider_auth_status_response(request),
-            _ => Err(DaemonError::LocalTransport {
-                operation: "get_provider_auth_status",
-                message: format!(
-                    "provider `{}` does not expose an auth status API",
-                    request.provider
-                ),
-            }),
-        }
-    }
-
-    pub(super) fn start_provider_login_response_for_app(
-        &mut self,
-        request: StartProviderLoginRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request.provider.as_str() {
-            "codex" => start_provider_login_response(request),
-            provider => Err(DaemonError::LocalTransport {
-                operation: "start_provider_login",
-                message: format!("provider `{provider}` does not expose a login API"),
-            }),
-        }
-    }
-
-    pub(super) fn logout_provider_response_for_app(
-        &mut self,
-        request: LogoutProviderRequest,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
-        match request.provider.as_str() {
-            "codex" => {
-                let response = logout_provider_response(request)?;
-                self.provider_catalog_cache.clear();
-                Ok(response)
-            }
-            provider => Err(DaemonError::LocalTransport {
-                operation: "logout_provider",
-                message: format!("provider `{provider}` does not expose a logout API"),
-            }),
-        }
     }
 }
 

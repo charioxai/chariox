@@ -1,8 +1,81 @@
 use super::*;
 
 #[test]
+fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
+
+    let request = LocalDaemonRequest::CreateProviderAccountProfile(
+        crate::local::api::CreateProviderAccountProfileRequest {
+            provider: "codex".to_string(),
+            label: "Work".to_string(),
+        },
+    );
+    let response = LocalDaemonResponse::ProviderAccountProfile {
+        profile: crate::account_profile::ProviderAccountProfile {
+            owner_user_id: "user-1".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "work".to_string(),
+            label: "Work".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+            is_default: false,
+            auth_state: crate::account_profile::ProviderAccountAuthState::Authenticated,
+            identity_summary: Some("work@example.com".to_string()),
+            plan: Some("pro".to_string()),
+            detected_provider_version: Some("1.2.3".to_string()),
+            last_validated_at_ms: Some(1_234),
+            usage: crate::account_profile::ProviderAccountUsageSnapshot {
+                profile_id: "work".to_string(),
+                provider: "codex".to_string(),
+                availability: crate::account_profile::ProviderAccountUsageAvailability::Available,
+                meters: vec![crate::account_profile::ProviderAccountUsageMeter {
+                    meter_id: "primary".to_string(),
+                    label: "5 hour limit".to_string(),
+                    kind: crate::account_profile::ProviderAccountUsageMeterKind::RollingLimit,
+                    scope: crate::account_profile::ProviderAccountUsageMeterScope::Account,
+                    used_percent: Some(25.0),
+                    used: None,
+                    remaining: None,
+                    total: None,
+                    unit: None,
+                    window_duration_minutes: Some(300),
+                    resets_at_ms: Some(9_876),
+                    state: crate::account_profile::ProviderAccountUsageMeterState::Healthy,
+                    source: "codex_app_server".to_string(),
+                    observed_at_ms: 1_234,
+                }],
+                observed_at_ms: Some(1_234),
+                source: "codex_app_server".to_string(),
+                management_url: Some("https://chatgpt.com/codex/settings/usage".to_string()),
+            },
+        },
+    };
+
+    let snapshot = serde_json::json!([request, response]);
+    assert_eq!(
+        snapshot.pointer("/0/CreateProviderAccountProfile/label"),
+        Some(&serde_json::json!("Work"))
+    );
+    assert_eq!(
+        snapshot.pointer("/1/ProviderAccountProfile/profile/usage/meters/0/used_percent"),
+        Some(&serde_json::json!(25.0))
+    );
+    assert!(snapshot
+        .pointer("/1/ProviderAccountProfile/profile")
+        .and_then(serde_json::Value::as_object)
+        .is_some_and(|profile| !profile.contains_key("path") && !profile.contains_key("locator")));
+
+    let serialized =
+        serde_json::to_string(&snapshot).expect("provider account profile snapshot should encode");
+    let hash = Sha256::digest(serialized.as_bytes());
+    assert_eq!(
+        format!("{hash:x}"),
+        "e82346cd3c46552403aafcbbb6c00ace8700683295c4a40128910bc50e95c696"
+    );
+}
+
+#[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -82,7 +155,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -694,7 +767,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -749,7 +822,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -799,7 +872,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -856,7 +929,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 265);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

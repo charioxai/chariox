@@ -152,6 +152,7 @@ impl KernelRuntimeState {
         &self,
         lease_id: &str,
         provider: &str,
+        account_profile: &str,
         model: Option<String>,
         effort: Option<String>,
         execution_mode: Option<AgentExecutionMode>,
@@ -162,10 +163,12 @@ impl KernelRuntimeState {
     ) -> Result<LeasedAgent, DaemonError> {
         let lease_id = lease_id.to_string();
         let provider = provider.to_string();
+        let account_profile = account_profile.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).create_leased_agent(
                 &lease_id,
                 &provider,
+                &account_profile,
                 model,
                 effort,
                 execution_mode,
@@ -210,6 +213,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
@@ -218,6 +222,7 @@ impl KernelRuntimeState {
             RemoteLeaseRuntime::new(app).update_leased_agent_profile(
                 &leased_agent_id,
                 provider,
+                account_profile,
                 model,
                 effort,
             )

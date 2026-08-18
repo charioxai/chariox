@@ -11,7 +11,7 @@ use crate::terminal::TerminalOutputKind;
 
 /// Version 16 adds the independent `event_context_enabled` capability to
 /// remote workflow turn contexts. Older workers default it off.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 16;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 17;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -234,6 +234,7 @@ pub enum RelayPeerRequest {
     SpawnLeasedAgent {
         lease_id: String,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,6 +259,7 @@ pub enum RelayPeerRequest {
     UpdateLeasedAgentProfile {
         leased_agent_id: String,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     },

@@ -85,12 +85,16 @@ fn plan_opencode_launch_unlocked(
         let executable = resolve_opencode_executable_unlocked()?;
         let port = resolve_opencode_launch_port(true)?;
         let base_url = format!("http://127.0.0.1:{port}");
+        let mut environment = runtime_mcp_env(request)?;
+        if let Some(request) = request {
+            environment.extend(request.provider_account_env.clone());
+        }
         return Ok(managed_launch(
             executable,
             port,
             resolve_opencode_bind_host(),
             base_url,
-            runtime_mcp_env(request)?,
+            environment,
             request
                 .map(|request| request.provider_env_remove.clone())
                 .unwrap_or_default(),
@@ -101,12 +105,16 @@ fn plan_opencode_launch_unlocked(
     let base_url = format!("http://127.0.0.1:{port}");
     let executable = resolve_opencode_executable_unlocked()?;
 
+    let mut environment = runtime_mcp_env(request)?;
+    if let Some(request) = request {
+        environment.extend(request.provider_account_env.clone());
+    }
     Ok(managed_launch(
         executable,
         port,
         resolve_opencode_bind_host(),
         base_url,
-        runtime_mcp_env(request)?,
+        environment,
         request
             .map(|request| request.provider_env_remove.clone())
             .unwrap_or_default(),

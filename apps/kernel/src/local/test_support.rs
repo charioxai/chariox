@@ -172,6 +172,7 @@ impl LocalRouterTestHarness {
     ) -> AgentInstance {
         match self
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                account_profile: None,
                 session_id: session_id.to_string(),
                 alias: Some(alias.to_string()),
                 provider: Some("dev-stub".to_string()),

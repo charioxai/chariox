@@ -53,6 +53,7 @@ export type AgentLifecycleCommandHandlerDeps = {
     model: string,
     variant: string,
     agentId: string,
+    accountProfile?: string,
   ) => Promise<RuntimeProviderRun>
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
@@ -199,6 +200,7 @@ async function applyFocusedAgentSession(
       launchDecision.launch.model,
       launchDecision.launch.effort,
       launchDecision.targetAgentId,
+      agent?.account_profile ?? undefined,
     )
     deps.setProviderRunState(run)
     deps.applySessionState(await deps.refreshSessionState(nextSession.id))
