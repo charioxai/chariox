@@ -381,36 +381,67 @@ impl DurableKernelStateStore {
     }
 }
 
+pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
+    pub(super) event_id: &'a str,
+    pub(super) timestamp_ms: u64,
+    pub(super) payload_json: &'a str,
+    pub(super) owner_id: &'a str,
+    pub(super) session_id: &'a str,
+    pub(super) hot_entities: &'a [DurableWorkflowHotEntityWrite],
+    pub(super) workflow_runs: &'a [DurableWorkflowRunWrite],
+    pub(super) delivery_receipts: &'a [DurableDeliveryReceiptWrite],
+}
+
 pub(super) fn write_workflow_runtime_transition(
     transaction: &Transaction<'_>,
-    event_id: &str,
-    timestamp_ms: u64,
-    payload_json: &str,
-    owner_id: &str,
-    session_id: &str,
-    hot_entities: &[DurableWorkflowHotEntityWrite],
-    workflow_runs: &[DurableWorkflowRunWrite],
-    delivery_receipts: &[DurableDeliveryReceiptWrite],
+    write: WorkflowRuntimeTransitionWrite<'_>,
 ) -> Result<u64, rusqlite::Error> {
     transaction.execute(
         "INSERT INTO durable_state_events (
             event_id, kind, subject_id, timestamp_ms, payload_json
          ) VALUES (?1, 'workflow.runtime.updated', ?2, ?3, ?4)",
-        params![event_id, session_id, timestamp_ms as i64, payload_json],
+        params![
+            write.event_id,
+            write.session_id,
+            write.timestamp_ms as i64,
+            write.payload_json
+        ],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
     write_workflow_hot_entities(
         transaction,
-        owner_id,
-        session_id,
-        timestamp_ms,
-        hot_entities,
+        write.owner_id,
+        write.session_id,
+        write.timestamp_ms,
+        write.hot_entities,
         true,
     )?;
-    write_workflow_runs(transaction, owner_id, timestamp_ms, workflow_runs, true)?;
-    write_delivery_receipts(transaction, owner_id, timestamp_ms, delivery_receipts, true)?;
-    delete_missing_active_workflow_runs(transaction, owner_id, session_id, workflow_runs)?;
-    delete_missing_delivery_receipts(transaction, owner_id, session_id, delivery_receipts)?;
+    write_workflow_runs(
+        transaction,
+        write.owner_id,
+        write.timestamp_ms,
+        write.workflow_runs,
+        true,
+    )?;
+    write_delivery_receipts(
+        transaction,
+        write.owner_id,
+        write.timestamp_ms,
+        write.delivery_receipts,
+        true,
+    )?;
+    delete_missing_active_workflow_runs(
+        transaction,
+        write.owner_id,
+        write.session_id,
+        write.workflow_runs,
+    )?;
+    delete_missing_delivery_receipts(
+        transaction,
+        write.owner_id,
+        write.session_id,
+        write.delivery_receipts,
+    )?;
     Ok(sequence)
 }
 

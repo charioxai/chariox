@@ -144,6 +144,7 @@ fn reserve_prompt_id_block(path: &Path, minimum: u64) -> std::io::Result<(u64, u
         .create(true)
         .read(true)
         .write(true)
+        .truncate(false)
         .open(lock_path)?;
     lock_file.lock()?;
     let current = match std::fs::read(path) {
