@@ -48,6 +48,11 @@ pub struct WorkflowEventBinding {
         skip_serializing_if = "Option::is_none"
     )]
     pub reply_mode: Option<String>,
+    /// Provider action IDs explicitly enabled for this event binding. The
+    /// list is catalog-validated before persistence and is never inferred
+    /// from provider context alone.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_ids: Vec<String>,
     pub revision: u64,
     pub status: WorkflowEventBindingStatus,
     pub created_at_ms: u64,

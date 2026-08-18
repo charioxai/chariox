@@ -21,6 +21,7 @@ use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 
+use crate::management_capability::{parse_public_key, verify_management_capability_scoped};
 use crate::store::ActionReceiptLookupError;
 use crate::{
     baseline_provider_connection_inspection, metadata_matches_filter, now_ms, AedsPublisher,
@@ -28,14 +29,29 @@ use crate::{
     MAX_WEBHOOK_BYTES,
 };
 
+fn action_receipt_is_durable(action_id: &str) -> bool {
+    // Context lookups are bounded, read-only queries. Persisting their full provider response
+    // would retain conversation history and user profiles indefinitely in the AEGS database.
+    !matches!(action_id, "event.context" | "notification.context")
+}
+
 #[derive(Clone)]
 struct AegsServer {
     producer_id: String,
     management_token: Option<String>,
+    management_public_key: Option<ed25519_dalek::VerifyingKey>,
+    management_issuer: String,
+    management_url: Option<String>,
+    manifest_digest: Option<String>,
     publisher: AedsPublisher,
     store: AegsStore,
     provider: Arc<dyn AegsProvider>,
     action_locks: ActionLockMap,
+}
+
+enum ManagementAuthorization {
+    Static,
+    Signed(Box<crate::management_capability::ManagementCapabilityClaims>),
 }
 
 type ActionLock = Arc<tokio::sync::Mutex<()>>;
@@ -86,12 +102,38 @@ where
         )
         .into());
     }
+    let management_url = std::env::var("CHARIOX_AEGS_MANAGEMENT_URL")
+        .ok()
+        .map(|value| value.trim().trim_end_matches('/').to_string())
+        .filter(|value| !value.is_empty());
+    let manifest_digest = std::env::var("CHARIOX_AEGS_MANIFEST_DIGEST")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let management_public_key = std::env::var("CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY")
+        .ok()
+        .map(|value| parse_public_key(&value))
+        .transpose()
+        .map_err(|error| format!("invalid CHARIOX_AEGS_MANAGEMENT_PUBLIC_KEY: {error}"))?;
+    if management_public_key.is_some() && (management_url.is_none() || manifest_digest.is_none()) {
+        return Err(
+            "signed management capabilities require CHARIOX_AEGS_MANAGEMENT_URL and CHARIOX_AEGS_MANIFEST_DIGEST"
+                .into(),
+        );
+    }
     let server = AegsServer {
         producer_id: producer_id.clone(),
         management_token: read_secret(
             "CHARIOX_AEGS_MANAGEMENT_TOKEN",
             "CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE",
         )?,
+        management_public_key,
+        management_issuer: std::env::var("CHARIOX_AEGS_MANAGEMENT_ISSUER")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| "chariox-cloud".to_string()),
+        management_url,
+        manifest_digest,
         publisher: AedsPublisher::new(
             producer_id.clone(),
             read_secret(
@@ -211,10 +253,15 @@ impl AegsServer {
                 Err(message) => error(StatusCode::INTERNAL_SERVER_ERROR, "store_failed", message),
             },
             (Method::GET, "/v1/subscriptions") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
-                match self.store.all(&self.producer_id) {
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
+                let subscriptions = match management_owner(&request, &authorization) {
+                    Some(owner_id) => self.store.all_for_owner(&self.producer_id, &owner_id),
+                    None => self.store.all(&self.producer_id),
+                };
+                match subscriptions {
                     Ok(subscriptions) => json(
                         StatusCode::OK,
                         serde_json::json!({"subscriptions": subscriptions}),
@@ -225,9 +272,10 @@ impl AegsServer {
                 }
             }
             (Method::PUT, "/v1/subscriptions/reconcile") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -243,6 +291,10 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) = enforce_management_owner(&authorization, &reconcile.owner_id)
+                {
+                    return *response;
+                }
                 if reconcile.generator_id != self.producer_id {
                     return error(
                         StatusCode::CONFLICT,
@@ -253,8 +305,13 @@ impl AegsServer {
                         ),
                     );
                 }
-                match self.store.reconcile(
+                let allowed_connection_owners = match &authorization {
+                    ManagementAuthorization::Signed(claims) => Some(claims.owner_ids.as_slice()),
+                    ManagementAuthorization::Static => None,
+                };
+                match self.store.reconcile_scoped(
                     &reconcile.owner_id,
+                    allowed_connection_owners,
                     &reconcile.generator_id,
                     &reconcile.subscriptions,
                 ) {
@@ -297,9 +354,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/actions") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -314,6 +372,9 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) = enforce_management_owner(&authorization, &action.owner_id) {
+                    return *response;
+                }
                 if let Err(message) = action.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_action", message);
                 }
@@ -375,23 +436,26 @@ impl AegsServer {
                     &action.input,
                     &action.context,
                 );
-                match self.store.action_receipt(
-                    &action.owner_id,
-                    &action.connection_id,
-                    &action.idempotency_key,
-                    &request_fingerprint,
-                ) {
-                    Ok(Some(response)) => return json(StatusCode::OK, response),
-                    Ok(None) => {}
-                    Err(ActionReceiptLookupError::Conflict(message)) => {
-                        return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
-                    }
-                    Err(ActionReceiptLookupError::Storage(message)) => {
-                        return error(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "action_receipt_lookup_failed",
-                            message,
-                        )
+                let durable_receipt = action_receipt_is_durable(&action.action_id);
+                if durable_receipt {
+                    match self.store.action_receipt(
+                        &action.owner_id,
+                        &action.connection_id,
+                        &action.idempotency_key,
+                        &request_fingerprint,
+                    ) {
+                        Ok(Some(response)) => return json(StatusCode::OK, response),
+                        Ok(None) => {}
+                        Err(ActionReceiptLookupError::Conflict(message)) => {
+                            return error(StatusCode::CONFLICT, "idempotency_key_conflict", message)
+                        }
+                        Err(ActionReceiptLookupError::Storage(message)) => {
+                            return error(
+                                StatusCode::INTERNAL_SERVER_ERROR,
+                                "action_receipt_lookup_failed",
+                                message,
+                            )
+                        }
                     }
                 }
                 let provider = Arc::clone(&self.provider);
@@ -422,25 +486,28 @@ impl AegsServer {
                         "provider action response identity did not match the request",
                     );
                 }
-                if let Err(message) = self.store.record_action_receipt(
-                    &action.owner_id,
-                    &action.connection_id,
-                    &response,
-                    &request_fingerprint,
-                    now_ms(),
-                ) {
-                    return error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "action_receipt_failed",
-                        message,
-                    );
+                if durable_receipt {
+                    if let Err(message) = self.store.record_action_receipt(
+                        &action.owner_id,
+                        &action.connection_id,
+                        &response,
+                        &request_fingerprint,
+                        now_ms(),
+                    ) {
+                        return error(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "action_receipt_failed",
+                            message,
+                        );
+                    }
                 }
                 json(StatusCode::ACCEPTED, response)
             }
             (Method::POST, "/v1/authorizations") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -456,6 +523,11 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &authorization.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = authorization.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_authorization", message);
                 }
@@ -508,9 +580,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/query") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -525,6 +598,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &query.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = query.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_connection_query", message);
                 }
@@ -593,9 +671,10 @@ impl AegsServer {
                 )
             }
             (Method::POST, "/v1/connections/inspect") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -611,6 +690,11 @@ impl AegsServer {
                             )
                         }
                     };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &inspection.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = inspection.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -631,9 +715,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/refresh") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -648,6 +733,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &refresh.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = refresh.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -708,9 +798,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/test-event") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -725,6 +816,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &test.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = test.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_test_event", message);
                 }
@@ -785,9 +881,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/revoke") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -802,6 +899,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &revoke.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = revoke.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -860,9 +962,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/connections/reconnect") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -878,6 +981,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &reconnect.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = reconnect.validate() {
                     return error(
                         StatusCode::BAD_REQUEST,
@@ -944,9 +1052,10 @@ impl AegsServer {
                 }
             }
             (Method::POST, "/v1/resources/query") => {
-                if let Err(response) = self.authorize_management(&request) {
-                    return *response;
-                }
+                let authorization_guard = match self.authorize_management(&request) {
+                    Ok(authorization) => authorization,
+                    Err(response) => return *response,
+                };
                 let body = match read_body(request).await {
                     Ok(body) => body,
                     Err(response) => return response,
@@ -961,6 +1070,11 @@ impl AegsServer {
                         )
                     }
                 };
+                if let Err(response) =
+                    enforce_management_owner(&authorization_guard, &query.owner_id)
+                {
+                    return *response;
+                }
                 if let Err(message) = query.validate() {
                     return error(StatusCode::BAD_REQUEST, "invalid_resource_query", message);
                 }
@@ -1029,6 +1143,19 @@ impl AegsServer {
                         return error(StatusCode::BAD_REQUEST, "invalid_callback", message)
                     }
                 };
+                // GitHub sends `setup_action=update` when an administrator changes an
+                // installation's repository or permission scope from GitHub settings. That
+                // administrative callback has no OAuth state and must not be treated as a
+                // connection authorization completion (nor should its one-time code be
+                // exchanged without an owner-bound pending authorization).
+                if query.get("setup_action").map(String::as_str) == Some("update")
+                    && !query.contains_key("state")
+                {
+                    return authorization_setup_updated_page(
+                        &self.producer_id,
+                        query.get("installation_id").map(String::as_str),
+                    );
+                }
                 let provider = Arc::clone(&self.provider);
                 match tokio::task::spawn_blocking(move || provider.complete_authorization(&query))
                     .await
@@ -1292,28 +1419,105 @@ impl AegsServer {
     fn authorize_management(
         &self,
         request: &Request<Incoming>,
-    ) -> Result<(), Box<Response<Full<Bytes>>>> {
-        let Some(expected) = self.management_token.as_deref() else {
-            return Err(Box::new(error(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "management_disabled",
-                "AEGS management token is not configured",
-            )));
-        };
+    ) -> Result<ManagementAuthorization, Box<Response<Full<Bytes>>>> {
         let presented = request
             .headers()
             .get("authorization")
             .and_then(|value| value.to_str().ok())
             .and_then(|value| value.strip_prefix("Bearer "));
-        if presented != Some(expected) {
+        if self
+            .management_token
+            .as_deref()
+            .is_some_and(|expected| Some(expected) == presented)
+        {
+            return Ok(ManagementAuthorization::Static);
+        }
+        if let Some(public_key) = self.management_public_key.as_ref() {
+            let Some(presented) = presented else {
+                return Err(Box::new(error(
+                    StatusCode::UNAUTHORIZED,
+                    "unauthorized",
+                    "valid AEGS management capability required",
+                )));
+            };
+            let claims = verify_management_capability_scoped(
+                presented,
+                public_key,
+                &self.management_issuer,
+                &self.producer_id,
+                now_ms() / 1_000,
+                self.management_url.as_deref(),
+                self.manifest_digest.as_deref(),
+            )
+            .map_err(|message| {
+                Box::new(error(StatusCode::UNAUTHORIZED, "unauthorized", message))
+            })?;
+            let presented_owner = request
+                .headers()
+                .get("x-chariox-owner-id")
+                .and_then(|value| value.to_str().ok());
+            if presented_owner
+                .is_none_or(|owner| !claims.owner_ids.iter().any(|allowed| allowed == owner))
+            {
+                return Err(Box::new(error(
+                    StatusCode::FORBIDDEN,
+                    "management_owner_mismatch",
+                    "the management capability is not bound to the requested owner",
+                )));
+            }
+            return Ok(ManagementAuthorization::Signed(Box::new(claims)));
+        }
+        if self.management_token.is_none() && self.management_public_key.is_none() {
             return Err(Box::new(error(
-                StatusCode::UNAUTHORIZED,
-                "unauthorized",
-                "valid AEGS management capability required",
+                StatusCode::SERVICE_UNAVAILABLE,
+                "management_disabled",
+                "AEGS management token or signed capability key is not configured",
             )));
         }
-        Ok(())
+        Err(Box::new(error(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "valid AEGS management capability required",
+        )))
     }
+}
+
+fn management_owner(
+    request: &Request<Incoming>,
+    authorization: &ManagementAuthorization,
+) -> Option<String> {
+    match authorization {
+        ManagementAuthorization::Signed(_) => request
+            .headers()
+            .get("x-chariox-owner-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+        ManagementAuthorization::Static => request
+            .headers()
+            .get("x-chariox-owner-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string),
+    }
+}
+
+fn enforce_management_owner(
+    authorization: &ManagementAuthorization,
+    requested_owner: &str,
+) -> Result<(), Box<Response<Full<Bytes>>>> {
+    if let ManagementAuthorization::Signed(claims) = authorization {
+        if !claims
+            .owner_ids
+            .iter()
+            .any(|owner| owner == requested_owner)
+        {
+            return Err(Box::new(error(
+                StatusCode::FORBIDDEN,
+                "management_owner_mismatch",
+                "the management capability is not bound to the requested owner",
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn connection_status(status: &str, expires_at_ms: Option<u64>) -> AegsConnectionStatus {
@@ -1430,6 +1634,33 @@ fn authorization_complete_page(
         .expect("valid authorization response")
 }
 
+fn authorization_setup_updated_page(
+    generator_id: &str,
+    installation_id: Option<&str>,
+) -> Response<Full<Bytes>> {
+    let generator = html_escape(generator_id);
+    let installation = installation_id
+        .map(html_escape)
+        .map(|value| format!("<p>Installation: <code>{value}</code></p>"))
+        .unwrap_or_default();
+    let html = format!(
+        "<!doctype html><html><head><meta charset=\"utf-8\"><title>Installation updated</title></head>\
+         <body><main><h1>Installation updated</h1><p>The {generator} installation was updated.\
+         Return to Chariox and reconnect or refresh this service so the kernel can verify the\
+         new permissions.</p>{installation}<p>You can close this window.</p></main></body></html>"
+    );
+    Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "text/html; charset=utf-8")
+        .header("cache-control", "no-store")
+        .header(
+            "content-security-policy",
+            "default-src 'none'; style-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        )
+        .body(Full::new(Bytes::from(html)))
+        .expect("valid installation update response")
+}
+
 fn html_escape(value: &str) -> String {
     value
         .replace('&', "&amp;")
@@ -1494,6 +1725,19 @@ mod tests {
     }
 
     #[test]
+    fn setup_update_without_state_is_an_informational_success() {
+        let response = authorization_setup_updated_page("dev.arroba.github", Some("153623497"));
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get("cache-control")
+                .and_then(|value| value.to_str().ok()),
+            Some("no-store")
+        );
+    }
+
+    #[test]
     fn baseline_inspection_never_claims_provider_health_or_test_support() {
         let inspection = baseline_provider_connection_inspection(
             "dev.chariox.github",
@@ -1517,5 +1761,35 @@ mod tests {
         );
         assert_eq!(inspection.last_successful_health_check_at_ms, None);
         assert!(!inspection.test_event_supported);
+    }
+
+    #[test]
+    fn context_actions_do_not_persist_provider_responses() {
+        assert!(!action_receipt_is_durable("event.context"));
+        assert!(!action_receipt_is_durable("notification.context"));
+        assert!(action_receipt_is_durable("notification.reply"));
+        assert!(action_receipt_is_durable("custom.action"));
+    }
+
+    #[test]
+    fn signed_management_capability_cannot_cross_owner_boundary() {
+        let authorization = ManagementAuthorization::Signed(Box::new(
+            crate::management_capability::ManagementCapabilityClaims {
+                issuer: "chariox-cloud".to_string(),
+                audience: "aegs-management".to_string(),
+                subject: "kernel-1".to_string(),
+                generator_id: "dev.chariox.slack".to_string(),
+                manifest_digest: "sha256:test".to_string(),
+                management_url: "https://aegs.example.test".to_string(),
+                user_id: "user-1".to_string(),
+                owner_ids: vec!["owner-1".to_string(), "kernel-1".to_string()],
+                issued_at: 100,
+                expires_at: 200,
+                token_id: "cap-1".to_string(),
+            },
+        ));
+        assert!(enforce_management_owner(&authorization, "owner-1").is_ok());
+        let response = enforce_management_owner(&authorization, "owner-2").unwrap_err();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

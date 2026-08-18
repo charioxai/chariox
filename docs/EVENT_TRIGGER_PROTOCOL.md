@@ -29,6 +29,13 @@ count, recommended placement, and the resulting `manifest_digest`—are delibera
 outside the signed payload and are rejected if embedded in a publisher manifest.
 The registry supplies and authenticates those catalog fields separately.
 
+An optional signed `actions` array declares bounded workflow capabilities. Each
+action has an opaque `action_id`, required scopes, a target policy, mutation and
+idempotency flags, and a closed object input schema. A workflow binding copies
+only the action IDs explicitly selected by the user after catalog validation;
+the kernel exposes the generic event-action tool only for that allow-list.
+Provider context alone never grants a mutation.
+
 ## Identities
 
 - `generator_id` identifies a publisher-scoped AEGS implementation. It does not
@@ -85,7 +92,15 @@ upstream webhook/subscription resources, and the mapping from an incoming provid
 event to an `event_interest_key`.
 
 The kernel reconciles each configured AEGS through its operator endpoint with a
-separate scoped management capability. `PUT /v1/subscriptions/reconcile` is
+separate scoped management capability. Hosted kernels obtain this capability from
+the Cloud API after authenticating their persisted Cloud session or machine
+credential; the registry-provided HTTPS management URL is checked against the
+published generator digest before a token is issued. The capability is a short-lived
+Ed25519-signed bearer token scoped to one generator, manifest digest, kernel identity,
+an exact set of allowed owner identities, and management audience. AEGS SDK servers verify it locally with the configured
+Chariox Cloud public key, so provider credentials and publisher private keys never
+enter the kernel, AEDS, or catalog. Self-hosted deployments may continue using a
+static operator token. `PUT /v1/subscriptions/reconcile` is
 authoritative for one `owner_id` and `generator_id` pair and carries
 trigger-owned binding identity, opaque connection handle, provider scope,
 canonical interest key, event type/version, filter, revision, and active state.

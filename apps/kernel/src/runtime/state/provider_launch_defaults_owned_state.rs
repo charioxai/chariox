@@ -7,9 +7,7 @@ impl KernelRuntimeOwnedState {
     /// Returns `None` when no provider default has ever been configured.
     pub(super) fn configured_session_agent_defaults(&self) -> Option<SessionAgentDefaults> {
         let providers = self.config_projection.snapshot().user_config.providers;
-        let provider = providers
-            .default
-            .filter(|value| !value.trim().is_empty())?;
+        let provider = providers.default.filter(|value| !value.trim().is_empty())?;
         Some(SessionAgentDefaults {
             provider,
             model: providers.model,

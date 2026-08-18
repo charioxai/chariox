@@ -2,6 +2,9 @@
 name = "chariox-event-protocol"
 version = "0.1.0"
 edition = "2021"
+description = "Public Chariox event protocol types and validation"
+license = "MIT"
+repository = "https://github.com/charioxai/chariox"
 
 [dependencies]
 chrono = { version = "0.4.45", default-features = false, features = ["std"] }

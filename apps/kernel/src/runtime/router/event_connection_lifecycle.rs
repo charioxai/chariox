@@ -11,7 +11,7 @@ use crate::local::{
     RemoveEventConnectionRequest, SetWorkflowEventBindingStatusRequest,
 };
 use crate::runtime::command::KernelCommand;
-use crate::runtime::event_catalog_control::execute_event_catalog_request;
+use crate::runtime::event_catalog_control::execute_event_catalog_request_with_client;
 use crate::session::WorkflowEventBindingStatus;
 
 use super::CommandRouter;
@@ -115,9 +115,10 @@ impl CommandRouter {
             .event_connection_lanes
             .lock(&caller_user_id, connection_id)
             .await;
-        let result = execute_event_catalog_request(
+        let result = execute_event_catalog_request_with_client(
             &self.runtime_state,
             &self.config_projection,
+            &self.aegs_management_http_client,
             &caller_user_id,
             LocalDaemonRequest::ObserveEventConnectionAuthorization(
                 crate::local::ObserveEventConnectionAuthorizationRequest {
@@ -218,9 +219,10 @@ impl CommandRouter {
         caller_user_id: &str,
         request: RemoveEventConnectionRequest,
     ) -> Result<LocalDaemonResponse, DaemonError> {
-        let dependencies = execute_event_catalog_request(
+        let dependencies = execute_event_catalog_request_with_client(
             &self.runtime_state,
             &self.config_projection,
+            &self.aegs_management_http_client,
             caller_user_id,
             LocalDaemonRequest::ListEventConnectionDependencies(
                 ListEventConnectionDependenciesRequest {
@@ -266,9 +268,10 @@ impl CommandRouter {
             }
         }
 
-        execute_event_catalog_request(
+        execute_event_catalog_request_with_client(
             &self.runtime_state,
             &self.config_projection,
+            &self.aegs_management_http_client,
             caller_user_id,
             LocalDaemonRequest::RemoveEventConnection(request),
         )

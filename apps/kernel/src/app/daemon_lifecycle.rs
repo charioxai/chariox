@@ -138,6 +138,7 @@ impl DaemonApp {
         );
         let event_delivery_config = {
             let app = app.lock().await;
+            let config_projection = app.config_projection_store();
             crate::transport::event_delivery_client::EventDeliveryClientConfig {
                 url: app.config().event_delivery_url.clone(),
                 token: app.config().event_delivery_token.clone(),
@@ -147,6 +148,7 @@ impl DaemonApp {
                     .config()
                     .event_generator_management_targets
                     .clone(),
+                config_projection,
             }
         };
         let event_delivery_task = tokio::spawn(

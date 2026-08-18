@@ -790,7 +790,10 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
         .expect("get user config should succeed")
     {
         LocalDaemonResponse::UserConfig { config, .. } => {
-            assert_eq!(config.providers.default, None, "fresh config.toml should have no provider default");
+            assert_eq!(
+                config.providers.default, None,
+                "fresh config.toml should have no provider default"
+            );
             assert_eq!(config.providers.model, None);
             assert_eq!(config.providers.effort, None);
         }
@@ -830,10 +833,12 @@ fn create_session_persists_and_reuses_provider_launch_defaults_from_user_config(
     }
 
     let second_agent = match client
-        .send(LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-provider-defaults-2",
-            "worktree-provider-defaults-2",
-        )))
+        .send(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-provider-defaults-2",
+                "worktree-provider-defaults-2",
+            ),
+        ))
         .expect("second session create should succeed")
     {
         LocalDaemonResponse::SessionCreated { agent, .. } => agent,

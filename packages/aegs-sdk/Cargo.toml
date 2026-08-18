@@ -2,12 +2,17 @@
 name = "chariox-aegs-sdk"
 version = "0.1.0"
 edition = "2021"
+description = "Public SDK for building Arroba/Chariox Event Generation Servers"
+license = "MIT"
+repository = "https://github.com/charioxai/chariox"
 
 [dependencies]
 aes-gcm = "0.10.3"
-chariox-event-protocol = { path = "../event-protocol" }
+chariox-event-protocol = { version = "0.1.0", path = "../event-protocol" }
 base64 = "0.22.1"
 bytes = "1.10.1"
+ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+serde_json_canonicalizer = "0.3.2"
 http-body-util = "0.1.3"
 hmac = "0.12.1"
 hyper = { version = "1.6.0", features = ["http1", "server"] }
