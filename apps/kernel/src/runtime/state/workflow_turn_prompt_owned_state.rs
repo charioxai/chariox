@@ -87,7 +87,7 @@ impl KernelRuntimeOwnedState {
         let base_directory =
             self.workflow_runtime_base_directory(session_id, workflow_run_id, workflow_node_run_id);
         let instruction_ref = self.workflow_node_instruction_reference(
-            base_directory.as_ref(),
+            session_id,
             workflow_run_id,
             node_id,
             node.and_then(|node| node.instructions()),
@@ -191,15 +191,16 @@ impl KernelRuntimeOwnedState {
 
     pub(super) fn workflow_node_instruction_reference(
         &self,
-        base_directory: Option<&PathBuf>,
+        session_id: &str,
         workflow_run_id: &str,
         node_id: &str,
         node_instructions: Option<&str>,
     ) -> Option<String> {
-        let root = base_directory?
-            .join(".chariox")
-            .join("workflow-runtime")
-            .join("kernel")
+        let root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join(session_id)
             .join(workflow_run_id)
             .join("workflow-instructions");
         let path = root.join(format!("node-{node_id}.md"));

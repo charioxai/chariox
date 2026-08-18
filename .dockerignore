@@ -12,6 +12,8 @@ DerivedData
 **/.derivedData
 .chariox
 **/.chariox
+.arroba
+**/.arroba
 .artifacts
 **/.artifacts
 *.log

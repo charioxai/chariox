@@ -45,11 +45,13 @@ This makes it easy to:
 Chariox resolves the log root in this order:
 
 1. `CHARIOX_LOG_DIR`
-2. `XDG_STATE_HOME/chariox/logs`
-3. `~/.local/state/chariox/logs`
-4. `./.chariox/logs`
+2. `CHARIOX_HOME/logs`
+3. `XDG_STATE_HOME/chariox/logs`
+4. `~/.local/state/chariox/logs`
+5. the operating-system temporary directory
 
 Each process writes its own `.ndjson` file under that root.
+Automatic logging never creates a project-local `.chariox` directory.
 
 ## 5. Default Logging Behavior
 
@@ -144,7 +146,7 @@ If you want disabled logging plus an isolated runtime directory during debugging
 
 ```bash
 export CHARIOX_LOG_LEVEL=off
-export CHARIOX_LOG_DIR="$(pwd)/.chariox/logs"
+export CHARIOX_HOME="$HOME/.chariox/dev/logging-experiment"
 ```
 
 ## 8. Inspecting Logs

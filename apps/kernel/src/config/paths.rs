@@ -56,6 +56,31 @@ impl DaemonConfig {
             })
     }
 
+    pub fn workflow_runtime_artifact_root(&self) -> PathBuf {
+        self.durable_state_path()
+            .parent()
+            .map(|root| root.join("workflow-runtime"))
+            .unwrap_or_else(|| {
+                default_state_dir()
+                    .join("workflow-runtime")
+                    .join(&self.daemon_id)
+            })
+    }
+
+    pub fn workflow_code_artifact_root(&self) -> PathBuf {
+        self.durable_state_path()
+            .parent()
+            .map(|root| root.join("workflow-code"))
+            .unwrap_or_else(|| default_config_dir().join("workflow-code"))
+    }
+
+    pub fn workflow_registry_root(&self) -> PathBuf {
+        self.durable_state_path()
+            .parent()
+            .map(|root| root.join("workflows"))
+            .unwrap_or_else(|| default_config_dir().join("workflows"))
+    }
+
     pub fn slice_root(&self) -> PathBuf {
         self.user_config
             .slices

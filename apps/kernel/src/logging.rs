@@ -122,6 +122,13 @@ pub fn default_log_root() -> PathBuf {
         return path;
     }
 
+    if let Some(path) = env::var_os("CHARIOX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return path.join("logs");
+    }
+
     if let Some(path) = env::var_os("XDG_STATE_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
@@ -140,10 +147,7 @@ pub fn default_log_root() -> PathBuf {
             .join("logs");
     }
 
-    std::env::current_dir()
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join(".chariox")
-        .join("logs")
+    std::env::temp_dir().join("chariox").join("logs")
 }
 
 pub fn debug(component: &str, message: impl Into<String>) {
@@ -514,6 +518,35 @@ mod tests {
 
     fn write_sized_file(path: &Path, size: usize) {
         fs::write(path, "x".repeat(size)).expect("write sized file");
+    }
+
+    #[test]
+    fn default_log_root_uses_chariox_home_instead_of_the_workspace() {
+        let _guard = crate::env_lock::lock();
+        let home = temp_log_dir("home");
+        let previous_log_dir = std::env::var_os("CHARIOX_LOG_DIR");
+        let previous_home = std::env::var_os("CHARIOX_HOME");
+        std::env::remove_var("CHARIOX_LOG_DIR");
+        std::env::set_var("CHARIOX_HOME", &home);
+
+        assert_eq!(default_log_root(), home.join("logs"));
+        assert_ne!(
+            default_log_root(),
+            std::env::current_dir()
+                .expect("current directory")
+                .join(".chariox")
+                .join("logs")
+        );
+
+        match previous_log_dir {
+            Some(value) => std::env::set_var("CHARIOX_LOG_DIR", value),
+            None => std::env::remove_var("CHARIOX_LOG_DIR"),
+        }
+        match previous_home {
+            Some(value) => std::env::set_var("CHARIOX_HOME", value),
+            None => std::env::remove_var("CHARIOX_HOME"),
+        }
+        let _ = fs::remove_dir_all(home);
     }
 
     fn ndjson_files(dir: &Path) -> Vec<PathBuf> {

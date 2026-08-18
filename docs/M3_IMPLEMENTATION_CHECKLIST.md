@@ -85,7 +85,7 @@ Current state: OpenCode `session.error` now reaches the transcript as a distinct
 ## 4.3 Project-Wide Logging and Debugging
 
 - [x] Define one daemon-owned machine-local log root for Chariox runtime processes.
-Current state: `CHARIOX_LOG_DIR` overrides the default; otherwise Chariox uses `XDG_STATE_HOME/chariox/logs`, then `~/.local/state/chariox/logs`, then `./.chariox/logs`.
+Current state: `CHARIOX_LOG_DIR` overrides the default; otherwise Chariox uses `CHARIOX_HOME/logs`, `XDG_STATE_HOME/chariox/logs`, `~/.local/state/chariox/logs`, then the operating-system temporary directory. It does not create workspace-local log directories automatically.
 - [x] Use structured log records with shared correlation fields:
   - timestamp
   - level

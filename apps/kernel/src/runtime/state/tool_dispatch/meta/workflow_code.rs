@@ -545,7 +545,14 @@ impl KernelRuntimeState {
         args: MetaWorkflowCodeValidateArgs,
     ) -> Result<RuntimeToolResult, DaemonError> {
         if let (Some(name), None) = (&args.name, &args.source) {
-            let artifact = meta_workflow_code_artifact(session, name)?;
+            let artifact = meta_workflow_code_artifact(
+                session,
+                self.owned
+                    .config_projection
+                    .snapshot()
+                    .workflow_code_artifact_root(),
+                name,
+            )?;
             let provider_rebindings = args.provider_rebindings;
             let agent_rebindings = args.agent_rebindings;
             let session_id = session.id().to_string();
@@ -574,7 +581,15 @@ impl KernelRuntimeState {
                 .await?;
             return runtime_tool_result_from_local_response(response);
         }
-        let source = meta_workflow_code_source(session, args.name, args.source)?;
+        let source = meta_workflow_code_source(
+            session,
+            self.owned
+                .config_projection
+                .snapshot()
+                .workflow_code_artifact_root(),
+            args.name,
+            args.source,
+        )?;
         let response = self
             .meta_execute_workflow_request(
                 crate::local::LocalDaemonRequest::ValidateWorkflowCode(
@@ -617,7 +632,15 @@ impl KernelRuntimeState {
             )
             .await?
         } else {
-            let source = meta_workflow_code_source(session, args.name, args.source)?;
+            let source = meta_workflow_code_source(
+                session,
+                self.owned
+                    .config_projection
+                    .snapshot()
+                    .workflow_code_artifact_root(),
+                args.name,
+                args.source,
+            )?;
             self.meta_workflow_code_apply_response(
                 session,
                 agent,
@@ -674,7 +697,15 @@ impl KernelRuntimeState {
             )
             .await?
         } else {
-            let source = meta_workflow_code_source(session, args.name, args.source)?;
+            let source = meta_workflow_code_source(
+                session,
+                self.owned
+                    .config_projection
+                    .snapshot()
+                    .workflow_code_artifact_root(),
+                args.name,
+                args.source,
+            )?;
             self.meta_execute_workflow_request(
                 crate::local::LocalDaemonRequest::RunWorkflowCode(
                     crate::local::RunWorkflowCodeRequest {
@@ -811,7 +842,12 @@ impl KernelRuntimeState {
             metaagent.owner_user_id().to_string(),
             Some(metaagent.id().to_string()),
         );
-        match meta_workflow_code_artifact_registry(session).and_then(|registry| {
+        let machine_root = self
+            .owned
+            .config_projection
+            .snapshot()
+            .workflow_code_artifact_root();
+        match meta_workflow_code_artifact_registry(session, machine_root).and_then(|registry| {
             registry.record_apply_history(artifact_name, actor, action, apply_report)
         }) {
             Ok(_) => {}
@@ -840,12 +876,13 @@ fn meta_workflow_code_node_path(
 
 fn meta_workflow_code_source(
     session: &crate::session::RuntimeSession,
+    machine_root: std::path::PathBuf,
     name: Option<String>,
     source: Option<String>,
 ) -> Result<String, DaemonError> {
     match (name, source) {
         (None, Some(source)) => Ok(source),
-        (Some(name), None) => meta_workflow_code_artifact_registry(session)?
+        (Some(name), None) => meta_workflow_code_artifact_registry(session, machine_root)?
             .get(&name)?
             .map(|artifact| artifact.source)
             .ok_or_else(|| DaemonError::LocalTransport {
@@ -865,9 +902,10 @@ fn meta_workflow_code_source(
 
 fn meta_workflow_code_artifact(
     session: &crate::session::RuntimeSession,
+    machine_root: std::path::PathBuf,
     name: &str,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifact, DaemonError> {
-    meta_workflow_code_artifact_registry(session)?
+    meta_workflow_code_artifact_registry(session, machine_root)?
         .get(name)?
         .ok_or_else(|| DaemonError::LocalTransport {
             operation: "meta.workflow_code",
@@ -907,17 +945,20 @@ fn meta_workflow_code_run_audit_payload(
 
 fn meta_workflow_code_artifact_registry(
     session: &crate::session::RuntimeSession,
+    machine_root: std::path::PathBuf,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
-    let mut roots = Vec::new();
+    let mut roots = vec![machine_root];
+    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
     if !session.workspace_id().trim().is_empty() {
         roots.push(
             crate::workflow_code::WorkflowCodeArtifactRegistry::project_root(
                 session.workspace_id(),
             ),
         );
-    }
-    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
-        roots.push(root);
     }
     Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
         roots,

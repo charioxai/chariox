@@ -4,7 +4,14 @@ import { tmpdir } from "node:os"
 import path from "node:path"
 import test from "node:test"
 
-import { formatLogRecord, readAllLogRecords, readLogTail, seedLogOffsets, type LogRecord } from "./logging.js"
+import {
+  defaultLogDir,
+  formatLogRecord,
+  readAllLogRecords,
+  readLogTail,
+  seedLogOffsets,
+  type LogRecord,
+} from "./logging.js"
 
 function writeRecords(logDir: string, fileName: string, records: LogRecord[]) {
   mkdirSync(logDir, { recursive: true })
@@ -16,6 +23,24 @@ function writeRecords(logDir: string, fileName: string, records: LogRecord[]) {
   )
   return filePath
 }
+
+test("defaultLogDir uses machine-local storage instead of the current workspace", () => {
+  const previousLogDir = process.env.CHARIOX_LOG_DIR
+  const previousHome = process.env.CHARIOX_HOME
+  const charioxHome = mkdtempSync(path.join(tmpdir(), "chariox-cli-home-"))
+  try {
+    delete process.env.CHARIOX_LOG_DIR
+    process.env.CHARIOX_HOME = charioxHome
+    assert.equal(defaultLogDir(), path.join(charioxHome, "logs"))
+    assert.notEqual(defaultLogDir(), path.join(process.cwd(), ".chariox", "logs"))
+  } finally {
+    if (previousLogDir === undefined) delete process.env.CHARIOX_LOG_DIR
+    else process.env.CHARIOX_LOG_DIR = previousLogDir
+    if (previousHome === undefined) delete process.env.CHARIOX_HOME
+    else process.env.CHARIOX_HOME = previousHome
+    rmSync(charioxHome, { recursive: true, force: true })
+  }
+})
 
 test("readAllLogRecords sorts NDJSON records across files", () => {
   const logDir = mkdtempSync(path.join(tmpdir(), "chariox-cli-logs-"))

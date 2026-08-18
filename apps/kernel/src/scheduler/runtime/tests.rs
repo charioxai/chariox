@@ -550,9 +550,15 @@ fn provider_completion_without_structured_output_schedules_a_correction_turn() {
 }
 
 #[test]
-fn workflow_instruction_reference_is_written_under_agent_workdir() {
+fn workflow_instruction_reference_is_written_under_kernel_state_root() {
     let _guard = crate::env_lock::lock();
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let config = DaemonConfig::for_tests();
+    let runtime_root = config.workflow_runtime_artifact_root();
+    let chariox_home = runtime_root
+        .parent()
+        .expect("test runtime root should have a parent")
+        .join("prompt-home");
+    let mut app = DaemonApp::bootstrap(config).expect("daemon should boot");
     let (session, agent_id) = create_scheduler_session_and_agent(&mut app, "client-scheduler");
 
     let workdir = std::env::temp_dir().join(format!(
@@ -562,7 +568,7 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     let _ = fs::remove_dir_all(&workdir);
     fs::create_dir_all(&workdir).expect("workdir should exist");
     let previous_chariox_home = std::env::var_os("CHARIOX_HOME");
-    std::env::set_var("CHARIOX_HOME", workdir.join(".chariox"));
+    std::env::set_var("CHARIOX_HOME", &chariox_home);
     app.launch_provider(
         LaunchProviderRequest::new(
             session.id(),
@@ -633,23 +639,24 @@ fn workflow_instruction_reference_is_written_under_agent_workdir() {
     )
     .expect("prompt should build");
 
-    let prefix = workdir
-        .join(".chariox")
-        .join("workflow-runtime")
+    let prefix = runtime_root
         .join(session.id())
         .join(workflow_run.id())
         .join("workflow-instructions");
     let prefix_string = prefix.to_string_lossy().to_string();
     assert!(
         prompt.contains(&prefix_string),
-        "prompt should reference a file under agent workdir: {prompt}"
+        "prompt should reference a file under the kernel state root: {prompt}"
     );
     let expected_file = prefix.join(format!("node-{node_id}.md"));
     assert!(expected_file.exists(), "instruction file should be written");
     let contents = fs::read_to_string(&expected_file).expect("instruction file should read");
     assert!(contents.contains("Read me from a workspace-local hidden file."));
-    let expected_prompt_template = workdir
-        .join(".chariox")
+    assert!(
+        !workdir.join(".chariox").exists(),
+        "automatic workflow runtime state must not create a project-local .chariox directory"
+    );
+    let expected_prompt_template = chariox_home
         .join("prompts")
         .join("workflow")
         .join("turn.md");

@@ -37,16 +37,18 @@ pub(super) fn workflow_code_registry_for_session(
     session_id: &str,
 ) -> Result<crate::workflow_code::WorkflowCodeArtifactRegistry, DaemonError> {
     let session = app.sessions().get_session(session_id)?;
-    let mut roots = Vec::new();
+    let mut roots = vec![app.config().workflow_code_artifact_root()];
+    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
+        if !roots.contains(&root) {
+            roots.push(root);
+        }
+    }
     if !session.workspace_id().trim().is_empty() {
         roots.push(
             crate::workflow_code::WorkflowCodeArtifactRegistry::project_root(
                 session.workspace_id(),
             ),
         );
-    }
-    if let Some(root) = crate::workflow_code::WorkflowCodeArtifactRegistry::user_root() {
-        roots.push(root);
     }
     Ok(crate::workflow_code::WorkflowCodeArtifactRegistry::new(
         roots,
@@ -151,7 +153,7 @@ pub(super) fn workflow_registry_for_session(
     };
     Ok(crate::workflow_code::WorkflowRegistry::new(
         workspace_root,
-        crate::workflow_code::WorkflowRegistry::user_root(),
+        Some(app.config().workflow_registry_root()),
     ))
 }
 
@@ -169,12 +171,8 @@ pub(super) fn workflow_registry_write_scope(
         }
         return Ok(scope);
     }
-    let session = app.sessions().get_session(session_id)?;
-    if !session.workspace_id().trim().is_empty() {
-        Ok(crate::workflow_code::WorkflowRegistrySourceScope::Workspace)
-    } else {
-        Ok(crate::workflow_code::WorkflowRegistrySourceScope::User)
-    }
+    app.sessions().get_session(session_id)?;
+    Ok(crate::workflow_code::WorkflowRegistrySourceScope::User)
 }
 
 pub(super) fn workflow_registry_apply_result(
