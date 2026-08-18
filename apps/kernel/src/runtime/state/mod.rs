@@ -51,6 +51,7 @@ mod provider_launch_defaults_owned_state;
 pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -61,6 +62,7 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     provider_process_tracking: ProviderProcessTrackingStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
@@ -426,12 +428,14 @@ impl KernelRuntimeState {
         Self {
             app,
             provider_runtime_lanes,
+            detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 config_projection,
                 session_store,
                 agent_store,
                 attachment_store,
                 provider_store,
+                workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 provider_process_tracking,
                 external_provider_sessions,
                 attached_provider_transcript_cursors,

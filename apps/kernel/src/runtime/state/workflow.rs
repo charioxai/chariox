@@ -54,6 +54,14 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         event_reply_enabled: bool,
     ) -> Result<String, DaemonError> {
+        // Admission and workflow-tool activation must be one critical section. Two concurrent
+        // workflow prompts for the same agent can otherwise both observe the first run while it
+        // is still Starting but before workflow tools are enabled, then create two provider
+        // processes for one workflow turn.
+        let _launch_guard = self
+            .workflow_provider_launch_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         let existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
         if let Some(run) = existing_run.as_ref() {
             if run.workflow_tools_enabled()

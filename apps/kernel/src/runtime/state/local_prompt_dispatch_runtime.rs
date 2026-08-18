@@ -7,6 +7,20 @@ use super::*;
 
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+struct DetachedWorkflowProviderLaunchClaim {
+    provider_run_id: String,
+    claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
+}
+
+impl Drop for DetachedWorkflowProviderLaunchClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.provider_run_id);
+    }
+}
+
 fn claude_native_dispatch_terminal_failure(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> Option<String> {
@@ -254,6 +268,125 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    #[tokio::test]
+    async fn concurrent_workflow_provider_admission_creates_one_starting_run() {
+        const INVOCATION_COUNT: usize = 32;
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-concurrent-workflow-provider",
+                "worktree-concurrent-workflow-provider",
+            ))
+            .expect("session should create");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("concurrent-workflow-provider"),
+            )
+            .expect("workflow agent should create");
+        let session_id = session.id().to_string();
+        let agent_id = workflow_agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let barrier = Arc::new(std::sync::Barrier::new(INVOCATION_COUNT));
+        let mut handles = Vec::with_capacity(INVOCATION_COUNT);
+
+        for index in 0..INVOCATION_COUNT {
+            let owned = runtime.owned.clone();
+            let barrier = Arc::clone(&barrier);
+            let session_id = session_id.clone();
+            let agent_id = agent_id.clone();
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("workflow-provider-admission-{index}"))
+                    .spawn(move || {
+                        barrier.wait();
+                        owned.workflow_ensure_provider_run(&session_id, &agent_id, false)
+                    })
+                    .expect("workflow provider admission thread should spawn"),
+            );
+        }
+
+        let run_ids = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                    .expect("concurrent workflow provider admission should succeed")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(run_ids.len(), 1, "one workflow agent must own one run");
+        let run_id = run_ids.iter().next().expect("run id should resolve");
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run(run_id)
+            .expect("admitted workflow provider should resolve");
+        assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+        assert!(run.workflow_tools_enabled());
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .list_runs()
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.session_id() == session_id
+                        && candidate.agent_instance_id() == Some(agent_id.as_str())
+                        && candidate.state() != crate::provider::ProviderRunState::Ended
+                })
+                .count(),
+            1
+        );
+
+        runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+        runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+        assert_eq!(
+            runtime
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![run_id.clone()],
+            "duplicate detached launch must not acquire a second lifecycle claim"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run(run_id)
+                    .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the single detached provider launch should finish");
+        assert!(runtime
+            .detached_workflow_provider_launches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+        let tracking = runtime.owned.provider_process_tracking.snapshot();
+        assert_eq!(tracking.run_processes.len(), 1);
+        assert_eq!(tracking.processes.len(), 1);
+
+        let cleanup_run_id = run_id.clone();
+        runtime
+            .with_app_side_effect(move |app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&cleanup_run_id)
+            })
+            .await
+            .expect("managed provider process should clean up");
     }
 
     #[tokio::test]
@@ -2210,8 +2343,22 @@ impl KernelRuntimeState {
     }
 
     fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
+        let claim = {
+            let mut claims = self
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !claims.insert(provider_run_id.clone()) {
+                return;
+            }
+            DetachedWorkflowProviderLaunchClaim {
+                provider_run_id: provider_run_id.clone(),
+                claims: Arc::clone(&self.detached_workflow_provider_launches),
+            }
+        };
         let state = self.clone();
         tokio::spawn(async move {
+            let _claim = claim;
             let run = match state.owned.provider_store.get_run(&provider_run_id) {
                 Ok(run) if run.state() == crate::provider::ProviderRunState::Starting => run,
                 _ => return,
