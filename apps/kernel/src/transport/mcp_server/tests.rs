@@ -37,7 +37,7 @@ where
 mod slice_tools;
 
 #[tokio::test]
-async fn mcp_initialize_and_tools_list_return_runtime_tools() {
+async fn mcp_initialize_succeeds_and_unknown_token_lists_no_runtime_tools() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
     ));
@@ -95,51 +95,10 @@ async fn mcp_initialize_and_tools_list_return_runtime_tools() {
     let tools = tools_value["result"]["tools"]
         .as_array()
         .expect("tools should be an array");
-    assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "validate_workflow_handoff"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "workflow_console_read"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "workflow_console_write"));
-    assert!(tools
-        .iter()
-        .any(|tool| tool["name"] == "workflow_console_clear"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.read_artifact"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.list_extensions"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.request_extension"));
-    assert!(!tools.iter().any(|tool| tool["name"] == "list_extensions"));
-    assert!(!tools.iter().any(|tool| tool["name"] == "request_extension"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.list_credential_handles"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "list_credential_handles"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.http_request_with_credential"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "http_request_with_credential"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.send_secret_to_terminal"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "send_secret_to_terminal"));
-    assert!(!tools
-        .iter()
-        .any(|tool| tool["name"] == "chariox.slice_screenshot"));
+    assert!(
+        tools.is_empty(),
+        "an unknown provider token must not discover runtime capabilities"
+    );
 }
 
 #[tokio::test]
