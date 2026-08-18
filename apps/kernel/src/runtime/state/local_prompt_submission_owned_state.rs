@@ -10,6 +10,14 @@ impl KernelRuntimeOwnedState {
         &self,
         prepared: &crate::app::KernelPreparedPromptSubmission,
     ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
+        self.submit_local_prepared_prompt_for_provider_run(prepared, None)
+    }
+
+    pub(super) fn submit_local_prepared_prompt_for_provider_run(
+        &self,
+        prepared: &crate::app::KernelPreparedPromptSubmission,
+        expected_provider_run_id: Option<&str>,
+    ) -> Result<Option<crate::app::KernelPromptSubmission>, DaemonError> {
         let session_id = prepared.session_id.clone();
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         if !crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
@@ -31,10 +39,25 @@ impl KernelRuntimeOwnedState {
             .prompt_state_owner
             .active_prompt_for_agent(&session, &target_agent_id)
             .is_some();
-        let provider_run_id = self
-            .provider_store
-            .get_run_for_agent(&session_id, &target_agent_id)
-            .map(|run| run.id().to_string());
+        let provider_run_id = match expected_provider_run_id {
+            Some(provider_run_id) => {
+                let run = self.ensure_provider_run_in_session(&session_id, provider_run_id)?;
+                if run.agent_instance_id() != Some(target_agent_id.as_str())
+                    || run.state() == crate::provider::ProviderRunState::Ended
+                {
+                    return Err(DaemonError::InvalidProviderRunState {
+                        provider_run_id: provider_run_id.to_string(),
+                        state: run.state(),
+                        operation: "submit prompt to selected provider run",
+                    });
+                }
+                Some(provider_run_id.to_string())
+            }
+            None => self
+                .provider_store
+                .get_run_for_agent(&session_id, &target_agent_id)
+                .map(|run| run.id().to_string()),
+        };
         if !queued_while_active && provider_run_id.is_none() {
             return Ok(None);
         }

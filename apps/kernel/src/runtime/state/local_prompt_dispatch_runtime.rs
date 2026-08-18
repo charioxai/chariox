@@ -238,6 +238,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-workflow-provider-binding",
+                "worktree-workflow-provider-binding",
+            ))
+            .expect("session should create");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("workflow-provider-binding"),
+            )
+            .expect("workflow agent should create");
+        let other_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("other-provider-binding"),
+            )
+            .expect("other agent should create");
+
+        let old_running_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(workflow_agent.id()),
+            )
+            .expect("old target run should launch");
+        app.update_provider_run_projection(old_running_run.clone());
+        let other_running_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(other_agent.id()),
+            )
+            .expect("other agent run should own the session pointer");
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(other_running_run.id().to_string()))
+            .expect("other agent run should become the session pointer");
+        app.update_provider_run_projection(other_running_run);
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("provider-binding".to_string()))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), workflow_agent.id())
+            .expect("workflow node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should create");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review exact head".to_string()),
+            )
+            .expect("workflow run should create");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "review exact head".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+
+        let session_id = session.id().to_string();
+        let agent_id = workflow_agent.id().to_string();
+        let run_id = workflow_run.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let dispatches = runtime
+            .owned
+            .workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: PromptQueueItem::new(
+                        "pending-workflow-provider-binding",
+                        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&run_id),
+                        &agent_id,
+                        "review exact head",
+                        PromptStatus::Queued,
+                    )
+                    .with_workflow_context(&run_id, &node_run_id),
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                &run_id,
+                &node_run_id,
+            )
+            .expect("workflow prompt should bind to its replacement run");
+
+        assert!(dispatches.local.is_empty());
+        assert_eq!(dispatches.starting_provider_runs.len(), 1);
+        assert_ne!(dispatches.starting_provider_runs[0], old_running_run.id());
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(old_running_run.id())
+                .expect("old target run should remain represented")
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run(&dispatches.starting_provider_runs[0])
+            .expect("replacement run should resolve");
+        assert_eq!(replacement.agent_instance_id(), Some(agent_id.as_str()));
+        assert_eq!(replacement.state(), crate::provider::ProviderRunState::Starting);
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should resolve");
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(active.is_none());
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].workflow_run_id(), Some(run_id.as_str()));
+    }
+
+    #[tokio::test]
     async fn failed_launch_settles_all_queued_workflow_nodes_and_advances_once() {
         let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
         let (session, _default_agent) = KernelSessionService::new(&mut app)

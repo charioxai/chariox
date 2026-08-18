@@ -205,16 +205,21 @@ impl KernelRuntimeOwnedState {
         let target_agent = self
             .agent_store
             .get_agent(prepared.prompt.target_agent_id())?;
-        if target_agent.remote_execution().is_none() {
+        let workflow_provider_run_id = if target_agent.remote_execution().is_none() {
             let event_reply_enabled = self
                 .workflow_event_reply_enabled_for_prompt(&prepared.session_id, &prepared.prompt)?;
-            self.workflow_ensure_provider_run(
+            Some(self.workflow_ensure_provider_run(
                 &prepared.session_id,
                 prepared.prompt.target_agent_id(),
                 event_reply_enabled,
-            )?;
-        }
-        let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
+            )?)
+        } else {
+            None
+        };
+        let mut submission = match self.submit_local_prepared_prompt_for_provider_run(
+            &prepared,
+            workflow_provider_run_id.as_deref(),
+        )? {
             Some(submission) => submission,
             None => match self.submit_remote_prepared_prompt(&prepared)? {
                 Some(submission) => submission,
@@ -247,9 +252,9 @@ impl KernelRuntimeOwnedState {
             submission.outcome,
             crate::session::PromptSubmissionOutcome::Queued { .. }
         ) {
-            if let Some(run) = self
-                .provider_store
-                .get_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
+            if let Some(run) = workflow_provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
             {
                 if run.state() == crate::provider::ProviderRunState::Starting {
                     dispatches.starting_provider_runs.push(run.id().to_string());
