@@ -115,6 +115,7 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::SpawnLeasedAgent {
             lease_id,
             provider,
+            account_profile,
             model,
             effort,
             execution_mode,
@@ -127,6 +128,7 @@ pub(super) async fn handle_daemon_peer_request(
                 .relay_create_leased_agent(
                     &lease_id,
                     &provider,
+                    &account_profile,
                     model,
                     effort,
                     execution_mode,
@@ -183,11 +185,18 @@ pub(super) async fn handle_daemon_peer_request(
         RelayPeerRequest::UpdateLeasedAgentProfile {
             leased_agent_id,
             provider,
+            account_profile,
             model,
             effort,
         } => {
             let updated = router
-                .relay_update_leased_agent_profile(&leased_agent_id, provider, model, effort)
+                .relay_update_leased_agent_profile(
+                    &leased_agent_id,
+                    provider,
+                    account_profile,
+                    model,
+                    effort,
+                )
                 .await;
             match updated {
                 Ok(leased_agent) => RelayPeerResponse::LeasedAgentProfileUpdated { leased_agent },
@@ -818,6 +827,26 @@ pub(super) async fn handle_daemon_peer_request(
                 .await;
             match ensured {
                 Ok(materialized) => RelayPeerResponse::RemoteSkillPackagesEnsured { materialized },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
+        RelayPeerRequest::EnsureRemoteProviderAccount {
+            context,
+            materialization,
+        } => {
+            let ensured = router
+                .relay_ensure_remote_provider_account(context, materialization)
+                .await;
+            match ensured {
+                Ok(profile) => RelayPeerResponse::RemoteProviderAccountEnsured {
+                    provider: profile.provider,
+                    account_profile: profile.profile_id,
+                },
                 Err(error) => {
                     return RelayRequestOutcome {
                         encrypted_response: None,

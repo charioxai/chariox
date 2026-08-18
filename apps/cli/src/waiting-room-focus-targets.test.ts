@@ -18,6 +18,7 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "launch-machine",
     "launch-kernel",
     "provider",
+    "account",
     "model",
     "effort",
     "workspace",
@@ -34,6 +35,7 @@ test("waiting room focus targets preserve menu order and sorted session indexes"
     "slice-entry",
     "terminal",
     "add-terminal",
+    "provider-accounts",
     "theme",
   ])
   assert.deepEqual(

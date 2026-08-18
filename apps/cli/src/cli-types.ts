@@ -41,8 +41,11 @@ import type {
   PromptQueueItem as KernelPromptQueueItem,
   PromptSubmittedPayload as KernelPromptSubmittedPayload,
   ProviderAuthStatus as KernelProviderAuthStatus,
+  ProviderAccountProfile as KernelProviderAccountProfile,
   ProviderLoginStart as KernelProviderLoginStart,
+  ProviderLoginStatus as KernelProviderLoginStatus,
   ProviderLogoutResult as KernelProviderLogoutResult,
+  ProviderLogoutOutcome as KernelProviderLogoutOutcome,
   ProviderProcessInfo as KernelProviderProcessInfo,
   RemoteExtensionManifestSyncStatus as KernelRemoteExtensionManifestSyncStatus,
   RuntimeAttachment as KernelRuntimeAttachment,
@@ -296,9 +299,15 @@ export type ProviderProcessInfo = KernelProviderProcessInfo
 
 export type ProviderAuthStatus = KernelProviderAuthStatus
 
+export type ProviderAccountProfile = KernelProviderAccountProfile
+
 export type ProviderLoginStart = KernelProviderLoginStart
 
+export type ProviderLoginStatus = KernelProviderLoginStatus
+
 export type ProviderLogoutResult = KernelProviderLogoutResult
+
+export type ProviderLogoutOutcome = KernelProviderLogoutOutcome
 
 export type PromptAttachmentPart = KernelPromptAttachmentPart
 

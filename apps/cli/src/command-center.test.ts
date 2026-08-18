@@ -433,7 +433,7 @@ test("buildCommandCenterItems includes slice diagnostics and lifecycle commands"
   assert.equal(authItems.find((item) => item.value === "/slice auth login ")?.description, "Start provider login inside the slice for a different account")
   assert.equal(authItems.find((item) => item.value === "/slice auth import ")?.description, "Copy this machine's provider credentials into the slice; credentials stay slice-scoped")
   assert.equal(authItems.find((item) => item.value === "/slice auth remove ")?.description, "Remove slice-local provider credentials and account summary")
-  assert.equal(authItems.find((item) => item.value === "/slice auth alias ")?.description, "Set a Chariox display alias when the provider account label is unclear")
+  assert.equal(authItems.some((item) => item.value === "/slice auth alias "), false)
 
   assert.equal(buildCommandCenterItems("/slice snapshot", {
     providerCatalog: fallbackProviderCatalog(),

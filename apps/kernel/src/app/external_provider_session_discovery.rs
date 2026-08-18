@@ -150,12 +150,107 @@ pub(crate) fn external_provider_session_transcript_needs_refresh(
     provider_observed_transcript_needs_refresh(provider, provider_session_id)
 }
 
+pub(crate) fn external_provider_session_transcript_needs_refresh_for_profile(
+    provider: &str,
+    provider_session_id: &str,
+    roots: &[PathBuf],
+) -> bool {
+    provider_observed_transcript_needs_refresh_in_roots(provider, provider_session_id, roots)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExternalProviderSessionFileSignature {
     provider: String,
     path: PathBuf,
     len: u64,
     modified_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExternalProviderSessionProfileRoot {
+    pub(crate) owner_user_id: String,
+    pub(crate) provider: String,
+    pub(crate) account_profile: String,
+    pub(crate) roots: Vec<PathBuf>,
+}
+
+pub(crate) fn discover_external_provider_sessions_for_profiles(
+    profiles: &[ExternalProviderSessionProfileRoot],
+    provider_filter: Option<&str>,
+) -> Vec<ExternalProviderSessionRecord> {
+    let mut sessions = Vec::new();
+    for profile in profiles
+        .iter()
+        .filter(|profile| provider_matches(provider_filter, &profile.provider))
+    {
+        for root in &profile.roots {
+            let discovered = match profile.provider.as_str() {
+                "codex" => discover_codex_external_sessions(root),
+                "claude" => discover_claude_external_sessions(root),
+                "opencode" => discover_opencode_external_sessions(root),
+                _ => Vec::new(),
+            };
+            sessions.extend(discovered.into_iter().map(|mut session| {
+                session.owner_user_id = profile.owner_user_id.clone();
+                session.account_profile = profile.account_profile.clone();
+                session.external_session_id = format!(
+                    "{}:{}:{}",
+                    session.provider, session.account_profile, session.provider_session_id
+                );
+                session
+            }));
+        }
+    }
+    deduplicate_external_sessions(sessions)
+}
+
+pub(crate) fn external_provider_session_candidate_paths_for_profiles(
+    profiles: &[ExternalProviderSessionProfileRoot],
+    provider_filter: Option<&str>,
+) -> Vec<(String, PathBuf)> {
+    let mut paths = Vec::new();
+    for profile in profiles
+        .iter()
+        .filter(|profile| provider_matches(provider_filter, &profile.provider))
+    {
+        for root in &profile.roots {
+            let candidates = match profile.provider.as_str() {
+                "codex" => codex_candidate_paths(root),
+                "claude" => claude_candidate_paths(root),
+                "opencode" => opencode_candidate_paths(root),
+                _ => Vec::new(),
+            };
+            paths.extend(
+                candidates
+                    .into_iter()
+                    .map(|path| (profile.provider.clone(), path)),
+            );
+        }
+    }
+    paths
+}
+
+pub(crate) fn read_external_provider_observed_turns_for_profile(
+    provider: &str,
+    provider_session_id: &str,
+    roots: &[PathBuf],
+) -> Vec<ObservedExternalProviderTurn> {
+    let turns = match normalized_external_provider_id(provider) {
+        "codex" => roots
+            .iter()
+            .flat_map(|root| read_codex_observed_turns(root, provider_session_id))
+            .collect::<Vec<_>>(),
+        "claude" => roots
+            .iter()
+            .flat_map(|root| read_claude_observed_turns(root, provider_session_id))
+            .collect::<Vec<_>>(),
+        "opencode" => roots
+            .iter()
+            .flat_map(|root| read_opencode_observed_turns(root, provider_session_id))
+            .collect::<Vec<_>>(),
+        _ => Vec::new(),
+    };
+    latest_observed_turns(turns)
 }
 
 pub(crate) fn discover_external_provider_sessions(

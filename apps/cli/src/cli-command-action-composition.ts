@@ -93,11 +93,22 @@ import {
 } from "./preferences.js"
 import {
   getProviderAuthStatus,
+  getProviderLoginStatus,
+  listProviderAccountProfiles,
+  createProviderAccountProfile,
+  linkProviderAccountProfile,
+  renameProviderAccountProfile,
+  setDefaultProviderAccountProfile,
+  refreshProviderAccountProfile,
+  removeProviderAccountProfile,
+  deleteProviderAccountProfileData,
   getProviderRun,
   launchProviderRun,
   launchProviderRuns,
   listProviderProcesses,
   logoutProvider,
+  cancelProviderLogin,
+  sendProviderLoginInput,
   startProviderLogin,
   teardownProviderProcesses,
   updateSessionConfig,
@@ -149,7 +160,6 @@ import {
   removeSliceProviderAuth,
   resetSliceState,
   saveSliceState,
-  setSliceProviderAuthAlias,
   startSliceProviderLogin,
   startSlice,
   stopSlice,
@@ -183,6 +193,7 @@ export type CliCommandActionCompositionDeps = {
   providerRunState: AnyFn
   currentModelId: AnyFn
   currentVariantId: AnyFn
+  currentAccountProfileId?: AnyFn
   focusedAgentId: AnyFn
   multiAgentResponseLayout: AnyFn
   maxAgentsPerScreen: AnyFn
@@ -296,11 +307,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     providerRunState,
     currentModelId,
     currentVariantId,
+    currentAccountProfileId,
     focusedAgentId,
     multiAgentResponseLayout,
     maxAgentsPerScreen,
     flashFooter,
     appendNotice,
+    readSecret,
     appendCloudNotice,
     formatError,
     attachBinding,
@@ -409,6 +422,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     currentModelId,
     currentVariantId,
     currentProviderId: () => options.provider ?? "opencode",
+    currentAccountProfileId: () => currentAccountProfileId?.() || options.accountProfile || "default",
     currentExecutionMode,
     currentPermissionLevel,
     focusedAgentId,
@@ -442,9 +456,21 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     applyVariantSelection,
     applyModeSelection,
     applyPermissionSelection,
-    getProviderAuthStatus: (provider) => getProviderAuthStatus(client, provider),
-    startProviderLogin: (provider) => startProviderLogin(client, provider),
-    logoutProvider: (provider) => logoutProvider(client, provider),
+    getProviderAuthStatus: (provider, accountProfile) => getProviderAuthStatus(client, provider, accountProfile),
+    startProviderLogin: (provider, accountProfile) => startProviderLogin(client, provider, accountProfile),
+    getProviderLoginStatus: (loginId) => getProviderLoginStatus(client, loginId),
+    sendProviderLoginInput: (loginId, dataBase64) => sendProviderLoginInput(client, loginId, dataBase64),
+    cancelProviderLogin: (loginId) => cancelProviderLogin(client, loginId),
+    ...(readSecret ? { readSecret } : {}),
+    logoutProvider: (provider, accountProfile) => logoutProvider(client, provider, accountProfile),
+    listProviderAccountProfiles: (provider) => listProviderAccountProfiles(client, provider),
+    createProviderAccountProfile: (provider, label) => createProviderAccountProfile(client, provider, label),
+    linkProviderAccountProfile: (provider, label, path) => linkProviderAccountProfile(client, provider, label, path),
+    renameProviderAccountProfile: (provider, profile, label) => renameProviderAccountProfile(client, provider, profile, label),
+    setDefaultProviderAccountProfile: (provider, profile) => setDefaultProviderAccountProfile(client, provider, profile),
+    refreshProviderAccountProfile: (provider, profile) => refreshProviderAccountProfile(client, provider, profile),
+    removeProviderAccountProfile: (provider, profile) => removeProviderAccountProfile(client, provider, profile),
+    deleteProviderAccountProfileData: (provider, profile) => deleteProviderAccountProfileData(client, provider, profile),
     getRelayStatus: () => getRelayStatus(client),
     sendCredentialEnrollmentKernelRequest: (request) => client.send(request),
     sendDeploymentSetupKernelRequest: (request) => client.send(request),
@@ -522,23 +548,18 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       setSlicesState(await listSlices(client))
       return slice
     },
-    importSliceProviderAuth: async (sliceRef, provider) => {
-      const result = await importSliceProviderAuth(client, sliceRef, provider)
+    importSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await importSliceProviderAuth(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },
-    removeSliceProviderAuth: async (sliceRef, provider) => {
-      const result = await removeSliceProviderAuth(client, sliceRef, provider)
+    removeSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = await removeSliceProviderAuth(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },
-    startSliceProviderLogin: async (sliceRef, provider) => {
-      const result = await startSliceProviderLogin(client, sliceRef, provider)
-      setSlicesState(await listSlices(client))
-      return result
-    },
-    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
-      const result = await setSliceProviderAuthAlias(client, sliceRef, provider, alias)
+    startSliceProviderLogin: async (sliceRef, provider, accountProfile) => {
+      const result = await startSliceProviderLogin(client, sliceRef, provider, accountProfile)
       setSlicesState(await listSlices(client))
       return result
     },
@@ -704,12 +725,12 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         }
       })
     },
-    launchAgentProviderRun: (provider, model, variant, agentId) =>
+    launchAgentProviderRun: (provider, model, variant, agentId, accountProfile) =>
       launchProviderRun(
         client,
         sessionState().id,
         provider,
-        options.accountProfile,
+        accountProfile || options.accountProfile || "default",
         model,
         variant,
         agentId,
@@ -718,12 +739,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     refreshSessionState: (sessionId) => getSessionState(client, sessionId),
     undoTurn: (agentRef, turnRef) => undoTurnApi(client, sessionState().id, agentRef, turnRef),
     forkAgent: (sourceAgentRef, alias) => forkAgentApi(client, sessionState().id, sourceAgentRef, alias),
-    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef) => {
+    spawnAgent: async (provider, alias, model, effort, worktreeId, machineRef, worktreePlacement, sliceRef, accountProfile) => {
       const agent = await spawnAgentApi(
         client,
         sessionState().id,
         {
           provider,
+          accountProfile,
           alias,
           model,
           effort,
@@ -745,6 +767,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         {
           agents: agents.map((agent) => ({
             provider: agent.provider,
+            accountProfile: agent.accountProfile,
             alias: agent.alias,
             model: agent.model,
             effort: agent.effort,
@@ -760,13 +783,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
         session: await getSessionState(client, sessionState().id),
       }
     },
-    launchAgentProviderRuns: async (provider, model, variant, agentIds) => {
+    launchAgentProviderRuns: async (provider, model, variant, agentIds, accountProfile) => {
       const result = await launchProviderRuns(
         client,
         agentIds.map((agentId) => ({
           sessionId: sessionState().id,
           provider,
-          accountProfile: options.accountProfile,
+          accountProfile: accountProfile || options.accountProfile || "default",
           model,
           effort: variant,
           agentId,

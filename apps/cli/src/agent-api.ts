@@ -29,6 +29,7 @@ export type UpdateAgentConfigOptions = {
 
 export type UpdateAgentProfileOptions = {
   provider?: string | null
+  accountProfile?: string | null
   model?: string | null
   effort?: string | null
   clearEffort?: boolean
@@ -36,6 +37,7 @@ export type UpdateAgentProfileOptions = {
 
 export type SpawnAgentOptions = {
   provider?: string | null | undefined
+  accountProfile?: string | null | undefined
   alias?: string | undefined
   model?: string | null | undefined
   effort?: string | null | undefined
@@ -90,6 +92,7 @@ export async function spawnAgent(
       options.kernelRef,
       options.worktreePlacement,
       options.sliceRef,
+      options.accountProfile,
     ),
   )
   const payload = expectVariant<{ agent: AgentInstance }>(response, "AgentSpawned")
@@ -106,6 +109,7 @@ export async function spawnAgents(
       sessionId,
       options.agents.map((agent) => ({
         provider: agent.provider ?? null,
+        accountProfile: agent.accountProfile ?? null,
         alias: agent.alias ?? null,
         model: agent.model ?? null,
         worktreeId: agent.worktreeId ?? null,
@@ -197,6 +201,7 @@ export async function updateAgentProfile(
       sessionId,
       agentId,
       ...(options.provider !== undefined ? { provider: options.provider } : {}),
+      ...(options.accountProfile !== undefined ? { accountProfile: options.accountProfile } : {}),
       ...(options.model !== undefined ? { model: options.model } : {}),
       ...(options.effort !== undefined ? { effort: options.effort } : {}),
       ...(options.clearEffort !== undefined ? { clearEffort: options.clearEffort } : {}),

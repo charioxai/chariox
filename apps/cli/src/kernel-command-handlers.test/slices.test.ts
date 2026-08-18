@@ -154,7 +154,7 @@ test("kernel health formatter reports slice provider auth issues", () => {
   assert.match(rendered, /remote runtime invariants: provider_runs=ok; worker_runs=ok; slices=attention starting=0 stopping=0 in_progress=0 unhealthy=0 failed_ops=0 auth_missing=1 auth_unconfigured=1; manifests=settled; live_sync_scope=selected-workspace-only/)
   assert.match(rendered, /slice provider auth issues: missing=1 unconfigured=1/)
   assert.match(rendered, /slice=dev \(slice-1\) status=running worktree=\/repo agents=agent-1 provider=codex state=not_configured alias=work identity=work: slice provider account needs login or import/)
-  assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex or \/slice auth import slice-1 codex before sending prompts to agents in that slice/)
+  assert.match(rendered, /next: run \/slice doctor slice-1; inspect \/slice audit slice-1; use \/slice auth login slice-1 codex <account-profile> or \/slice auth import slice-1 codex <account-profile> before sending prompts to agents in that slice/)
 })
 
 test("kernel health formatter avoids placeholder provider recovery when only aggregate slice auth counts are available", () => {
@@ -231,4 +231,3 @@ test("kernel health formatter avoids placeholder slice recovery for aggregate se
   assert.match(rendered, /next: wait for the slice operation to finish; run \/slice list to identify any stuck slice, then run \/slice doctor and inspect logs if it does not settle/)
   assert.doesNotMatch(rendered, /<slice>/)
 })
-

@@ -34,6 +34,7 @@ export type AgentSpawnCommandHandlerDeps = {
   currentModelId: () => string
   currentVariantId: () => string
   currentProviderId: () => string
+  currentAccountProfileId?: () => string
   flashFooter: (message: string, tone: FooterTone) => void
   formatError: (error: unknown) => string
   createSlice?: (options: {
@@ -53,6 +54,7 @@ export type AgentSpawnCommandHandlerDeps = {
     model: string,
     variant: string,
     agentId: string,
+    accountProfile?: string,
   ) => Promise<RuntimeProviderRun>
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
@@ -65,10 +67,12 @@ export type AgentSpawnCommandHandlerDeps = {
     machineRef?: string,
     worktreePlacement?: RemoteGitWorktreePlacement | undefined,
     sliceRef?: string,
+    accountProfile?: string | null,
   ) => Promise<AgentSpawnPayload>
   spawnAgents?: (
     agents: Array<{
       provider?: string | null | undefined
+      accountProfile?: string | null | undefined
       alias?: string | undefined
       model?: string | null | undefined
       effort?: string | null | undefined
@@ -83,6 +87,7 @@ export type AgentSpawnCommandHandlerDeps = {
     model: string,
     variant: string,
     agentIds: readonly string[],
+    accountProfile?: string,
   ) => Promise<{ runs: RuntimeProviderRun[]; failures: Array<{ index: number; agent_id?: string | null; message: string }> }>
   importExternalProviderAgent?: (
     externalSessionId: string,
@@ -134,7 +139,9 @@ export async function handleAgentSpawnCommand(
         )
         return
       }
-      const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({})))
+      const payload = await deps.spawnAgents(Array.from({ length: count }, () => ({
+        accountProfile: currentAccountProfileId(deps),
+      })))
       deps.applySessionState(payload.session)
       await deps.refreshAgentPanes(payload.session)
       const provider = deps.currentProviderId()
@@ -145,6 +152,7 @@ export async function handleAgentSpawnCommand(
         model,
         variant,
         payload.agents.map((agent) => agent.id),
+        currentAccountProfileId(deps),
       )
       deps.setProviderRunState(launched.runs.at(-1) ?? null)
       const refreshedSession = await deps.refreshSessionState(payload.session.id)
@@ -189,6 +197,7 @@ export async function handleAgentSpawnCommand(
     const sliceRef = await prepareSliceForSpawn(deps, parsed.sliceRef, parsed.sliceDisplayMode, worktreeId, remoteRef)
     const payload = await spawnAndLaunchAgent(deps, {
       provider,
+      accountProfile: parsed.accountProfile ?? currentAccountProfileId(deps),
       alias,
       model: model ?? null,
       effort,
@@ -389,6 +398,7 @@ async function spawnAndLaunchAgent(
   deps: AgentSpawnCommandHandlerDeps,
   options: {
     provider?: string | null
+    accountProfile?: string | null
     alias?: string | undefined
     model?: string | null
     effort?: string | null
@@ -407,6 +417,7 @@ async function spawnAndLaunchAgent(
     options.machineRef,
     options.worktreePlacement,
     options.sliceRef,
+    options.accountProfile,
   )
   deps.applySessionState(payload.session)
   await deps.refreshAgentPanes(payload.session)
@@ -425,11 +436,13 @@ async function spawnAndLaunchAgent(
   const launchProvider = payload.agent.provider || options.provider || deps.currentProviderId()
   const launchModel = payload.agent.model || options.model || deps.currentModelId()
   const launchEffort = payload.agent.effort || options.effort || deps.currentVariantId()
+  const launchAccountProfile = payload.agent.account_profile || options.accountProfile || currentAccountProfileId(deps)
   const run = await deps.launchAgentProviderRun(
     launchProvider,
     launchModel,
     launchEffort,
     payload.agent.id,
+    launchAccountProfile,
   )
   deps.setProviderRunState(run)
   const refreshedSession = await deps.refreshSessionState(payload.session.id)
@@ -441,4 +454,8 @@ async function spawnAndLaunchAgent(
     agent: payload.agent,
     session: refreshedSession,
   }
+}
+
+function currentAccountProfileId(deps: AgentSpawnCommandHandlerDeps): string {
+  return deps.currentAccountProfileId?.() || "default"
 }

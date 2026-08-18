@@ -671,22 +671,6 @@ impl KernelRuntimeState {
         Ok(slice)
     }
 
-    pub(crate) fn set_slice_provider_auth_alias(
-        &self,
-        slice_ref: &str,
-        provider: &str,
-        alias: Option<&str>,
-    ) -> Result<crate::slice::SliceRecord, DaemonError> {
-        let slice = self.owned.slice_store.set_provider_auth_alias(
-            slice_ref,
-            provider,
-            alias,
-            crate::session::unix_epoch_ms(),
-        )?;
-        self.append_slice_durable_event("slice.updated", &slice)?;
-        Ok(slice)
-    }
-
     pub(crate) fn delete_slice(
         &self,
         slice_ref: &str,

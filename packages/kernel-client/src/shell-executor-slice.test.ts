@@ -244,7 +244,7 @@ test("executeShellCommand renders slice account recovery hints", async () => {
   assert.match(result.message ?? "", /owner=home-kernel@home-machine authority=home-managed/)
   assert.match(result.message ?? "", /auth_status=missing codex/)
   assert.match(result.message ?? "", /providers=codex auth_status=missing codex auth=-/)
-  assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex or \/slice auth login linux-a codex/)
+  assert.match(result.message ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-a codex <account-profile> or \/slice auth login linux-a codex <account-profile>/)
   assert.equal(doctor.ok, false)
   assert.match(doctor.message ?? "", /fail provider accounts: missing codex/)
   assert.match(doctor.message ?? "", /next: import or login provider accounts for codex/)
@@ -292,7 +292,7 @@ test("executeShellCommand requires slice auth coverage for every advertised prov
   assert.equal(result.ok, false)
   assert.match(result.message ?? "", /ok provider CLIs: codex,opencode:openai/)
   assert.match(result.message ?? "", /fail provider accounts: codex:codex@example.com; missing opencode:openai/)
-  assert.match(result.message ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-a opencode:openai or \/slice auth login linux-a opencode:openai/)
+  assert.match(result.message ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-a opencode:openai <account-profile> or \/slice auth login linux-a opencode:openai <account-profile>/)
 })
 
 test("executeShellCommand renders concrete slice stale-auth recovery", async () => {
@@ -350,8 +350,8 @@ test("executeShellCommand renders concrete slice stale-auth recovery", async () 
   assert.equal(result.ok, true)
   assert.match(result.message ?? "", /linux-a[\s\S]*auth_status=refresh codex/)
   assert.match(result.message ?? "", /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
-  assert.match(result.message ?? "", /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
-  assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex; for opencode:openai use \/slice auth login linux-b opencode:openai/)
+  assert.match(result.message ?? "", /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex <account-profile>/)
+  assert.match(result.message ?? "", /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex <account-profile>; for opencode:openai use \/slice auth login linux-b opencode:openai <account-profile>/)
 })
 
 test("executeShellCommand treats unsupported slice auth responses as failures", async () => {
@@ -388,13 +388,13 @@ test("executeShellCommand treats unsupported slice auth responses as failures", 
   })
   const context = createDefaultShellContext({ workspace: "/repo", worktree: "/repo/feature" })
 
-  const imported = await executeShellCommand(parseShellCommand("slice auth import linux-a codex"), context, { client: fake.client })
-  const removed = await executeShellCommand(parseShellCommand("slice auth remove linux-a codex"), context, { client: fake.client })
+  const imported = await executeShellCommand(parseShellCommand("slice auth import linux-a codex default"), context, { client: fake.client })
+  const removed = await executeShellCommand(parseShellCommand("slice auth remove linux-a codex default"), context, { client: fake.client })
 
   assert.equal(imported.ok, false)
   assert.match(
     imported.message ?? "",
-    /auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-a codex, open \/slice screen linux-a to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
+    /auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-a codex <account-profile>, open \/slice screen linux-a to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
   )
   assert.equal(removed.ok, false)
   assert.match(
@@ -480,7 +480,7 @@ test("executeShellCommand resolves focused agent slice by attached agent id", as
   assert.match(result.message ?? "", /linux-a id=slice-1 status=running/)
   assert.match(result.message ?? "", /relay=shared:wss:\/\/relay.example\/slice/)
   assert.match(result.message ?? "", /auth=codex:oauth/)
-  assert.match(result.message ?? "", /next=refresh provider login for codex with \/slice auth login linux-a codex/)
+  assert.match(result.message ?? "", /next=refresh provider login for codex with \/slice auth login linux-a codex <account-profile>/)
 })
 
 test("executeShellCommand renders slice logs", async () => {
@@ -599,5 +599,5 @@ test("executeShellCommand renders slice audit", async () => {
   assert.match(result.message ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-a provider=codex/)
   assert.match(result.message ?? "", /status=running backend=local_docker display=headless worktree=\/repo\/feature sessions=2 agents=1 worker=kernel-slice machine=machine-slice/)
   assert.match(result.message ?? "", /2026-01-02T03:04:06.000Z auth\.login failed slice=linux-a provider=opencode message=login failed/)
-  assert.match(result.message ?? "", /next: run \/slice doctor linux-a; retry with \/slice auth login linux-a opencode or \/slice auth import linux-a opencode/)
+  assert.match(result.message ?? "", /next: run \/slice doctor linux-a; retry with \/slice auth login linux-a opencode <account-profile> or \/slice auth import linux-a opencode <account-profile>/)
 })

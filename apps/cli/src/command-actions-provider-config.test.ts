@@ -48,13 +48,14 @@ test("provider command can switch backends and manage codex auth", async () => {
     }),
     startProviderLogin: async () => ({
       provider: "codex",
+      account_profile: "default",
       login_kind: "chatgptDeviceCode",
       login_id: "login-1",
       auth_url: null,
       verification_url: "https://auth.openai.com/codex/device",
       user_code: "ABCD-1234",
     }),
-    logoutProvider: async (provider) => ({ provider }),
+    logoutProvider: async (provider) => ({ kind: "logged_out", result: { provider, account_profile: "default" } }),
     setMultiAgentResponseLayout: () => {},
     applyResponseLayout: () => {},
     updateSessionResponseLayout: async () => ({ session: makeSession(), config: makeSession().config_state }),
@@ -237,13 +238,14 @@ test("provider processes command lists and tears down safe daemon-tracked proces
     }),
     startProviderLogin: async () => ({
       provider: "codex",
+      account_profile: "default",
       login_kind: "chatgptDeviceCode",
       login_id: "login-1",
       auth_url: null,
       verification_url: "https://auth.openai.com/codex/device",
       user_code: "ABCD-1234",
     }),
-    logoutProvider: async (provider) => ({ provider }),
+    logoutProvider: async (provider) => ({ kind: "logged_out", result: { provider, account_profile: "default" } }),
     listProviderProcesses: async (provider) => {
       listedProvider = provider
       return [
@@ -392,8 +394,8 @@ test("provider processes teardown reports blocked daemon-tracked processes", asy
     applyModelSelection: async () => {},
     applyVariantSelection: async () => {},
     getProviderAuthStatus: async () => ({ provider: "codex", auth_state: "authenticated", account_profile: null, login_hint: null, detected_version: null }),
-    startProviderLogin: async () => ({ provider: "codex", login_kind: "chatgptDeviceCode", login_id: "login-1", auth_url: null, verification_url: null, user_code: null }),
-    logoutProvider: async (provider) => ({ provider }),
+    startProviderLogin: async () => ({ provider: "codex", account_profile: "default", login_kind: "chatgptDeviceCode", login_id: "login-1", auth_url: null, verification_url: null, user_code: null }),
+    logoutProvider: async (provider) => ({ kind: "logged_out", result: { provider, account_profile: "default" } }),
     listProviderProcesses: async () => [blockedProcess],
     teardownProviderProcesses: async () => [],
     setMultiAgentResponseLayout: () => {},

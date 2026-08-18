@@ -48,7 +48,7 @@ test("executeShellCommand manages provider auth and processes", async () => {
       send: async (request: Record<string, unknown>) => {
         requests.push(request)
         if ("StartProviderLogin" in request) {
-          return { ProviderLoginStarted: { login: { provider: "codex", login_kind: "device", login_id: "login-1", auth_url: null, verification_url: "https://auth.example", user_code: "ABCD" } } }
+          return { ProviderLoginStarted: { login: { provider: "codex", account_profile: "default", login_kind: "device", login_id: "login-1", auth_url: null, verification_url: "https://auth.example", user_code: "ABCD" } } }
         }
         if ("LogoutProvider" in request) {
           return { ProviderLoggedOut: { provider: "codex" } }
@@ -81,12 +81,12 @@ test("executeShellCommand manages provider auth and processes", async () => {
   assert.equal(teardown.ok, true)
   assert.match(teardown.message ?? "", /tore down 1 provider process/)
   assert.equal(unknown.ok, false)
-  assert.match(unknown.message ?? "", /usage: provider status\|login\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
+  assert.match(unknown.message ?? "", /usage: provider status\|login\|login-status\|login-cancel\|logout\|reauth\|processes \[provider\]\|processes teardown <provider>/)
   assert.deepEqual(requests, [
-    { StartProviderLogin: { provider: "codex" } },
-    { LogoutProvider: { provider: "codex" } },
-    { LogoutProvider: { provider: "codex" } },
-    { StartProviderLogin: { provider: "codex" } },
+    { StartProviderLogin: { provider: "codex", account_profile: "default" } },
+    { LogoutProvider: { provider: "codex", account_profile: "default" } },
+    { LogoutProvider: { provider: "codex", account_profile: "default" } },
+    { StartProviderLogin: { provider: "codex", account_profile: "default" } },
     { ListProviderProcesses: { provider: "codex" } },
     { TeardownProviderProcesses: { provider: "codex", force: false } },
   ])

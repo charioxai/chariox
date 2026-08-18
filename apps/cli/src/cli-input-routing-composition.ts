@@ -178,6 +178,7 @@ export type CliInputRoutingCompositionDeps = {
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
+  providerAccountsState: AnyFn
   terminalsState: AnyFn
   slicesState: AnyFn
   themeRegistryState: AnyFn
@@ -546,6 +547,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       projects: deps.waitingRoomProjects(),

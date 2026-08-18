@@ -152,6 +152,7 @@ impl KernelRuntimeState {
         &self,
         lease_id: &str,
         provider: &str,
+        account_profile: &str,
         model: Option<String>,
         effort: Option<String>,
         execution_mode: Option<AgentExecutionMode>,
@@ -162,10 +163,12 @@ impl KernelRuntimeState {
     ) -> Result<LeasedAgent, DaemonError> {
         let lease_id = lease_id.to_string();
         let provider = provider.to_string();
+        let account_profile = account_profile.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).create_leased_agent(
                 &lease_id,
                 &provider,
+                &account_profile,
                 model,
                 effort,
                 execution_mode,
@@ -210,6 +213,7 @@ impl KernelRuntimeState {
         &self,
         leased_agent_id: &str,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
@@ -218,6 +222,7 @@ impl KernelRuntimeState {
             RemoteLeaseRuntime::new(app).update_leased_agent_profile(
                 &leased_agent_id,
                 provider,
+                account_profile,
                 model,
                 effort,
             )
@@ -472,6 +477,17 @@ impl KernelRuntimeState {
         .await
     }
 
+    pub(crate) async fn ensure_relay_remote_provider_account(
+        &self,
+        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+        self.with_app_side_effect(move |app| {
+            RemoteLeaseRuntime::new(app).ensure_remote_provider_account(context, materialization)
+        })
+        .await
+    }
+
     pub(crate) async fn check_relay_remote_mcp_availability(
         &self,
         context: RemoteMcpCheckContext,
@@ -612,8 +628,13 @@ impl KernelRuntimeState {
         for completion in outcome.completions {
             self.inject_metaagent_turn_completion_event(&session_id, &agent_id, &completion)?;
         }
-        if let Some((provider, state)) = provider_auth_observation {
-            self.apply_remote_slice_provider_auth_observation(&agent_id, &provider, state)?;
+        if let Some((provider, account_profile, state)) = provider_auth_observation {
+            self.apply_remote_slice_provider_auth_observation(
+                &agent_id,
+                &provider,
+                &account_profile,
+                state,
+            )?;
         }
         Ok(())
     }
@@ -622,6 +643,7 @@ impl KernelRuntimeState {
         &self,
         agent_id: &str,
         provider: &str,
+        account_profile: &str,
         state: crate::slice_provider_auth::SliceProviderAuthState,
     ) -> Result<(), DaemonError> {
         let source = if state == crate::slice_provider_auth::SliceProviderAuthState::Authenticated {
@@ -637,7 +659,9 @@ impl KernelRuntimeState {
             let mut provider_auth = slice.provider_auth.clone();
             let mut matched = false;
             for summary in &mut provider_auth {
-                if crate::provider::canonical_provider_family(&summary.provider) == Some(provider) {
+                if crate::provider::canonical_provider_family(&summary.provider) == Some(provider)
+                    && summary.account_profile == account_profile
+                {
                     summary.state = state.clone();
                     summary.source = source.to_string();
                     matched = true;
@@ -646,6 +670,7 @@ impl KernelRuntimeState {
             if !matched {
                 provider_auth.push(crate::slice_provider_auth::SliceProviderAuthSummary {
                     provider: provider.to_string(),
+                    account_profile: account_profile.to_string(),
                     state: state.clone(),
                     auth_type: None,
                     account_id: None,
@@ -653,7 +678,6 @@ impl KernelRuntimeState {
                     organization_id: None,
                     organization_name: None,
                     subscription_type: None,
-                    alias: None,
                     source: source.to_string(),
                 });
             }
@@ -666,19 +690,26 @@ impl KernelRuntimeState {
 fn remote_provider_auth_observation(
     run: &crate::provider::RuntimeProviderRun,
     saw_provider_activity: bool,
-) -> Option<(String, crate::slice_provider_auth::SliceProviderAuthState)> {
+) -> Option<(
+    String,
+    String,
+    crate::slice_provider_auth::SliceProviderAuthState,
+)> {
     let provider = crate::provider::canonical_provider_family(run.provider())?.to_string();
+    let account_profile = run.account_profile().to_string();
     if run
         .terminal_diagnostic()
         .is_some_and(provider_diagnostic_is_auth_failure)
     {
         return Some((
             provider,
+            account_profile,
             crate::slice_provider_auth::SliceProviderAuthState::NotConfigured,
         ));
     }
     saw_provider_activity.then_some((
         provider,
+        account_profile,
         crate::slice_provider_auth::SliceProviderAuthState::Authenticated,
     ))
 }

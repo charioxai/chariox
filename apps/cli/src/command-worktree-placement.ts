@@ -26,6 +26,7 @@ export type PlacementParseResult = {
   sliceRef?: string | undefined
   sliceDisplayMode?: "headless" | "headed" | undefined
   externalSessionId?: string | undefined
+  accountProfile?: string | undefined
   metaagent?: boolean | undefined
   gitWorktree?: string | undefined
   branch?: string | undefined
@@ -205,17 +206,33 @@ export function parsePlacementOptions(
 
 export function parseAgentSpawnOptions(args: string[]): PlacementParseResult {
   const metaagent = args.includes("--meta") || args.includes("--metaagent")
-  const spawnArgs = args.filter((arg) => arg !== "--meta" && arg !== "--metaagent")
+  let accountProfile: string | undefined
+  const spawnArgs: string[] = []
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]
+    if (arg === "--meta" || arg === "--metaagent") continue
+    if (arg === "--account") {
+      const value = args[index + 1]
+      if (!value || value.startsWith("--")) {
+        return { positional: [], error: "usage: /agent spawn [alias] [model] --account <profile-id>" }
+      }
+      accountProfile = value
+      index += 1
+      continue
+    }
+    if (arg) spawnArgs.push(arg)
+  }
   const parsed = parsePlacementOptions(spawnArgs, "/agent spawn", true)
   let error = parsed.error
   if (!error && parsed.positional.length > 2) {
-    error = "usage: /agent spawn [alias] [model] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--unattached-agent <external-session-id>]"
+    error = "usage: /agent spawn [alias] [model] [--account <profile-id>] [--dir <directory>] [--worktree <directory> --branch <branch>] [--machine <machine-ref>|--kernel <kernel-ref>] [--slice off|new|new:headless|new:headed|<slice-ref>] [--unattached-agent <external-session-id>]"
   }
   if (!error && metaagent) {
     error = "creating separate metaagents is deprecated; send /meta <task> to a regular agent to enter meta mode"
   }
   return {
     ...parsed,
+    accountProfile,
     metaagent: false,
     error,
   }

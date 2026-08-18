@@ -27,6 +27,7 @@ fn append_native_provider_output_batch_fans_out_and_records_history() {
     };
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("parallel".to_string()),
             provider: Some("dev-stub".to_string()),

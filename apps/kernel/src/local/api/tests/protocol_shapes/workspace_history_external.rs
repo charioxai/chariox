@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let request = LocalDaemonRequest::ExportDebugBundle(ExportDebugBundleRequest {
         session_id: "session-1".to_string(),
@@ -41,7 +41,7 @@ fn local_daemon_protocol_debug_bundle_export_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let request = LocalDaemonRequest::GetWorkspaceLiveSyncStatus(
         crate::local::GetWorkspaceLiveSyncStatusRequest {
@@ -170,7 +170,7 @@ fn local_daemon_protocol_workspace_live_sync_status_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let request = LocalDaemonRequest::GetSessionHistoryOutline(
         crate::local::GetSessionHistoryOutlineRequest {
@@ -362,7 +362,7 @@ fn local_daemon_protocol_session_history_outline_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let request =
         LocalDaemonRequest::ListProviderProcesses(crate::local::ListProviderProcessesRequest {
@@ -409,7 +409,7 @@ fn local_daemon_protocol_provider_process_memory_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let request = LocalDaemonRequest::ListExternalProviderSessions(
         crate::local::ListExternalProviderSessionsRequest {
@@ -419,6 +419,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
         },
     );
     let record = crate::local::ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: "codex:thread-1".to_string(),
         provider: "codex".to_string(),
         provider_session_id: "thread-1".to_string(),
@@ -428,7 +429,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
         created_at_ms: Some(10),
         last_modified_at_ms: 20,
         worktree_path: Some("/repo".to_string()),
-        account_profile: Some("default".to_string()),
+        account_profile: "default".to_string(),
         capabilities: crate::local::ExternalProviderSessionCapabilities {
             can_read_history: true,
         },
@@ -475,7 +476,7 @@ fn local_daemon_protocol_external_provider_session_shape_is_versioned() {
 
 #[test]
 fn relay_workspace_live_sync_apply_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let context = crate::transport::relay_peer::RemoteWorkspaceLiveSyncApplyContext {
         home_session_id: "session-1".to_string(),
@@ -564,7 +565,7 @@ fn relay_workspace_live_sync_apply_shape_is_versioned() {
 
 #[test]
 fn relay_home_extension_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -694,7 +695,7 @@ fn relay_home_extension_invocation_shape_is_versioned() {
 
 #[test]
 fn relay_home_credential_proxy_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let context = crate::transport::relay_peer::RemoteExtensionInvocationContext {
         home_kernel_id: "home-kernel".to_string(),
@@ -779,7 +780,7 @@ fn relay_home_credential_proxy_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_extension_install_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 264);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 267);
 
     let mcp = LocalDaemonRequest::InstallMcpServer(crate::local::InstallMcpServerRequest {
         workspace_id: Some("/repo".to_string()),

@@ -66,7 +66,6 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ImportSliceProviderAuth(_) => "slice.auth.import",
         LocalDaemonRequest::RemoveSliceProviderAuth(_) => "slice.auth.remove",
         LocalDaemonRequest::StartSliceProviderLogin(_) => "slice.auth.login",
-        LocalDaemonRequest::SetSliceProviderAuthAlias(_) => "slice.auth.alias",
         LocalDaemonRequest::GetSliceDisplayEndpoint(_) => "slice.display_endpoint.get",
         LocalDaemonRequest::GetSliceLogs(_) => "slice.logs.get",
         LocalDaemonRequest::ListSliceAudit(_) => "slice.audit.list",

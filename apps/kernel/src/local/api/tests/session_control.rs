@@ -262,6 +262,7 @@ fn session_attach_clears_a_missing_active_provider_run() {
         .expect("initial attachment should succeed");
     harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
             provider: Some("opencode".to_string()),
@@ -334,6 +335,7 @@ fn session_attach_clears_a_projected_leased_run_for_an_unfocused_agent() {
         .expect("initial attachment should succeed");
     let remote_agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("remote-worker".to_string()),
             provider: Some("codex".to_string()),
@@ -618,6 +620,7 @@ fn local_request_api_spawns_and_focuses_agents() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("  reviewer  ".to_string()),
             provider: Some("opencode".to_string()),
@@ -762,6 +765,7 @@ fn local_request_api_spawns_and_focuses_agents() {
                 session_id: session.id().to_string(),
                 agent_id: spawned.id().to_string(),
                 provider: Some("codex".to_string()),
+                account_profile: None,
                 model: Some("gpt-5.4".to_string()),
                 effort: Some("low".to_string()),
                 clear_effort: false,
@@ -793,6 +797,7 @@ fn local_request_api_spawns_and_focuses_agents() {
                 session_id: session.id().to_string(),
                 agent_id: spawned.id().to_string(),
                 provider: None,
+                account_profile: None,
                 model: None,
                 effort: None,
                 clear_effort: true,
@@ -931,6 +936,7 @@ fn same_agent_profile_update_keeps_active_provider_run() {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
                 provider: Some("codex".to_string()),
+                account_profile: None,
                 model: Some("gpt-5.4".to_string()),
                 effort: None,
                 clear_effort: false,

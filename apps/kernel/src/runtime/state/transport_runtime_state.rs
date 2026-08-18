@@ -7,13 +7,16 @@ const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
 impl KernelRuntimeState {
     pub(crate) fn waiting_room_auxiliary_projection(
         &self,
+        owner_user_id: &str,
         request: &crate::local::ListExternalProviderSessionsRequest,
     ) -> (
         crate::local::ExternalProviderSessionPage,
         crate::runtime::metaagent_event::MetaagentEventStore,
     ) {
         (
-            self.owned.external_provider_sessions.list(request),
+            self.owned
+                .external_provider_sessions
+                .list_for_owner(owner_user_id, request),
             self.owned.metaagent_events.clone(),
         )
     }

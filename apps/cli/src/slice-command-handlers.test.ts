@@ -18,8 +18,8 @@ test("slice command list renders lifecycle scope and provider auth details", asy
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
         providers: ["codex", "claude"],
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "test" },
-          { provider: "claude", state: "authenticated", email: "user@example.com", organization_name: "Team", subscription_type: "pro", source: "test" },
+          { provider: "codex", account_profile: "work", state: "configured", account_id: "acct-1", source: "test" },
+          { provider: "claude", account_profile: "default", state: "authenticated", email: "user@example.com", organization_name: "Team", subscription_type: "pro", source: "test" },
         ],
       }),
     ],
@@ -31,7 +31,7 @@ test("slice command list renders lifecycle scope and provider auth details", asy
   assert.match(harness.notices.at(-1) ?? "", /worktree=\/repo\/feature agents=1 sessions=2/)
   assert.match(harness.notices.at(-1) ?? "", /worker=kernel-slice relay=shared:wss:\/\/relay.example\/slice/)
   assert.match(harness.notices.at(-1) ?? "", /auth_status=ready codex, claude/)
-  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth_status=ready codex, claude auth=codex:work \(acct-1\),claude:user@example.com\/org=Team\/plan=pro/)
+  assert.match(harness.notices.at(-1) ?? "", /providers=codex,claude auth_status=ready codex, claude auth=codex:work \(acct-1\),claude:default \(user@example.com\)\/org=Team\/plan=pro/)
   assert.equal(harness.footers.at(-1)?.message, "listed 1 slice")
 })
 
@@ -51,7 +51,7 @@ test("slice command list renders provider account recovery hints", async () => {
 
   assert.match(harness.notices.at(-1) ?? "", /auth_status=missing codex/)
   assert.match(harness.notices.at(-1) ?? "", /providers=codex auth_status=missing codex auth=-/)
-  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
+  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex with \/slice auth import linux-dev codex <account-profile> or \/slice auth login linux-dev codex <account-profile>/)
 })
 
 test("slice command list renders concrete commands for multi-provider recovery hints", async () => {
@@ -70,7 +70,7 @@ test("slice command list renders concrete commands for multi-provider recovery h
 
   assert.match(harness.notices.at(-1) ?? "", /auth_status=missing codex, opencode:openai/)
   assert.match(harness.notices.at(-1) ?? "", /providers=codex,opencode:openai auth_status=missing codex, opencode:openai auth=-/)
-  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex; for opencode:openai use \/slice auth import linux-dev opencode:openai or \/slice auth login linux-dev opencode:openai/)
+  assert.match(harness.notices.at(-1) ?? "", /next=import or login provider accounts for codex,opencode:openai with \/slice auth import linux-dev codex <account-profile> or \/slice auth login linux-dev codex <account-profile>; for opencode:openai use \/slice auth import linux-dev opencode:openai <account-profile> or \/slice auth login linux-dev opencode:openai <account-profile>/)
 })
 
 test("slice command list renders concrete stale-auth recovery hints", async () => {
@@ -80,15 +80,15 @@ test("slice command list renders concrete stale-auth recovery hints", async () =
         id: "slice-1",
         name: "linux-a",
         providers: ["codex"],
-        provider_auth: [{ provider: "codex", state: "not_configured", source: "slice" }],
+        provider_auth: [{ provider: "codex", account_profile: "default", state: "not_configured", source: "slice" }],
       }),
       slice({
         id: "slice-2",
         name: "linux-b",
         providers: ["codex", "opencode:openai"],
         provider_auth: [
-          { provider: "codex", state: "not_configured", source: "slice" },
-          { provider: "opencode:openai", state: "unknown", source: "slice" },
+          { provider: "codex", account_profile: "default", state: "not_configured", source: "slice" },
+          { provider: "opencode:openai", account_profile: "default", state: "unknown", source: "slice" },
         ],
       }),
     ],
@@ -99,8 +99,8 @@ test("slice command list renders concrete stale-auth recovery hints", async () =
   const notice = harness.notices.at(-1) ?? ""
   assert.match(notice, /linux-a[\s\S]*auth_status=refresh codex/)
   assert.match(notice, /linux-b[\s\S]*auth_status=refresh codex, opencode:openai/)
-  assert.match(notice, /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex/)
-  assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex; for opencode:openai use \/slice auth login linux-b opencode:openai/)
+  assert.match(notice, /linux-a[\s\S]*next=refresh provider login for codex with \/slice auth login linux-a codex <account-profile>/)
+  assert.match(notice, /linux-b[\s\S]*next=refresh provider login for codex,opencode:openai with \/slice auth login linux-b codex <account-profile>; for opencode:openai use \/slice auth login linux-b opencode:openai <account-profile>/)
 })
 
 test("slice command create passes display mode and current worktree mount", async () => {
@@ -287,7 +287,7 @@ test("slice command doctor requires provider auth for every advertised provider"
         worktree_id: "/repo/wt",
         providers: ["codex", "opencode:openai"],
         provider_auth: [
-          { provider: "codex", state: "authenticated", email: "codex@example.com", source: "test" },
+          { provider: "codex", account_profile: "default", state: "authenticated", email: "codex@example.com", source: "test" },
         ],
       }),
     ],
@@ -296,8 +296,8 @@ test("slice command doctor requires provider auth for every advertised provider"
   await handleSliceSlashCommand(harness.deps, command("doctor", "linux-dev"))
 
   assert.match(harness.notices.at(-1) ?? "", /ok provider CLIs: codex,opencode:openai/)
-  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: codex:codex@example.com; missing opencode:openai/)
-  assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-dev opencode:openai or \/slice auth login linux-dev opencode:openai/)
+  assert.match(harness.notices.at(-1) ?? "", /fail provider accounts: codex:default \(codex@example.com\); missing opencode:openai/)
+  assert.match(harness.notices.at(-1) ?? "", /next: import or login provider accounts for opencode:openai with \/slice auth import linux-dev opencode:openai <account-profile> or \/slice auth login linux-dev opencode:openai <account-profile>/)
   assert.equal(harness.footers.at(-1)?.tone, "error")
 })
 
@@ -356,7 +356,7 @@ test("slice command audit resolves focused slice and passes limit", async () => 
   assert.match(harness.notices.at(-1) ?? "", /2026-01-02T03:04:05.000Z auth\.import completed slice=linux-dev provider=codex/)
   assert.match(harness.notices.at(-1) ?? "", /status=running backend=local_docker display=headless worktree=\/repo\/wt sessions=2 agents=1 worker=kernel-slice machine=machine-slice/)
   assert.match(harness.notices.at(-1) ?? "", /2026-01-02T03:04:06.000Z auth\.login failed slice=linux-dev provider=opencode message=login failed/)
-  assert.match(harness.notices.at(-1) ?? "", /next: run \/slice doctor linux-dev; retry with \/slice auth login linux-dev opencode or \/slice auth import linux-dev opencode/)
+  assert.match(harness.notices.at(-1) ?? "", /next: run \/slice doctor linux-dev; retry with \/slice auth login linux-dev opencode <account-profile> or \/slice auth import linux-dev opencode <account-profile>/)
   assert.equal(harness.footers.at(-1)?.message, "slice audit linux-dev")
 })
 
@@ -409,9 +409,9 @@ test("slice command auth import can target the focused agent slice", async () =>
     },
   })
 
-  await handleSliceSlashCommand(harness.deps, command("auth", "import", "codex"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "import", "codex", "work"))
 
-  assert.deepEqual(harness.importedAuth, [{ sliceRef: "linux-dev", provider: "codex" }])
+  assert.deepEqual(harness.importedAuth, [{ sliceRef: "linux-dev", provider: "codex", accountProfile: "work" }])
   assert.equal(harness.footers.at(-1)?.message, "slice auth import codex: imported")
 })
 
@@ -435,9 +435,9 @@ test("slice command auth remove can target the focused agent slice", async () =>
     },
   })
 
-  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "opencode"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "opencode", "default"))
 
-  assert.deepEqual(harness.removedAuth, [{ sliceRef: "linux-dev", provider: "opencode" }])
+  assert.deepEqual(harness.removedAuth, [{ sliceRef: "linux-dev", provider: "opencode", accountProfile: "default" }])
   assert.equal(harness.footers.at(-1)?.message, "slice auth remove opencode: removed")
 })
 
@@ -463,13 +463,13 @@ test("slice command auth import and remove explain unsupported worker operations
     },
   })
 
-  await handleSliceSlashCommand(harness.deps, command("auth", "import", "codex"))
-  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "codex"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "import", "codex", "work"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "remove", "codex", "work"))
 
   assert.equal(harness.footers.at(-2)?.tone, "error")
   assert.match(
     harness.footers.at(-2)?.message ?? "",
-    /slice auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-dev codex, open \/slice screen linux-dev to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
+    /slice auth import codex is unavailable on this kernel\. Next action: use \/slice auth login linux-dev codex <account-profile>, open \/slice screen linux-dev to configure the account inside the slice, or update\/restart the worker kernel if auth import should be available\./,
   )
   assert.equal(harness.footers.at(-1)?.tone, "error")
   assert.match(
@@ -498,26 +498,12 @@ test("slice command auth login starts provider login in focused agent slice", as
     },
   })
 
-  await handleSliceSlashCommand(harness.deps, command("auth", "login", "codex"))
+  await handleSliceSlashCommand(harness.deps, command("auth", "login", "codex", "work"))
 
-  assert.deepEqual(harness.startedAuthLogins, [{ sliceRef: "linux-dev", provider: "codex" }])
+  assert.deepEqual(harness.startedAuthLogins, [{ sliceRef: "linux-dev", provider: "codex", accountProfile: "work" }])
   assert.match(harness.notices.at(-1) ?? "", /url=https:\/\/auth.example/)
   assert.match(harness.notices.at(-1) ?? "", /code=ABCD-EFGH/)
   assert.equal(harness.footers.at(-1)?.message, "slice auth login codex: started")
-})
-
-test("slice command auth alias sets and clears provider aliases", async () => {
-  const harness = sliceHarness()
-
-  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "work", "account"))
-  await handleSliceSlashCommand(harness.deps, command("auth", "alias", "slice-1", "codex", "clear"))
-
-  assert.deepEqual(harness.aliasedAuth, [
-    { sliceRef: "slice-1", provider: "codex", alias: "work account" },
-    { sliceRef: "slice-1", provider: "codex", alias: null },
-  ])
-  assert.equal(harness.footers.at(-2)?.message, "slice auth alias codex: work account")
-  assert.equal(harness.footers.at(-1)?.message, "slice auth alias codex: cleared")
 })
 
 test("slice command stop blocks slices with attached agents", async () => {
@@ -568,10 +554,9 @@ function sliceHarness(options: {
   const createdSlices: Array<Parameters<NonNullable<SliceCommandHandlerDeps["createSlice"]>>[0]> = []
   const displayEndpointRefs: string[] = []
   const openedUrls: string[] = []
-  const importedAuth: Array<{ sliceRef: string; provider: string }> = []
-  const removedAuth: Array<{ sliceRef: string; provider: string }> = []
-  const startedAuthLogins: Array<{ sliceRef: string; provider: string }> = []
-  const aliasedAuth: Array<{ sliceRef: string; provider: string; alias: string | null }> = []
+  const importedAuth: Array<{ sliceRef: string; provider: string; accountProfile: string }> = []
+  const removedAuth: Array<{ sliceRef: string; provider: string; accountProfile: string }> = []
+  const startedAuthLogins: Array<{ sliceRef: string; provider: string; accountProfile: string }> = []
   const stoppedSlices: string[] = []
   const deletedSlices: string[] = []
   const logRequests: Array<{ sliceRef: string; tailLines: number | null | undefined }> = []
@@ -613,16 +598,16 @@ function sliceHarness(options: {
       deletedSlices.push(sliceRef)
       return slice({ id: sliceRef, name: sliceRef })
     },
-    importSliceProviderAuth: async (sliceRef, provider) => {
-      importedAuth.push({ sliceRef, provider })
+    importSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      importedAuth.push({ sliceRef, provider, accountProfile })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: options.importedAuthStatus ?? "imported" }
     },
-    removeSliceProviderAuth: async (sliceRef, provider) => {
-      removedAuth.push({ sliceRef, provider })
+    removeSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      removedAuth.push({ sliceRef, provider, accountProfile })
       return { slice: slice({ id: sliceRef, name: sliceRef }), provider, status: options.removedAuthStatus ?? "removed" }
     },
-    startSliceProviderLogin: async (sliceRef, provider) => {
-      startedAuthLogins.push({ sliceRef, provider })
+    startSliceProviderLogin: async (sliceRef, provider, accountProfile) => {
+      startedAuthLogins.push({ sliceRef, provider, accountProfile })
       return {
         slice: slice({ id: sliceRef, name: sliceRef }),
         login: {
@@ -634,10 +619,6 @@ function sliceHarness(options: {
           message: "Open https://auth.example and enter ABCD-EFGH",
         },
       }
-    },
-    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => {
-      aliasedAuth.push({ sliceRef, provider, alias })
-      return { slice: slice({ id: sliceRef, name: sliceRef }), provider, alias }
     },
     getSliceDisplayEndpoint: async (sliceRef) => {
       displayEndpointRefs.push(sliceRef)
@@ -726,7 +707,7 @@ function sliceHarness(options: {
       }
     },
   }
-  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, aliasedAuth, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
+  return { deps, notices, footers, createdSlices, displayEndpointRefs, openedUrls, importedAuth, removedAuth, startedAuthLogins, stoppedSlices, deletedSlices, logRequests, auditRequests, savedStates, stateStatusRequests, resetStates, backups }
 }
 
 function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {

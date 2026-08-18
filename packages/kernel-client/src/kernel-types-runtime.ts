@@ -204,7 +204,6 @@ export type CharioxUserConfig = {
   providers?: {
     default?: string
     model?: string
-    account_profile?: string
     effort?: string
     workspace_live_sync?: "off" | "managed" | "tracked" | "unrestricted"
   }

@@ -508,6 +508,7 @@ fn slice_lifecycle_health_identifies_provider_auth_issues_for_attached_slices() 
     );
     stale_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
         provider: "codex".to_string(),
+        account_profile: "default".to_string(),
         state: crate::slice_provider_auth::SliceProviderAuthState::NotConfigured,
         auth_type: Some("chatgpt".to_string()),
         account_id: Some("acct-1".to_string()),
@@ -515,7 +516,6 @@ fn slice_lifecycle_health_identifies_provider_auth_issues_for_attached_slices() 
         organization_id: None,
         organization_name: None,
         subscription_type: None,
-        alias: Some("work".to_string()),
         source: "slice".to_string(),
     }];
 
@@ -544,7 +544,7 @@ fn slice_lifecycle_health_identifies_provider_auth_issues_for_attached_slices() 
     );
     assert_eq!(
         snapshot.provider_auth_issues[1].identity.as_deref(),
-        Some("work")
+        Some("acct-1")
     );
 }
 
@@ -560,6 +560,7 @@ fn slice_lifecycle_health_reports_partial_provider_auth_coverage() {
     partial_auth.providers = vec!["codex".to_string(), "opencode".to_string()];
     partial_auth.provider_auth = vec![crate::slice_provider_auth::SliceProviderAuthSummary {
         provider: "codex".to_string(),
+        account_profile: "default".to_string(),
         state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
         auth_type: Some("chatgpt".to_string()),
         account_id: Some("acct-1".to_string()),
@@ -567,7 +568,6 @@ fn slice_lifecycle_health_reports_partial_provider_auth_coverage() {
         organization_id: None,
         organization_name: None,
         subscription_type: None,
-        alias: Some("work".to_string()),
         source: "slice".to_string(),
     }];
 

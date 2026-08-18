@@ -14,8 +14,10 @@ mod catalog_endpoint;
 mod mcp_config;
 mod ports;
 
-pub(crate) use catalog_endpoint::lease_codex_catalog_endpoint;
-pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
+pub use catalog_endpoint::codex_catalog_endpoint;
+pub(crate) use catalog_endpoint::{
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+};
 
 const CODEX_ENV_OVERRIDE: &str = "CHARIOX_CODEX_BIN";
 static CODEX_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
@@ -84,7 +86,10 @@ fn plan_codex_launch_unlocked(
     let listen_endpoint = format!("ws://{}:{port}", resolve_codex_bind_host());
 
     let executable = resolve_codex_executable_unlocked()?;
-    let (config_args, env) = runtime_mcp_config(request)?;
+    let (config_args, mut env) = runtime_mcp_config(request)?;
+    if let Some(request) = request {
+        env.extend(request.provider_account_env.clone());
+    }
     let working_directory = request.and_then(|request| request.working_directory.clone());
     Ok(ProviderLaunchResult {
         endpoint_mode: AgentEndpointMode::Managed,
@@ -120,10 +125,15 @@ fn codex_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<Str
     names
 }
 
-pub fn logout_codex() -> Result<(), DaemonError> {
+pub fn logout_codex(provider_account_env: &BTreeMap<String, String>) -> Result<(), DaemonError> {
     let executable = resolve_codex_executable()?;
-    let status = Command::new(executable)
-        .arg("logout")
+    let mut command = Command::new(executable);
+    command.arg("logout");
+    command.envs(provider_account_env);
+    for name in crate::account_profile::provider_auth_env_vars("codex") {
+        command.env_remove(name);
+    }
+    let status = command
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -162,6 +172,7 @@ fn is_executable_file(path: &Path) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
@@ -539,7 +550,7 @@ mod tests {
             .expect("fixture should be executable");
         std::env::set_var("CHARIOX_CODEX_BIN", &path);
 
-        logout_codex().expect("logout should succeed");
+        logout_codex(&BTreeMap::new()).expect("logout should succeed");
 
         std::env::remove_var("CHARIOX_CODEX_BIN");
         let logged = fs::read_to_string(&marker).expect("marker should be written");

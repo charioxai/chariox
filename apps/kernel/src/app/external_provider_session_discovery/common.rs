@@ -73,6 +73,7 @@ pub(super) fn record_from_parts(
     let first_prompt_preview =
         first_prompt.map(|prompt| truncate_chars(&prompt, MAX_PROMPT_PREVIEW_CHARS));
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("{provider}:{provider_session_id}"),
         provider: provider.to_string(),
         provider_session_id,
@@ -87,7 +88,7 @@ pub(super) fn record_from_parts(
         created_at_ms,
         last_modified_at_ms,
         worktree_path,
-        account_profile,
+        account_profile: account_profile.unwrap_or_else(|| "default".to_string()),
         capabilities,
         attached_to_chariox: false,
         attached_session_ids: Vec::new(),

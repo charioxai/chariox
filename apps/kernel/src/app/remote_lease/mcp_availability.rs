@@ -161,6 +161,7 @@ mod tests {
             "lease-1".to_string(),
             "home-agent-1".to_string(),
             "codex".to_string(),
+            "default".to_string(),
             None,
             None,
             None,

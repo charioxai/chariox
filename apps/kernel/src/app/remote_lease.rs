@@ -15,6 +15,7 @@ mod native_provider;
 mod projection;
 mod prompt_attachments;
 mod prompt_lifecycle;
+mod provider_account;
 mod provider_run;
 mod relay_context;
 mod skill_sync;
@@ -80,6 +81,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         lease_id: &str,
         provider: &str,
+        account_profile: &str,
         model: Option<String>,
         effort: Option<String>,
         execution_mode: Option<crate::provider::AgentExecutionMode>,
@@ -97,6 +99,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             &base_directory,
             lease_id,
             provider,
+            account_profile,
             model,
             effort,
             execution_mode,
@@ -112,6 +115,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         base_directory: &Path,
         lease_id: &str,
         provider: &str,
+        account_profile: &str,
         model: Option<String>,
         effort: Option<String>,
         execution_mode: Option<crate::provider::AgentExecutionMode>,
@@ -226,6 +230,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let mut sessions = session_store.write();
             let mut request = CreateAgentRequest::new(session.id(), provider)
                 .with_owner_user_id(lease.owner_user_id.clone())
+                .with_account_profile(account_profile.to_string())
                 .with_worktree(session.worktree_id())
                 .with_model(model.clone().unwrap_or_else(|| "default".to_string()))
                 .with_effort(effort.clone().unwrap_or_else(|| "medium".to_string()));
@@ -253,6 +258,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
             lease_id.to_string(),
             lease.home_agent_id.clone(),
             provider.to_string(),
+            account_profile.to_string(),
             model,
             effort,
             execution_mode,
@@ -480,6 +486,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<LeasedAgent, DaemonError> {
@@ -508,16 +515,26 @@ impl<'a> RemoteLeaseRuntime<'a> {
         }
 
         let profile_changed = leased_agent.provider != provider
+            || leased_agent.account_profile != account_profile
             || leased_agent.model != model
             || leased_agent.effort != effort;
         if profile_changed {
             self.terminate_backing_provider_runtime(&leased_agent);
-            self.app.agents.update_agent_profile(
-                &leased_agent.backing_agent_id,
-                Some(provider.clone()),
-                model.clone(),
-                Some(effort.clone()),
-            )?;
+            let backing_agent = self.app.agents.get_agent(&leased_agent.backing_agent_id)?;
+            let resume_state = backing_agent
+                .provider_resume_state()
+                .without_provider_session_id(backing_agent.provider())
+                .without_provider_session_id(&provider);
+            self.app
+                .agents
+                .set_agent_runtime_profile_with_account_profile(
+                    &leased_agent.backing_agent_id,
+                    &provider,
+                    model.clone(),
+                    effort.clone(),
+                    Some(account_profile.clone()),
+                    resume_state,
+                )?;
         }
         let updated = self
             .app
@@ -527,6 +544,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 leased_agent_id: leased_agent_id.to_string(),
             })?;
         updated.provider = provider;
+        updated.account_profile = account_profile;
         updated.model = model;
         updated.effort = effort;
         Ok(updated.clone())
@@ -803,6 +821,7 @@ mod tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("sonnet".to_string()),
                 None,
                 None,

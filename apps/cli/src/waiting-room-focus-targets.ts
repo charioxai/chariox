@@ -94,6 +94,7 @@ export function waitingRoomFocusTargets(
     { focus: "launch-kernel" as const, sessionIndex: 0 },
     ...(remote.projects !== undefined ? [{ focus: "project" as const, sessionIndex: 0 }] : []),
     { focus: "provider" as const, sessionIndex: 0 },
+    { focus: "account" as const, sessionIndex: 0 },
     { focus: "model" as const, sessionIndex: 0 },
     { focus: "effort" as const, sessionIndex: 0 },
     { focus: "workspace" as const, sessionIndex: 0 },
@@ -139,6 +140,7 @@ export function waitingRoomFocusTargets(
       terminalIndex,
     })),
     { focus: "add-terminal" as const, sessionIndex: 0 },
+    { focus: "provider-accounts" as const, sessionIndex: 0 },
     { focus: "theme" as const, sessionIndex: 0 },
   ].map((target) => ({
     machineIndex: 0,

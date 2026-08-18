@@ -1,3 +1,4 @@
+pub mod account_profile;
 pub mod agent;
 pub mod app;
 pub mod artifacts;

@@ -2,6 +2,53 @@
 use super::support::*;
 
 #[test]
+fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        18
+    );
+    let mut materialization = crate::account_profile::ProviderAccountMaterialization {
+        profile: crate::account_profile::ProviderAccountReplicaMetadata {
+            owner_user_id: "user-1".to_string(),
+            provider: "codex".to_string(),
+            profile_id: "work".to_string(),
+            label: "Work".to_string(),
+            origin: crate::account_profile::ProviderAccountProfileOrigin::CharioxCreated,
+            is_default: false,
+        },
+        files: Vec::new(),
+        generated_at_ms: 1_234,
+    };
+    let request = RelayPeerRequest::EnsureRemoteProviderAccount {
+        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+            home_kernel_id: "home".to_string(),
+            home_session_id: "session-1".to_string(),
+            home_agent_id: "agent-1".to_string(),
+            execution_lease_id: "lease-1".to_string(),
+        },
+        materialization: materialization.clone(),
+    };
+    let value = serde_json::to_value(request).expect("request should serialize");
+    assert_eq!(
+        value.pointer("/kind"),
+        Some(&serde_json::json!("ensure_remote_provider_account"))
+    );
+    assert_eq!(
+        value.pointer("/materialization/profile/profile_id"),
+        Some(&serde_json::json!("work"))
+    );
+    assert!(value.pointer("/materialization/profile/locator").is_none());
+
+    materialization
+        .files
+        .push(crate::account_profile::ProviderAccountMaterializationFile {
+            relative_path: "auth.json".to_string(),
+            contents_base64: "bmV2ZXItbG9nLXRoaXM=".to_string(),
+        });
+    assert!(!format!("{materialization:?}").contains("bmV2ZXItbG9nLXRoaXM"));
+}
+
+#[test]
 fn execution_lease_created_response_advertises_relay_peer_protocol_version() {
     let lease = crate::execution_lease::ExecutionLease {
         id: "lease-1".to_string(),
@@ -593,6 +640,7 @@ async fn leased_agents_are_spawned_and_destroyed_through_peer_transport() {
         RelayPeerRequest::SpawnLeasedAgent {
             lease_id: lease.id.clone(),
             provider: "opencode".to_string(),
+            account_profile: "work".to_string(),
             model: Some("kimi2.5".to_string()),
             effort: Some("medium".to_string()),
             execution_mode: None,

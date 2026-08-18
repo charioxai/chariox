@@ -22,7 +22,7 @@ pub(super) fn observer_target(agent_id: &str) -> AttachedExternalObserverTarget 
         agent_id.to_string(),
         None,
         ExternalProviderImportMetadata::observed_history(
-            format!("codex:thread-{agent_id}"),
+            format!("codex:default:thread-{agent_id}"),
             "codex".to_string(),
             format!("thread-{agent_id}"),
         ),
@@ -153,6 +153,7 @@ pub(super) fn record(
     worktree_path: &str,
 ) -> ExternalProviderSessionRecord {
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("{provider}:{provider_session_id}"),
         provider: provider.to_string(),
         provider_session_id: provider_session_id.to_string(),
@@ -162,7 +163,7 @@ pub(super) fn record(
         created_at_ms: None,
         last_modified_at_ms: 10,
         worktree_path: Some(worktree_path.to_string()),
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities {
             can_read_history: true,
             ..ExternalProviderSessionCapabilities::default()

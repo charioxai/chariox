@@ -26,7 +26,6 @@ const {
   startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
-  setSliceProviderAuthAliasRequest,
 } = await import('../../../packages/kernel-client/dist/ipc-requests.js')
 const { handleSliceSlashCommand } = await import('../dist/slice-command-handlers.js')
 const { createWaitingRoomLifecycleActionController } = await import('../dist/waiting-room-lifecycle-action-controller.js')
@@ -249,31 +248,23 @@ async function runSliceSlashCommandDrill(client, workspace, sliceRef, sliceName)
     startSlice: async (sliceRef) => variant(await client.send(startSliceRequest(sliceRef)), 'SliceStarted').slice,
     stopSlice: async (sliceRef) => variant(await client.send(stopSliceRequest(sliceRef)), 'SliceStopped').slice,
     deleteSlice: async (sliceRef) => variant(await client.send(deleteSliceRequest(sliceRef)), 'SliceDeleted').slice,
-    importSliceProviderAuth: async (sliceRef, provider) => {
-      const result = variant(await client.send(importSliceProviderAuthRequest(sliceRef, provider)), 'SliceProviderAuthImported')
+    importSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = variant(await client.send(importSliceProviderAuthRequest(sliceRef, provider, accountProfile)), 'SliceProviderAuthImported')
       return { slice: result.slice, provider: result.provider, status: result.status }
     },
-    removeSliceProviderAuth: async (sliceRef, provider) => {
-      const result = variant(await client.send(removeSliceProviderAuthRequest(sliceRef, provider)), 'SliceProviderAuthRemoved')
+    removeSliceProviderAuth: async (sliceRef, provider, accountProfile) => {
+      const result = variant(await client.send(removeSliceProviderAuthRequest(sliceRef, provider, accountProfile)), 'SliceProviderAuthRemoved')
       return { slice: result.slice, provider: result.provider, status: result.status }
     },
-    startSliceProviderLogin: async (sliceRef, provider) => variant(await client.send(startSliceProviderLoginRequest(sliceRef, provider)), 'SliceProviderLoginStarted'),
-    setSliceProviderAuthAlias: async (sliceRef, provider, alias) => variant(await client.send(setSliceProviderAuthAliasRequest(sliceRef, provider, alias)), 'SliceProviderAuthAliasSet'),
+    startSliceProviderLogin: async (sliceRef, provider, accountProfile) => variant(await client.send(startSliceProviderLoginRequest(sliceRef, provider, accountProfile)), 'SliceProviderLoginStarted'),
     getSliceDisplayEndpoint: async (sliceRef) => variant(await client.send(getSliceDisplayEndpointRequest(sliceRef)), 'SliceDisplayEndpoint').endpoint,
   }
 
-  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', sliceRef, 'codex', 'cli', 'account'))
-  const aliased = variant(await client.send(getSliceRequest(sliceRef)), 'Slice').slice
-  assert(providerAuth(aliased, 'codex', (auth) => auth.alias === 'cli account'), '/slice auth alias should persist an alias')
   await handleSliceSlashCommand(deps, sliceSlashCommand('status', sliceRef))
   assert(
-    notices.some((notice) => notice.includes(sliceName) && notice.includes('codex:cli account')),
-    `/slice status should show alias auth context\n${notices.join('\n---\n')}`,
+    notices.some((notice) => notice.includes(sliceName) && notice.includes('codex:default')),
+    `/slice status should show account-profile auth context\n${notices.join('\n---\n')}`,
   )
-  await handleSliceSlashCommand(deps, sliceSlashCommand('auth', 'alias', sliceRef, 'codex', 'clear'))
-  const cleared = variant(await client.send(getSliceRequest(sliceRef)), 'Slice').slice
-  assert(providerAuth(cleared, 'codex', (auth) => auth.alias === null || auth.alias === undefined), '/slice auth alias clear should clear provider alias')
-  assert(footers.some((footer) => footer.message === 'slice auth alias codex: cleared'), '/slice auth alias clear should report clearing')
   log('slash-command-pass', { slice: sliceRef, name: sliceName })
 }
 
@@ -422,15 +413,19 @@ async function main() {
     await assertScreenEndpointReady(endpoint.url)
     log('screen', { url: endpoint.url, access: endpoint.access })
 
-    const imported = variant(await client.send(importSliceProviderAuthRequest(created.id, 'all')), 'SliceProviderAuthImported')
-    assert(imported.status === 'imported', `provider auth import should succeed, got ${imported.status}`)
+    let imported = null
+    for (const provider of ['codex', 'opencode', 'claude']) {
+      imported = variant(await client.send(importSliceProviderAuthRequest(created.id, provider, 'default')), 'SliceProviderAuthImported')
+      assert(imported.status === 'imported', `${provider} auth import should succeed, got ${imported.status}`)
+    }
+    assert(imported, 'provider auth imports should return a slice')
     assert(providerAuth(imported.slice, 'codex', (auth) => auth.account_id === 'slice-drill-account-1'), 'codex account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'opencode:openai', (auth) => auth.account_id === 'slice-drill-opencode-openai' && auth.auth_type === 'oauth'), 'OpenCode OpenAI account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'opencode:opencode', (auth) => auth.account_id === 'slice-drill-opencode-api' && auth.auth_type === 'api'), 'OpenCode native account summary should be recorded on the slice')
     assert(providerAuth(imported.slice, 'claude', (auth) => auth.account_id === 'slice-drill-claude-user' && auth.organization_id === 'slice-drill-claude-org' && auth.subscription_type === 'pro'), 'Claude account summary should be recorded on the slice')
-    log('auth-imported', { provider: imported.provider, summaries: imported.slice.provider_auth?.map((auth) => auth.provider) ?? [] })
+    log('auth-imported', { profiles: imported.slice.provider_auth?.map((auth) => `${auth.provider}:${auth.account_profile}`) ?? [] })
 
-    const login = variant(await client.send(startSliceProviderLoginRequest(created.id, 'codex')), 'SliceProviderLoginStarted').login
+    const login = variant(await client.send(startSliceProviderLoginRequest(created.id, 'codex', 'default')), 'SliceProviderLoginStarted').login
     assert(login.status === 'started', `slice provider login should start, got ${login.status}`)
     assert(
       login.verification_url?.startsWith('https://') || login.message.includes('provider login started in screen session'),
@@ -441,7 +436,7 @@ async function main() {
     }
     log('auth-login-started', { provider: login.provider, kind: login.login_kind, url: login.verification_url, code: login.user_code })
 
-    const removedOpenCode = variant(await client.send(removeSliceProviderAuthRequest(created.id, 'opencode')), 'SliceProviderAuthRemoved')
+    const removedOpenCode = variant(await client.send(removeSliceProviderAuthRequest(created.id, 'opencode', 'default')), 'SliceProviderAuthRemoved')
     assert(removedOpenCode.status === 'removed', `provider auth removal should succeed, got ${removedOpenCode.status}`)
     assert(!removedOpenCode.slice.provider_auth?.some((auth) => auth.provider.startsWith('opencode')), 'OpenCode provider family should be removed from the slice')
     assert(providerAuth(removedOpenCode.slice, 'codex'), 'provider auth removal should preserve other providers')
@@ -460,7 +455,7 @@ async function main() {
     })), 'SliceCreated').slice
     await client.send(startSliceRequest(secondSlice.id))
     await writeCodexAuth(home, 'slice-drill-account-2')
-    const secondImported = variant(await client.send(importSliceProviderAuthRequest(secondSlice.id, 'codex')), 'SliceProviderAuthImported')
+    const secondImported = variant(await client.send(importSliceProviderAuthRequest(secondSlice.id, 'codex', 'default')), 'SliceProviderAuthImported')
     assert(secondImported.slice.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-2'), 'second slice should record its own codex account summary')
     const firstAfterSecondImport = variant(await client.send(getSliceRequest(created.id)), 'Slice').slice
     assert(firstAfterSecondImport.provider_auth?.some((auth) => auth.provider === 'codex' && auth.account_id === 'slice-drill-account-1'), 'first slice should keep its original codex account summary')

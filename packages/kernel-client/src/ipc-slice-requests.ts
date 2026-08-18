@@ -50,39 +50,32 @@ export function deleteSliceRequest(sliceRef: string) {
   return { DeleteSlice: { slice_ref: sliceRef } }
 }
 
-export function importSliceProviderAuthRequest(sliceRef: string, provider: string) {
+export function importSliceProviderAuthRequest(sliceRef: string, provider: string, accountProfile: string) {
   return {
     ImportSliceProviderAuth: {
       slice_ref: sliceRef,
       provider,
+      account_profile: accountProfile,
     },
   }
 }
 
-export function removeSliceProviderAuthRequest(sliceRef: string, provider: string) {
+export function removeSliceProviderAuthRequest(sliceRef: string, provider: string, accountProfile: string) {
   return {
     RemoveSliceProviderAuth: {
       slice_ref: sliceRef,
       provider,
+      account_profile: accountProfile,
     },
   }
 }
 
-export function startSliceProviderLoginRequest(sliceRef: string, provider: string) {
+export function startSliceProviderLoginRequest(sliceRef: string, provider: string, accountProfile: string) {
   return {
     StartSliceProviderLogin: {
       slice_ref: sliceRef,
       provider,
-    },
-  }
-}
-
-export function setSliceProviderAuthAliasRequest(sliceRef: string, provider: string, alias: string | null) {
-  return {
-    SetSliceProviderAuthAlias: {
-      slice_ref: sliceRef,
-      provider,
-      alias,
+      account_profile: accountProfile,
     },
   }
 }

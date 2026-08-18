@@ -83,14 +83,14 @@ test("waiting room slice labels keep aliases and extracted auth identities visib
         display_mode: "headed",
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" },
-          { provider: "claude", state: "authenticated", email: "user@example.com", source: "slice" },
+          { provider: "codex", account_profile: "default", state: "configured", account_id: "acct-1", source: "slice" },
+          { provider: "claude", account_profile: "default", state: "authenticated", email: "user@example.com", source: "slice" },
         ],
       }),
     ],
   })
 
-  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 4 agents: agent-1, agent-2, agent-3 +1 more, relay shared, codex work (acct-1), claude user@example.com)")
+  assert.equal(formatWaitingRoomSliceSelection("slice-1", slices), "linux-dev (running, headed, 4 agents: agent-1, agent-2, agent-3 +1 more, relay shared, codex default (acct-1), claude default (user@example.com))")
 })
 
 test("waiting room slice labels do not infer shared relay when private flag is missing", () => {
@@ -144,8 +144,8 @@ test("waiting room slice labels show partial and stale provider auth coverage", 
         name: "linux-dev",
         providers: ["codex", "opencode", "claude"],
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" },
-          { provider: "claude", state: "not_configured", source: "slice" },
+          { provider: "codex", account_profile: "default", state: "configured", account_id: "acct-1", source: "slice" },
+          { provider: "claude", account_profile: "default", state: "not_configured", source: "slice" },
         ],
       }),
     ],
@@ -153,7 +153,7 @@ test("waiting room slice labels show partial and stale provider auth coverage", 
 
   assert.equal(
     formatWaitingRoomSliceSelection("slice-1", slices),
-    "linux-dev (running, headless, 0 agents, codex work (acct-1), claude auth missing/state=not_configured, missing opencode, refresh claude)",
+    "linux-dev (running, headless, 0 agents, codex default (acct-1), claude default (auth missing)/state=not_configured, missing opencode, refresh claude)",
   )
 })
 

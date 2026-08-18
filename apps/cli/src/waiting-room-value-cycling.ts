@@ -70,6 +70,17 @@ export function cycleWaitingRoomFocusedValue(
       providerId: BACKEND_PROVIDER_IDS[modulo(index + delta, BACKEND_PROVIDER_IDS.length)]!,
     })
   }
+  if (state.focus === "account") {
+    const profiles = (remote.providerAccounts ?? []).filter((profile) => profile.provider === state.providerId)
+    if (profiles.length === 0) {
+      return state
+    }
+    const index = Math.max(0, profiles.findIndex((profile) => profile.profile_id === state.accountProfileId))
+    return context.normalizeState({
+      ...state,
+      accountProfileId: profiles[modulo(index + delta, profiles.length)]?.profile_id ?? "default",
+    })
+  }
   if (state.focus === "effort") {
     const efforts = waitingRoomEfforts(waitingRoomModel(state, context.catalog))
     const index = Math.max(0, efforts.indexOf(state.effort))

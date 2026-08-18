@@ -491,6 +491,7 @@ mod tests {
 
     fn spawn_request() -> SpawnAgentRequest {
         SpawnAgentRequest {
+            account_profile: None,
             session_id: "session-1".to_string(),
             alias: None,
             provider: None,

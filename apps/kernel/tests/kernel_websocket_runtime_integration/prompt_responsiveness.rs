@@ -239,7 +239,7 @@ fn kernel_websocket_prompt_submit_acks_while_provider_catalog_is_slow() {
             json!({
                 "type": "request",
                 "request_id": "slow-provider-catalog",
-                "request": LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest),
+                "request": LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest::default()),
             }),
         )
         .await;

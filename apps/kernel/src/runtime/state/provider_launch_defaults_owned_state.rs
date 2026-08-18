@@ -12,7 +12,9 @@ impl KernelRuntimeOwnedState {
             provider,
             model: providers.model,
             effort: providers.effort,
-            account_profile: providers.account_profile,
+            // Account defaults are kernel-registry state keyed by owner and provider.
+            // They are resolved at launch time rather than duplicated in config.toml.
+            account_profile: None,
             execution_mode: None,
             permission_level: None,
         })

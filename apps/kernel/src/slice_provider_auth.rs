@@ -24,6 +24,7 @@ pub enum SliceProviderAuthState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SliceProviderAuthSummary {
     pub provider: String,
+    pub account_profile: String,
     pub state: SliceProviderAuthState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_type: Option<String>,
@@ -37,17 +38,12 @@ pub struct SliceProviderAuthSummary {
     pub organization_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subscription_type: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub alias: Option<String>,
     pub source: String,
 }
 
 impl SliceProviderAuthSummary {
-    pub fn alias_or_identity(&self) -> Option<&str> {
-        self.alias
-            .as_deref()
-            .or(self.email.as_deref())
-            .or(self.account_id.as_deref())
+    pub fn identity(&self) -> Option<&str> {
+        self.email.as_deref().or(self.account_id.as_deref())
     }
 }
 
@@ -147,6 +143,7 @@ pub fn parse_codex_auth_json(text: &str) -> Option<SliceProviderAuthSummary> {
     }
     Some(SliceProviderAuthSummary {
         provider: "codex".to_string(),
+        account_profile: "default".to_string(),
         state: SliceProviderAuthState::Configured,
         auth_type,
         account_id,
@@ -154,7 +151,6 @@ pub fn parse_codex_auth_json(text: &str) -> Option<SliceProviderAuthSummary> {
         organization_id: None,
         organization_name: None,
         subscription_type: None,
-        alias: None,
         source: "home_codex_auth_json".to_string(),
     })
 }
@@ -184,6 +180,7 @@ pub fn parse_opencode_auth_json(text: &str) -> Vec<SliceProviderAuthSummary> {
             }
             Some(SliceProviderAuthSummary {
                 provider: format!("opencode:{provider}"),
+                account_profile: "default".to_string(),
                 state: SliceProviderAuthState::Configured,
                 auth_type,
                 account_id,
@@ -191,7 +188,6 @@ pub fn parse_opencode_auth_json(text: &str) -> Vec<SliceProviderAuthSummary> {
                 organization_id: None,
                 organization_name: None,
                 subscription_type: None,
-                alias: None,
                 source: "home_opencode_auth_json".to_string(),
             })
         })
@@ -225,6 +221,7 @@ fn parse_claude_status_value(value: &Value) -> Option<SliceProviderAuthSummary> 
     }
     Some(SliceProviderAuthSummary {
         provider: "claude".to_string(),
+        account_profile: "default".to_string(),
         state: SliceProviderAuthState::Authenticated,
         auth_type: value
             .get("authMethod")
@@ -247,7 +244,6 @@ fn parse_claude_status_value(value: &Value) -> Option<SliceProviderAuthSummary> 
             .get("subscriptionType")
             .and_then(Value::as_str)
             .map(str::to_string),
-        alias: None,
         source: "claude_auth_status".to_string(),
     })
 }
@@ -278,6 +274,7 @@ pub fn parse_claude_settings_json(text: &str) -> Option<SliceProviderAuthSummary
     }
     Some(SliceProviderAuthSummary {
         provider: "claude".to_string(),
+        account_profile: "default".to_string(),
         state: SliceProviderAuthState::Configured,
         auth_type: Some("claude.ai".to_string()),
         account_id,
@@ -285,7 +282,6 @@ pub fn parse_claude_settings_json(text: &str) -> Option<SliceProviderAuthSummary
         organization_id,
         organization_name: None,
         subscription_type,
-        alias: None,
         source: "home_claude_settings_json".to_string(),
     })
 }
@@ -332,7 +328,6 @@ fn fill_missing_provider_auth_fields(
     fill_missing(&mut target.organization_id, fallback.organization_id);
     fill_missing(&mut target.organization_name, fallback.organization_name);
     fill_missing(&mut target.subscription_type, fallback.subscription_type);
-    fill_missing(&mut target.alias, fallback.alias);
     if !target.source.contains(&fallback.source) {
         target.source = format!("{}+{}", target.source, fallback.source);
     }
@@ -359,7 +354,6 @@ fn state_quality(state: &SliceProviderAuthState) -> u8 {
 
 fn identity_quality(summary: &SliceProviderAuthSummary) -> u8 {
     [
-        summary.alias.as_ref(),
         summary.email.as_ref(),
         summary.account_id.as_ref(),
         summary.organization_id.as_ref(),

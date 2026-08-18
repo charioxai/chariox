@@ -71,6 +71,8 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    provider_login_processes: ProviderLoginProcessStore,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
     prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
     active_turns: ActiveTurnStore,
@@ -219,6 +221,11 @@ mod provider_launch_owned_state;
 mod provider_launch_runtime;
 pub(crate) use provider_launch_runtime::ProviderLaunchStartOutcome;
 mod provider_liveness_runtime;
+mod provider_login_state;
+pub(in crate::runtime) use provider_login_state::{
+    ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
+    ProviderLoginProcessStore,
+};
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
 mod provider_process_runtime_state;
@@ -318,7 +325,12 @@ impl KernelRuntimeState {
         metaagent_events: MetaagentEventStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let (external_provider_sessions, attached_provider_transcript_cursors, pty_output_signal) = {
+        let (
+            external_provider_sessions,
+            attached_provider_transcript_cursors,
+            pty_output_signal,
+            provider_account_profiles,
+        ) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
@@ -326,6 +338,7 @@ impl KernelRuntimeState {
                         app.external_provider_session_index_store(),
                         app.attached_provider_transcript_cursor_store(),
                         app.pty_output_signal(),
+                        app.provider_account_profile_registry(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -352,6 +365,7 @@ impl KernelRuntimeState {
             provider_run_projection,
             operational_history_store,
             durable_state_store,
+            provider_account_profiles,
             prompt_state_owner,
             active_turns,
             prompt_activity,
@@ -382,6 +396,7 @@ impl KernelRuntimeState {
         provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
         operational_history_store: OperationalHistoryStore,
         durable_state_store: DurableKernelStateStore,
+        provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
         prompt_state_owner: crate::runtime::prompt_state::PromptStateOwner,
         active_turns: ActiveTurnStore,
         prompt_activity: PromptActivityStore,
@@ -450,6 +465,8 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                provider_account_profiles,
+                provider_login_processes: ProviderLoginProcessStore::default(),
                 prompt_state_owner,
                 active_turns,
                 prompt_activity,
@@ -508,6 +525,26 @@ impl KernelRuntimeState {
             crate::runtime::app_lock::lock_app_instrumented(&self.app, "kernel_runtime_state")
                 .await;
         operation(&mut app)
+    }
+
+    pub(crate) fn provider_account_profile_registry(
+        &self,
+    ) -> &crate::account_profile::ProviderAccountProfileRegistry {
+        &self.owned.provider_account_profiles
+    }
+
+    pub(crate) fn provider_account_authority_owner_user_id(
+        &self,
+        runtime_owner_user_id: &str,
+    ) -> String {
+        crate::account_profile::provider_account_authority_owner_user_id(
+            &self.owned.config_projection.snapshot(),
+            runtime_owner_user_id,
+        )
+    }
+
+    pub(in crate::runtime) fn provider_login_process_store(&self) -> &ProviderLoginProcessStore {
+        &self.owned.provider_login_processes
     }
 
     fn try_with_app_side_effect<R>(

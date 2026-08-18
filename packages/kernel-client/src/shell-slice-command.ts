@@ -19,7 +19,6 @@ import {
   removeSliceProviderAuthRequest,
   resetSliceStateRequest,
   saveSliceStateRequest,
-  setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
@@ -201,12 +200,14 @@ export async function executeSliceCommand(
     }
     case "auth": {
       if (first === "import") {
-        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
-        const provider = rest.length > 1 ? rest[1] : rest[0]
-        if (!provider) {
-          return { ok: false, message: "usage: slice auth import [slice-ref] <provider>" }
+        const hasExplicitSlice = rest.length >= 3
+        const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = hasExplicitSlice ? rest[1] : rest[0]
+        const accountProfile = hasExplicitSlice ? rest[2] : rest[1]
+        if (!provider || !accountProfile) {
+          return { ok: false, message: "usage: slice auth import [slice-ref] <provider> <account-profile>" }
         }
-        const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider))
+        const response = await deps.client.send(importSliceProviderAuthRequest(sliceRef, provider, accountProfile))
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
         return {
           ok: payload.status === "imported",
@@ -215,12 +216,14 @@ export async function executeSliceCommand(
         }
       }
       if (first === "remove") {
-        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
-        const provider = rest.length > 1 ? rest[1] : rest[0]
-        if (!provider) {
-          return { ok: false, message: "usage: slice auth remove [slice-ref] <provider>" }
+        const hasExplicitSlice = rest.length >= 3
+        const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = hasExplicitSlice ? rest[1] : rest[0]
+        const accountProfile = hasExplicitSlice ? rest[2] : rest[1]
+        if (!provider || !accountProfile) {
+          return { ok: false, message: "usage: slice auth remove [slice-ref] <provider> <account-profile>" }
         }
-        const response = await deps.client.send(removeSliceProviderAuthRequest(sliceRef, provider))
+        const response = await deps.client.send(removeSliceProviderAuthRequest(sliceRef, provider, accountProfile))
         const payload = expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
         return {
           ok: payload.status === "removed",
@@ -229,12 +232,14 @@ export async function executeSliceCommand(
         }
       }
       if (first === "login") {
-        const sliceRef = rest.length > 1 ? rest[0]! : await focusedAgentSliceRef(context, deps)
-        const provider = rest.length > 1 ? rest[1] : rest[0]
-        if (!provider) {
-          return { ok: false, message: "usage: slice auth login [slice-ref] <provider>" }
+        const hasExplicitSlice = rest.length >= 3
+        const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
+        const provider = hasExplicitSlice ? rest[1] : rest[0]
+        const accountProfile = hasExplicitSlice ? rest[2] : rest[1]
+        if (!provider || !accountProfile) {
+          return { ok: false, message: "usage: slice auth login [slice-ref] <provider> <account-profile>" }
         }
-        const response = await deps.client.send(startSliceProviderLoginRequest(sliceRef, provider))
+        const response = await deps.client.send(startSliceProviderLoginRequest(sliceRef, provider, accountProfile))
         const payload = expectVariant<{
           slice: SliceRecord
           login: {
@@ -252,29 +257,10 @@ export async function executeSliceCommand(
           data: payload,
         }
       }
-      if (first === "alias") {
-        const hasExplicitSlice = rest.length >= 3
-        const sliceRef = hasExplicitSlice ? rest[0]! : await focusedAgentSliceRef(context, deps)
-        const provider = hasExplicitSlice ? rest[1] : rest[0]
-        const aliasValue = hasExplicitSlice ? rest.slice(2).join(" ") : rest.slice(1).join(" ")
-        if (!provider || !aliasValue) {
-          return { ok: false, message: "usage: slice auth alias [slice-ref] <provider> <alias|clear>" }
-        }
-        const alias = aliasValue === "clear" ? null : aliasValue
-        const response = await deps.client.send(setSliceProviderAuthAliasRequest(sliceRef, provider, alias))
-        const payload = expectVariant<{ slice: SliceRecord; provider: string; alias: string | null }>(response, "SliceProviderAuthAliasSet")
-        return {
-          ok: true,
-          message: payload.alias
-            ? `slice ${formatSliceLabel(payload.slice)} auth alias ${payload.provider}: ${payload.alias}`
-            : `slice ${formatSliceLabel(payload.slice)} auth alias ${payload.provider}: cleared`,
-          data: payload,
-        }
-      }
-      return { ok: false, message: "usage: slice auth import|remove [slice-ref] <provider> | slice auth login [slice-ref] <provider> | slice auth alias [slice-ref] <provider> <alias|clear>" }
+      return { ok: false, message: "usage: slice auth import|remove|login [slice-ref] <provider> <account-profile>" }
     }
     default:
-      return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|auth alias|screen" }
+      return { ok: false, message: "usage: slice list|create|status|doctor|logs|audit|state|save-state|backup|reset-state|start|stop|delete|auth import|auth remove|auth login|screen" }
   }
 }
 
@@ -433,11 +419,11 @@ function formatSliceProviderAuthCommandResult(
   }
   if (status === "not_implemented") {
     const fallback = action === "import"
-      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
+      ? `use /slice auth login ${sliceRef} ${provider} <account-profile>, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
       : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
     return `slice ${label} auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
   }
-  return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
+  return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider} <account-profile>.`
 }
 
 function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord | null): string {
@@ -685,11 +671,11 @@ function formatProviderRecoveryCommands(providers: readonly string[], commandFor
 }
 
 function formatSliceAuthImportCommand(slice: SliceRecord, provider: string): string {
-  return `/slice auth import ${formatSliceCommandRef(slice)} ${provider}`
+  return `/slice auth import ${formatSliceCommandRef(slice)} ${provider} <account-profile>`
 }
 
 function formatSliceAuthLoginCommand(slice: SliceRecord, provider: string): string {
-  return `/slice auth login ${formatSliceCommandRef(slice)} ${provider}`
+  return `/slice auth login ${formatSliceCommandRef(slice)} ${provider} <account-profile>`
 }
 
 function formatSliceCommandRef(slice: SliceRecord): string {
@@ -746,9 +732,12 @@ function sliceAuditNextAction(action: string, outcome: string, payload: Record<s
   }
   const sliceRef = String(label || payload.slice_id || "<slice>")
   const provider = typeof payload.provider === "string" && payload.provider ? payload.provider : null
+  const accountProfile = typeof payload.account_profile === "string" && payload.account_profile
+    ? payload.account_profile
+    : "<account-profile>"
   if (action.startsWith("auth.")) {
     return provider
-      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} ${accountProfile} or /slice auth import ${sliceRef} ${provider} ${accountProfile}`
       : `run /slice doctor ${sliceRef}; inspect provider account state, then retry the matching /slice auth command`
   }
   if (["start", "stop", "delete", "state.save", "state.reset", "backup.create"].includes(action)) {

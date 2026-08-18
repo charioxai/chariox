@@ -18,6 +18,7 @@ fn leased_projection_emits_source_proof_output_once() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("workflow-intermediate-node".to_string()),
             None,
             None,
@@ -97,6 +98,7 @@ fn leased_projection_history_completion_is_not_blocked_by_notice() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -186,6 +188,7 @@ fn leased_projection_recovers_output_from_history_when_terminal_records_are_miss
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -258,6 +261,7 @@ fn leased_projection_completion_dedupe_is_prompt_scoped_when_provider_run_is_reu
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -373,6 +377,7 @@ fn leased_projection_recovers_history_output_when_tool_chunks_are_drained() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -489,6 +494,7 @@ fn leased_projection_history_dedupe_is_scoped_to_backing_session() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -502,6 +508,7 @@ fn leased_projection_history_dedupe_is_scoped_to_backing_session() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,

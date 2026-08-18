@@ -100,6 +100,7 @@ impl CommandRouter {
         &self,
         lease_id: &str,
         provider: &str,
+        account_profile: &str,
         model: Option<String>,
         effort: Option<String>,
         execution_mode: Option<crate::provider::AgentExecutionMode>,
@@ -112,6 +113,7 @@ impl CommandRouter {
             &self.runtime_state,
             lease_id,
             provider,
+            account_profile,
             model,
             effort,
             execution_mode,
@@ -149,6 +151,7 @@ impl CommandRouter {
         &self,
         leased_agent_id: &str,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<crate::execution_lease::LeasedAgent, DaemonError> {
@@ -156,6 +159,7 @@ impl CommandRouter {
             &self.runtime_state,
             leased_agent_id,
             provider,
+            account_profile,
             model,
             effort,
         )
@@ -314,6 +318,19 @@ impl CommandRouter {
             &self.runtime_state,
             context,
             packages,
+        )
+        .await
+    }
+
+    pub(crate) async fn relay_ensure_remote_provider_account(
+        &self,
+        context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+        materialization: crate::account_profile::ProviderAccountMaterialization,
+    ) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+        relay_peer_runtime::ensure_relay_remote_provider_account(
+            &self.runtime_state,
+            context,
+            materialization,
         )
         .await
     }

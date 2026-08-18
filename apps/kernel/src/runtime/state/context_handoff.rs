@@ -10,9 +10,11 @@ use builder::build_agent_context_handoff_from_history;
 pub(super) struct PendingAgentContextHandoff {
     pub(super) source_provider_run_id: String,
     pub(super) source_provider: String,
+    pub(super) source_account_profile: String,
     pub(super) source_model: String,
     pub(super) target_provider_run_id: Option<String>,
     pub(super) target_provider: String,
+    pub(super) target_account_profile: String,
     pub(super) target_model: Option<String>,
     pub(super) context: String,
 }
@@ -78,6 +80,7 @@ impl PendingAgentContextHandoffStore {
 impl PendingAgentContextHandoff {
     fn matches_target(&self, target_run: &RuntimeProviderRun) -> bool {
         self.target_provider == target_run.provider()
+            && self.target_account_profile == target_run.account_profile()
             && self
                 .target_provider_run_id
                 .as_deref()
@@ -109,9 +112,7 @@ impl super::KernelRuntimeOwnedState {
         if source_run.agent_instance_id() != Some(agent_id) {
             return;
         }
-        if source_run.provider() == target_run.provider()
-            && source_run.model() == target_run.model()
-        {
+        if !requires_provider_context_handoff(source_run, target_run) {
             return;
         }
         self.prepare_provider_switch_context_handoff_for_target(
@@ -121,6 +122,7 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             Some(target_run.id()),
             target_run.provider(),
+            target_run.account_profile(),
             Some(target_run.model()),
         );
     }
@@ -129,6 +131,7 @@ impl super::KernelRuntimeOwnedState {
         &self,
         source_run: &RuntimeProviderRun,
         target_provider: &str,
+        target_account_profile: &str,
         target_model: Option<&str>,
     ) {
         let Some(agent_id) = source_run.agent_instance_id() else {
@@ -136,6 +139,7 @@ impl super::KernelRuntimeOwnedState {
         };
         if source_run.provider() == target_provider
             && target_model.is_some_and(|model| model == source_run.model())
+            && source_run.account_profile() == target_account_profile
         {
             return;
         }
@@ -146,6 +150,7 @@ impl super::KernelRuntimeOwnedState {
             agent_id,
             None,
             target_provider,
+            target_account_profile,
             target_model,
         );
     }
@@ -167,6 +172,7 @@ impl super::KernelRuntimeOwnedState {
             target_agent_id,
             Some(target_run.id()),
             target_run.provider(),
+            target_run.account_profile(),
             Some(target_run.model()),
         );
     }
@@ -179,6 +185,7 @@ impl super::KernelRuntimeOwnedState {
         agent_id: &str,
         target_provider_run_id: Option<&str>,
         target_provider: &str,
+        target_account_profile: &str,
         target_model: Option<&str>,
     ) {
         self.pending_agent_context_handoffs
@@ -195,9 +202,11 @@ impl super::KernelRuntimeOwnedState {
                     PendingAgentContextHandoff {
                         source_provider_run_id: source_run.id().to_string(),
                         source_provider: source_run.provider().to_string(),
+                        source_account_profile: source_run.account_profile().to_string(),
                         source_model: source_run.model().to_string(),
                         target_provider_run_id: target_provider_run_id.map(str::to_string),
                         target_provider: target_provider.to_string(),
+                        target_account_profile: target_account_profile.to_string(),
                         target_model: target_model.map(str::to_string),
                         context,
                     },
@@ -215,6 +224,7 @@ impl super::KernelRuntimeOwnedState {
                         "source_provider_run_id": source_run.id(),
                         "target_provider_run_id": target_provider_run_id,
                         "target_provider": target_provider,
+                        "target_account_profile": target_account_profile,
                         "target_model": target_model,
                         "error": error.to_string(),
                     }),
@@ -271,14 +281,25 @@ impl super::KernelRuntimeOwnedState {
     }
 }
 
+fn requires_provider_context_handoff(
+    source_run: &RuntimeProviderRun,
+    target_run: &RuntimeProviderRun,
+) -> bool {
+    source_run.provider() != target_run.provider()
+        || source_run.model() != target_run.model()
+        || source_run.account_profile() != target_run.account_profile()
+}
+
 fn context_handoff_for_provider(handoff: &PendingAgentContextHandoff) -> String {
     format!(
-        "{}\n\nProvider switch: {} ({}) from run {} -> {} ({}) run {}.",
+        "{}\n\nProvider/account switch: {} [{}] ({}) from run {} -> {} [{}] ({}) run {}.",
         handoff.context.trim(),
         handoff.source_provider,
+        handoff.source_account_profile,
         model_label(Some(&handoff.source_model)),
         handoff.source_provider_run_id,
         handoff.target_provider,
+        handoff.target_account_profile,
         model_label(handoff.target_model.as_deref()),
         handoff
             .target_provider_run_id
@@ -399,9 +420,11 @@ mod tests {
             PendingAgentContextHandoff {
                 source_provider_run_id: "run-old".to_string(),
                 source_provider: "opencode".to_string(),
+                source_account_profile: "default".to_string(),
                 source_model: "model-old".to_string(),
                 target_provider_run_id: Some("run-new".to_string()),
                 target_provider: "codex".to_string(),
+                target_account_profile: "default".to_string(),
                 target_model: Some("model-new".to_string()),
                 context: "<chariox_context_handoff>prior context</chariox_context_handoff>"
                     .to_string(),
@@ -419,6 +442,17 @@ mod tests {
         let injected = inject_context_handoff("next request", &first.unwrap());
         assert!(injected.contains("prior context"));
         assert!(injected.contains("<user_request>\nnext request\n</user_request>"));
+    }
+
+    #[test]
+    fn same_provider_and_model_with_different_account_requires_handoff() {
+        let source = test_run_with_account(
+            "run-old", "session", "agent", "codex", "gpt-5.5", "personal",
+        );
+        let target =
+            test_run_with_account("run-new", "session", "agent", "codex", "gpt-5.5", "work");
+
+        assert!(requires_provider_context_handoff(&source, &target));
     }
 
     #[tokio::test]
@@ -545,9 +579,11 @@ mod tests {
             PendingAgentContextHandoff {
                 source_provider_run_id: "run-old".to_string(),
                 source_provider: "opencode".to_string(),
+                source_account_profile: "default".to_string(),
                 source_model: "model-old".to_string(),
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
+                target_account_profile: "default".to_string(),
                 target_model: None,
                 context: "<chariox_context_handoff>workflow context</chariox_context_handoff>"
                     .to_string(),
@@ -570,9 +606,11 @@ mod tests {
         let handoff = PendingAgentContextHandoff {
             source_provider_run_id: "run-old".to_string(),
             source_provider: "codex".to_string(),
+            source_account_profile: "default".to_string(),
             source_model: "gpt-5.5".to_string(),
             target_provider_run_id: None,
             target_provider: "claude-headless".to_string(),
+            target_account_profile: "default".to_string(),
             target_model: Some("claude-opus-4-7".to_string()),
             context: "<chariox_context_handoff>prior context</chariox_context_handoff>".to_string(),
         };
@@ -586,7 +624,7 @@ mod tests {
 
         assert!(hidden.contains("existing hidden context"));
         assert!(hidden.contains("<chariox_context_handoff>prior context</chariox_context_handoff>"));
-        assert!(hidden.contains("Provider switch: codex (gpt-5.5)"));
+        assert!(hidden.contains("Provider/account switch: codex [default] (gpt-5.5)"));
         assert!(hidden.contains("The active user request is supplied separately."));
         assert!(!hidden.contains("<user_request>"));
     }
@@ -600,9 +638,11 @@ mod tests {
             PendingAgentContextHandoff {
                 source_provider_run_id: "run-old".to_string(),
                 source_provider: "claude".to_string(),
+                source_account_profile: "default".to_string(),
                 source_model: "opus".to_string(),
                 target_provider_run_id: None,
                 target_provider: "codex".to_string(),
+                target_account_profile: "default".to_string(),
                 target_model: Some("gpt-5".to_string()),
                 context: "<chariox_context_handoff>prior context</chariox_context_handoff>"
                     .to_string(),
@@ -627,8 +667,23 @@ mod tests {
         provider: &str,
         model: &str,
     ) -> RuntimeProviderRun {
+        test_run_with_account(run_id, session_id, agent_id, provider, model, "default")
+    }
+
+    fn test_run_with_account(
+        run_id: &str,
+        session_id: &str,
+        agent_id: &str,
+        provider: &str,
+        model: &str,
+        account_profile: &str,
+    ) -> RuntimeProviderRun {
         let request = crate::provider::LaunchProviderRequest::new(
-            session_id, "dev-stub", provider, "default", model,
+            session_id,
+            "dev-stub",
+            provider,
+            account_profile,
+            model,
         )
         .with_agent_id(agent_id);
         RuntimeProviderRun::new(

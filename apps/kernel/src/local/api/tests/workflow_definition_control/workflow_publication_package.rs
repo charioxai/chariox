@@ -395,6 +395,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("shopper".to_string()),
             provider: Some("dev-stub".to_string()),

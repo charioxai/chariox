@@ -747,6 +747,7 @@ fn fork_agent_clones_config_and_launches_provider_inner() {
     };
     let source = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("source".to_string()),
             provider: Some("dev-stub".to_string()),

@@ -19,7 +19,7 @@ fn list_sorts_filters_and_paginates_external_provider_sessions() {
             .iter()
             .map(|session| session.external_session_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["opencode:session-1", "codex:thread-1"]
+        vec!["opencode:default:session-1", "codex:default:thread-1"]
     );
     assert!(first.has_more);
     assert_eq!(first.next_cursor.as_deref(), Some("offset:2"));
@@ -29,7 +29,10 @@ fn list_sorts_filters_and_paginates_external_provider_sessions() {
         cursor: first.next_cursor,
         limit: Some(2),
     });
-    assert_eq!(second.sessions[0].external_session_id, "codex:thread-2");
+    assert_eq!(
+        second.sessions[0].external_session_id,
+        "codex:default:thread-2"
+    );
     assert!(!second.has_more);
 
     let codex = store.list(&ListExternalProviderSessionsRequest {
@@ -38,6 +41,44 @@ fn list_sorts_filters_and_paginates_external_provider_sessions() {
         limit: None,
     });
     assert_eq!(codex.sessions.len(), 2);
+}
+
+#[test]
+fn owner_scoped_listing_filters_before_pagination() {
+    let store = ExternalProviderSessionIndexStore::default();
+    let mut owner_a_old = record("codex", "owner-a-old", 10);
+    owner_a_old.owner_user_id = "owner-a".to_string();
+    let mut owner_b = record("codex", "owner-b", 30);
+    owner_b.owner_user_id = "owner-b".to_string();
+    let mut owner_a_new = record("codex", "owner-a-new", 20);
+    owner_a_new.owner_user_id = "owner-a".to_string();
+    store.upsert(owner_a_old);
+    store.upsert(owner_b);
+    store.upsert(owner_a_new);
+
+    let page = store.list_for_owner(
+        "owner-a",
+        &ListExternalProviderSessionsRequest {
+            provider: None,
+            cursor: None,
+            limit: Some(1),
+        },
+    );
+    assert_eq!(page.sessions.len(), 1);
+    assert_eq!(page.sessions[0].provider_session_id, "owner-a-new");
+    assert!(page.has_more);
+    assert_eq!(page.next_cursor.as_deref(), Some("offset:1"));
+
+    let second = store.list_for_owner(
+        "owner-a",
+        &ListExternalProviderSessionsRequest {
+            provider: None,
+            cursor: page.next_cursor,
+            limit: Some(1),
+        },
+    );
+    assert_eq!(second.sessions[0].provider_session_id, "owner-a-old");
+    assert!(!second.has_more);
 }
 
 #[test]
@@ -57,7 +98,7 @@ fn replace_provider_sessions_normalizes_provider_key() {
             .iter()
             .map(|session| session.external_session_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["codex:thread-fresh"]
+        vec!["codex:default:thread-fresh"]
     );
     assert!(store.get("codex:thread-stale").is_none());
 }
@@ -75,7 +116,10 @@ fn upsert_canonicalizes_known_provider_session_records() {
         limit: None,
     });
     assert_eq!(page.sessions.len(), 1);
-    assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+    assert_eq!(
+        page.sessions[0].external_session_id,
+        "codex:default:thread-1"
+    );
     assert_eq!(page.sessions[0].provider, "codex");
     assert_eq!(page.sessions[0].provider_session_id, "thread-1");
 }
@@ -121,7 +165,10 @@ fn replace_provider_sessions_ignores_unknown_provider_key() {
         limit: None,
     });
     assert_eq!(page.sessions.len(), 1);
-    assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+    assert_eq!(
+        page.sessions[0].external_session_id,
+        "codex:default:thread-1"
+    );
 }
 
 #[test]
@@ -145,7 +192,7 @@ fn replace_provider_sessions_preserves_attachment_markers() {
 fn attachment_marker_applies_to_later_discovered_provider_session() {
     let store = ExternalProviderSessionIndexStore::default();
     assert!(store
-        .mark_provider_session_attached("codex", "thread-1", "session-1", "agent-1")
+        .mark_provider_session_attached("codex", "default", "thread-1", "session-1", "agent-1")
         .is_none());
 
     store.replace_provider_sessions("codex", vec![record("codex", "thread-1", 40)]);
@@ -190,10 +237,15 @@ fn attachment_marker_can_be_applied_from_provider_resume_state() {
     resume_state.set_claude_session_id("thread-2");
     resume_state.set_opencode_session_id("thread-3");
 
-    let attached_count = store.mark_resume_state_attached(&resume_state, "session-1", "agent-1");
+    let attached_count =
+        store.mark_resume_state_attached(&resume_state, "default", "session-1", "agent-1");
 
     assert_eq!(attached_count, 3);
-    for external_session_id in ["codex:thread-1", "claude:thread-2", "opencode:thread-3"] {
+    for external_session_id in [
+        "codex:default:thread-1",
+        "claude:default:thread-2",
+        "opencode:default:thread-3",
+    ] {
         let session = store
             .get(external_session_id)
             .expect("provider session should remain indexed");
@@ -223,13 +275,17 @@ fn provider_run_attachment_marks_resume_state_and_direct_provider_session() {
 
     store.mark_provider_run_attached(
         "opencode",
+        "default",
         Some("session-from-run"),
         &resume_state,
         "session-1",
         "agent-1",
     );
 
-    for external_session_id in ["codex:thread-from-resume", "opencode:session-from-run"] {
+    for external_session_id in [
+        "codex:default:thread-from-resume",
+        "opencode:default:session-from-run",
+    ] {
         let session = store
             .get(external_session_id)
             .expect("provider session should remain indexed");
@@ -237,22 +293,6 @@ fn provider_run_attachment_marks_resume_state_and_direct_provider_session() {
         assert_eq!(session.first_attached_session_id(), Some("session-1"));
         assert_eq!(session.first_attached_agent_id(), Some("agent-1"));
     }
-}
-
-#[test]
-fn external_session_id_for_provider_session_canonicalizes_known_providers() {
-    assert_eq!(
-        external_session_id_for_provider_session(" Codex ", " thread-1 ").as_deref(),
-        Some("codex:thread-1")
-    );
-    assert_eq!(
-        external_session_id_for_provider_session("unknown", "thread-1"),
-        None
-    );
-    assert_eq!(
-        external_session_id_for_provider_session("codex", "   "),
-        None
-    );
 }
 
 #[test]
@@ -273,7 +313,7 @@ fn list_excludes_attached_to_chariox_external_provider_sessions() {
             .iter()
             .map(|session| session.external_session_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["codex:thread-2"]
+        vec!["codex:default:thread-2"]
     );
 }
 
@@ -300,7 +340,10 @@ fn detach_session_returns_provider_session_to_attachable_list() {
         limit: None,
     });
     assert_eq!(page.sessions.len(), 1);
-    assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+    assert_eq!(
+        page.sessions[0].external_session_id,
+        "codex:default:thread-1"
+    );
     assert!(page.sessions[0].is_attachable_to_chariox());
     assert_eq!(page.sessions[0].first_attached_session_id(), None);
     assert_eq!(page.sessions[0].first_attached_agent_id(), None);
@@ -345,7 +388,10 @@ fn detach_agent_returns_provider_session_to_attachable_list() {
         limit: None,
     });
     assert_eq!(page.sessions.len(), 1);
-    assert_eq!(page.sessions[0].external_session_id, "codex:thread-1");
+    assert_eq!(
+        page.sessions[0].external_session_id,
+        "codex:default:thread-1"
+    );
     assert!(page.sessions[0].is_attachable_to_chariox());
     assert_eq!(page.sessions[0].first_attached_session_id(), None);
     assert_eq!(page.sessions[0].first_attached_agent_id(), None);
@@ -374,7 +420,7 @@ fn detach_attachment_removes_only_exact_provider_session_agent_ref() {
     assert_eq!(
         store.attachment_refs(),
         BTreeSet::from([ExternalProviderSessionAttachmentRef {
-            external_session_id: "codex:thread-new".to_string(),
+            external_session_id: "codex:default:thread-new".to_string(),
             session_id: "session-1".to_string(),
             agent_id: "agent-1".to_string(),
         }])
@@ -419,14 +465,25 @@ fn detach_agent_preserves_other_agent_attachments() {
 fn transcript_cursor_store_detaches_session_cursors() {
     let store = AttachedProviderTranscriptCursorStore::default();
     store.set(
-        AttachedProviderTranscriptCursorKey::new("session-1", "agent-1", "codex", "thread-1"),
+        AttachedProviderTranscriptCursorKey::new(
+            "session-1",
+            "agent-1",
+            "codex",
+            "default",
+            "thread-1",
+        ),
         ExternalProviderObservedCursor {
             last_observed_turn_id: Some("turn-1".to_string()),
             ..ExternalProviderObservedCursor::default()
         },
     );
-    let preserved_key =
-        AttachedProviderTranscriptCursorKey::new("session-2", "agent-2", "codex", "thread-2");
+    let preserved_key = AttachedProviderTranscriptCursorKey::new(
+        "session-2",
+        "agent-2",
+        "codex",
+        "default",
+        "thread-2",
+    );
     store.set(
         preserved_key.clone(),
         ExternalProviderObservedCursor {
@@ -442,6 +499,7 @@ fn transcript_cursor_store_detaches_session_cursors() {
             "session-1",
             "agent-1",
             "codex",
+            "default",
             "thread-1"
         )),
         ExternalProviderObservedCursor::default()
@@ -456,14 +514,25 @@ fn transcript_cursor_store_detaches_session_cursors() {
 fn transcript_cursor_store_detaches_agent_cursors() {
     let store = AttachedProviderTranscriptCursorStore::default();
     store.set(
-        AttachedProviderTranscriptCursorKey::new("session-1", "agent-1", "codex", "thread-1"),
+        AttachedProviderTranscriptCursorKey::new(
+            "session-1",
+            "agent-1",
+            "codex",
+            "default",
+            "thread-1",
+        ),
         ExternalProviderObservedCursor {
             last_observed_turn_id: Some("turn-1".to_string()),
             ..ExternalProviderObservedCursor::default()
         },
     );
-    let preserved_same_session =
-        AttachedProviderTranscriptCursorKey::new("session-1", "agent-2", "codex", "thread-2");
+    let preserved_same_session = AttachedProviderTranscriptCursorKey::new(
+        "session-1",
+        "agent-2",
+        "codex",
+        "default",
+        "thread-2",
+    );
     store.set(
         preserved_same_session.clone(),
         ExternalProviderObservedCursor {
@@ -479,6 +548,7 @@ fn transcript_cursor_store_detaches_agent_cursors() {
             "session-1",
             "agent-1",
             "codex",
+            "default",
             "thread-1"
         )),
         ExternalProviderObservedCursor::default()
@@ -496,7 +566,13 @@ fn transcript_cursor_store_detaches_agent_cursors() {
 fn transcript_cursor_key_canonicalizes_provider_session_identity() {
     let store = AttachedProviderTranscriptCursorStore::default();
     store.set(
-        AttachedProviderTranscriptCursorKey::new("session-1", "agent-1", " Codex ", " thread-1 "),
+        AttachedProviderTranscriptCursorKey::new(
+            "session-1",
+            "agent-1",
+            " Codex ",
+            " default ",
+            " thread-1 ",
+        ),
         ExternalProviderObservedCursor {
             last_observed_turn_id: Some("turn-1".to_string()),
             ..ExternalProviderObservedCursor::default()
@@ -509,6 +585,7 @@ fn transcript_cursor_key_canonicalizes_provider_session_identity() {
                 "session-1",
                 "agent-1",
                 "codex",
+                "default",
                 "thread-1"
             ))
             .last_observed_turn_id
@@ -523,6 +600,7 @@ fn record(
     last_modified_at_ms: u64,
 ) -> ExternalProviderSessionRecord {
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("{provider}:{provider_session_id}"),
         provider: provider.to_string(),
         provider_session_id: provider_session_id.to_string(),
@@ -532,7 +610,7 @@ fn record(
         created_at_ms: None,
         last_modified_at_ms,
         worktree_path: None,
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },
