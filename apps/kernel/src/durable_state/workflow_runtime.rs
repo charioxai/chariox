@@ -1,14 +1,20 @@
 use rusqlite::{params, OptionalExtension, Transaction};
 
 use crate::error::DaemonError;
-use crate::session::{RuntimeSession, WorkflowEventDeliveryReceipt, WorkflowRun};
+use crate::session::{
+    DurableWorkflowHotState, RuntimeSession, WorkflowConsole, WorkflowDefinition,
+    WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPromptQueueDefinition,
+    WorkflowPublicationDefinition, WorkflowPublicationSnapshot, WorkflowQueuedPrompt, WorkflowRun,
+    WorkflowScheduleDefinition,
+};
 
 use super::{
-    unix_epoch_ms, DurableDeliveryReceiptWrite, DurableKernelStateStore, DurableWorkflowRunWrite,
+    unix_epoch_ms, DurableDeliveryReceiptWrite, DurableKernelStateStore,
+    DurableWorkflowHotEntityWrite, DurableWorkflowRunWrite, DurableWorkflowSessionWrite,
     DurableWriteOperation,
 };
 
-const WORKFLOW_RUNTIME_STORAGE_VERSION: &str = "1";
+const WORKFLOW_RUNTIME_STORAGE_VERSION: &str = "2";
 const WORKFLOW_RUNTIME_STORAGE_VERSION_KEY: &str = "workflow_runtime_storage_version";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,25 +31,16 @@ impl DurableKernelStateStore {
     ) -> Result<u64, DaemonError> {
         let timestamp_ms = unix_epoch_ms();
         let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
-        let hot_session = session.durable_runtime_snapshot();
         let payload_json = serde_json::to_string(&serde_json::json!({
-            "session": hot_session,
+            "owner_id": session.host_daemon_id(),
+            "session_id": session.id(),
             "reason": reason,
         }))
         .map_err(|error| DaemonError::LocalTransport {
             operation: "durable_state.encode_workflow_runtime_transition",
             message: error.to_string(),
         })?;
-        let workflow_runs = session
-            .workflow_runs()
-            .iter()
-            .map(|workflow_run| encode_workflow_run(session.id(), workflow_run))
-            .collect::<Result<Vec<_>, _>>()?;
-        let delivery_receipts = session
-            .workflow_event_delivery_receipts()
-            .values()
-            .map(|receipt| encode_delivery_receipt(session.id(), receipt))
-            .collect::<Result<Vec<_>, _>>()?;
+        let encoded = encode_workflow_session(session)?;
         self.writer
             .execute(DurableWriteOperation::WorkflowRuntimeTransition {
                 event_id,
@@ -51,8 +48,59 @@ impl DurableKernelStateStore {
                 payload_json,
                 owner_id: session.host_daemon_id().to_string(),
                 session_id: session.id().to_string(),
-                workflow_runs,
-                delivery_receipts,
+                hot_entities: encoded.hot_entities,
+                workflow_runs: encoded.workflow_runs,
+                delivery_receipts: encoded.delivery_receipts,
+            })
+    }
+
+    pub(crate) fn persist_workflow_runtime_sessions_transition(
+        &self,
+        sessions: &[RuntimeSession],
+        reason: &str,
+    ) -> Result<u64, DaemonError> {
+        let Some(first) = sessions.first() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "durable_state.persist_workflow_runtime_sessions_transition",
+                message: "workflow runtime transition requires at least one session".to_string(),
+            });
+        };
+        let owner_id = first.host_daemon_id();
+        if sessions
+            .iter()
+            .any(|session| session.host_daemon_id() != owner_id)
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "durable_state.persist_workflow_runtime_sessions_transition",
+                message: "workflow runtime transition cannot span kernel owners".to_string(),
+            });
+        }
+        let timestamp_ms = unix_epoch_ms();
+        let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
+        let session_ids = sessions
+            .iter()
+            .map(|session| session.id())
+            .collect::<Vec<_>>();
+        let payload_json = serde_json::to_string(&serde_json::json!({
+            "owner_id": owner_id,
+            "session_ids": session_ids,
+            "reason": reason,
+        }))
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.encode_workflow_runtime_sessions_transition",
+            message: error.to_string(),
+        })?;
+        let sessions = sessions
+            .iter()
+            .map(encode_workflow_session)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.writer
+            .execute(DurableWriteOperation::WorkflowRuntimeSessionsTransition {
+                event_id,
+                timestamp_ms,
+                payload_json,
+                owner_id: owner_id.to_string(),
+                sessions,
             })
     }
 
@@ -61,12 +109,20 @@ impl DurableKernelStateStore {
         owner_id: &str,
         sessions: &[RuntimeSession],
     ) -> Result<(), DaemonError> {
+        let hot_entities = sessions
+            .iter()
+            .map(encode_workflow_hot_entities)
+            .collect::<Result<Vec<_>, _>>()?
+            .into_iter()
+            .flatten()
+            .collect();
         let workflow_runs = sessions
             .iter()
             .flat_map(|session| {
                 session
                     .workflow_runs()
                     .iter()
+                    .filter(|run| !run.status().is_terminal())
                     .map(move |run| encode_workflow_run(session.id(), run))
             })
             .collect::<Result<Vec<_>, _>>()?;
@@ -82,8 +138,28 @@ impl DurableKernelStateStore {
         self.writer
             .execute(DurableWriteOperation::WorkflowRuntimeMigration {
                 owner_id: owner_id.to_string(),
+                hot_entities,
                 workflow_runs,
                 delivery_receipts,
+            })?;
+        Ok(())
+    }
+
+    pub(crate) fn migrate_legacy_workflow_history_chunk(
+        &self,
+        owner_id: &str,
+        workflow_runs: &[(String, WorkflowRun)],
+        completed: bool,
+    ) -> Result<(), DaemonError> {
+        let workflow_runs = workflow_runs
+            .iter()
+            .map(|(session_id, run)| encode_workflow_run(session_id, run))
+            .collect::<Result<Vec<_>, _>>()?;
+        self.writer
+            .execute(DurableWriteOperation::WorkflowHistoryMigrationChunk {
+                owner_id: owner_id.to_string(),
+                workflow_runs,
+                completed,
             })?;
         Ok(())
     }
@@ -121,7 +197,7 @@ impl DurableKernelStateStore {
         let mut statement = connection
             .prepare(
                 "SELECT session_id, payload_json
-                 FROM durable_workflow_runs
+                 FROM durable_workflow_runs INDEXED BY idx_durable_workflow_runs_active
                  WHERE owner_id = ?1
                    AND status NOT IN ('Completed', 'Failed', 'Stopped')
                  ORDER BY session_id ASC, created_at_ms ASC, run_id ASC",
@@ -133,6 +209,39 @@ impl DurableKernelStateStore {
             })
             .map_err(|error| storage_error("query active workflow runs", error))?;
         decode_workflow_run_rows(rows, "read active workflow runs")
+    }
+
+    pub(crate) fn load_workflow_hot_states(
+        &self,
+        owner_id: &str,
+    ) -> Result<Vec<(String, DurableWorkflowHotState)>, DaemonError> {
+        let connection = self.lock_connection("durable_state.load_workflow_hot_states")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT session_id, entity_kind, entity_id, payload_json
+                 FROM durable_workflow_hot_entities
+                 WHERE owner_id = ?1
+                 ORDER BY session_id ASC, entity_kind ASC, entity_id ASC",
+            )
+            .map_err(|error| storage_error("prepare workflow hot states", error))?;
+        let rows = statement
+            .query_map(params![owner_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            })
+            .map_err(|error| storage_error("query workflow hot states", error))?;
+        let mut states = std::collections::BTreeMap::<String, DurableWorkflowHotState>::new();
+        for row in rows {
+            let (session_id, entity_kind, entity_id, payload_json) =
+                row.map_err(|error| storage_error("read workflow hot state", error))?;
+            let state = states.entry(session_id).or_default();
+            decode_workflow_hot_entity(state, &entity_kind, &entity_id, &payload_json)?;
+        }
+        Ok(states.into_iter().collect())
     }
 
     pub(crate) fn load_active_delivery_receipts(
@@ -279,6 +388,7 @@ pub(super) fn write_workflow_runtime_transition(
     payload_json: &str,
     owner_id: &str,
     session_id: &str,
+    hot_entities: &[DurableWorkflowHotEntityWrite],
     workflow_runs: &[DurableWorkflowRunWrite],
     delivery_receipts: &[DurableDeliveryReceiptWrite],
 ) -> Result<u64, rusqlite::Error> {
@@ -289,8 +399,72 @@ pub(super) fn write_workflow_runtime_transition(
         params![event_id, session_id, timestamp_ms as i64, payload_json],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
+    write_workflow_hot_entities(
+        transaction,
+        owner_id,
+        session_id,
+        timestamp_ms,
+        hot_entities,
+        true,
+    )?;
     write_workflow_runs(transaction, owner_id, timestamp_ms, workflow_runs, true)?;
     write_delivery_receipts(transaction, owner_id, timestamp_ms, delivery_receipts, true)?;
+    delete_missing_active_workflow_runs(transaction, owner_id, session_id, workflow_runs)?;
+    delete_missing_delivery_receipts(transaction, owner_id, session_id, delivery_receipts)?;
+    Ok(sequence)
+}
+
+pub(super) fn write_workflow_runtime_sessions_transition(
+    transaction: &Transaction<'_>,
+    event_id: &str,
+    timestamp_ms: u64,
+    payload_json: &str,
+    owner_id: &str,
+    sessions: &[DurableWorkflowSessionWrite],
+) -> Result<u64, rusqlite::Error> {
+    transaction.execute(
+        "INSERT INTO durable_state_events (
+            event_id, kind, subject_id, timestamp_ms, payload_json
+         ) VALUES (?1, 'workflow.runtime.updated', NULL, ?2, ?3)",
+        params![event_id, timestamp_ms as i64, payload_json],
+    )?;
+    let sequence = transaction.last_insert_rowid().max(0) as u64;
+    for session in sessions {
+        write_workflow_hot_entities(
+            transaction,
+            owner_id,
+            &session.session_id,
+            timestamp_ms,
+            &session.hot_entities,
+            true,
+        )?;
+        write_workflow_runs(
+            transaction,
+            owner_id,
+            timestamp_ms,
+            &session.workflow_runs,
+            true,
+        )?;
+        write_delivery_receipts(
+            transaction,
+            owner_id,
+            timestamp_ms,
+            &session.delivery_receipts,
+            true,
+        )?;
+        delete_missing_active_workflow_runs(
+            transaction,
+            owner_id,
+            &session.session_id,
+            &session.workflow_runs,
+        )?;
+        delete_missing_delivery_receipts(
+            transaction,
+            owner_id,
+            &session.session_id,
+            &session.delivery_receipts,
+        )?;
+    }
     Ok(sequence)
 }
 
@@ -310,6 +484,11 @@ pub(super) fn write_session_delete(
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;
     transaction.execute(
+        "DELETE FROM durable_workflow_hot_entities
+         WHERE owner_id = ?1 AND session_id = ?2",
+        params![owner_id, session_id],
+    )?;
+    transaction.execute(
         "DELETE FROM durable_workflow_runs
          WHERE owner_id = ?1 AND session_id = ?2",
         params![owner_id, session_id],
@@ -325,10 +504,12 @@ pub(super) fn write_session_delete(
 pub(super) fn write_workflow_runtime_migration(
     transaction: &Transaction<'_>,
     owner_id: &str,
+    hot_entities: &[DurableWorkflowHotEntityWrite],
     workflow_runs: &[DurableWorkflowRunWrite],
     delivery_receipts: &[DurableDeliveryReceiptWrite],
 ) -> Result<u64, rusqlite::Error> {
     let timestamp_ms = unix_epoch_ms();
+    write_workflow_hot_entities(transaction, owner_id, "", timestamp_ms, hot_entities, false)?;
     write_workflow_runs(transaction, owner_id, timestamp_ms, workflow_runs, false)?;
     write_delivery_receipts(
         transaction,
@@ -354,6 +535,101 @@ pub(super) fn write_workflow_runtime_migration(
     Ok(0)
 }
 
+pub(super) fn write_workflow_history_migration_chunk(
+    transaction: &Transaction<'_>,
+    owner_id: &str,
+    workflow_runs: &[DurableWorkflowRunWrite],
+    completed: bool,
+) -> Result<u64, rusqlite::Error> {
+    let timestamp_ms = unix_epoch_ms();
+    write_workflow_runs(transaction, owner_id, timestamp_ms, workflow_runs, false)?;
+    transaction.execute(
+        "INSERT INTO durable_state_metadata (
+            owner_id, metadata_key, metadata_value, updated_at_ms
+         ) VALUES (?1, 'workflow_history_migration_status', ?2, ?3)
+         ON CONFLICT(owner_id, metadata_key) DO UPDATE SET
+            metadata_value = excluded.metadata_value,
+            updated_at_ms = excluded.updated_at_ms",
+        params![
+            owner_id,
+            if completed { "verified" } else { "in_progress" },
+            timestamp_ms as i64,
+        ],
+    )?;
+    Ok(0)
+}
+
+fn write_workflow_hot_entities(
+    transaction: &Transaction<'_>,
+    owner_id: &str,
+    session_id: &str,
+    timestamp_ms: u64,
+    hot_entities: &[DurableWorkflowHotEntityWrite],
+    replace_session: bool,
+) -> Result<(), rusqlite::Error> {
+    if replace_session {
+        transaction.execute_batch(
+            "CREATE TEMP TABLE IF NOT EXISTS durable_workflow_hot_current_keys (
+                entity_kind TEXT NOT NULL,
+                entity_id TEXT NOT NULL,
+                PRIMARY KEY(entity_kind, entity_id)
+             );
+             DELETE FROM durable_workflow_hot_current_keys;",
+        )?;
+    }
+    let mut key_statement = if replace_session {
+        Some(transaction.prepare(
+            "INSERT INTO durable_workflow_hot_current_keys (entity_kind, entity_id)
+             VALUES (?1, ?2)",
+        )?)
+    } else {
+        None
+    };
+    let conflict_clause = if replace_session {
+        "ON CONFLICT(owner_id, session_id, entity_kind, entity_id) DO UPDATE SET
+            updated_at_ms = excluded.updated_at_ms,
+            payload_json = excluded.payload_json
+         WHERE durable_workflow_hot_entities.payload_json <> excluded.payload_json"
+    } else {
+        "ON CONFLICT(owner_id, session_id, entity_kind, entity_id) DO NOTHING"
+    };
+    let sql = format!(
+        "INSERT INTO durable_workflow_hot_entities (
+            owner_id, session_id, entity_kind, entity_id, updated_at_ms, payload_json
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         {conflict_clause}"
+    );
+    let mut entity_statement = transaction.prepare(&sql)?;
+    for entity in hot_entities {
+        if let Some(statement) = key_statement.as_mut() {
+            statement.execute(params![entity.entity_kind, entity.entity_id])?;
+        }
+        entity_statement.execute(params![
+            owner_id,
+            entity.session_id,
+            entity.entity_kind,
+            entity.entity_id,
+            timestamp_ms as i64,
+            entity.payload_json,
+        ])?;
+    }
+    drop(entity_statement);
+    drop(key_statement);
+    if replace_session {
+        transaction.execute(
+            "DELETE FROM durable_workflow_hot_entities
+             WHERE owner_id = ?1 AND session_id = ?2
+               AND NOT EXISTS (
+                 SELECT 1 FROM durable_workflow_hot_current_keys current
+                 WHERE current.entity_kind = durable_workflow_hot_entities.entity_kind
+                   AND current.entity_id = durable_workflow_hot_entities.entity_id
+               )",
+            params![owner_id, session_id],
+        )?;
+    }
+    Ok(())
+}
+
 fn write_workflow_runs(
     transaction: &Transaction<'_>,
     owner_id: &str,
@@ -368,7 +644,8 @@ fn write_workflow_runs(
             created_at_ms = excluded.created_at_ms,
             completed_at_ms = excluded.completed_at_ms,
             updated_at_ms = excluded.updated_at_ms,
-            payload_json = excluded.payload_json"
+            payload_json = excluded.payload_json
+         WHERE durable_workflow_runs.payload_json <> excluded.payload_json"
     } else {
         "ON CONFLICT(owner_id, session_id, run_id) DO NOTHING"
     };
@@ -412,7 +689,8 @@ fn write_delivery_receipts(
         "ON CONFLICT(owner_id, session_id, delivery_id) DO UPDATE SET
             binding_id = excluded.binding_id,
             expires_at_ms = excluded.expires_at_ms,
-            payload_json = excluded.payload_json"
+            payload_json = excluded.payload_json
+         WHERE durable_event_delivery_receipts.payload_json <> excluded.payload_json"
     } else {
         "ON CONFLICT(owner_id, session_id, delivery_id) DO NOTHING"
     };
@@ -432,6 +710,236 @@ fn write_delivery_receipts(
             receipt.expires_at_ms as i64,
             receipt.payload_json,
         ])?;
+    }
+    Ok(())
+}
+
+fn delete_missing_active_workflow_runs(
+    transaction: &Transaction<'_>,
+    owner_id: &str,
+    session_id: &str,
+    workflow_runs: &[DurableWorkflowRunWrite],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS durable_workflow_current_run_ids (
+            run_id TEXT PRIMARY KEY
+         );
+         DELETE FROM durable_workflow_current_run_ids;",
+    )?;
+    {
+        let mut statement = transaction
+            .prepare("INSERT INTO durable_workflow_current_run_ids (run_id) VALUES (?1)")?;
+        for run in workflow_runs {
+            statement.execute([&run.run_id])?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM durable_workflow_runs
+         WHERE owner_id = ?1 AND session_id = ?2
+           AND status NOT IN ('Completed', 'Failed', 'Stopped')
+           AND NOT EXISTS (
+               SELECT 1 FROM durable_workflow_current_run_ids current
+               WHERE current.run_id = durable_workflow_runs.run_id
+           )",
+        params![owner_id, session_id],
+    )?;
+    Ok(())
+}
+
+fn delete_missing_delivery_receipts(
+    transaction: &Transaction<'_>,
+    owner_id: &str,
+    session_id: &str,
+    delivery_receipts: &[DurableDeliveryReceiptWrite],
+) -> Result<(), rusqlite::Error> {
+    transaction.execute_batch(
+        "CREATE TEMP TABLE IF NOT EXISTS durable_workflow_current_delivery_ids (
+            delivery_id TEXT PRIMARY KEY
+         );
+         DELETE FROM durable_workflow_current_delivery_ids;",
+    )?;
+    {
+        let mut statement = transaction.prepare(
+            "INSERT INTO durable_workflow_current_delivery_ids (delivery_id) VALUES (?1)",
+        )?;
+        for receipt in delivery_receipts {
+            statement.execute([&receipt.delivery_id])?;
+        }
+    }
+    transaction.execute(
+        "DELETE FROM durable_event_delivery_receipts
+         WHERE owner_id = ?1 AND session_id = ?2
+           AND NOT EXISTS (
+               SELECT 1 FROM durable_workflow_current_delivery_ids current
+               WHERE current.delivery_id = durable_event_delivery_receipts.delivery_id
+           )",
+        params![owner_id, session_id],
+    )?;
+    Ok(())
+}
+
+fn encode_workflow_session(
+    session: &RuntimeSession,
+) -> Result<DurableWorkflowSessionWrite, DaemonError> {
+    Ok(DurableWorkflowSessionWrite {
+        session_id: session.id().to_string(),
+        hot_entities: encode_workflow_hot_entities(session)?,
+        workflow_runs: session
+            .workflow_runs()
+            .iter()
+            .map(|workflow_run| encode_workflow_run(session.id(), workflow_run))
+            .collect::<Result<Vec<_>, _>>()?,
+        delivery_receipts: session
+            .workflow_event_delivery_receipts()
+            .values()
+            .map(|receipt| encode_delivery_receipt(session.id(), receipt))
+            .collect::<Result<Vec<_>, _>>()?,
+    })
+}
+
+fn encode_workflow_hot_entities(
+    session: &RuntimeSession,
+) -> Result<Vec<DurableWorkflowHotEntityWrite>, DaemonError> {
+    let session_id = session.id();
+    let state = session.durable_workflow_hot_state();
+    let mut entities = vec![encode_workflow_hot_entity(
+        session_id,
+        "state_marker",
+        "state",
+        &serde_json::json!({}),
+    )?];
+    for workflow in state.workflows {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "workflow",
+            workflow.id(),
+            &workflow,
+        )?);
+    }
+    for queue in state.workflow_prompt_queues {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "queue",
+            queue.id(),
+            &queue,
+        )?);
+    }
+    for prompt in state.workflow_queued_prompts {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "queued_prompt",
+            prompt.id(),
+            &prompt,
+        )?);
+    }
+    for schedule in state.workflow_schedules {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "schedule",
+            schedule.id(),
+            &schedule,
+        )?);
+    }
+    for console in state.workflow_consoles {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "console",
+            console.workflow_id(),
+            &console,
+        )?);
+    }
+    for publication in state.workflow_publications {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "publication",
+            publication.id(),
+            &publication,
+        )?);
+    }
+    for (publication_id, snapshot) in state.workflow_publication_snapshots {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "publication_snapshot",
+            &publication_id,
+            &snapshot,
+        )?);
+    }
+    for binding in state.workflow_event_bindings {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "event_binding",
+            &binding.id,
+            &binding,
+        )?);
+    }
+    Ok(entities)
+}
+
+fn encode_workflow_hot_entity(
+    session_id: &str,
+    entity_kind: &str,
+    entity_id: &str,
+    payload: &impl serde::Serialize,
+) -> Result<DurableWorkflowHotEntityWrite, DaemonError> {
+    Ok(DurableWorkflowHotEntityWrite {
+        session_id: session_id.to_string(),
+        entity_kind: entity_kind.to_string(),
+        entity_id: entity_id.to_string(),
+        payload_json: serde_json::to_string(payload).map_err(|error| {
+            DaemonError::LocalTransport {
+                operation: "durable_state.encode_workflow_hot_entity",
+                message: error.to_string(),
+            }
+        })?,
+    })
+}
+
+fn decode_workflow_hot_entity(
+    state: &mut DurableWorkflowHotState,
+    entity_kind: &str,
+    entity_id: &str,
+    payload_json: &str,
+) -> Result<(), DaemonError> {
+    macro_rules! decode {
+        ($type:ty) => {
+            serde_json::from_str::<$type>(payload_json).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "durable_state.decode_workflow_hot_entity",
+                    message: format!("invalid {entity_kind} `{entity_id}`: {error}"),
+                }
+            })?
+        };
+    }
+    match entity_kind {
+        "state_marker" => {}
+        "workflow" => state.workflows.push(decode!(WorkflowDefinition)),
+        "queue" => state
+            .workflow_prompt_queues
+            .push(decode!(WorkflowPromptQueueDefinition)),
+        "queued_prompt" => state
+            .workflow_queued_prompts
+            .push_back(decode!(WorkflowQueuedPrompt)),
+        "schedule" => state
+            .workflow_schedules
+            .push(decode!(WorkflowScheduleDefinition)),
+        "console" => state.workflow_consoles.push(decode!(WorkflowConsole)),
+        "publication" => state
+            .workflow_publications
+            .push(decode!(WorkflowPublicationDefinition)),
+        "publication_snapshot" => {
+            state
+                .workflow_publication_snapshots
+                .insert(entity_id.to_string(), decode!(WorkflowPublicationSnapshot));
+        }
+        "event_binding" => state
+            .workflow_event_bindings
+            .push(decode!(WorkflowEventBinding)),
+        unsupported => {
+            return Err(DaemonError::LocalTransport {
+                operation: "durable_state.decode_workflow_hot_entity",
+                message: format!("unsupported workflow hot entity kind `{unsupported}`"),
+            });
+        }
     }
     Ok(())
 }
@@ -504,7 +1012,7 @@ fn storage_error(operation: &'static str, error: rusqlite::Error) -> DaemonError
 mod tests {
     use super::*;
     use crate::session::WorkflowRunStatus;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     fn temp_store(label: &str) -> (DurableKernelStateStore, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
@@ -572,6 +1080,9 @@ mod tests {
         store
             .persist_workflow_runtime_transition(&session, "test")
             .expect("workflow transition should persist");
+        drop(store);
+        let store = DurableKernelStateStore::open(path.clone())
+            .expect("workflow runtime store should reopen after restart");
 
         let active = store
             .load_active_workflow_runs("kernel-1")
@@ -590,16 +1101,112 @@ mod tests {
             .expect("receipts should load");
         assert_eq!(receipts.len(), 1);
 
+        let mut settled = session.clone();
+        settled
+            .workflow_run_mut("run-active")
+            .expect("active run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+        store
+            .persist_workflow_runtime_transition(&settled, "run-completed")
+            .expect("terminal run should persist before archival");
+        settled.archive_terminal_workflow_runs();
+        settled.prune_expired_workflow_event_delivery_receipts(u64::MAX);
+        store
+            .persist_workflow_runtime_transition(&settled, "hot-state-pruned")
+            .expect("pruned hot state should persist");
+        assert!(store
+            .load_active_workflow_runs("kernel-1")
+            .expect("pruned active runs should load")
+            .is_empty());
+        assert!(store
+            .load_active_delivery_receipts("kernel-1", unix_epoch_ms())
+            .expect("pruned receipts should load")
+            .is_empty());
+        assert_eq!(
+            store
+                .list_workflow_runs_page("kernel-1", "session-1", None, None, 10)
+                .expect("terminal history should remain")
+                .workflow_runs
+                .len(),
+            2,
+            "pruning hot active state must retain terminal run history",
+        );
+
         let event = store
             .load_events_by_kind("workflow.runtime.updated")
             .expect("workflow event should load")
             .pop()
             .expect("workflow event should exist");
-        let hot_session: RuntimeSession = serde_json::from_value(event.payload["session"].clone())
-            .expect("hot session should decode");
-        assert_eq!(hot_session.workflow_runs().len(), 1);
-        assert_eq!(hot_session.workflow_runs()[0].id(), "run-active");
-        assert!(hot_session.workflow_event_delivery_receipts().is_empty());
+        assert_eq!(event.payload["session_id"], "session-1");
+        assert!(event.payload.get("session").is_none());
+        assert!(serde_json::to_vec(&event.payload).unwrap().len() < 128);
+        assert_eq!(
+            store
+                .load_workflow_hot_states("kernel-1")
+                .expect("workflow hot state should load")
+                .len(),
+            1
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn multi_session_workflow_transition_is_atomic_and_never_writes_session_aggregates() {
+        let (store, path) = temp_store("workflow-runtime-multi-session");
+        let first = session_with_runs();
+        let mut second = RuntimeSession::new(
+            "session-2",
+            None,
+            "/workspace",
+            "/workspace",
+            "machine-1",
+            "kernel-1",
+        );
+        second.create_workflow_run(WorkflowRun::new(
+            "run-second",
+            "workflow-2",
+            "endpoint-2",
+            "node-2",
+            Some("second".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        ));
+
+        store
+            .persist_workflow_runtime_sessions_transition(&[first, second], "binding_transferred")
+            .expect("multi-session transition should persist");
+
+        let hot_states = store
+            .load_workflow_hot_states("kernel-1")
+            .expect("hot states should load");
+        assert_eq!(hot_states.len(), 2);
+        assert_eq!(
+            store
+                .load_active_workflow_runs("kernel-1")
+                .expect("active runs should load")
+                .len(),
+            2
+        );
+        let events = store
+            .load_events_by_kind("workflow.runtime.updated")
+            .expect("workflow events should load");
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].payload["reason"], "binding_transferred");
+        assert_eq!(
+            events[0].payload["session_ids"]
+                .as_array()
+                .expect("session ids should be an array")
+                .len(),
+            2
+        );
+        assert!(events[0].payload.get("sessions").is_none());
+        assert!(store
+            .load_events_by_kind("sessions.updated")
+            .expect("aggregate events should load")
+            .is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(path);
@@ -670,6 +1277,72 @@ mod tests {
     }
 
     #[test]
+    fn legacy_history_migration_resumes_idempotently_and_marks_verified() {
+        let (store, path) = temp_store("workflow-history-migration-resume");
+        let session = session_with_runs();
+        let archived = session
+            .workflow_run("run-completed")
+            .expect("completed run should exist")
+            .clone();
+
+        store
+            .migrate_legacy_workflow_runtime("kernel-1", std::slice::from_ref(&session))
+            .expect("hot migration should succeed");
+        assert_eq!(
+            store
+                .list_workflow_runs_page("kernel-1", "session-1", None, None, 10)
+                .expect("hot run page should load")
+                .workflow_runs
+                .len(),
+            1,
+            "synchronous migration must leave terminal history for the background worker",
+        );
+
+        store
+            .migrate_legacy_workflow_history_chunk(
+                "kernel-1",
+                &[("session-1".to_string(), archived.clone())],
+                false,
+            )
+            .expect("first history chunk should persist");
+        drop(store);
+
+        let resumed = DurableKernelStateStore::open(path.clone()).expect("store should reopen");
+        resumed
+            .migrate_legacy_workflow_history_chunk(
+                "kernel-1",
+                &[("session-1".to_string(), archived)],
+                true,
+            )
+            .expect("replayed history chunk should complete");
+        assert_eq!(
+            resumed
+                .list_workflow_runs_page("kernel-1", "session-1", None, None, 10)
+                .expect("migrated run page should load")
+                .workflow_runs
+                .len(),
+            2,
+            "replaying a chunk after interruption must not duplicate history",
+        );
+        let connection = resumed
+            .lock_connection("test history migration status")
+            .expect("connection should lock");
+        let status = connection
+            .query_row(
+                "SELECT metadata_value FROM durable_state_metadata
+                 WHERE owner_id = 'kernel-1'
+                   AND metadata_key = 'workflow_history_migration_status'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .expect("migration status should load");
+        assert_eq!(status, "verified");
+        drop(connection);
+        drop(resumed);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn session_delete_atomically_removes_normalized_workflow_state() {
         let (store, path) = temp_store("workflow-runtime-session-delete");
         let session = session_with_runs();
@@ -696,6 +1369,168 @@ mod tests {
             .expect("delete event should load");
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].sequence, delete_sequence);
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn large_completed_history_keeps_hot_restore_and_transition_tail_bounded() {
+        const COMPLETED_RUNS: usize = 10_000;
+        const HOT_TRANSITIONS: usize = 50;
+        let (store, path) = temp_store("workflow-runtime-large-history");
+        let mut hot_session = RuntimeSession::new(
+            "session-scale",
+            None,
+            "/workspace",
+            "/workspace",
+            "machine-1",
+            "kernel-1",
+        );
+        hot_session.create_workflow_run(WorkflowRun::new(
+            "run-active",
+            "workflow-1",
+            "endpoint-1",
+            "node-1",
+            Some("active".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        ));
+        let completed = (0..COMPLETED_RUNS)
+            .map(|index| {
+                let mut run = WorkflowRun::new(
+                    format!("run-completed-{index:05}"),
+                    "workflow-1",
+                    "endpoint-1",
+                    "node-1",
+                    Some(format!("completed prompt {index}")),
+                    None,
+                    Vec::new(),
+                    Vec::new(),
+                );
+                run.set_status(WorkflowRunStatus::Completed);
+                ("session-scale".to_string(), run)
+            })
+            .collect::<Vec<_>>();
+        let mut legacy_session = hot_session.clone();
+        for (_, run) in &completed {
+            legacy_session.create_workflow_run(run.clone());
+        }
+        let legacy_payload = serde_json::to_vec(&legacy_session)
+            .expect("legacy aggregate should encode for the baseline");
+        let legacy_decode_started = Instant::now();
+        let decoded_legacy: RuntimeSession = serde_json::from_slice(&legacy_payload)
+            .expect("legacy aggregate should decode for the baseline");
+        let legacy_decode_ms = legacy_decode_started.elapsed().as_millis();
+        assert_eq!(decoded_legacy.workflow_runs().len(), COMPLETED_RUNS + 1);
+        drop(decoded_legacy);
+        drop(legacy_session);
+        for (index, chunk) in completed.chunks(256).enumerate() {
+            store
+                .migrate_legacy_workflow_history_chunk(
+                    "kernel-1",
+                    chunk,
+                    (index + 1) * 256 >= completed.len(),
+                )
+                .expect("history chunk should migrate");
+        }
+        for index in 0..HOT_TRANSITIONS {
+            store
+                .persist_workflow_runtime_transition(&hot_session, &format!("scale-{index}"))
+                .expect("bounded hot transition should persist");
+        }
+
+        let hot_restore_started = Instant::now();
+        let hot_states = store
+            .load_workflow_hot_states("kernel-1")
+            .expect("hot states should load");
+        let active = store
+            .load_active_workflow_runs("kernel-1")
+            .expect("active runs should load");
+        let hot_restore_ms = hot_restore_started.elapsed().as_millis();
+        assert_eq!(hot_states.len(), 1);
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].1.id(), "run-active");
+        assert!(
+            hot_restore_ms < 2_000,
+            "bounded hot restore exceeded the local two-second readiness budget"
+        );
+        let history_page_started = Instant::now();
+        let first_page = store
+            .list_workflow_runs_page("kernel-1", "session-scale", None, None, 50)
+            .expect("history page should load");
+        let history_page_ms = history_page_started.elapsed().as_millis();
+        assert_eq!(first_page.workflow_runs.len(), 50);
+        assert!(first_page.next_cursor.is_some());
+        let tail = store
+            .event_tail_statistics(0)
+            .expect("event tail should measure");
+        assert_eq!(tail.event_count, HOT_TRANSITIONS as u64);
+        assert!(
+            tail.encoded_bytes < 32 * 1024,
+            "hot transition journal grew to {} bytes with {COMPLETED_RUNS} historical runs",
+            tail.encoded_bytes,
+        );
+        let connection = store
+            .lock_connection("test large workflow history")
+            .expect("connection should lock");
+        let history_count = connection
+            .query_row(
+                "SELECT COUNT(*) FROM durable_workflow_runs
+                 WHERE owner_id = 'kernel-1' AND session_id = 'session-scale'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("history count should load");
+        assert_eq!(history_count, COMPLETED_RUNS as i64 + 1);
+        let max_transition_bytes = connection
+            .query_row(
+                "SELECT COALESCE(MAX(length(CAST(payload_json AS BLOB))), 0)
+                 FROM durable_state_events
+                 WHERE kind = 'workflow.runtime.updated'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .expect("maximum transition size should load");
+        assert!(max_transition_bytes < 512);
+        let active_query_plan = connection
+            .query_row(
+                "EXPLAIN QUERY PLAN
+                 SELECT session_id, payload_json
+                 FROM durable_workflow_runs INDEXED BY idx_durable_workflow_runs_active
+                 WHERE owner_id = 'kernel-1'
+                   AND status NOT IN ('Completed', 'Failed', 'Stopped')
+                 ORDER BY session_id ASC, created_at_ms ASC, run_id ASC",
+                [],
+                |row| row.get::<_, String>(3),
+            )
+            .expect("active run query plan should load");
+        assert!(
+            active_query_plan.contains("idx_durable_workflow_runs_active"),
+            "active restore must use the terminal-history-independent partial index: {active_query_plan}"
+        );
+        drop(connection);
+
+        let database_bytes = std::fs::metadata(&path)
+            .expect("scale database metadata should load")
+            .len();
+        eprintln!(
+            "{}",
+            serde_json::json!({
+                "completed_runs": COMPLETED_RUNS,
+                "active_runs": active.len(),
+                "legacy_aggregate_bytes": legacy_payload.len(),
+                "legacy_aggregate_decode_ms": legacy_decode_ms,
+                "normalized_hot_restore_ms": hot_restore_ms,
+                "history_page_ms": history_page_ms,
+                "transition_count": tail.event_count,
+                "transition_tail_bytes": tail.encoded_bytes,
+                "maximum_transition_payload_bytes": max_transition_bytes,
+                "active_query_plan": active_query_plan,
+                "database_bytes": database_bytes,
+            })
+        );
 
         drop(store);
         let _ = std::fs::remove_file(path);

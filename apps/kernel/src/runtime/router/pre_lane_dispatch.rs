@@ -337,7 +337,7 @@ impl CommandRouter {
                 .dispatch_workflow_command(command.clone(), request.clone())
                 .await?;
             return self
-                .redact_result_for_user(Ok(response), caller_user_id)
+                .redact_workflow_result_for_user(Ok(response), caller_user_id, request)
                 .map(Some);
         }
         if let LocalDaemonRequest::GetProviderRun(request) = request {

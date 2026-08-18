@@ -702,6 +702,16 @@ Implications:
 - workflow barriers, fan-in, aggregation, and termination decisions MUST operate on structured runtime state
 - PTY traffic MAY be observed by the daemon for runtime coordination when needed, but MUST NOT be reused as the inter-agent contract
 
+### 5.5 Durable Runtime State
+
+Durable kernel state separates bounded execution state from paginated historical
+data. Kernel readiness restores workflow definitions, active runs, queues,
+bindings and pending delivery safety state; completed runs, transcripts and recall
+indexes remain lazy read models. Ordinary workflow transitions persist keyed
+entity mutations rather than full session aggregates. See
+[`DURABLE_RUNTIME_PERSISTENCE.md`](DURABLE_RUNTIME_PERSISTENCE.md) for the storage,
+migration, readiness and disk-maintenance contract.
+
 ## 6. Security and Trust Boundaries
 
 ### 6.1 E2E Encryption Scope

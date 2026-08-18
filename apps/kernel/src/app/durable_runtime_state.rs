@@ -334,9 +334,31 @@ impl DaemonApp {
     }
 
     fn restore_normalized_workflow_runtime_state(&mut self) -> Result<(), DaemonError> {
-        let restored_sessions = self.sessions.list_all_sessions();
+        let session_ids = self.sessions.read().all_session_ids();
+        let mut archived_run_count = 0usize;
+        let mut hot_sessions = Vec::with_capacity(session_ids.len());
+        {
+            let mut sessions = self.sessions.write();
+            for session_id in &session_ids {
+                let archived = sessions.archive_terminal_workflow_runs(session_id)?;
+                archived_run_count += archived.len();
+                self.pending_legacy_workflow_history.extend(
+                    archived
+                        .into_iter()
+                        .map(|workflow_run| (session_id.clone(), workflow_run)),
+                );
+                hot_sessions.push(sessions.get_session(session_id)?);
+            }
+        }
         self.durable_state
-            .migrate_legacy_workflow_runtime(&self.config.daemon_id, &restored_sessions)?;
+            .migrate_legacy_workflow_runtime(&self.config.daemon_id, &hot_sessions)?;
+        drop(hot_sessions);
+
+        let mut hot_state_by_session = self
+            .durable_state
+            .load_workflow_hot_states(&self.config.daemon_id)?
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
 
         let mut active_runs_by_session = BTreeMap::<String, Vec<_>>::new();
         for (session_id, workflow_run) in self
@@ -359,31 +381,34 @@ impl DaemonApp {
                 .push(receipt);
         }
 
-        let mut archived_run_count = 0usize;
-        let mut normalized_session_ids = Vec::new();
         {
             let mut sessions = self.sessions.write();
-            for session in restored_sessions {
-                let session_id = session.id().to_string();
-                archived_run_count += sessions.archive_terminal_workflow_runs(&session_id)?.len();
+            for session_id in &session_ids {
+                if let Some(hot_state) = hot_state_by_session.remove(session_id) {
+                    sessions.restore_workflow_hot_state(session_id, hot_state)?;
+                }
                 sessions.restore_active_workflow_runs(
-                    &session_id,
+                    session_id,
                     active_runs_by_session
-                        .remove(&session_id)
+                        .remove(session_id)
                         .unwrap_or_default(),
                 )?;
                 sessions.restore_workflow_event_delivery_receipts(
-                    &session_id,
-                    receipts_by_session.remove(&session_id).unwrap_or_default(),
+                    session_id,
+                    receipts_by_session.remove(session_id).unwrap_or_default(),
                 )?;
-                normalized_session_ids.push(session_id);
             }
         }
-        for session_id in normalized_session_ids {
+        for session_id in session_ids {
             if let Ok(session) = self.sessions.get_session(&session_id) {
                 self.update_session_projection(session);
             }
         }
+        self.durable_state.migrate_legacy_workflow_history_chunk(
+            &self.config.daemon_id,
+            &[],
+            self.pending_legacy_workflow_history.is_empty(),
+        )?;
         crate::logging::info_with_fields(
             "durable_state.restore",
             "normalized workflow runtime state",
@@ -912,15 +937,17 @@ impl DaemonApp {
     }
 
     pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
-        let interval_events = self.config.user_config.state.snapshot_interval_events? as u64;
-        Some(DurableSnapshotScheduler::new(
+        let policy = crate::durable_snapshot::DurableCheckpointPolicy::from_user_state_config(
+            &self.config.user_config.state,
+        )?;
+        Some(DurableSnapshotScheduler::new_with_policy(
             self.config.daemon_id.clone(),
             self.durable_state_store(),
             self.session_state_store(),
             self.agents.clone(),
             self.slices.clone(),
             self.metaagent_events.clone(),
-            interval_events,
+            policy,
         ))
     }
 
@@ -1013,7 +1040,8 @@ impl DaemonApp {
                 self.prompt_state_owner.restore_session_state(&session);
                 self.update_session_projection(session);
             }
-            "session.updated" | "workflow.runtime.updated" => {
+            "workflow.runtime.updated" => {}
+            "session.updated" => {
                 if durable_payload_entity_belongs_to_other_owner(
                     &event,
                     "session",

@@ -485,29 +485,9 @@ impl KernelRuntimeOwnedState {
 
     fn persist_workflow_watchdog_sessions(&self, session_ids: BTreeSet<String>) {
         for session_id in session_ids {
-            let session = match self.session_snapshot(&session_id) {
-                Ok(session) => session,
-                Err(error) => {
-                    crate::logging::warn_with_fields(
-                        "daemon.runtime",
-                        "workflow schedule session projection failed",
-                        serde_json::json!({
-                            "session_id": session_id,
-                            "error": error.to_string(),
-                        }),
-                    );
-                    continue;
-                }
-            };
-            let session = session.durable_runtime_snapshot();
-            if let Err(error) = self.durable_state_store.append_event(
-                "session.updated",
-                Some(session_id.clone()),
-                serde_json::json!({
-                    "session": &session,
-                    "reason": "workflow_schedule_tick",
-                }),
-            ) {
+            if let Err(error) =
+                self.persist_workflow_runtime_session(&session_id, "workflow_schedule_tick")
+            {
                 crate::logging::warn_with_fields(
                     "daemon.runtime",
                     "workflow schedule session persistence failed",

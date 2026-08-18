@@ -142,6 +142,18 @@ fn history_and_state_config_defaults_are_available() {
         config.user_config.state.snapshot_interval_events,
         Some(1_000)
     );
+    assert_eq!(
+        config.user_config.state.snapshot_interval_bytes,
+        Some(4 * 1024 * 1024)
+    );
+    assert_eq!(
+        config.user_config.state.snapshot_interval_seconds,
+        Some(300)
+    );
+    assert_eq!(
+        config.user_config.state.snapshot_max_tail_bytes,
+        Some(16 * 1024 * 1024)
+    );
 }
 
 #[test]
@@ -188,6 +200,15 @@ fn history_and_state_config_can_be_changed_and_persisted() {
     config
         .set_user_config_value("state.snapshot_interval_events", "250")
         .expect("state snapshot interval should update");
+    config
+        .set_user_config_value("state.snapshot_interval_bytes", "1048576")
+        .expect("state snapshot byte interval should update");
+    config
+        .set_user_config_value("state.snapshot_interval_seconds", "30")
+        .expect("state snapshot time interval should update");
+    config
+        .set_user_config_value("state.snapshot_max_tail_bytes", "2097152")
+        .expect("state snapshot hard tail budget should update");
 
     let loaded = load_user_config_from_path(&path);
     assert_eq!(
@@ -202,6 +223,9 @@ fn history_and_state_config_can_be_changed_and_persisted() {
         Some("http://127.0.0.1:49300")
     );
     assert_eq!(loaded.state.snapshot_interval_events, Some(250));
+    assert_eq!(loaded.state.snapshot_interval_bytes, Some(1_048_576));
+    assert_eq!(loaded.state.snapshot_interval_seconds, Some(30));
+    assert_eq!(loaded.state.snapshot_max_tail_bytes, Some(2_097_152));
 
     let _ = std::fs::remove_file(path);
 }
@@ -281,11 +305,14 @@ fn event_counter_paths_expand_state_home_before_parent() {
 
     let kernel_counter = config.kernel_event_counter_path();
     let relay_counter = config.kernel_relay_event_counter_path();
+    let prompt_counter = config.kernel_prompt_counter_path();
 
     assert!(!kernel_counter.starts_with("~"));
     assert!(!relay_counter.starts_with("~"));
+    assert!(!prompt_counter.starts_with("~"));
     assert!(kernel_counter.ends_with(".chariox/custom/kernel-events/daemon/event-counter.json"));
     assert!(
         relay_counter.ends_with(".chariox/custom/kernel-events/daemon/relay-event-counter.json")
     );
+    assert!(prompt_counter.ends_with(".chariox/custom/kernel-events/daemon/prompt-counter.json"));
 }

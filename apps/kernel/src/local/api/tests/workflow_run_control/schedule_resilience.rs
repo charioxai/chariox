@@ -114,23 +114,27 @@ fn failed_schedule_tick_does_not_leave_a_queued_prompt_inner() {
     assert_eq!(updated_schedule.last_status(), Some("invoke_failed"));
     assert!(!updated_schedule.enabled());
 
-    let persisted = harness.with_app(|app| {
+    let persisted_state = harness.with_app(|app| {
         app.durable_state_store()
             .load_subject_events(session.id(), 20)
             .expect("durable session events should load")
             .into_iter()
             .find(|event| {
-                event.kind == "session.updated"
+                event.kind == "workflow.runtime.updated"
                     && event.payload["reason"] == "workflow_schedule_tick"
             })
-            .expect("schedule tick should persist the updated session")
+            .expect("schedule tick should persist a bounded workflow transition");
+        app.durable_state_store()
+            .load_workflow_hot_states(session.host_daemon_id())
+            .expect("durable workflow hot state should load")
+            .into_iter()
+            .find(|(session_id, _)| session_id == session.id())
+            .map(|(_, state)| state)
+            .expect("persisted schedule state should exist")
     });
-    let persisted_session: crate::session::RuntimeSession =
-        serde_json::from_value(persisted.payload["session"].clone())
-            .expect("persisted schedule session should decode");
-    assert!(persisted_session.workflow_queued_prompts().is_empty());
-    assert!(!persisted_session
-        .workflow_schedules()
+    assert!(persisted_state.workflow_queued_prompts.is_empty());
+    assert!(!persisted_state
+        .workflow_schedules
         .iter()
         .find(|candidate| candidate.id() == schedule.id())
         .expect("persisted schedule should exist")

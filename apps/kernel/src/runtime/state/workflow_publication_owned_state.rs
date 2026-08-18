@@ -163,16 +163,13 @@ impl KernelRuntimeOwnedState {
         let target_session = self.workflow_session(&request.target_session_id)?;
         if request.source_session_id != request.target_session_id {
             let source_session = self.workflow_session(&request.source_session_id)?;
-            let source_durable = source_session.durable_runtime_snapshot();
-            let target_durable = target_session.durable_runtime_snapshot();
-            if let Err(error) = self.durable_state_store.append_event(
-                "sessions.updated",
-                None,
-                serde_json::json!({
-                    "sessions": [&source_durable, &target_durable],
-                    "reason": "workflow_event_binding_transferred",
-                }),
-            ) {
+            if let Err(error) = self
+                .durable_state_store
+                .persist_workflow_runtime_sessions_transition(
+                    &[source_session, target_session.clone()],
+                    "workflow_event_binding_transferred",
+                )
+            {
                 let mut sessions = self.session_store.write();
                 sessions.restore_session(source_before);
                 if let Some(target_before) = target_before {

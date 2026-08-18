@@ -41,14 +41,6 @@ impl SessionStateStore {
         self.read().reserve_prompt_id()
     }
 
-    pub(crate) fn observe_prompt_number(&self, number: u64) {
-        self.read().observe_prompt_number(number)
-    }
-
-    pub(crate) fn seed_prompt_ids_from_sessions(&self) {
-        self.read().seed_prompt_ids_from_sessions()
-    }
-
     pub(crate) fn get_session(&self, session_id: &str) -> Result<RuntimeSession, DaemonError> {
         self.read().get_session(session_id)
     }

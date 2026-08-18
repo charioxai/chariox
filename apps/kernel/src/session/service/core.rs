@@ -14,7 +14,7 @@ impl SessionService {
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
             event_environment_id: config.event_delivery_environment_id.clone(),
-            prompt_id_allocator: PromptIdAllocator::default(),
+            prompt_id_allocator: PromptIdAllocator::persistent(config.kernel_prompt_counter_path()),
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
             next_workflow_endpoint_number: 0,
@@ -113,6 +113,10 @@ impl SessionService {
             .collect()
     }
 
+    pub(crate) fn all_session_ids(&self) -> Vec<String> {
+        self.store.session_ids()
+    }
+
     pub(crate) fn archive_terminal_workflow_runs(
         &mut self,
         session_id: &str,
@@ -138,6 +142,21 @@ impl SessionService {
                     session_id: session_id.to_string(),
                 })?;
         session.restore_active_workflow_runs(workflow_runs);
+        Ok(())
+    }
+
+    pub(crate) fn restore_workflow_hot_state(
+        &mut self,
+        session_id: &str,
+        state: DurableWorkflowHotState,
+    ) -> Result<(), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.restore_durable_workflow_hot_state(state);
         Ok(())
     }
 

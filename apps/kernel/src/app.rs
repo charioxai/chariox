@@ -139,6 +139,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    pending_legacy_workflow_history: Vec<(String, crate::session::WorkflowRun)>,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
@@ -241,6 +242,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            pending_legacy_workflow_history: Vec::new(),
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             metaagent_trace_subscriptions:
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
@@ -289,7 +291,6 @@ impl DaemonApp {
                 crate::session::unix_epoch_ms(),
             )
         };
-        app.seed_prompt_id_allocator()?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state restored",
@@ -309,14 +310,6 @@ impl DaemonApp {
             }),
         );
         Ok(app)
-    }
-
-    fn seed_prompt_id_allocator(&self) -> Result<(), DaemonError> {
-        let max_history_prompt_number = self.operational_history.max_prompt_number()?;
-        self.sessions
-            .observe_prompt_number(max_history_prompt_number);
-        self.sessions.seed_prompt_ids_from_sessions();
-        Ok(())
     }
 
     pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {

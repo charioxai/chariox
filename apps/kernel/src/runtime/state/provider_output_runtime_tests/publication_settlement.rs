@@ -134,21 +134,20 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
     let durable_events = runtime
         .owned
         .durable_state_store
-        .load_subject_events_by_kind(session.id(), "session.updated", 10)
+        .load_subject_events_by_kind(session.id(), "workflow.runtime.updated", 10)
         .expect("durable workflow runtime tool events should load");
     let latest_event = durable_events
         .last()
         .expect("workflow output submission should be durable before returning");
     assert_eq!(latest_event.payload["reason"], "workflow_runtime_tool");
-    let durable_session = serde_json::from_value::<crate::session::RuntimeSession>(
-        latest_event.payload["session"].clone(),
-    )
-    .expect("durable workflow output session should deserialize");
+    let durable_run = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("durable workflow run should load")
+        .expect("durable workflow run should exist");
     assert_eq!(
-        durable_session
-            .workflow_run(workflow_run.id())
-            .expect("durable workflow run should exist")
-            .status(),
+        durable_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
     assert!(
