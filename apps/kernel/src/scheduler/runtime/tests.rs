@@ -431,6 +431,23 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
         .get_run_for_agent(session.id(), &second_agent_id)
         .expect("downstream agent provider should be preflighted");
     assert_ne!(first_provider_run.id(), second_provider_run.id());
+    assert!(first_provider_run.workflow_tools_enabled());
+    assert!(second_provider_run.workflow_tools_enabled());
+    assert_eq!(
+        app.providers()
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session.id()
+                    && matches!(
+                        run.agent_instance_id(),
+                        Some(id) if id == first_agent_id || id == second_agent_id
+                    )
+            })
+            .count(),
+        2,
+        "cold workflow admission must create exactly one provider run per agent"
+    );
     assert_eq!(
         app.sessions()
             .get_session(session.id())

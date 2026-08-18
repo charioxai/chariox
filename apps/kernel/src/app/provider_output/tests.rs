@@ -465,6 +465,89 @@ fn ended_structured_run_drains_completed_pending_output() {
 }
 
 #[test]
+fn active_prompt_belongs_only_to_its_durable_delivery_provider_run() {
+    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-run-bound-prompt",
+            "worktree-run-bound-prompt",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-run-bound-prompt",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let launch = || {
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "test-model",
+        )
+        .with_agent_id(agent.id())
+    };
+    let stale = app
+        .launch_provider(launch())
+        .expect("first provider should launch");
+    let current = app
+        .launch_provider(launch())
+        .expect("replacement provider should launch");
+    assert_eq!(stale.state(), crate::provider::ProviderRunState::Running);
+    assert_eq!(
+        app.providers()
+            .get_run(stale.id())
+            .expect("stale provider should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Parked
+    );
+
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "review this exact revision",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should become active");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(current.id().to_string()),
+        None,
+    )
+    .expect("prompt delivery should bind to the replacement provider");
+
+    assert!(!app
+        .provider_run_has_active_prompt(
+            session.id(),
+            &app.providers()
+                .get_run(stale.id())
+                .expect("stale provider should resolve")
+        )
+        .expect("stale prompt ownership should resolve"));
+    assert!(app
+        .provider_run_has_active_prompt(
+            session.id(),
+            &app.providers()
+                .get_run(current.id())
+                .expect("current provider should resolve")
+        )
+        .expect("current prompt ownership should resolve"));
+}
+
+#[test]
 fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
