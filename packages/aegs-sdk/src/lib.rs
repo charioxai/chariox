@@ -15,7 +15,8 @@ pub use conformance::{
     verify_provider_contract, verify_webhook_conformance, WebhookConformanceCase,
 };
 pub use conformance_attestation::{
-    create_conformance_attestation, AegsConformanceAttestation, AEGS_CONFORMANCE_SUITE,
+    create_conformance_attestation, AegsConformanceAttestation, AEGS_CONFORMANCE_CHECKS,
+    AEGS_CONFORMANCE_SUITE,
 };
 pub use manifest::{
     parse_signing_key, sign_manifest, unsigned_manifest_digest, validate_manifest_envelope,

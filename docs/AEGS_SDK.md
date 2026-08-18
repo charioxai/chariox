@@ -51,9 +51,42 @@ bind it to the signed manifest. A passing report has this bounded shape:
 {
   "suite": "chariox-aegs-conformance-v1",
   "passed": true,
-  "checks": ["identity", "signature", "normalization", "lifecycle"]
+  "checks": [
+    "identity",
+    "manifest_signature",
+    "webhook_normalization",
+    "filters",
+    "connection_lifecycle",
+    "test_events",
+    "provider_actions",
+    "protocol_compatibility"
+  ]
 }
 ```
+
+The complete example is available at
+[`docs/fixtures/event-generators/dummy/conformance-report.json`](fixtures/event-generators/dummy/conformance-report.json).
+The SDK and Store reject an attestation that omits any required check, repeats
+a check, or uses an unbounded check name. Extra provider-specific checks are
+allowed and remain bound by the report digest.
+
+Each check is a concrete provider test obligation:
+
+| Check | Required proof in the provider repository |
+| --- | --- |
+| `identity` | `verify_provider_contract` accepts the publisher-scoped generator ID and exact webhook route, and rejects another provider's route. |
+| `manifest_signature` | The release manifest passes `validate_manifest_envelope` and `verify_manifest_signature`; changing any signed field fails verification. |
+| `webhook_normalization` | Authentic and invalid provider fixtures exercise `verify_webhook_conformance`, including deterministic occurrence identity and UTC timestamps. |
+| `filters` | Provider metadata uses documented filter paths and `metadata_matches_filter` accepts matching values and rejects non-matching values. |
+| `connection_lifecycle` | Authorization, inspection, refresh/reconnect, resource discovery, revocation, and expired/unavailable states are covered without exporting credentials. |
+| `test_events` | Supported test events use an active subscription's event type, scope, and filter and enter the ordinary AEDS publication path; unsupported behavior is explicit. |
+| `provider_actions` | Every declared action has bounded inputs/results, required scopes, target isolation, provider-error coverage, and durable idempotency for mutations; undeclared actions fail closed. |
+| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 3 and management protocol 4, including the public request/response validation used by the implementation. |
+
+The public SDK tests prove the shared reference behavior for signatures,
+filters, durable lifecycle state, action receipts, and protocol validation.
+Provider repositories must add their own provider fixtures and live acceptance;
+the report is not permission to replace those tests with eight unchecked names.
 
 Create the Store attestation locally:
 
@@ -64,8 +97,8 @@ cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
   --output conformance-attestation.json
 ```
 
-The attestation records the exact report and manifest SHA-256 digests, the
-event and management protocol versions, and the completion time. A failed,
+The attestation records the completed check matrix, exact report and manifest
+SHA-256 digests, event and management protocol versions, and completion time. A failed,
 empty, malformed, stale, future-dated, wrong-protocol, or wrong-manifest
 attestation is rejected. Keep the report with the provider's release evidence;
 Cloud stores its digest and the bounded attestation, not provider credentials
