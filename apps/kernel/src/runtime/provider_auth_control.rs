@@ -187,7 +187,15 @@ pub(crate) async fn execute_get_provider_login_status_request(
     }
     let now_ms = crate::session::unix_epoch_ms();
     if now_ms.saturating_sub(record.started_at_ms) >= PROVIDER_LOGIN_TIMEOUT_MS {
-        if record.backend == crate::runtime::state::ProviderLoginProcessBackend::Terminal {
+        if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
+            cancel_codex_login(
+                runtime_state,
+                owner_user_id,
+                &record.account_profile,
+                &request.login_id,
+            )
+            .await?;
+        } else {
             let _ = runtime_state
                 .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))
                 .await;
@@ -339,6 +347,28 @@ pub(crate) async fn execute_send_provider_login_input_request(
     })
 }
 
+async fn cancel_codex_login(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    account_profile: &str,
+    login_id: &str,
+) -> Result<(), DaemonError> {
+    let registry = runtime_state.provider_account_profile_registry().clone();
+    let owner = owner_user_id.to_string();
+    let profile_id = account_profile.to_string();
+    let login_id = login_id.to_string();
+    tokio::task::spawn_blocking(move || {
+        let environment = registry.resolve_environment(&owner, "codex", &profile_id)?;
+        let endpoint =
+            crate::provider::ensure_codex_account_endpoint(&owner, &profile_id, environment)?;
+        crate::provider::CodexClient::new("provider-login-cancel", endpoint)?
+            .cancel_login(&login_id)
+    })
+    .await
+    .map_err(|error| provider_auth_task_error("cancel Codex login", error))??;
+    Ok(())
+}
+
 pub(crate) async fn execute_cancel_provider_login_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -358,19 +388,13 @@ pub(crate) async fn execute_cancel_provider_login_request(
         ));
     }
     if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
-        let registry = runtime_state.provider_account_profile_registry().clone();
-        let owner = owner_user_id.to_string();
-        let profile_id = record.account_profile.clone();
-        let login_id = request.login_id.clone();
-        tokio::task::spawn_blocking(move || {
-            let environment = registry.resolve_environment(&owner, "codex", &profile_id)?;
-            let endpoint =
-                crate::provider::ensure_codex_account_endpoint(&owner, &profile_id, environment)?;
-            crate::provider::CodexClient::new("provider-login-cancel", endpoint)?
-                .cancel_login(&login_id)
-        })
-        .await
-        .map_err(|error| provider_auth_task_error("cancel Codex login", error))??;
+        cancel_codex_login(
+            runtime_state,
+            owner_user_id,
+            &record.account_profile,
+            &request.login_id,
+        )
+        .await?;
     } else {
         let _ = runtime_state
             .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))

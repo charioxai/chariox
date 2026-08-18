@@ -969,43 +969,119 @@ impl ProviderAccountProfileRegistry {
             .join(safe_path_component(owner_user_id))
             .join(provider)
             .join(profile_id);
-        let replace_existing_replica = {
-            let document = self.read_document()?;
-            match document.profiles.iter().find(|stored| {
-                stored.public.owner_user_id == owner_user_id
-                    && stored.public.provider == provider
-                    && stored.public.profile_id == profile_id
-            }) {
-                Some(stored) if !stored.materialized_replica => {
-                    return Err(registry_error(
-                        "materialize account profile",
-                        "refusing to replace an authoritative local account profile",
-                    ));
-                }
-                Some(_) => true,
-                None => false,
-            }
-        };
-        if replace_existing_replica && managed_root.exists() {
-            remove_managed_root(&managed_root, &self.path)?;
-        }
+        let managed_parent = managed_root.parent().ok_or_else(|| {
+            registry_error(
+                "materialize account profile",
+                "managed account profile has no parent directory",
+            )
+        })?;
+        fs::create_dir_all(managed_parent).map_err(registry_io("materialize account profile"))?;
+        set_private_dir_permissions(managed_parent)?;
+        let staging_root = unique_sibling_path(&managed_root, "stage");
         let locator = ProviderAccountLocator::managed(provider, &managed_root)?;
-        create_private_roots(&locator)?;
+        let staging_locator = ProviderAccountLocator::managed(provider, &staging_root)?;
+        let mut decoded_files = Vec::with_capacity(materialization.files.len());
+        let mut decoded_bytes = 0usize;
         for file in &materialization.files {
-            let destination = materialization_destination(&locator, &file.relative_path)?;
             let contents = base64::engine::general_purpose::STANDARD
                 .decode(&file.contents_base64)
                 .map_err(|error| {
                     registry_error("materialize account profile", error.to_string())
                 })?;
-            atomic_write_private(&destination, &contents)?;
-        }
-        if let ProviderAccountLocator::Codex { codex_home } = &locator {
-            enforce_codex_file_credentials(codex_home)?;
+            decoded_bytes = decoded_bytes.saturating_add(contents.len());
+            if decoded_bytes > MAX_MATERIALIZATION_BYTES {
+                return Err(registry_error(
+                    "materialize account profile",
+                    "provider account materialization exceeds the 64 MiB safety limit",
+                ));
+            }
+            let destination = materialization_destination(&staging_locator, &file.relative_path)?;
+            if decoded_files
+                .iter()
+                .any(|(existing, _)| existing == &destination)
+            {
+                return Err(registry_error(
+                    "materialize account profile",
+                    "provider account materialization contains a duplicate path",
+                ));
+            }
+            decoded_files.push((destination, contents));
         }
 
-        let mut document = self.write_document()?;
-        if let Some(existing) = document.profiles.iter_mut().find(|stored| {
+        let stage_result = (|| {
+            create_private_roots(&staging_locator)?;
+            set_private_dir_permissions(&staging_root)?;
+            for (destination, contents) in &decoded_files {
+                atomic_write_private(destination, contents)?;
+            }
+            if let ProviderAccountLocator::Codex { codex_home } = &staging_locator {
+                enforce_codex_file_credentials(codex_home)?;
+            }
+            sync_private_tree(&staging_root)
+        })();
+        if let Err(error) = stage_result {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(error);
+        }
+
+        let mut document = match self.write_document() {
+            Ok(document) => document,
+            Err(error) => {
+                let _ = fs::remove_dir_all(&staging_root);
+                return Err(error);
+            }
+        };
+        let original_document = document.clone();
+        let replace_existing_replica = match document.profiles.iter().find(|stored| {
+            stored.public.owner_user_id == owner_user_id
+                && stored.public.provider == provider
+                && stored.public.profile_id == profile_id
+        }) {
+            Some(stored) if !stored.materialized_replica => {
+                let _ = fs::remove_dir_all(&staging_root);
+                return Err(registry_error(
+                    "materialize account profile",
+                    "refusing to replace an authoritative local account profile",
+                ));
+            }
+            Some(_) => true,
+            None => false,
+        };
+        if managed_root.exists() && !replace_existing_replica {
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(registry_error(
+                "materialize account profile",
+                "refusing to replace unregistered provider account data",
+            ));
+        }
+
+        let backup_root = managed_root
+            .exists()
+            .then(|| unique_sibling_path(&managed_root, "backup"));
+        if let Some(backup_root) = &backup_root {
+            if let Err(error) = fs::rename(&managed_root, backup_root) {
+                let _ = fs::remove_dir_all(&staging_root);
+                return Err(registry_io("materialize account profile")(error));
+            }
+        }
+        if let Err(error) = fs::rename(&staging_root, &managed_root) {
+            if let Some(backup_root) = &backup_root {
+                let _ = fs::rename(backup_root, &managed_root);
+            }
+            let _ = fs::remove_dir_all(&staging_root);
+            return Err(registry_io("materialize account profile")(error));
+        }
+        if let Err(error) = sync_directory(managed_parent) {
+            let failed_root = unique_sibling_path(&managed_root, "failed");
+            let _ = fs::rename(&managed_root, &failed_root);
+            if let Some(backup_root) = &backup_root {
+                let _ = fs::rename(backup_root, &managed_root);
+            }
+            let _ = fs::remove_dir_all(&failed_root);
+            return Err(error);
+        }
+
+        let result = if let Some(existing) = document.profiles.iter_mut().find(|stored| {
             stored.public.owner_user_id == owner_user_id
                 && stored.public.provider == provider
                 && stored.public.profile_id == profile_id
@@ -1021,25 +1097,49 @@ impl ProviderAccountProfileRegistry {
             existing.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
             existing.locator = locator;
             existing.materialized_replica = true;
-            let result = existing.public.clone();
-            self.persist_locked(&document)?;
-            return Ok(result);
+            existing.public.clone()
+        } else {
+            let public = new_public_profile(
+                owner_user_id,
+                provider,
+                profile_id,
+                &materialization.profile.label,
+                materialization.profile.origin,
+                materialization.profile.is_default,
+            );
+            document.profiles.push(StoredProviderAccountProfile {
+                public: public.clone(),
+                locator,
+                materialized_replica: true,
+            });
+            public
+        };
+
+        if let Err(error) = self.persist_locked(&document) {
+            *document = original_document;
+            let failed_root = unique_sibling_path(&managed_root, "failed");
+            let _ = fs::rename(&managed_root, &failed_root);
+            if let Some(backup_root) = &backup_root {
+                let _ = fs::rename(backup_root, &managed_root);
+            }
+            let _ = fs::remove_dir_all(&failed_root);
+            let rollback_result = self.persist_locked(&document);
+            let _ = sync_directory(managed_parent);
+            return match rollback_result {
+                Ok(()) => Err(error),
+                Err(rollback_error) => Err(registry_error(
+                    "materialize account profile",
+                    format!(
+                        "{error}; additionally failed to restore the account profile registry: {rollback_error}"
+                    ),
+                )),
+            };
         }
-        let public = new_public_profile(
-            owner_user_id,
-            provider,
-            profile_id,
-            &materialization.profile.label,
-            materialization.profile.origin,
-            materialization.profile.is_default,
-        );
-        document.profiles.push(StoredProviderAccountProfile {
-            public: public.clone(),
-            locator,
-            materialized_replica: true,
-        });
-        self.persist_locked(&document)?;
-        Ok(public)
+        if let Some(backup_root) = &backup_root {
+            let _ = fs::remove_dir_all(backup_root);
+            let _ = sync_directory(managed_parent);
+        }
+        Ok(result)
     }
 
     fn read_document(
@@ -1522,6 +1622,64 @@ fn validate_linked_root(path: &Path) -> Result<PathBuf, DaemonError> {
     Ok(canonical)
 }
 
+fn unique_sibling_path(path: &Path, purpose: &str) -> PathBuf {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("profile");
+    loop {
+        let suffix: String = rand::thread_rng()
+            .sample_iter(&Alphanumeric)
+            .take(12)
+            .map(char::from)
+            .collect();
+        let candidate = parent.join(format!(".{name}.{purpose}-{suffix}"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+}
+
+fn sync_private_tree(root: &Path) -> Result<(), DaemonError> {
+    let mut pending = vec![root.to_path_buf()];
+    let mut directories = Vec::new();
+    while let Some(directory) = pending.pop() {
+        directories.push(directory.clone());
+        for entry in
+            fs::read_dir(&directory).map_err(registry_io("sync account profile replica"))?
+        {
+            let entry = entry.map_err(registry_io("sync account profile replica"))?;
+            let metadata = entry
+                .file_type()
+                .map_err(registry_io("sync account profile replica"))?;
+            if metadata.is_dir() {
+                pending.push(entry.path());
+            } else if metadata.is_file() {
+                fs::File::open(entry.path())
+                    .and_then(|file| file.sync_all())
+                    .map_err(registry_io("sync account profile replica"))?;
+            } else {
+                return Err(registry_error(
+                    "sync account profile replica",
+                    "provider account replica contains an unsupported filesystem entry",
+                ));
+            }
+        }
+    }
+    directories.sort_by_key(|directory| std::cmp::Reverse(directory.components().count()));
+    for directory in directories {
+        sync_directory(&directory)?;
+    }
+    Ok(())
+}
+
+fn sync_directory(path: &Path) -> Result<(), DaemonError> {
+    fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(registry_io("sync account profile directory"))
+}
+
 fn remove_managed_root(root: &Path, registry_path: &Path) -> Result<(), DaemonError> {
     let managed_base = registry_path
         .parent()
@@ -1745,6 +1903,60 @@ mod tests {
         assert!(target
             .materialize_replica("owner-b", &materialization)
             .is_err());
+        let _ = fs::remove_dir_all(source_root);
+        let _ = fs::remove_dir_all(target_root);
+    }
+
+    #[test]
+    fn failed_replica_replacement_preserves_existing_credentials() {
+        let (source_root, source) = fixture();
+        let profile = source.create_managed("owner-a", "codex", "Work").unwrap();
+        let source_environment = source
+            .resolve_environment("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+        fs::write(
+            Path::new(&source_environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"token":"old"}"#,
+        )
+        .unwrap();
+        let materialization = source
+            .export_materialization("owner-a", "codex", &profile.profile_id)
+            .unwrap();
+
+        let (target_root, target) = fixture();
+        let materialized = target
+            .materialize_replica("owner-a", &materialization)
+            .unwrap();
+        let target_environment = target
+            .resolve_environment("owner-a", "codex", &materialized.profile_id)
+            .unwrap();
+        let target_auth = Path::new(&target_environment["CODEX_HOME"]).join("auth.json");
+
+        let mut invalid_replacement = materialization.clone();
+        invalid_replacement
+            .files
+            .push(ProviderAccountMaterializationFile {
+                relative_path: "replacement.json".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"new"),
+            });
+        invalid_replacement
+            .files
+            .push(ProviderAccountMaterializationFile {
+                relative_path: "../escape".to_string(),
+                contents_base64: base64::engine::general_purpose::STANDARD.encode(b"invalid"),
+            });
+
+        assert!(target
+            .materialize_replica("owner-a", &invalid_replacement)
+            .is_err());
+        assert_eq!(
+            fs::read_to_string(target_auth).unwrap(),
+            r#"{"token":"old"}"#
+        );
+        assert!(target
+            .get("owner-a", "codex", &materialized.profile_id)
+            .is_ok());
+
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
     }

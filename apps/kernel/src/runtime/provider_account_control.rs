@@ -183,5 +183,17 @@ pub(crate) fn ensure_profile_idle(
             ),
         });
     }
+    if runtime_state
+        .provider_login_process_store()
+        .has_running_for_profile(owner_user_id, &profile.provider, &profile.profile_id)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "mutate provider account profile",
+            message: format!(
+                "account profile `{}` has an active provider authentication workflow; cancel it before removing or deleting the profile",
+                profile.profile_id
+            ),
+        });
+    }
     Ok(())
 }

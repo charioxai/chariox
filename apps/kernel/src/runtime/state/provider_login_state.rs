@@ -142,6 +142,24 @@ impl ProviderLoginProcessStore {
             .ok_or_else(|| login_error("provider login was not found"))
     }
 
+    pub fn has_running_for_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        account_profile: &str,
+    ) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .any(|record| {
+                record.owner_user_id == owner_user_id
+                    && record.provider == provider
+                    && record.account_profile == account_profile
+                    && record.state == ProviderLoginProcessState::Running
+            })
+    }
+
     pub fn remove(&self, login_id: &str) {
         self.inner
             .lock()
@@ -225,9 +243,20 @@ mod tests {
     fn login_processes_are_owner_scoped_and_single_flight_per_profile() {
         let store = ProviderLoginProcessStore::default();
         store.insert(record("owner-a", "login-a")).unwrap();
+        assert!(store.has_running_for_profile("owner-a", "claude", "work"));
+        assert!(!store.has_running_for_profile("owner-b", "claude", "work"));
         assert!(store.insert(record("owner-a", "login-b")).is_err());
         assert!(store.record_for_owner("owner-b", "login-a").is_err());
         store.insert(record("owner-b", "login-b")).unwrap();
+        store
+            .set_state(
+                "owner-a",
+                "login-a",
+                ProviderLoginProcessState::Succeeded,
+                2,
+            )
+            .unwrap();
+        assert!(!store.has_running_for_profile("owner-a", "claude", "work"));
     }
 
     #[test]
