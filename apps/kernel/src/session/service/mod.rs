@@ -146,7 +146,7 @@ fn reserve_prompt_id_block(path: &Path, minimum: u64) -> std::io::Result<(u64, u
         .write(true)
         .truncate(false)
         .open(lock_path)?;
-    lock_file.lock()?;
+    lock_file_exclusive(&lock_file)?;
     let current = match std::fs::read(path) {
         Ok(payload) => serde_json::from_slice::<DurablePromptIdCounter>(&payload)
             .map(|counter| counter.high_water_prompt_id)
@@ -171,6 +171,29 @@ fn reserve_prompt_id_block(path: &Path, minimum: u64) -> std::io::Result<(u64, u
     }
     std::fs::rename(&temporary, path)?;
     Ok((baseline.saturating_add(1), reserved_until))
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `std::fs::File::lock` is not stable on the Rust 1.88 toolchain used by
+    // CI. The kernel already depends on libc, and flock is released when the
+    // file descriptor closes at the end of the reservation transaction.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable prompt id allocation requires an exclusive file lock",
+    ))
 }
 
 #[cfg(test)]
