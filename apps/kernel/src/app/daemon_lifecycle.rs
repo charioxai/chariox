@@ -1,3 +1,4 @@
+use std::net::TcpListener;
 use std::sync::Arc;
 
 use crate::app::{provider_runtime, DaemonApp};
@@ -116,6 +117,17 @@ impl DaemonApp {
     }
 
     pub async fn run(self) -> Result<(), DaemonError> {
+        self.run_with_listener(None).await
+    }
+
+    pub async fn run_on_listener(self, listener: TcpListener) -> Result<(), DaemonError> {
+        self.run_with_listener(Some(listener)).await
+    }
+
+    async fn run_with_listener(self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
+        let legacy_workflow_history = self.legacy_workflow_history_store();
+        let history_migration_store = self.durable_state_store();
+        let history_migration_owner = self.config.daemon_id.clone();
         let app = Arc::new(tokio::sync::Mutex::new(self));
         let router = std::sync::Arc::new(
             crate::runtime::router::CommandRouter::with_interactive_capacity_from_app(
@@ -125,6 +137,14 @@ impl DaemonApp {
         );
         let runtime_state = router.runtime_state();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let history_migration_task = (!legacy_workflow_history.is_empty()).then(|| {
+            tokio::spawn(run_legacy_workflow_history_migration(
+                history_migration_store,
+                history_migration_owner,
+                legacy_workflow_history,
+                shutdown_rx.clone(),
+            ))
+        });
         let relay_state = {
             let app = app.lock().await;
             app.relay_client_state()
@@ -176,18 +196,120 @@ impl DaemonApp {
         // must not mutate kernel-owned active prompt state.
         let _ = runtime_state;
 
-        let result =
-            crate::runtime_transport::run_kernel_websocket_server_with_router(router, async {
-                let _ = tokio::signal::ctrl_c().await;
-                let _ = shutdown_tx.send(true);
-            })
-            .await;
+        let shutdown = async {
+            let _ = tokio::signal::ctrl_c().await;
+            let _ = shutdown_tx.send(true);
+        };
+        let result = match listener {
+            Some(listener) => {
+                crate::runtime_transport::run_kernel_websocket_server_with_router_on_listener(
+                    router, listener, shutdown,
+                )
+                .await
+            }
+            None => {
+                crate::runtime_transport::run_kernel_websocket_server_with_router(router, shutdown)
+                    .await
+            }
+        };
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
         let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
         let _ = event_connection_reconciliation_task.await;
+        if let Some(task) = history_migration_task {
+            let _ = task.await;
+        }
         result
+    }
+}
+
+async fn run_legacy_workflow_history_migration(
+    store: crate::durable_state::DurableKernelStateStore,
+    owner_id: String,
+    workflow_runs: crate::app::LegacyWorkflowHistoryStore,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    const MIGRATION_CHUNK_SIZE: usize = 256;
+    let run_count = workflow_runs.len();
+    crate::logging::info_with_fields(
+        "durable_state.migration",
+        "started background workflow history migration",
+        serde_json::json!({
+            "workflow_run_count": run_count,
+            "chunk_size": MIGRATION_CHUNK_SIZE,
+        }),
+    );
+    let mut completed_run_count = 0usize;
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        let chunk = workflow_runs.next_chunk(MIGRATION_CHUNK_SIZE);
+        if chunk.is_empty() {
+            break;
+        }
+        let store = store.clone();
+        let owner_id = owner_id.clone();
+        let migration_chunk = chunk.clone();
+        let completed = chunk.len() == workflow_runs.len();
+        let result = tokio::task::spawn_blocking(move || {
+            store.migrate_legacy_workflow_history_chunk(&owner_id, &migration_chunk, completed)
+        })
+        .await;
+        match result {
+            Ok(Ok(())) => {
+                workflow_runs.remove_committed(&chunk);
+                completed_run_count += chunk.len();
+            }
+            Ok(Err(error)) => {
+                crate::logging::warn_with_fields(
+                    "durable_state.migration",
+                    "background workflow history migration failed",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                        "completed_run_count": completed_run_count,
+                        "workflow_run_count": run_count,
+                    }),
+                );
+                return;
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "durable_state.migration",
+                    "background workflow history migration worker failed",
+                    serde_json::json!({"error": error.to_string()}),
+                );
+                return;
+            }
+        }
+        tokio::task::yield_now().await;
+    }
+    crate::logging::info_with_fields(
+        "durable_state.migration",
+        "completed background workflow history migration",
+        serde_json::json!({"workflow_run_count": run_count}),
+    );
+    match tokio::task::spawn_blocking(move || store.reclaim_unused_pages_incrementally(512)).await {
+        Ok(Ok(outcome)) => crate::logging::info_with_fields(
+            "durable_state.maintenance",
+            "completed bounded background incremental reclaim",
+            serde_json::json!({
+                "supported": outcome.supported,
+                "free_pages_before": outcome.free_pages_before,
+                "free_pages_after": outcome.free_pages_after,
+            }),
+        ),
+        Ok(Err(error)) => crate::logging::warn_with_fields(
+            "durable_state.maintenance",
+            "bounded background incremental reclaim failed",
+            serde_json::json!({"error": error.to_string()}),
+        ),
+        Err(error) => crate::logging::warn_with_fields(
+            "durable_state.maintenance",
+            "bounded background incremental reclaim worker failed",
+            serde_json::json!({"error": error.to_string()}),
+        ),
     }
 }

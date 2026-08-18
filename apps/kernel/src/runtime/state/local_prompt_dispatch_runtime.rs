@@ -541,9 +541,16 @@ mod tests {
             .get_session(&session_id)
             .expect("failed workflow session should resolve");
         for workflow_run_id in [&first_workflow_run_id, &second_workflow_run_id] {
-            let failed_run = failed_session
-                .workflow_run(workflow_run_id)
-                .expect("failed workflow run should resolve");
+            let failed_run = runtime
+                .owned
+                .durable_state_store
+                .resolve_workflow_run(
+                    failed_session.host_daemon_id(),
+                    failed_session.id(),
+                    workflow_run_id,
+                )
+                .expect("failed workflow run lookup should succeed")
+                .expect("failed workflow run should resolve from durable history");
             assert_eq!(
                 failed_run.status(),
                 crate::session::WorkflowRunStatus::Failed

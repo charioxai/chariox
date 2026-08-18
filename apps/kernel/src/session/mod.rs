@@ -36,7 +36,7 @@ pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore}
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };
-pub(crate) use service::prompt_id_number;
+pub(crate) use runtime_session::DurableWorkflowHotState;
 pub use service::{
     classify_workflow_failure_kind, WorkflowCompletionUpdate, WorkflowDispatch,
     WorkflowHandoffValidationFailure, WorkflowHandoffValidationWarning,

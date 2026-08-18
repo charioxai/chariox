@@ -792,33 +792,6 @@ impl SessionService {
         self.prompt_id_allocator.next_prompt_id()
     }
 
-    pub(crate) fn observe_prompt_number(&self, number: u64) {
-        self.prompt_id_allocator.advance_to_at_least(number);
-    }
-
-    pub(crate) fn observe_prompt_id(&self, prompt_id: &str) {
-        self.prompt_id_allocator.observe_prompt_id(prompt_id);
-    }
-
-    pub(crate) fn seed_prompt_ids_from_sessions(&self) {
-        for session in self.store.list() {
-            if let Some(prompt) = session.active_prompt() {
-                self.observe_prompt_id(prompt.id());
-            }
-            for prompt in session.queued_prompts() {
-                self.observe_prompt_id(prompt.id());
-            }
-            for prompt_state in session.prompt_states().values() {
-                if let Some(prompt) = prompt_state.active_prompt() {
-                    self.observe_prompt_id(prompt.id());
-                }
-                for prompt in prompt_state.queued_prompts() {
-                    self.observe_prompt_id(prompt.id());
-                }
-            }
-        }
-    }
-
     pub(crate) fn prompt_id_allocator(&self) -> PromptIdAllocator {
         self.prompt_id_allocator.clone()
     }

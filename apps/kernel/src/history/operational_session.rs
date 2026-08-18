@@ -4,7 +4,7 @@ use std::sync::MutexGuard;
 use rusqlite::params;
 
 use crate::error::DaemonError;
-use crate::session::{prompt_id_number, PromptOrigin};
+use crate::session::PromptOrigin;
 
 use super::session_log::external_provider_observed_merge_key_with_prefix_is_state_signal;
 use super::STEERING_PROMPT_MERGE_KEY_PREFIX;
@@ -66,49 +66,6 @@ impl OperationalHistoryStore {
                 operation: "mark legacy history fallback disabled",
                 message: error.to_string(),
             })
-    }
-
-    pub fn max_prompt_number(&self) -> Result<u64, DaemonError> {
-        let connection = self.lock_read_connection(None)?;
-        let mut statement = connection
-            .prepare(
-                "SELECT DISTINCT prompt_id
-                 FROM history_events
-                 WHERE prompt_id IS NOT NULL",
-            )
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: None,
-                operation: "prepare operational history prompt id scan",
-                message: error.to_string(),
-            })?;
-        let mut rows = statement
-            .query([])
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: None,
-                operation: "scan operational history prompt ids",
-                message: error.to_string(),
-            })?;
-        let mut max_prompt_number = 0;
-        while let Some(row) = rows
-            .next()
-            .map_err(|error| DaemonError::SessionHistoryFailed {
-                session_id: None,
-                operation: "read operational history prompt id",
-                message: error.to_string(),
-            })?
-        {
-            let prompt_id =
-                row.get::<_, String>(0)
-                    .map_err(|error| DaemonError::SessionHistoryFailed {
-                        session_id: None,
-                        operation: "decode operational history prompt id",
-                        message: error.to_string(),
-                    })?;
-            if let Some(number) = prompt_id_number(&prompt_id) {
-                max_prompt_number = max_prompt_number.max(number);
-            }
-        }
-        Ok(max_prompt_number)
     }
 
     pub fn list_session_history_agent_ids(

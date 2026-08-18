@@ -10,10 +10,12 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
+
+pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]
 pub struct DurableKernelStateStore {
@@ -47,6 +49,27 @@ pub(crate) struct DurableWriterHealthSnapshot {
     pub(crate) max_batch_records: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DurableEventTailStatistics {
+    pub(crate) event_count: u64,
+    pub(crate) encoded_bytes: u64,
+    pub(crate) oldest_timestamp_ms: Option<u64>,
+    pub(crate) latest_sequence: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DurableCheckpointMarker {
+    pub(crate) sequence: u64,
+    pub(crate) timestamp_ms: u64,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DurableIncrementalReclaimOutcome {
+    pub(crate) supported: bool,
+    pub(crate) free_pages_before: u64,
+    pub(crate) free_pages_after: u64,
+}
+
 #[derive(Debug)]
 struct DurableWriteRequest {
     operation: DurableWriteOperation,
@@ -73,6 +96,77 @@ enum DurableWriteOperation {
         timestamp_ms: u64,
         entities: Vec<DurableCheckpointEntity>,
     },
+    WorkflowRuntimeTransition {
+        event_id: String,
+        timestamp_ms: u64,
+        payload_json: String,
+        owner_id: String,
+        session_id: String,
+        hot_entities: Vec<DurableWorkflowHotEntityWrite>,
+        workflow_runs: Vec<DurableWorkflowRunWrite>,
+        delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
+    },
+    WorkflowRuntimeSessionsTransition {
+        event_id: String,
+        timestamp_ms: u64,
+        payload_json: String,
+        owner_id: String,
+        sessions: Vec<DurableWorkflowSessionWrite>,
+    },
+    WorkflowRuntimeMigration {
+        owner_id: String,
+        hot_entities: Vec<DurableWorkflowHotEntityWrite>,
+        workflow_runs: Vec<DurableWorkflowRunWrite>,
+        delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
+    },
+    WorkflowHistoryMigrationChunk {
+        owner_id: String,
+        workflow_runs: Vec<DurableWorkflowRunWrite>,
+        completed: bool,
+    },
+    SessionDelete {
+        event_id: String,
+        timestamp_ms: u64,
+        payload_json: String,
+        owner_id: String,
+        session_id: String,
+    },
+}
+
+#[derive(Debug)]
+struct DurableWorkflowRunWrite {
+    session_id: String,
+    run_id: String,
+    workflow_id: String,
+    status: String,
+    created_at_ms: u64,
+    completed_at_ms: Option<u64>,
+    payload_json: String,
+}
+
+#[derive(Debug)]
+struct DurableWorkflowHotEntityWrite {
+    session_id: String,
+    entity_kind: String,
+    entity_id: String,
+    payload_json: String,
+}
+
+#[derive(Debug)]
+struct DurableDeliveryReceiptWrite {
+    session_id: String,
+    delivery_id: String,
+    binding_id: String,
+    expires_at_ms: u64,
+    payload_json: String,
+}
+
+#[derive(Debug)]
+struct DurableWorkflowSessionWrite {
+    session_id: String,
+    hot_entities: Vec<DurableWorkflowHotEntityWrite>,
+    workflow_runs: Vec<DurableWorkflowRunWrite>,
+    delivery_receipts: Vec<DurableDeliveryReceiptWrite>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,6 +195,9 @@ pub(crate) struct DurableCheckpointEntity {
 
 impl DurableKernelStateStore {
     pub fn open(path: PathBuf) -> Result<Self, DaemonError> {
+        let initialize_incremental_vacuum = fs::metadata(&path)
+            .map(|metadata| metadata.len() == 0)
+            .unwrap_or(true);
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent).map_err(|error| DaemonError::LocalTransport {
                 operation: "durable_state.open",
@@ -111,6 +208,14 @@ impl DurableKernelStateStore {
             operation: "durable_state.open",
             message: error.to_string(),
         })?;
+        if initialize_incremental_vacuum {
+            connection
+                .pragma_update(None, "auto_vacuum", "INCREMENTAL")
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "durable_state.incremental_vacuum_mode",
+                    message: error.to_string(),
+                })?;
+        }
         connection
             .pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| DaemonError::LocalTransport {
@@ -260,6 +365,72 @@ impl DurableKernelStateStore {
                 payload: serde_json::from_str(&payload_json).map_err(|error| {
                     DaemonError::LocalTransport {
                         operation: "durable_state.decode_event_batch",
+                        message: error.to_string(),
+                    }
+                })?,
+            });
+        }
+        Ok(events)
+    }
+
+    pub(crate) fn load_restore_events_after_batch(
+        &self,
+        sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<DurableStateEvent>, DaemonError> {
+        let limit = limit.clamp(1, 4_096);
+        let connection = self.lock_connection("durable_state.load_restore_events_after_batch")?;
+        let mut statement = connection
+            .prepare(
+                "SELECT event.sequence, event.event_id, event.kind, event.subject_id,
+                        event.timestamp_ms, event.payload_json
+                 FROM durable_state_events event
+                 WHERE event.sequence > ?1
+                   AND event.kind <> 'workflow.runtime.updated'
+                   AND (
+                     event.kind <> 'session.updated'
+                     OR event.subject_id IS NULL
+                     OR event.sequence = (
+                       SELECT MAX(latest.sequence)
+                       FROM durable_state_events latest
+                       WHERE latest.sequence > ?1
+                         AND latest.subject_id = event.subject_id
+                         AND latest.kind = 'session.updated'
+                     )
+                   )
+                 ORDER BY event.sequence ASC
+                 LIMIT ?2",
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.load_restore_events_after_batch",
+                message: error.to_string(),
+            })?;
+        let mut rows = statement
+            .query(params![sequence as i64, limit as i64])
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.load_restore_events_after_batch",
+                message: error.to_string(),
+            })?;
+        let mut events = Vec::with_capacity(limit);
+        while let Some(row) = rows.next().map_err(|error| DaemonError::LocalTransport {
+            operation: "durable_state.load_restore_events_after_batch",
+            message: error.to_string(),
+        })? {
+            let payload_json =
+                row.get::<_, String>(5)
+                    .map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.load_restore_events_after_batch",
+                        message: error.to_string(),
+                    })?;
+            events.push(DurableStateEvent {
+                sequence: row.get::<_, i64>(0).unwrap_or_default().max(0) as u64,
+                event_id: row.get::<_, String>(1).unwrap_or_default(),
+                kind: row.get::<_, String>(2).unwrap_or_default(),
+                subject_id: row.get::<_, Option<String>>(3).unwrap_or_default(),
+                timestamp_ms: row.get::<_, i64>(4).unwrap_or_default().max(0) as u64,
+                payload: serde_json::from_str(&payload_json).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "durable_state.decode_restore_event_batch",
                         message: error.to_string(),
                     }
                 })?,
@@ -438,6 +609,83 @@ impl DurableKernelStateStore {
                 message: error.to_string(),
             })?;
         Ok(sequence.max(0) as u64)
+    }
+
+    pub(crate) fn event_tail_statistics(
+        &self,
+        after_sequence: u64,
+    ) -> Result<DurableEventTailStatistics, DaemonError> {
+        let connection = self.lock_connection("durable_state.event_tail_statistics")?;
+        let (event_count, encoded_bytes, oldest_timestamp_ms, latest_sequence) = connection
+            .query_row(
+                "SELECT COUNT(*),
+                        COALESCE(SUM(
+                            length(CAST(event_id AS BLOB))
+                          + length(CAST(kind AS BLOB))
+                          + COALESCE(length(CAST(subject_id AS BLOB)), 0)
+                          + length(CAST(payload_json AS BLOB))
+                          + 24
+                        ), 0),
+                        MIN(timestamp_ms),
+                        COALESCE(MAX(sequence), ?1)
+                 FROM durable_state_events
+                 WHERE sequence > ?1",
+                params![after_sequence as i64],
+                |row| {
+                    Ok((
+                        row.get::<_, i64>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, Option<i64>>(2)?,
+                        row.get::<_, i64>(3)?,
+                    ))
+                },
+            )
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.event_tail_statistics",
+                message: error.to_string(),
+            })?;
+        Ok(DurableEventTailStatistics {
+            event_count: event_count.max(0) as u64,
+            encoded_bytes: encoded_bytes.max(0) as u64,
+            oldest_timestamp_ms: oldest_timestamp_ms.map(|value| value.max(0) as u64),
+            latest_sequence: latest_sequence.max(0) as u64,
+        })
+    }
+
+    pub(crate) fn latest_checkpoint_marker_for_owner(
+        &self,
+        owner_id: &str,
+    ) -> Result<DurableCheckpointMarker, DaemonError> {
+        let connection = self.lock_connection("durable_state.latest_checkpoint_marker")?;
+        let marker = connection
+            .query_row(
+                "SELECT sequence, timestamp_ms
+                 FROM durable_state_owner_checkpoint_manifest
+                 WHERE owner_id = ?1",
+                params![owner_id],
+                |row| {
+                    Ok(DurableCheckpointMarker {
+                        sequence: row.get::<_, i64>(0)?.max(0) as u64,
+                        timestamp_ms: row.get::<_, i64>(1)?.max(0) as u64,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.latest_checkpoint_marker",
+                message: error.to_string(),
+            })?;
+        drop(connection);
+        if let Some(marker) = marker {
+            return Ok(marker);
+        }
+        Ok(self
+            .latest_snapshot_for_owner(owner_id)?
+            .map(|snapshot| DurableCheckpointMarker {
+                sequence: snapshot.sequence,
+                timestamp_ms: snapshot.timestamp_ms,
+            })
+            .unwrap_or_default())
     }
 
     pub fn latest_snapshot_sequence(&self) -> Result<u64, DaemonError> {
@@ -793,6 +1041,61 @@ impl DurableKernelStateStore {
         &self.path
     }
 
+    pub(crate) fn reclaim_unused_pages_incrementally(
+        &self,
+        max_pages: u32,
+    ) -> Result<DurableIncrementalReclaimOutcome, DaemonError> {
+        let connection =
+            Connection::open(&self.path).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.open_incremental_reclaim",
+                message: error.to_string(),
+            })?;
+        connection
+            .busy_timeout(Duration::from_millis(250))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.configure_incremental_reclaim",
+                message: error.to_string(),
+            })?;
+        let auto_vacuum = connection
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.read_incremental_reclaim_mode",
+                message: error.to_string(),
+            })?;
+        let free_pages_before = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.read_free_pages",
+                message: error.to_string(),
+            })?
+            .max(0) as u64;
+        if auto_vacuum != 2 || free_pages_before == 0 || max_pages == 0 {
+            return Ok(DurableIncrementalReclaimOutcome {
+                supported: auto_vacuum == 2,
+                free_pages_before,
+                free_pages_after: free_pages_before,
+            });
+        }
+        connection
+            .execute_batch(&format!("PRAGMA incremental_vacuum({max_pages});"))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.incremental_reclaim",
+                message: error.to_string(),
+            })?;
+        let free_pages_after = connection
+            .query_row("PRAGMA freelist_count", [], |row| row.get::<_, i64>(0))
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.read_reclaimed_free_pages",
+                message: error.to_string(),
+            })?
+            .max(0) as u64;
+        Ok(DurableIncrementalReclaimOutcome {
+            supported: true,
+            free_pages_before,
+            free_pages_after,
+        })
+    }
+
     pub(crate) fn writer_health_snapshot(&self) -> DurableWriterHealthSnapshot {
         self.writer.health_snapshot()
     }
@@ -980,6 +1283,78 @@ fn commit_durable_write_batch(
                 write_entity_checkpoint(&transaction, owner_id, *sequence, *timestamp_ms, entities)
                     .map(|_| *sequence)
             }
+            DurableWriteOperation::WorkflowRuntimeTransition {
+                event_id,
+                timestamp_ms,
+                payload_json,
+                owner_id,
+                session_id,
+                hot_entities,
+                workflow_runs,
+                delivery_receipts,
+            } => workflow_runtime::write_workflow_runtime_transition(
+                &transaction,
+                workflow_runtime::WorkflowRuntimeTransitionWrite {
+                    event_id,
+                    timestamp_ms: *timestamp_ms,
+                    payload_json,
+                    owner_id,
+                    session_id,
+                    hot_entities,
+                    workflow_runs,
+                    delivery_receipts,
+                },
+            ),
+            DurableWriteOperation::WorkflowRuntimeSessionsTransition {
+                event_id,
+                timestamp_ms,
+                payload_json,
+                owner_id,
+                sessions,
+            } => workflow_runtime::write_workflow_runtime_sessions_transition(
+                &transaction,
+                event_id,
+                *timestamp_ms,
+                payload_json,
+                owner_id,
+                sessions,
+            ),
+            DurableWriteOperation::WorkflowRuntimeMigration {
+                owner_id,
+                hot_entities,
+                workflow_runs,
+                delivery_receipts,
+            } => workflow_runtime::write_workflow_runtime_migration(
+                &transaction,
+                owner_id,
+                hot_entities,
+                workflow_runs,
+                delivery_receipts,
+            ),
+            DurableWriteOperation::WorkflowHistoryMigrationChunk {
+                owner_id,
+                workflow_runs,
+                completed,
+            } => workflow_runtime::write_workflow_history_migration_chunk(
+                &transaction,
+                owner_id,
+                workflow_runs,
+                *completed,
+            ),
+            DurableWriteOperation::SessionDelete {
+                event_id,
+                timestamp_ms,
+                payload_json,
+                owner_id,
+                session_id,
+            } => workflow_runtime::write_session_delete(
+                &transaction,
+                event_id,
+                *timestamp_ms,
+                payload_json,
+                owner_id,
+                session_id,
+            ),
         };
         match result {
             Ok(sequence) => results.push(sequence),
@@ -1076,13 +1451,29 @@ fn write_entity_checkpoint(
     transaction.execute(
         "DELETE FROM durable_state_events
          WHERE sequence <= ?1
-           AND kind IN ('session.updated', 'session.prompt_state.updated')
+           AND kind IN (
+               'session.updated',
+               'workflow.runtime.updated',
+               'session.prompt_state.updated'
+           )
+           AND (
+               (
+                   kind = 'workflow.runtime.updated'
+                   AND json_extract(payload_json, '$.owner_id') = ?2
+               )
+               OR EXISTS (
+                   SELECT 1 FROM durable_checkpoint_current_keys current
+                   WHERE current.entity_kind = 'sessions'
+                     AND current.entity_id = durable_state_events.subject_id
+               )
+           )
            AND EXISTS (
-               SELECT 1 FROM durable_checkpoint_current_keys current
-               WHERE current.entity_kind = 'sessions'
-                 AND current.entity_id = durable_state_events.subject_id
+               SELECT 1 FROM durable_state_metadata migration
+               WHERE migration.owner_id = ?2
+                 AND migration.metadata_key = 'workflow_history_migration_status'
+                 AND migration.metadata_value = 'verified'
            )",
-        params![sequence as i64],
+        params![sequence as i64, owner_id],
     )?;
     transaction.execute(
         "DELETE FROM durable_state_snapshots
@@ -1096,6 +1487,12 @@ fn write_entity_checkpoint(
                    SELECT 1 FROM json_each(payload_json, '$.slices') slice
                    WHERE json_extract(slice.value, '$.owner_kernel_id') = ?2
                )
+           )
+           AND EXISTS (
+               SELECT 1 FROM durable_state_metadata migration
+               WHERE migration.owner_id = ?2
+                 AND migration.metadata_key = 'workflow_history_migration_status'
+                 AND migration.metadata_value = 'verified'
            )",
         params![sequence as i64, owner_id],
     )?;
@@ -1158,6 +1555,66 @@ CREATE TABLE IF NOT EXISTS durable_state_owner_checkpoint_entities (
 
 CREATE INDEX IF NOT EXISTS idx_durable_owner_checkpoint_entities_sequence
     ON durable_state_owner_checkpoint_entities(owner_id, checkpoint_sequence, entity_kind);
+
+CREATE TABLE IF NOT EXISTS durable_workflow_hot_entities (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    entity_kind TEXT NOT NULL,
+    entity_id TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(owner_id, session_id, entity_kind, entity_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_hot_entities_session
+    ON durable_workflow_hot_entities(owner_id, session_id, entity_kind, entity_id);
+
+CREATE TABLE IF NOT EXISTS durable_workflow_runs (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    workflow_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created_at_ms INTEGER NOT NULL,
+    completed_at_ms INTEGER,
+    updated_at_ms INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(owner_id, session_id, run_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_session_created
+    ON durable_workflow_runs(owner_id, session_id, created_at_ms DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_workflow_created
+    ON durable_workflow_runs(owner_id, session_id, workflow_id, created_at_ms DESC, run_id DESC);
+
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_status
+    ON durable_workflow_runs(owner_id, status, session_id);
+
+CREATE INDEX IF NOT EXISTS idx_durable_workflow_runs_active
+    ON durable_workflow_runs(owner_id, session_id, created_at_ms, run_id)
+    WHERE status NOT IN ('Completed', 'Failed', 'Stopped');
+
+CREATE TABLE IF NOT EXISTS durable_event_delivery_receipts (
+    owner_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    delivery_id TEXT NOT NULL,
+    binding_id TEXT NOT NULL,
+    expires_at_ms INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    PRIMARY KEY(owner_id, session_id, delivery_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_durable_delivery_receipts_expiry
+    ON durable_event_delivery_receipts(owner_id, expires_at_ms);
+
+CREATE TABLE IF NOT EXISTS durable_state_metadata (
+    owner_id TEXT NOT NULL,
+    metadata_key TEXT NOT NULL,
+    metadata_value TEXT NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    PRIMARY KEY(owner_id, metadata_key)
+);
 "#;
 
 fn snapshot_payload_has_owner(payload: &serde_json::Value, owner_id: &str) -> bool {
@@ -1307,6 +1764,26 @@ mod tests {
     }
 
     #[test]
+    fn new_store_enables_bounded_incremental_reclamation() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-durable-state-incremental-reclaim-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let outcome = store
+            .reclaim_unused_pages_incrementally(32)
+            .expect("incremental reclaim should be safe");
+        assert!(outcome.supported);
+        assert_eq!(outcome.free_pages_before, outcome.free_pages_after);
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn entity_checkpoints_are_incremental_atomic_and_supersede_legacy_snapshots() {
         let path = std::env::temp_dir().join(format!(
             "chariox-durable-state-entity-checkpoint-{}-{}.db",
@@ -1322,6 +1799,9 @@ mod tests {
                 }),
             )
             .expect("legacy snapshot should save");
+        store
+            .migrate_legacy_workflow_history_chunk("owner-1", &[], true)
+            .expect("history migration should be verified before legacy compaction");
         let session = DurableCheckpointEntity {
             kind: "sessions".to_string(),
             id: "session-1".to_string(),
@@ -1392,6 +1872,57 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_preserves_legacy_replay_until_history_migration_is_verified() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-durable-state-migration-gate-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        let sequence = store
+            .append_event(
+                "session.updated",
+                Some("session-1".to_string()),
+                serde_json::json!({"id": "session-1", "host_daemon_id": "owner-1"}),
+            )
+            .expect("legacy session event should append")
+            .sequence;
+        let entities = vec![DurableCheckpointEntity {
+            kind: "sessions".to_string(),
+            id: "session-1".to_string(),
+            payload_json: serde_json::json!({"id": "session-1"}).to_string(),
+        }];
+
+        store
+            .save_entity_checkpoint("owner-1", sequence, entities.clone())
+            .expect("checkpoint should save");
+        assert_eq!(
+            store
+                .load_events_by_kind("session.updated")
+                .expect("legacy event should load")
+                .len(),
+            1,
+            "rollback source must remain before migration verification",
+        );
+
+        store
+            .migrate_legacy_workflow_history_chunk("owner-1", &[], true)
+            .expect("empty history migration should verify");
+        store
+            .save_entity_checkpoint("owner-1", sequence, entities)
+            .expect("verified checkpoint should save");
+        assert!(store
+            .load_events_by_kind("session.updated")
+            .expect("compacted events should load")
+            .is_empty());
+
+        drop(store);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
     fn entity_checkpoints_are_isolated_by_kernel_owner() {
         let path = std::env::temp_dir().join(format!(
             "chariox-durable-state-owner-checkpoint-{}-{}.db",
@@ -1423,6 +1954,12 @@ mod tests {
                 serde_json::json!({"session": {"id": "session-b"}}),
             )
             .expect("second owner update should append");
+        store
+            .migrate_legacy_workflow_history_chunk("kernel-a", &[], true)
+            .expect("first owner history migration should verify");
+        store
+            .migrate_legacy_workflow_history_chunk("kernel-b", &[], true)
+            .expect("second owner history migration should verify");
 
         store
             .save_entity_checkpoint(
@@ -1865,6 +2402,49 @@ mod tests {
             .expect("audit events should load");
 
         assert_eq!(events, vec![audit]);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn restore_event_loading_skips_superseded_full_session_snapshots() {
+        let path = std::env::temp_dir().join(format!(
+            "chariox-durable-state-restore-compaction-{}-{}.db",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let store = DurableKernelStateStore::open(path.clone()).expect("store should open");
+        store
+            .append_event(
+                "session.updated",
+                Some("session-1".to_string()),
+                serde_json::json!({"revision": 1, "payload": "x".repeat(1_000_000)}),
+            )
+            .expect("first session snapshot should append");
+        let unrelated = store
+            .append_event(
+                "agent.updated",
+                Some("agent-1".to_string()),
+                serde_json::json!({"revision": 1}),
+            )
+            .expect("unrelated event should append");
+        store
+            .append_event(
+                "workflow.runtime.updated",
+                Some("session-1".to_string()),
+                serde_json::json!({"revision": 2}),
+            )
+            .expect("latest session snapshot should append");
+
+        let restored = store
+            .load_restore_events_after_batch(0, 10)
+            .expect("restore events should load");
+        assert_eq!(restored.len(), 2);
+        assert_eq!(restored[0].kind, "session.updated");
+        assert_eq!(restored[1], unrelated);
+
+        drop(store);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));

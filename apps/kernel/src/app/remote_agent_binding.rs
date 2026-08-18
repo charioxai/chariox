@@ -351,16 +351,15 @@ impl DaemonApp {
                     &self.config,
                     agent.owner_user_id(),
                 );
-            let mut account_materialization = match self
-                .provider_account_profiles
-                .export_materialization(
+            let mut account_materialization =
+                match self.provider_account_profiles.export_materialization(
                     &account_owner_user_id,
                     agent.provider(),
                     agent.provider_account_profile(),
                 ) {
-                Ok(materialization) => materialization,
-                Err(error) => {
-                    let _ = self
+                    Ok(materialization) => materialization,
+                    Err(error) => {
+                        let _ = self
                         .provider_account_profiles
                         .update_materialization_status(
                         &account_owner_user_id,
@@ -375,10 +374,10 @@ impl DaemonApp {
                             last_error: Some("account materialization export failed".to_string()),
                         },
                     );
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(error);
-                }
-            };
+                        cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                        return Err(error);
+                    }
+                };
             // The home registry aliases the configured Cloud owner to `local`.
             // The worker lease remains scoped to the runtime owner identity, so
             // stamp that identity on the encrypted replica envelope.

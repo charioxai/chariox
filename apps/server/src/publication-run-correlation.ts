@@ -13,7 +13,7 @@ export async function findWorkflowRunByInvocationRequestId(
   requestId: string,
 ): Promise<WorkflowRun | null> {
   const response = await client.send(
-    listWorkflowRunsRequest(publication.session_id, publication.workflow_ref),
+    listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const workflowRuns = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
   return workflowRuns.find((workflowRun) => workflowRunMatchesInvocationRequestId(workflowRun, requestId)) ?? null

@@ -211,11 +211,13 @@ fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs_inner(provider
             ListWorkflowRunsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: Some(workflow.id().to_string()),
+                cursor: None,
+                limit: None,
             },
         ))
         .expect("workflow runs should list")
     {
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => workflow_runs,
         _ => panic!("unexpected local response"),
     };
     assert_eq!(listed.len(), 1);
@@ -442,11 +444,13 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching_i
             ListWorkflowRunsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: Some(workflow.id().to_string()),
+                cursor: None,
+                limit: None,
             },
         ))
         .expect("workflow runs should list")
     {
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => workflow_runs,
         _ => panic!("unexpected local response"),
     };
     assert!(workflow_runs.is_empty());
@@ -632,11 +636,51 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
             .expect("session should remain available")
     });
     assert!(advanced.workflow_queued_prompts().is_empty());
-    assert_eq!(advanced.workflow_runs().len(), 2);
+    assert_eq!(advanced.workflow_runs().len(), 1);
     assert_eq!(
-        advanced.workflow_runs()[1].status(),
+        advanced.workflow_runs()[0].status(),
         WorkflowRunStatus::Running
     );
+    let (first_page, next_cursor) = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            crate::local::ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: None,
+                cursor: None,
+                limit: Some(1),
+            },
+        ))
+        .expect("workflow run history should remain queryable")
+    {
+        LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs,
+            next_cursor,
+        } => (workflow_runs, next_cursor),
+        _ => panic!("unexpected workflow run history response"),
+    };
+    assert_eq!(first_page.len(), 1);
+    let second_page = match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            crate::local::ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: None,
+                cursor: next_cursor,
+                limit: Some(1),
+            },
+        ))
+        .expect("next workflow run history page should remain queryable")
+    {
+        LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs,
+            next_cursor,
+        } => {
+            assert!(next_cursor.is_none());
+            workflow_runs
+        }
+        _ => panic!("unexpected workflow run history response"),
+    };
+    assert_eq!(second_page.len(), 1);
+    assert_ne!(first_page[0].id(), second_page[0].id());
 }
 
 fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
@@ -744,11 +788,13 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
             ListWorkflowRunsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: Some(workflow.id().to_string()),
+                cursor: None,
+                limit: None,
             },
         ))
         .expect("workflow runs should list")
     {
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => workflow_runs,
         _ => panic!("unexpected local response"),
     };
     assert_eq!(

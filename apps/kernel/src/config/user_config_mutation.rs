@@ -190,6 +190,27 @@ impl CharioxUserConfig {
                     true,
                 )?)
             }
+            "state.snapshot_interval_bytes" => {
+                self.state.snapshot_interval_bytes = Some(parse_config_u32(
+                    "state.snapshot_interval_bytes",
+                    &value,
+                    true,
+                )?)
+            }
+            "state.snapshot_interval_seconds" => {
+                self.state.snapshot_interval_seconds = Some(parse_config_u32(
+                    "state.snapshot_interval_seconds",
+                    &value,
+                    true,
+                )?)
+            }
+            "state.snapshot_max_tail_bytes" => {
+                self.state.snapshot_max_tail_bytes = Some(parse_config_u32(
+                    "state.snapshot_max_tail_bytes",
+                    &value,
+                    true,
+                )?)
+            }
             "slices.root" => {
                 self.slices.root = Some(non_empty_config_string("slices.root", value)?)
             }
@@ -472,6 +493,9 @@ impl CharioxUserConfig {
             }
             "state.path" => self.state.path = None,
             "state.snapshot_interval_events" => self.state.snapshot_interval_events = None,
+            "state.snapshot_interval_bytes" => self.state.snapshot_interval_bytes = None,
+            "state.snapshot_interval_seconds" => self.state.snapshot_interval_seconds = None,
+            "state.snapshot_max_tail_bytes" => self.state.snapshot_max_tail_bytes = None,
             "slices.root" => self.slices.root = None,
             "slices.linux.docker_image" => self.slices.linux.docker_image = None,
             "slices.linux.build_image" => self.slices.linux.build_image = None,

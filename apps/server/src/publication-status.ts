@@ -116,7 +116,7 @@ async function latestEndpointRunStatus(
       .filter((runId): runId is string => typeof runId === "string" && runId.length > 0),
   )
   const response = await client.send<Record<string, unknown>>(
-    listWorkflowRunsRequest(publication.session_id, publication.workflow_ref),
+    listWorkflowRunsRequest(publication.session_id, publication.workflow_ref, { limit: 200 }),
   )
   const runs = (response.WorkflowRunsListed as { workflow_runs?: WorkflowRun[] } | undefined)?.workflow_runs ?? []
   const matchingRuns = runs.filter((run) => isPublicationEndpointRun(run, publication, latestWatchdogRunIds))

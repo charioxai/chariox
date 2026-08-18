@@ -139,6 +139,14 @@ async fn run_event_delivery_connector_with_queue(
     delivery_queue: DeliveryAcceptanceQueue,
 ) {
     let Some(url) = config.url.clone() else {
+        crate::logging::info_with_fields(
+            "daemon.event_delivery",
+            "event delivery is ready with no AEDS configured",
+            serde_json::json!({
+                "phase": "event_ready",
+                "configured": false,
+            }),
+        );
         let _ = shutdown.changed().await;
         return;
     };
@@ -241,6 +249,7 @@ async fn connect_once(
     let mut kernel_heartbeat = tokio::time::interval(Duration::from_secs(5));
     kernel_heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut aeds_ready = false;
+    let mut event_ready_logged = false;
     let (delivery_result_tx, mut delivery_result_rx) =
         mpsc::unbounded_channel::<(String, Duration, Result<(), String>)>();
     let mut pending_delivery_ids = std::collections::BTreeSet::new();
@@ -281,6 +290,18 @@ async fn connect_once(
                     }
                     AedsToKernelMessage::RoutesReconciled { conflicts, .. } => {
                         runtime_state.apply_event_route_conflicts(&conflicts);
+                        if !event_ready_logged {
+                            event_ready_logged = true;
+                            crate::logging::info_with_fields(
+                                "daemon.event_delivery",
+                                "event delivery routes reconciled",
+                                serde_json::json!({
+                                    "phase": "event_ready",
+                                    "configured": true,
+                                    "url": url,
+                                }),
+                            );
+                        }
                         for conflict in conflicts {
                             crate::logging::warn_with_fields(
                                 "daemon.event_delivery",

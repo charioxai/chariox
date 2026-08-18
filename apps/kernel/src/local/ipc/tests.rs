@@ -587,11 +587,13 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
                     ListWorkflowRunsRequest {
                         session_id: session.id().to_string(),
                         workflow_ref: Some(workflow.id().to_string()),
+                        cursor: None,
+                        limit: None,
                     },
                 ))
                 .expect("workflow runs list should succeed")
             {
-                LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => workflow_runs,
+                LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => workflow_runs,
                 other => panic!("unexpected response: {other:?}"),
             };
             assert_eq!(listed.len(), 1);

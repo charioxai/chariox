@@ -109,6 +109,12 @@ impl DaemonConfig {
             .join("relay-event-counter.json")
     }
 
+    pub fn kernel_prompt_counter_path(&self) -> PathBuf {
+        self.event_counter_root()
+            .join(&self.daemon_id)
+            .join("prompt-counter.json")
+    }
+
     fn event_counter_root(&self) -> PathBuf {
         self.user_config
             .state

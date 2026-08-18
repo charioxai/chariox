@@ -218,7 +218,19 @@ impl KernelRuntimeOwnedState {
         operation: &'static str,
     ) -> Result<(), DaemonError> {
         let sessions = self.session_store.read();
-        let workflow_run = sessions.resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+        let session = sessions.get_session(session_id)?;
+        let workflow_run = sessions
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)
+            .ok()
+            .or(self.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                session.id(),
+                workflow_run_ref,
+            )?)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_ref.to_string(),
+            })?;
         let workflow = sessions.resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
         if workflow.controlled_by_metaagent_id() == Some(metaagent_id) {
             Ok(())
@@ -369,5 +381,155 @@ impl KernelRuntimeOwnedState {
                 operation,
             ))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    fn runtime_state_from_app(app: crate::app::DaemonApp) -> KernelRuntimeState {
+        let config_projection = app.config_projection_store();
+        let session_store = app.session_state_store();
+        let agent_store = app.agents().clone();
+        let attachment_store = app.attachments().clone();
+        let provider_store = app.providers().clone();
+        let provider_process_tracking = app.provider_process_tracking_store();
+        let slice_store = app.slices();
+        let session_projection = app.session_state_projection_store();
+        let provider_run_projection = app.provider_run_projection_store();
+        let operational_history_store = app.operational_history_store();
+        let durable_state_store = app.durable_state_store();
+        let prompt_state_owner = app.prompt_state_owner();
+        let active_turns = app.active_turn_store();
+        let prompt_activity = app.prompt_activity_store();
+        let prompt_workspace_claims = app.prompt_workspace_claim_store();
+        let structured_output_records = app.structured_output_record_store();
+        let terminal_stream = app.terminal_stream_store();
+        let workflow_design_events = app.workflow_design_event_store();
+        let metaagent_events = app.metaagent_event_store();
+        let workspace_coordinator = app.workspace_coordinator();
+        KernelRuntimeState::new_with_owned_state(
+            Arc::new(Mutex::new(app)),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
+
+    #[test]
+    fn metaagent_guard_resolves_archived_run_after_restart() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let mut app = crate::app::DaemonApp::bootstrap(config.clone()).expect("daemon should boot");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-archived-metaagent",
+                "worktree-archived-metaagent",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let (workflow_id, run_id) = {
+            let mut sessions = app.sessions_mut();
+            let workflow = sessions
+                .create_workflow_controlled_by_metaagent(
+                    &session_id,
+                    Some("archived-metaagent".to_string()),
+                    Some("metaagent-owner".to_string()),
+                )
+                .expect("controlled workflow should create");
+            let node = sessions
+                .add_workflow_node(&session_id, workflow.id(), agent.id())
+                .expect("workflow node should create");
+            let endpoint = sessions
+                .create_workflow_endpoint(
+                    &session_id,
+                    workflow.id(),
+                    node.id(),
+                    Some("default".to_string()),
+                )
+                .expect("workflow endpoint should create");
+            let run = sessions
+                .invoke_workflow_endpoint(
+                    &session_id,
+                    workflow.id(),
+                    endpoint.id(),
+                    Some("private archived prompt".to_string()),
+                )
+                .expect("workflow should invoke");
+            let mut durable_session = sessions
+                .get_session(&session_id)
+                .expect("session should resolve");
+            durable_session
+                .workflow_run_mut(run.id())
+                .expect("run should resolve")
+                .set_status(crate::session::WorkflowRunStatus::Completed);
+            sessions.restore_session(durable_session.clone());
+            (workflow.id().to_string(), run.id().to_string())
+        };
+        let durable_session = app
+            .sessions()
+            .get_session(&session_id)
+            .expect("durable session should resolve");
+        app.durable_state_store()
+            .persist_workflow_runtime_transition(&durable_session, "test_completed")
+            .expect("terminal run should persist");
+        app.sessions_mut()
+            .archive_terminal_workflow_runs(&session_id)
+            .expect("terminal run should archive");
+        assert!(app
+            .sessions()
+            .resolve_workflow_run_ref(&session_id, &run_id)
+            .is_err());
+        drop(app);
+
+        let restored = crate::app::DaemonApp::bootstrap(config).expect("daemon should restart");
+        let runtime = runtime_state_from_app(restored);
+        assert!(runtime
+            .owned
+            .ensure_workflow_run_controlled_by_metaagent(
+                &session_id,
+                &run_id,
+                "metaagent-owner",
+                "get workflow run",
+            )
+            .is_ok());
+        assert!(runtime
+            .owned
+            .ensure_workflow_run_controlled_by_metaagent(
+                &session_id,
+                &run_id,
+                "other-metaagent",
+                "get workflow run",
+            )
+            .is_err());
+        assert_eq!(
+            runtime
+                .owned
+                .durable_state_store
+                .resolve_workflow_run("daemon-test", &session_id, &run_id)
+                .expect("durable lookup should succeed")
+                .expect("archived run should remain durable")
+                .workflow_id(),
+            workflow_id
+        );
     }
 }

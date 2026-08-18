@@ -71,6 +71,7 @@ struct KernelRuntimeOwnedState {
     operational_history_store: OperationalHistoryStore,
     transcript_history_append_lock: Arc<std::sync::Mutex<()>>,
     durable_state_store: DurableKernelStateStore,
+    legacy_workflow_history: crate::app::LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     provider_login_processes: ProviderLoginProcessStore,
     event_connection_registry: crate::event_connection::EventConnectionRegistry,
@@ -410,7 +411,12 @@ impl KernelRuntimeState {
             crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let (completed_git_turn_snapshots, provider_process_projection, relay_state) = {
+        let (
+            completed_git_turn_snapshots,
+            provider_process_projection,
+            relay_state,
+            legacy_workflow_history,
+        ) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
@@ -418,6 +424,7 @@ impl KernelRuntimeState {
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
                         app.relay_client_state(),
+                        app.legacy_workflow_history_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -465,6 +472,7 @@ impl KernelRuntimeState {
                         durable_state_store.clone(),
                     ),
                 durable_state_store,
+                legacy_workflow_history,
                 provider_account_profiles,
                 provider_login_processes: ProviderLoginProcessStore::default(),
                 prompt_state_owner,
@@ -580,7 +588,18 @@ impl KernelRuntimeState {
         session: &crate::session::RuntimeSession,
         reason: &'static str,
     ) -> Result<(), DaemonError> {
-        let session = session.clone();
+        if kind == "session.deleted" {
+            self.owned
+                .durable_state_store
+                .persist_session_deleted(session, reason)?;
+            return Ok(());
+        }
+        if kind == "session.updated" && reason == "workflow" {
+            self.owned
+                .persist_workflow_runtime_session(session.id(), reason)?;
+            return Ok(());
+        }
+        let session = session.durable_runtime_snapshot();
         self.owned.durable_state_store.append_event(
             kind,
             Some(session.id().to_string()),

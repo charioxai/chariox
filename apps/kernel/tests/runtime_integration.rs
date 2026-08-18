@@ -5,21 +5,23 @@ use std::time::Duration;
 use chariox_kernel::agent::CreateAgentRequest;
 use chariox_kernel::attachment::{AttachRequest, ClientCapabilityLevel};
 use chariox_kernel::local::{
-    AttachToSessionRequest, EndSessionRequest, GetUserConfigRequest, LaunchProviderRunRequest,
-    LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse, SubmitPromptRequest,
-    UpdateSessionConfigRequest,
+    AttachToSessionRequest, EndSessionRequest, GetUserConfigRequest, GetWorkflowRunRequest,
+    LaunchProviderRunRequest, LocalDaemonClient, LocalDaemonRequest, LocalDaemonResponse,
+    SubmitPromptRequest, UpdateSessionConfigRequest,
 };
 use chariox_kernel::provider::{LaunchProviderRequest, ProviderRunState};
 use chariox_kernel::runtime_transport::run_kernel_websocket_server_on_listener;
 use chariox_kernel::session::{
     CreateSessionRequest, PromptSubmissionOutcome, SessionAgentDefaults, SessionStatus,
-    WorkflowNodeRunStatus, WorkflowRunStatus,
+    WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
 use chariox_kernel::{DaemonApp, DaemonConfig};
 use tokio::sync::{oneshot, Mutex as TokioMutex};
 
 mod support;
-use support::kernel_websocket::{connect_with_retry, reserved_kernel_listener, unused_tcp_port};
+use support::kernel_websocket::{
+    connect_with_retry, reserved_kernel_listener, response_variant, send_request, unused_tcp_port,
+};
 use support::runtime_integration::{
     collect_terminal_output_until, wait_for_local_provider_run_ready,
     wait_for_local_terminal_output,
@@ -320,8 +322,7 @@ async fn workflow_runs_progress_without_terminal_pumps() {
         .await
     });
 
-    let readiness_socket = connect_with_retry(&config.kernel_websocket_url()).await;
-    drop(readiness_socket);
+    let mut socket = connect_with_retry(&config.kernel_websocket_url()).await;
 
     let run = {
         let mut app = app.lock().await;
@@ -337,14 +338,22 @@ async fn workflow_runs_progress_without_terminal_pumps() {
 
     let run_id = run.id().to_string();
     let run = tokio::time::timeout(Duration::from_secs(5), async {
+        let mut attempt = 0_u64;
         loop {
-            let run = {
-                let app = app.lock().await;
-                app.sessions()
-                    .resolve_workflow_run_ref(session.id(), &run_id)
-                    .expect("workflow run should exist")
-                    .clone()
-            };
+            attempt += 1;
+            let response = send_request(
+                &mut socket,
+                &format!("get-workflow-run-{attempt}"),
+                LocalDaemonRequest::GetWorkflowRun(GetWorkflowRunRequest {
+                    session_id: session.id().to_string(),
+                    workflow_run_ref: run_id.clone(),
+                }),
+            )
+            .await;
+            let run: WorkflowRun = serde_json::from_value(
+                response_variant(&response, "WorkflowRun")["workflow_run"].clone(),
+            )
+            .expect("workflow run response should decode");
             if !matches!(
                 run.status(),
                 WorkflowRunStatus::Running | WorkflowRunStatus::Waiting

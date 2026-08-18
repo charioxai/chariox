@@ -699,6 +699,18 @@ Workflow trigger and deployment direction:
   only. Runtime publication traffic should terminate at the dedicated
   publication ingress and route from there to the active backend.
 
+Workflow run history queries:
+
+- `ListWorkflowRuns` is a bounded keyset-paginated query. Clients MAY provide
+  `limit` and the opaque `cursor` returned by an earlier page.
+- `WorkflowRunsListed` returns the selected `workflow_runs` plus an optional
+  `next_cursor`. The absence of `next_cursor` means the history is exhausted.
+- the kernel merges bounded hot, durable-history, and in-progress legacy
+  migration pages. It MUST NOT replay or scan the complete lifetime run history
+  to serve one request.
+- legacy terminal runs remain readable until their normalized durable migration
+  transaction commits; a failed or interrupted migration MUST NOT hide them.
+
 Publication deployment record:
 
 - `deployment_id`

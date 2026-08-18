@@ -59,6 +59,10 @@ impl SessionStore {
         self.sessions.values().cloned().collect()
     }
 
+    pub(crate) fn session_ids(&self) -> Vec<String> {
+        self.sessions.keys().cloned().collect()
+    }
+
     pub fn active_session_count(&self) -> usize {
         self.visible_non_ended_sessions().count()
     }

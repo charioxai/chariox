@@ -14,6 +14,7 @@ mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
+mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
@@ -103,6 +104,7 @@ use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
+pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
@@ -142,6 +144,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    legacy_workflow_history: LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
@@ -256,6 +259,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             metaagent_trace_subscriptions:
@@ -305,7 +309,6 @@ impl DaemonApp {
                 crate::session::unix_epoch_ms(),
             )
         };
-        app.seed_prompt_id_allocator()?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state restored",
@@ -325,14 +328,6 @@ impl DaemonApp {
             }),
         );
         Ok(app)
-    }
-
-    fn seed_prompt_id_allocator(&self) -> Result<(), DaemonError> {
-        let max_history_prompt_number = self.operational_history.max_prompt_number()?;
-        self.sessions
-            .observe_prompt_number(max_history_prompt_number);
-        self.sessions.seed_prompt_ids_from_sessions();
-        Ok(())
     }
 
     pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {
@@ -379,6 +374,10 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {
+        self.legacy_workflow_history.clone()
     }
 
     pub(crate) fn provider_account_profile_registry(

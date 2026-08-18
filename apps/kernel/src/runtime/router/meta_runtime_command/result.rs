@@ -213,12 +213,16 @@ fn summarize_meta_command_response(
             "workflow": summarize_meta_workflow(workflow),
             "endpoint": summarize_meta_workflow_endpoint(endpoint),
         }),
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => serde_json::json!({
+        LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs,
+            next_cursor,
+        } => serde_json::json!({
             "type": "WorkflowRunsListed",
             "workflow_runs": workflow_runs
                 .iter()
                 .map(summarize_meta_workflow_run)
                 .collect::<Vec<_>>(),
+            "next_cursor": next_cursor,
         }),
         LocalDaemonResponse::WorkflowRun { workflow_run } => serde_json::json!({
             "type": "WorkflowRun",

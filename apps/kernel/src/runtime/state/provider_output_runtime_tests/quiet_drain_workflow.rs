@@ -684,11 +684,11 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
         "a completed workflow provider run must release its managed PTY before a later run can launch with fresh runtime credentials"
     );
 
-    let durable_session = runtime
+    runtime
         .owned
         .durable_state_store
-        .load_events_by_kind("session.updated")
-        .expect("durable session events should load")
+        .load_events_by_kind("workflow.runtime.updated")
+        .expect("durable workflow events should load")
         .into_iter()
         .rev()
         .find(|event| {
@@ -699,13 +699,12 @@ async fn workflow_prompt_with_completed_tool_advances_when_output_pump_consumed_
                     .and_then(serde_json::Value::as_str)
                     == Some("workflow_prompt_completed")
         })
-        .and_then(|event| event.payload.get("session").cloned())
-        .map(serde_json::from_value::<crate::session::RuntimeSession>)
-        .transpose()
-        .expect("durable workflow session should decode")
-        .expect("workflow completion should persist its session");
-    let durable_run = durable_session
-        .workflow_run(workflow_run.id())
+        .expect("workflow completion should persist a bounded transition");
+    let durable_run = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("durable workflow run should load")
         .expect("durable workflow run should exist");
     assert_eq!(
         durable_run.node_runs()[0].status(),
@@ -972,11 +971,18 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
     assert!(settled_session
         .active_prompt_for_agent(agent.id())
         .is_none());
+    let settled_workflow_run = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(
+            settled_session.host_daemon_id(),
+            settled_session.id(),
+            workflow_run.id(),
+        )
+        .expect("workflow run lookup should succeed")
+        .expect("completed workflow run should exist in durable history");
     assert_eq!(
-        settled_session
-            .workflow_run(workflow_run.id())
-            .expect("workflow run should exist")
-            .status(),
+        settled_workflow_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
     assert_eq!(
@@ -1016,27 +1022,14 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
                 .contains_key(crate::history::PROMPT_SETTLED_AT_MS_METADATA_KEY)
     }));
 
-    let durable_session = runtime
+    let durable_run = runtime
         .owned
         .durable_state_store
-        .load_events_by_kind("session.updated")
-        .expect("durable session events should load")
-        .into_iter()
-        .rev()
-        .find(|event| event.subject_id.as_deref() == Some(session.id()))
-        .and_then(|event| event.payload.get("session").cloned())
-        .map(serde_json::from_value::<crate::session::RuntimeSession>)
-        .transpose()
-        .expect("durable session should decode")
-        .expect("workflow settlement should persist the session");
-    assert!(durable_session
-        .active_prompt_for_agent(agent.id())
-        .is_none());
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("durable workflow run should load")
+        .expect("workflow settlement should persist the run");
     assert_eq!(
-        durable_session
-            .workflow_run(workflow_run.id())
-            .expect("durable workflow run should exist")
-            .status(),
+        durable_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
 }

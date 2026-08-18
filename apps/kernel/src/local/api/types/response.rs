@@ -475,7 +475,10 @@ pub enum LocalDaemonResponse {
         endpoint: WorkflowEndpointDefinition,
         session: RuntimeSession,
     },
-    WorkflowRunsListed { workflow_runs: Vec<WorkflowRun>, },
+    WorkflowRunsListed {
+        workflow_runs: Vec<WorkflowRun>,
+        next_cursor: Option<String>,
+    },
     WorkflowRun { workflow_run: WorkflowRun, },
     WorkflowRunCancelled { workflow_run: WorkflowRun, session: RuntimeSession, },
     WorkflowRunPaused { workflow_run: WorkflowRun, session: RuntimeSession, },
