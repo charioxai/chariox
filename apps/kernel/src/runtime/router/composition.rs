@@ -45,6 +45,15 @@ impl CommandRouter {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_aegs_management_http_client(
+        mut self,
+        client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
+    ) -> Self {
+        self.aegs_management_http_client = client;
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_interactive_and_session_capacity(
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
@@ -317,6 +326,7 @@ pub(super) fn compose_command_router(
         agent_runtime,
         session_runtime,
         workflow_runtime,
+        aegs_management_http_client: Default::default(),
         event_connection_lanes: Default::default(),
         provider_runtime_lanes,
         focus_projection,

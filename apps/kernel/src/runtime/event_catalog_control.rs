@@ -4,8 +4,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::sync::{Mutex, OnceLock};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
@@ -15,6 +15,7 @@ use crate::local::{
     EventGeneratorEventDefinition, EventGeneratorEventPage, EventGeneratorParty,
     LocalDaemonRequest, LocalDaemonResponse, WorkflowEventBindingDependency,
 };
+use crate::runtime::aegs_network_policy::is_globally_reachable_aegs_destination;
 use crate::runtime::cloud_api_client::issue_event_generator_management_capability;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
@@ -33,6 +34,43 @@ struct CatalogCacheEntry {
 }
 
 static CATALOG_CACHE: OnceLock<Mutex<BTreeMap<String, CatalogCacheEntry>>> = OnceLock::new();
+
+type AegsAgentBuilderFactory =
+    dyn Fn(&crate::config::EventGeneratorManagementTarget) -> ureq::AgentBuilder + Send + Sync;
+
+#[derive(Clone)]
+pub(crate) struct AegsManagementHttpClient {
+    agent_builder: Arc<AegsAgentBuilderFactory>,
+}
+
+impl Default for AegsManagementHttpClient {
+    fn default() -> Self {
+        Self {
+            agent_builder: Arc::new(aegs_management_agent_builder),
+        }
+    }
+}
+
+impl AegsManagementHttpClient {
+    fn agent_builder(
+        &self,
+        target: &crate::config::EventGeneratorManagementTarget,
+    ) -> ureq::AgentBuilder {
+        (self.agent_builder)(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_agent_builder(
+        agent_builder: impl Fn(&crate::config::EventGeneratorManagementTarget) -> ureq::AgentBuilder
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            agent_builder: Arc::new(agent_builder),
+        }
+    }
+}
 
 pub(crate) struct WorkflowEventBindingContract {
     pub(crate) generator_id: String,
@@ -84,9 +122,10 @@ impl WorkflowEventBindingContract {
     }
 }
 
-pub(crate) async fn execute_event_catalog_request(
+pub(crate) async fn execute_event_catalog_request_with_client(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -108,6 +147,7 @@ pub(crate) async fn execute_event_catalog_request(
         return execute_event_connection_request(
             runtime_state,
             &BTreeMap::new(),
+            management_client,
             &config.daemon_id,
             caller_user_id,
             request,
@@ -135,6 +175,7 @@ pub(crate) async fn execute_event_catalog_request(
         return execute_event_connection_request(
             runtime_state,
             &management_targets,
+            management_client,
             &config.daemon_id,
             caller_user_id,
             request,
@@ -155,8 +196,9 @@ pub(crate) async fn execute_event_catalog_request(
         )
         .await?;
         let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
+        let management_client = management_client.clone();
         return tokio::task::spawn_blocking(move || {
-            aegs_management_request(&targets, &owner_id, &request)
+            aegs_management_request(&management_client, &targets, &owner_id, &request)
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
@@ -381,6 +423,7 @@ fn event_generator_ids_from_management_request(
 pub(crate) async fn validate_event_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     generator_id: &str,
     connection_id: &str,
@@ -405,8 +448,15 @@ pub(crate) async fn validate_event_connection(
     let connection_id = connection_id.to_string();
     let expected_generator_id = generator_id.clone();
     let expected_connection_id = connection_id.clone();
+    let management_client = management_client.clone();
     let page = match blocking_aegs(move || {
-        query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
+        query_aegs_connections(
+            &management_client,
+            &targets,
+            &owner_id,
+            &generator_id,
+            Some(&connection_id),
+        )
     })
     .await
     {
@@ -588,6 +638,7 @@ fn validate_granted_event_connection_scopes(
 pub(crate) async fn validate_registered_event_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     generator_id: &str,
     connection_id: &str,
@@ -604,6 +655,7 @@ pub(crate) async fn validate_registered_event_connection(
     validate_event_connection(
         runtime_state,
         config_projection,
+        management_client,
         caller_user_id,
         generator_id,
         connection_id,
@@ -666,6 +718,7 @@ pub(crate) async fn ensure_event_generator_management_target_for_workflow_run(
 async fn execute_event_connection_request(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    management_client: &AegsManagementHttpClient,
     daemon_id: &str,
     caller_user_id: &str,
     request: LocalDaemonRequest,
@@ -714,9 +767,11 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::InstallEventConnection(request) => {
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let flow = blocking_aegs(move || {
                 start_aegs_authorization(
+                    &management_client,
                     &targets,
                     &owner_id,
                     &request.generator_id,
@@ -731,6 +786,7 @@ async fn execute_event_connection_request(
             let (authorization, observed) = observe_event_connection_authorization(
                 runtime_state,
                 targets,
+                management_client,
                 &owner_id,
                 caller_user_id,
                 &request.authorization_id,
@@ -744,11 +800,18 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::RefreshEventConnection(request) => {
             let current = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = current.generator_id.clone();
             let connection_id = current.connection_id.clone();
             let inspection = match blocking_aegs(move || {
-                refresh_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+                refresh_aegs_connection(
+                    &management_client,
+                    &targets,
+                    &owner_id,
+                    &generator_id,
+                    &connection_id,
+                )
             })
             .await
             {
@@ -774,11 +837,13 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::TestEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id;
             let connection_id = connection.connection_id;
             let result = blocking_aegs(move || {
                 test_aegs_connection(
+                    &management_client,
                     &targets,
                     &owner_id,
                     &generator_id,
@@ -792,6 +857,7 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::ReconnectEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let reconnect = chariox_event_protocol::AegsConnectionReconnectRequest {
                 generator_id: connection.generator_id.clone(),
@@ -802,6 +868,7 @@ async fn execute_event_connection_request(
             let generator_id = reconnect.generator_id.clone();
             let flow = match blocking_aegs(move || {
                 post_aegs_json(
+                    &management_client,
                     &targets,
                     &generator_id,
                     "/v1/connections/reconnect",
@@ -826,18 +893,24 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::ListEventConnectionResources(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
-            let connection_id = connection.connection_id.clone();
+            let resource_query = chariox_event_protocol::AegsProviderResourceQuery {
+                generator_id: generator_id.clone(),
+                owner_id,
+                connection_id: connection.connection_id.clone(),
+                query: request.query,
+                cursor: request.cursor,
+                limit: request.limit,
+            };
             let page = match blocking_aegs(move || {
-                query_aegs_resources(
+                post_aegs_json(
+                    &management_client,
                     &targets,
-                    &owner_id,
                     &generator_id,
-                    &connection_id,
-                    request.query,
-                    request.cursor,
-                    request.limit,
+                    "/v1/resources/query",
+                    &resource_query,
                 )
             })
             .await
@@ -891,11 +964,18 @@ async fn execute_event_connection_request(
                 ));
             }
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
             let connection_id = connection.connection_id.clone();
             let revoked = match blocking_aegs(move || {
-                revoke_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+                revoke_aegs_connection(
+                    &management_client,
+                    &targets,
+                    &owner_id,
+                    &generator_id,
+                    &connection_id,
+                )
             })
             .await
             {
@@ -936,6 +1016,7 @@ async fn execute_event_connection_request(
 async fn observe_event_connection_authorization(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    management_client: &AegsManagementHttpClient,
     owner_id: &str,
     caller_user_id: &str,
     authorization_id: &str,
@@ -952,12 +1033,15 @@ async fn observe_event_connection_authorization(
         .ok_or_else(|| connection_error("event connection authorization was not found"))?;
     let query_targets = targets.clone();
     let inspection_targets = targets.clone();
+    let query_client = management_client.clone();
+    let inspection_client = management_client.clone();
     let owner_id = owner_id.to_string();
     let inspection_owner_id = owner_id.clone();
     let generator_id = authorization.generator_id.clone();
     let connection_id = authorization.connection_id.clone();
     let page = blocking_aegs(move || {
         query_aegs_connections(
+            &query_client,
             &query_targets,
             &owner_id,
             &generator_id,
@@ -974,9 +1058,16 @@ async fn observe_event_connection_authorization(
         let connection_id = summary.connection_id.clone();
         let mut connection = registry.upsert(caller_user_id, summary)?;
         let targets = inspection_targets.clone();
+        let management_client = inspection_client.clone();
         let owner_id = inspection_owner_id.clone();
         if let Ok(inspection) = blocking_aegs(move || {
-            inspect_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+            inspect_aegs_connection(
+                &management_client,
+                &targets,
+                &owner_id,
+                &generator_id,
+                &connection_id,
+            )
         })
         .await
         {
@@ -1154,6 +1245,7 @@ pub(crate) fn select_event_generator_management_target(
 }
 
 fn aegs_management_request(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     request: &LocalDaemonRequest,
@@ -1190,7 +1282,8 @@ fn aegs_management_request(
     };
     let target = select_event_generator_management_target(targets, generator_id, owner_id)?;
     let url = format!("{}{path}", target.url);
-    let agent = aegs_management_agent_builder(&target)
+    let agent = management_client
+        .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -1221,6 +1314,7 @@ fn aegs_management_request(
 }
 
 fn start_aegs_authorization(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -1231,10 +1325,17 @@ fn start_aegs_authorization(
         owner_id: owner_id.to_string(),
         return_url,
     };
-    post_aegs_json(targets, generator_id, "/v1/authorizations", &request)
+    post_aegs_json(
+        management_client,
+        targets,
+        generator_id,
+        "/v1/authorizations",
+        &request,
+    )
 }
 
 fn query_aegs_connections(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -1247,36 +1348,24 @@ fn query_aegs_connections(
         cursor: None,
         limit: 100,
     };
-    post_aegs_json(targets, generator_id, "/v1/connections/query", &request)
-}
-
-fn query_aegs_resources(
-    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
-    owner_id: &str,
-    generator_id: &str,
-    connection_id: &str,
-    query: Option<String>,
-    cursor: Option<String>,
-    limit: u32,
-) -> Result<chariox_event_protocol::AegsProviderResourcePage, DaemonError> {
-    let request = chariox_event_protocol::AegsProviderResourceQuery {
-        generator_id: generator_id.to_string(),
-        owner_id: owner_id.to_string(),
-        connection_id: connection_id.to_string(),
-        query,
-        cursor,
-        limit,
-    };
-    post_aegs_json(targets, generator_id, "/v1/resources/query", &request)
+    post_aegs_json(
+        management_client,
+        targets,
+        generator_id,
+        "/v1/connections/query",
+        &request,
+    )
 }
 
 fn refresh_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
 ) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/refresh",
@@ -1289,12 +1378,14 @@ fn refresh_aegs_connection(
 }
 
 fn inspect_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
 ) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/inspect",
@@ -1307,6 +1398,7 @@ fn inspect_aegs_connection(
 }
 
 fn test_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -1314,6 +1406,7 @@ fn test_aegs_connection(
     event_type: Option<String>,
 ) -> Result<chariox_event_protocol::AegsConnectionTestEventResponse, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/test-event",
@@ -1330,10 +1423,17 @@ pub(crate) fn invoke_aegs_action(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     request: &chariox_event_protocol::AegsProviderActionRequest,
 ) -> Result<chariox_event_protocol::AegsProviderActionResponse, DaemonError> {
-    post_aegs_json(targets, &request.generator_id, "/v1/actions", request)
+    post_aegs_json(
+        &AegsManagementHttpClient::default(),
+        targets,
+        &request.generator_id,
+        "/v1/actions",
+        request,
+    )
 }
 
 fn revoke_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -1345,6 +1445,7 @@ fn revoke_aegs_connection(
         connection_id: connection_id.to_string(),
     };
     post_aegs_json::<_, chariox_event_protocol::AegsConnectionRevokeResponse>(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/revoke",
@@ -1353,6 +1454,7 @@ fn revoke_aegs_connection(
 }
 
 fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     generator_id: &str,
     path: &str,
@@ -1369,7 +1471,8 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .ok_or_else(|| catalog_error("AEGS request is missing owner_id".to_string()))?;
     let target = select_event_generator_management_target(targets, generator_id, &owner_id)?;
     let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
-    let mut http_request = aegs_management_agent_builder(&target)
+    let mut http_request = management_client
+        .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -1400,11 +1503,19 @@ pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -
 pub(crate) fn aegs_management_agent_builder(
     target: &crate::config::EventGeneratorManagementTarget,
 ) -> ureq::AgentBuilder {
+    aegs_management_agent_builder_with_resolver(target, resolve_public_aegs_addresses)
+}
+
+pub(crate) fn aegs_management_agent_builder_with_resolver<R>(
+    target: &crate::config::EventGeneratorManagementTarget,
+    resolver: R,
+) -> ureq::AgentBuilder
+where
+    R: ureq::Resolver + 'static,
+{
     let builder = ureq::AgentBuilder::new();
     if is_registry_issued_management_target(target) {
-        builder
-            .https_only(true)
-            .resolver(resolve_public_aegs_addresses)
+        builder.https_only(true).resolver(resolver)
     } else {
         builder
     }
@@ -1433,7 +1544,7 @@ fn validate_public_aegs_addresses(
     }
     if let Some(address) = addresses
         .iter()
-        .find(|address| !is_public_aegs_ip(address.ip()))
+        .find(|address| !is_globally_reachable_aegs_destination(address.ip()))
     {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
@@ -1444,47 +1555,6 @@ fn validate_public_aegs_addresses(
         ));
     }
     Ok(addresses)
-}
-
-fn is_public_aegs_ip(address: IpAddr) -> bool {
-    match address {
-        IpAddr::V4(address) => {
-            let [first, second, third, _] = address.octets();
-            !(matches!(
-                (first, second, third),
-                (0, _, _)
-                    | (10, _, _)
-                    | (127, _, _)
-                    | (169, 254, _)
-                    | (172, 16..=31, _)
-                    | (192, 0, 0)
-                    | (192, 0, 2)
-                    | (192, 88, 99)
-                    | (192, 168, _)
-                    | (198, 18..=19, _)
-                    | (198, 51, 100)
-                    | (203, 0, 113)
-                    | (224..=255, _, _)
-            ) || first == 100 && (64..=127).contains(&second))
-        }
-        IpAddr::V6(address) => {
-            if let Some(mapped) = address.to_ipv4() {
-                return is_public_aegs_ip(IpAddr::V4(mapped));
-            }
-            let segments = address.segments();
-            !address.is_unspecified()
-                && !address.is_loopback()
-                && !address.is_multicast()
-                && segments[0] & 0xfe00 != 0xfc00
-                && segments[0] & 0xffc0 != 0xfe80
-                && !(segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
-                && !(segments[0] == 0x0100
-                    && segments[1] == 0
-                    && segments[2] == 0
-                    && segments[3] == 0)
-                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
-        }
-    }
 }
 
 fn connection_error(message: impl Into<String>) -> DaemonError {

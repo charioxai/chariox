@@ -39,6 +39,16 @@ impl LocalRouterTestHarness {
     }
 
     pub(crate) fn with_config(config: DaemonConfig) -> Self {
+        Self::with_config_and_aegs_management_http_client(
+            config,
+            crate::runtime::event_catalog_control::AegsManagementHttpClient::default(),
+        )
+    }
+
+    pub(crate) fn with_config_and_aegs_management_http_client(
+        config: DaemonConfig,
+        management_client: crate::runtime::event_catalog_control::AegsManagementHttpClient,
+    ) -> Self {
         let app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
         let provider_runtime_lanes = app.provider_run_operation_lanes();
         let app = Arc::new(Mutex::new(app));
@@ -46,7 +56,8 @@ impl LocalRouterTestHarness {
             Arc::clone(&app),
             16,
             provider_runtime_lanes,
-        );
+        )
+        .with_aegs_management_http_client(management_client);
         Self {
             runtime: Builder::new_multi_thread()
                 .enable_all()

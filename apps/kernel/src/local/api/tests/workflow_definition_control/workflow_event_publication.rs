@@ -10,7 +10,7 @@ use crate::session::WorkflowEventBindingStatus;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 struct ReadyConnectionServer {
@@ -20,24 +20,36 @@ struct ReadyConnectionServer {
     unavailable: Arc<AtomicBool>,
     scopes_reduced: Arc<AtomicBool>,
     capability_issued: Arc<AtomicBool>,
+    management_url: String,
+    requests: Arc<Mutex<Vec<String>>>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ReadyConnectionServer {
     fn start() -> Self {
+        Self::start_with_management_url(|address| format!("http://{address}"))
+    }
+
+    fn start_with_management_url(
+        management_url: impl FnOnce(std::net::SocketAddr) -> String,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
         let address = listener.local_addr().unwrap();
+        let management_url = management_url(address);
         let stop = Arc::new(AtomicBool::new(false));
         let revoked = Arc::new(AtomicBool::new(false));
         let unavailable = Arc::new(AtomicBool::new(false));
         let scopes_reduced = Arc::new(AtomicBool::new(false));
         let capability_issued = Arc::new(AtomicBool::new(false));
+        let requests = Arc::new(Mutex::new(Vec::new()));
         let thread_stop = Arc::clone(&stop);
         let thread_revoked = Arc::clone(&revoked);
         let thread_unavailable = Arc::clone(&unavailable);
         let thread_scopes_reduced = Arc::clone(&scopes_reduced);
         let thread_capability_issued = Arc::clone(&capability_issued);
+        let thread_management_url = management_url.clone();
+        let thread_requests = Arc::clone(&requests);
         let thread = std::thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -49,7 +61,8 @@ impl ReadyConnectionServer {
                             &thread_unavailable,
                             &thread_scopes_reduced,
                             &thread_capability_issued,
-                            address,
+                            &thread_management_url,
+                            &thread_requests,
                         )
                     }
                     Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
@@ -66,6 +79,8 @@ impl ReadyConnectionServer {
             unavailable,
             scopes_reduced,
             capability_issued,
+            management_url,
+            requests,
             thread: Some(thread),
         }
     }
@@ -91,13 +106,52 @@ impl Drop for ReadyConnectionServer {
     }
 }
 
+#[derive(Debug)]
+struct PassthroughTlsConnector;
+
+impl ureq::TlsConnector for PassthroughTlsConnector {
+    fn connect(
+        &self,
+        _dns_name: &str,
+        stream: Box<dyn ureq::ReadWrite>,
+    ) -> Result<Box<dyn ureq::ReadWrite>, ureq::Error> {
+        Ok(stream)
+    }
+}
+
+fn dynamic_registry_config(server_url: String) -> crate::DaemonConfig {
+    let mut config = crate::DaemonConfig::for_tests();
+    config.event_registry_url = Some(server_url.clone());
+    config.event_generator_management_targets.clear();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        api_url: server_url,
+        email: "external@example.test".to_string(),
+        account_id: "account-external".to_string(),
+        user_id: "user-external".to_string(),
+        account_slug: "external".to_string(),
+        realm_id: "realm-external".to_string(),
+        relay_url: "wss://relay.example.test".to_string(),
+        issuer_id: "issuer-external".to_string(),
+        client_id: Some("client-external".to_string()),
+        client_alias: Some("external-client".to_string()),
+        machine_id: Some("machine-external".to_string()),
+        machine_alias: Some("external-machine".to_string()),
+        machine_credential: None,
+        cloud_session_token: Some("cloud-session-token".to_string()),
+        cloud_session_expires_at_ms: None,
+        token_expires_at_ms: None,
+    });
+    config
+}
+
 fn serve_ready_connection(
     stream: &mut TcpStream,
     revoked: &AtomicBool,
     unavailable: &AtomicBool,
     scopes_reduced: &AtomicBool,
     capability_issued: &AtomicBool,
-    address: std::net::SocketAddr,
+    management_url: &str,
+    requests: &Mutex<Vec<String>>,
 ) {
     let mut request = Vec::new();
     let mut buffer = [0_u8; 4096];
@@ -118,6 +172,7 @@ fn serve_ready_connection(
         return;
     }
     let request = String::from_utf8_lossy(&request);
+    requests.lock().unwrap().push(request.to_string());
     let catalog_detail_request = request
         .starts_with("GET /v1/event-generators/dev.chariox.dummy HTTP/1.1")
         || request.starts_with("GET /v1/event-generators/dev.chariox.dummy?");
@@ -164,7 +219,7 @@ fn serve_ready_connection(
             "installed_count": 0,
             "recommended": false,
             "availability": "available",
-            "management_url": format!("http://{address}"),
+            "management_url": management_url,
             "authorization": {"kind": "none"},
             "events": [{
                 "event_type": "dummy.test",
@@ -186,7 +241,7 @@ fn serve_ready_connection(
             "\"manifestDigest\":\"{}\"",
             crate::runtime::event_catalog_control::BUILTIN_DUMMY_MANIFEST_DIGEST
         )));
-        assert!(request.contains(&format!("\"managementUrl\":\"http://{address}\"")));
+        assert!(request.contains(&format!("\"managementUrl\":\"{management_url}\"")));
         capability_issued.store(true, Ordering::Relaxed);
         serde_json::json!({
             "token": "registry-issued-token",
@@ -263,28 +318,7 @@ fn serve_ready_connection(
 fn kernel_rejects_insecure_registry_issued_management_target_after_capability_issue() {
     let server = ReadyConnectionServer::start();
     let server_url = server.target().url;
-    let mut config = crate::DaemonConfig::for_tests();
-    config.event_registry_url = Some(server_url.clone());
-    config.event_generator_management_targets.clear();
-    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
-        api_url: server_url,
-        email: "external@example.test".to_string(),
-        account_id: "account-external".to_string(),
-        user_id: "user-external".to_string(),
-        account_slug: "external".to_string(),
-        realm_id: "realm-external".to_string(),
-        relay_url: "wss://relay.example.test".to_string(),
-        issuer_id: "issuer-external".to_string(),
-        client_id: Some("client-external".to_string()),
-        client_alias: Some("external-client".to_string()),
-        machine_id: Some("machine-external".to_string()),
-        machine_alias: Some("external-machine".to_string()),
-        machine_credential: None,
-        cloud_session_token: Some("cloud-session-token".to_string()),
-        cloud_session_expires_at_ms: None,
-        token_expires_at_ms: None,
-    });
-    let harness = LocalRouterTestHarness::with_config(config);
+    let harness = LocalRouterTestHarness::with_config(dynamic_registry_config(server_url));
 
     let error = harness
         .dispatch(LocalDaemonRequest::InstallEventConnection(
@@ -302,6 +336,76 @@ fn kernel_rejects_insecure_registry_issued_management_target_after_capability_is
         "unexpected error: {error}"
     );
     assert!(server.capability_issued.load(Ordering::Relaxed));
+}
+
+#[test]
+fn kernel_bootstraps_registry_issued_https_management_target_end_to_end() {
+    let server = ReadyConnectionServer::start_with_management_url(|address| {
+        format!("https://aegs-public.test:{}", address.port())
+    });
+    let server_address = server.address;
+    let client =
+        crate::runtime::event_catalog_control::AegsManagementHttpClient::with_agent_builder(
+            move |target| {
+                crate::runtime::event_catalog_control::aegs_management_agent_builder_with_resolver(
+                    target,
+                    move |netloc: &str| {
+                        assert_eq!(
+                            netloc,
+                            format!("aegs-public.test:{}", server_address.port())
+                        );
+                        Ok(vec![server_address])
+                    },
+                )
+                .tls_connector(Arc::new(PassthroughTlsConnector))
+            },
+        );
+    let harness = LocalRouterTestHarness::with_config_and_aegs_management_http_client(
+        dynamic_registry_config(server.target().url),
+        client,
+    );
+    let caller_user_id = "external-user";
+    let expected_owner_id = crate::runtime::event_catalog_control::event_connection_owner_id(
+        "daemon-test",
+        caller_user_id,
+    );
+
+    let response = harness
+        .dispatch_as_user(
+            caller_user_id,
+            LocalDaemonRequest::InstallEventConnection(
+                crate::local::InstallEventConnectionRequest {
+                    generator_id: "dev.chariox.dummy".to_string(),
+                    return_url: Some("https://terminal.chariox.com/notifications".to_string()),
+                },
+            ),
+        )
+        .expect("trusted HTTPS Store target should start authorization");
+
+    let LocalDaemonResponse::EventConnectionAuthorizationStarted { authorization } = response
+    else {
+        panic!("unexpected response: {response:?}");
+    };
+    assert_eq!(authorization.generator_id, "dev.chariox.dummy");
+    assert_eq!(
+        authorization.connection_id.as_deref(),
+        Some("connection-dynamic")
+    );
+    assert!(server.capability_issued.load(Ordering::Relaxed));
+    assert_eq!(
+        server.management_url,
+        format!("https://aegs-public.test:{}", server.address.port())
+    );
+
+    let requests = server.requests.lock().unwrap();
+    let authorization_request = requests
+        .iter()
+        .find(|request| request.starts_with("POST /v1/authorizations HTTP/1.1"))
+        .expect("authorization request should reach the AEGS");
+    let normalized = authorization_request.to_ascii_lowercase();
+    assert!(normalized.contains("authorization: bearer registry-issued-token"));
+    assert!(normalized.contains(&format!("x-chariox-owner-id: {expected_owner_id}")));
+    assert!(authorization_request.contains(&format!("\"owner_id\":\"{expected_owner_id}\"")));
 }
 
 fn http_request_complete(request: &[u8]) -> bool {

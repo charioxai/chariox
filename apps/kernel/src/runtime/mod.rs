@@ -1,3 +1,4 @@
+pub(crate) mod aegs_network_policy;
 pub mod agent_actor;
 pub(crate) mod agent_control_executor;
 pub mod agent_prompt_service;
