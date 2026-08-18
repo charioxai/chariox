@@ -6,6 +6,14 @@ const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", im
 const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
 const kernelTypes = await readFile(new URL("../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
+const toolchainPackage = JSON.parse(await readFile(
+  new URL("../docker/publication/toolchain/package.json", import.meta.url),
+  "utf8",
+))
+const toolchainLock = JSON.parse(await readFile(
+  new URL("../docker/publication/toolchain/package-lock.json", import.meta.url),
+  "utf8",
+))
 
 test("publication image copies compile-time workflow examples before building the kernel", () => {
   assert.match(workflowCode, /include_str!\("\.\.\/\.\.\/\.\.\/examples\/workflow-code\//)
@@ -24,7 +32,8 @@ test("publication image copies compile-time workflow examples before building th
 })
 
 test("publication images pin every base image by immutable digest", () => {
-  const publicationBases = dockerfile.match(/^FROM\s+\S+/gm) ?? []
+  const publicationBases = (dockerfile.match(/^FROM\s+\S+/gm) ?? [])
+    .filter((base) => base !== "FROM js-toolchain")
   assert.equal(publicationBases.length, 3)
   for (const base of publicationBases) {
     assert.match(base, /@sha256:[0-9a-f]{64}$/)
@@ -49,15 +58,25 @@ test("publication image pins and verifies every official provider CLI", () => {
   assert.match(dockerfile, /ARG CHARIOX_CODEX_VERSION=\d+\.\d+\.\d+/)
   assert.match(dockerfile, /ARG CHARIOX_OPENCODE_VERSION=\d+\.\d+\.\d+/)
   assert.match(dockerfile, /ARG CHARIOX_CLAUDE_VERSION=\d+\.\d+\.\d+/)
-  assert.match(dockerfile, /"@openai\/codex@\$\{CHARIOX_CODEX_VERSION\}"/)
-  assert.match(dockerfile, /"opencode-ai@\$\{CHARIOX_OPENCODE_VERSION\}"/)
-  assert.match(dockerfile, /"@anthropic-ai\/claude-code@\$\{CHARIOX_CLAUDE_VERSION\}"/)
+  assert.equal(toolchainPackage.dependencies["@openai/codex"], "0.144.0")
+  assert.equal(toolchainPackage.dependencies["opencode-ai"], "1.4.1")
+  assert.equal(toolchainPackage.dependencies["@anthropic-ai/claude-code"], "2.1.207")
+  assert.equal(toolchainPackage.dependencies.pnpm, "9.15.0")
+  assert.match(dockerfile, /npm ci --omit=dev/)
+  assert.match(dockerfile, /npm sbom --sbom-format cyclonedx/)
   assert.match(dockerfile, /test "\$\(codex --version\)" = "codex-cli \$\{CHARIOX_CODEX_VERSION\}"/)
   assert.match(dockerfile, /test "\$\(opencode --version\)" = "\$\{CHARIOX_OPENCODE_VERSION\}"/)
   assert.match(dockerfile, /test "\$\(claude --version\)" = "\$\{CHARIOX_CLAUDE_VERSION\} \(Claude Code\)"/)
-  assert.doesNotMatch(dockerfile, /npm install -g\s+@openai\/codex(?:\s|$)/)
-  assert.doesNotMatch(dockerfile, /npm install -g\s+opencode-ai(?:\s|$)/)
-  assert.doesNotMatch(dockerfile, /npm install -g\s+@anthropic-ai\/claude-code(?:\s|$)/)
+  assert.doesNotMatch(dockerfile, /RUN npm install|corepack prepare/)
+})
+
+test("publication network installs are integrity-locked and snapshot-bound", () => {
+  assert.equal((dockerfile.match(/snapshot\.debian\.org\/archive\/debian\/20250701T000000Z/g) ?? []).length, 2)
+  for (const [path, entry] of Object.entries(toolchainLock.packages)) {
+    if (!path || entry.link) continue
+    assert.match(entry.resolved ?? "", /^https:\/\/registry\.npmjs\.org\//, `${path} needs a registry artifact`)
+    assert.match(entry.integrity ?? "", /^sha512-/, `${path} needs SHA-512 integrity`)
+  }
 })
 
 test("publication image labels the protocol version verified against its kernel", () => {

@@ -1,8 +1,18 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-builder
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-toolchain
+WORKDIR /opt/chariox-toolchain
+COPY docker/publication/toolchain/package.json docker/publication/toolchain/package-lock.json ./
+RUN npm ci --omit=dev \
+  && npm sbom --sbom-format cyclonedx > toolchain-sbom.cdx.json \
+  && test "$(node_modules/.bin/pnpm --version)" = "9.15.0" \
+  && test "$(node_modules/.bin/codex --version)" = "codex-cli 0.144.0" \
+  && test "$(node_modules/.bin/opencode --version)" = "1.4.1" \
+  && test "$(node_modules/.bin/claude --version)" = "2.1.207 (Claude Code)"
+
+FROM js-toolchain AS js-builder
+ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 WORKDIR /opt/chariox
-RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY packages packages
 COPY apps/server/package.json apps/server/package.json
@@ -14,7 +24,9 @@ RUN pnpm --filter @chariox/tool-display run build \
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=262
 WORKDIR /opt/chariox
-RUN apt-get update \
+RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
+  && rm -f /etc/apt/sources.list.d/debian.sources \
+  && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     libdbus-1-dev \
     pkg-config \
@@ -28,6 +40,7 @@ RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin chariox-k
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 LABEL org.opencontainers.image.title="Chariox workflow publication"
 LABEL org.opencontainers.image.description="Standalone Chariox kernel plus workflow publication gateway runtime."
+LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.4.1
@@ -39,7 +52,9 @@ LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"
 LABEL dev.chariox.local-daemon-protocol-version="${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 ENV DEBIAN_FRONTEND=noninteractive
-RUN apt-get update \
+RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
+  && rm -f /etc/apt/sources.list.d/debian.sources \
+  && apt-get -o Acquire::Check-Valid-Until=false update \
   && apt-get install -y --no-install-recommends \
     bash \
     ca-certificates \
@@ -47,11 +62,9 @@ RUN apt-get update \
     tini \
   && rm -rf /var/lib/apt/lists/*
 
-RUN npm install -g \
-    "@openai/codex@${CHARIOX_CODEX_VERSION}" \
-    "opencode-ai@${CHARIOX_OPENCODE_VERSION}" \
-    "@anthropic-ai/claude-code@${CHARIOX_CLAUDE_VERSION}" \
-  && test "$(codex --version)" = "codex-cli ${CHARIOX_CODEX_VERSION}" \
+COPY --from=js-toolchain /opt/chariox-toolchain /opt/chariox-toolchain
+ENV PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+RUN test "$(codex --version)" = "codex-cli ${CHARIOX_CODEX_VERSION}" \
   && test "$(opencode --version)" = "${CHARIOX_OPENCODE_VERSION}" \
   && test "$(claude --version)" = "${CHARIOX_CLAUDE_VERSION} (Claude Code)"
 
@@ -85,7 +98,6 @@ ENV CHARIOX_KERNEL_HOST=127.0.0.1
 ENV CHARIOX_KERNEL_PORT=43118
 ENV HOST=0.0.0.0
 ENV PORT=3000
-ENV PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
 
 EXPOSE 3000 43118
 ENTRYPOINT ["tini", "--", "chariox-publication-container"]
