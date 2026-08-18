@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 
-FROM node:22-bookworm-slim AS js-builder
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-builder
 WORKDIR /opt/chariox
 RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
@@ -11,8 +11,8 @@ COPY apps/server apps/server
 RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
-FROM rust:1.88-bookworm AS rust-builder
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=261
+FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=262
 WORKDIR /opt/chariox
 RUN apt-get update \
   && apt-get install -y --no-install-recommends \
@@ -25,14 +25,14 @@ COPY examples/workflow-code examples/workflow-code
 RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(apps/kernel/target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
-FROM node:22-bookworm-slim
+FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 LABEL org.opencontainers.image.title="Chariox workflow publication"
 LABEL org.opencontainers.image.description="Standalone Chariox kernel plus workflow publication gateway runtime."
 
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.4.1
 ARG CHARIOX_CLAUDE_VERSION=2.1.207
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=261
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=262
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

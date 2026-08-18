@@ -10,7 +10,7 @@ const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs
 test("publication image copies compile-time workflow examples before building the kernel", () => {
   assert.match(workflowCode, /include_str!\("\.\.\/\.\.\/\.\.\/examples\/workflow-code\//)
 
-  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm AS rust-builder")
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
   const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
   assert.notEqual(rustStageStart, -1)
   assert.notEqual(nextStageStart, -1)
@@ -21,6 +21,15 @@ test("publication image copies compile-time workflow examples before building th
   assert.ok(examplesCopy >= 0, "the Rust build stage must copy compile-time workflow examples")
   assert.ok(kernelBuild >= 0, "the Rust build stage must compile the kernel")
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
+})
+
+test("publication images pin every base image by immutable digest", () => {
+  const publicationBases = dockerfile.match(/^FROM\s+\S+/gm) ?? []
+  assert.equal(publicationBases.length, 3)
+  for (const base of publicationBases) {
+    assert.match(base, /@sha256:[0-9a-f]{64}$/)
+  }
+  assert.match(egressDockerfile, /^FROM node:22-bookworm-slim@sha256:[0-9a-f]{64}$/m)
 })
 
 test("publication image reserves isolated credential, action, and gateway identities", () => {
