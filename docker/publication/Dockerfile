@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 
+FROM node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c AS ca-bundle
+RUN echo 'a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d  /etc/ssl/certs/ca-certificates.crt' | sha256sum --check --strict
+
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436 AS js-toolchain
 WORKDIR /opt/chariox-toolchain
 COPY docker/publication/toolchain/package.json docker/publication/toolchain/package-lock.json ./
@@ -25,6 +28,7 @@ RUN pnpm --filter @chariox/tool-display run build \
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
 ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=265
 WORKDIR /opt/chariox
+COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \
@@ -58,6 +62,7 @@ LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"
 LABEL dev.chariox.local-daemon-protocol-version="${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 ENV DEBIAN_FRONTEND=noninteractive
+COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
   && apt-get -o Acquire::Check-Valid-Until=false update \

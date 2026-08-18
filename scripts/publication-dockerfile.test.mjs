@@ -58,7 +58,7 @@ test("publication Rust build consumes the workspace lock and every kernel path d
 test("publication images pin every base image by immutable digest", () => {
   const publicationBases = (dockerfile.match(/^FROM\s+\S+/gm) ?? [])
     .filter((base) => base !== "FROM js-toolchain")
-  assert.equal(publicationBases.length, 3)
+  assert.equal(publicationBases.length, 4)
   for (const base of publicationBases) {
     assert.match(base, /@sha256:[0-9a-f]{64}$/)
   }
@@ -95,6 +95,29 @@ test("publication image pins and verifies every official provider CLI", () => {
 })
 
 test("publication network installs are integrity-locked and snapshot-bound", () => {
+  const caStage = dockerfile.match(
+    /^FROM node:22\.17\.1-bookworm@sha256:[0-9a-f]{64} AS ca-bundle\nRUN echo '([0-9a-f]{64})  \/etc\/ssl\/certs\/ca-certificates\.crt' \| sha256sum --check --strict$/m,
+  )
+  assert.ok(caStage, "the CA donor must be digest-pinned and its bundle hash verified")
+  assert.equal(caStage[1], "a3413a37a8e09cc21b2c11c9ffb23d92d2fc9d1933c9e7617f5c4fba4f72d37d")
+  assert.equal(
+    (dockerfile.match(/COPY --from=ca-bundle \/etc\/ssl\/certs\/ca-certificates\.crt \/etc\/ssl\/certs\/ca-certificates\.crt/g) ?? []).length,
+    2,
+  )
+
+  for (const stageName of ["rust-builder", null]) {
+    const stageStart = stageName
+      ? dockerfile.indexOf(` AS ${stageName}`)
+      : dockerfile.lastIndexOf("\nFROM node:22-bookworm-slim@sha256:")
+    const nextStage = dockerfile.indexOf("\nFROM ", stageStart + 1)
+    const stage = dockerfile.slice(stageStart, nextStage < 0 ? undefined : nextStage)
+    const caCopy = stage.indexOf("COPY --from=ca-bundle /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt")
+    const aptUpdate = stage.indexOf("apt-get -o Acquire::Check-Valid-Until=false update")
+    assert.ok(caCopy >= 0, `${stageName ?? "final"} stage must import the verified CA bundle`)
+    assert.ok(aptUpdate >= 0, `${stageName ?? "final"} stage must update from the Debian snapshot`)
+    assert.ok(caCopy < aptUpdate, `${stageName ?? "final"} stage must import CA trust before HTTPS APT`)
+  }
+
   assert.equal((dockerfile.match(/snapshot\.debian\.org\/archive\/debian\/20250701T000000Z/g) ?? []).length, 2)
   for (const [path, entry] of Object.entries(toolchainLock.packages)) {
     if (!path || entry.link) continue
