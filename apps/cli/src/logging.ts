@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs"
 import path from "node:path"
 import process from "node:process"
-import { homedir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 
 const DEFAULT_LOG_RETENTION_DAYS = 7
 const DEFAULT_LOG_ROOT_MAX_BYTES = 200 * 1024 * 1024
@@ -119,9 +119,8 @@ export function defaultLogDir() {
     return process.env.CHARIOX_LOG_DIR
   }
 
-  const workspaceLogDir = path.join(process.cwd(), ".chariox", "logs")
-  if (workspaceLogDir) {
-    return workspaceLogDir
+  if (process.env.CHARIOX_HOME) {
+    return path.join(process.env.CHARIOX_HOME, "logs")
   }
 
   if (process.env.XDG_STATE_HOME) {
@@ -132,7 +131,7 @@ export function defaultLogDir() {
     return path.join(homedir(), ".local", "state", "chariox", "logs")
   }
 
-  return path.join(process.cwd(), ".chariox", "logs")
+  return path.join(tmpdir(), "chariox", "logs")
 }
 
 export function readAllLogRecords(logDir = defaultLogDir()): LogRecord[] {

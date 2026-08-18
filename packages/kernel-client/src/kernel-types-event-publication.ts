@@ -20,6 +20,7 @@ export type EventGeneratorCatalogSummary = {
   installed_count: number
   recommended: boolean
   availability: "available" | "development_preview" | "coming_soon" | string
+  management_url?: string | null
 }
 
 export type EventGeneratorEventDefinition = {

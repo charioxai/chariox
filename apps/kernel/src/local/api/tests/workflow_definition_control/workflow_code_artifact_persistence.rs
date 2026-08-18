@@ -22,7 +22,9 @@ fn local_request_api_persists_workflow_code_artifacts() {
     )
     .expect("temporary schema file should be written");
 
-    let harness = LocalRouterTestHarness::new();
+    let config = crate::config::DaemonConfig::for_tests();
+    let artifact_root = config.workflow_code_artifact_root();
+    let harness = LocalRouterTestHarness::with_config(config);
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new(
@@ -74,7 +76,11 @@ workflow.endpoint(planner, { handle: "entry", alias: "entry" })
         LocalDaemonResponse::WorkflowCodeArtifactCreated { artifact } => {
             assert_eq!(artifact.metadata.name, name);
             assert!(artifact.metadata.validation.ok);
-            assert!(artifact.metadata.path.starts_with(&workspace_root));
+            assert!(artifact.metadata.path.starts_with(&artifact_root));
+            assert!(
+                !workspace_root.join(".chariox").exists(),
+                "generated workflow code must not create project-local runtime state"
+            );
             assert_eq!(
                 artifact.definition.workflow.alias.as_deref(),
                 Some("artifact_flow")

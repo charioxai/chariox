@@ -845,16 +845,29 @@ fn workflow_runtime_artifact_root(
     workflow_node_run_id: &str,
     category: &str,
 ) -> Option<std::path::PathBuf> {
-    let base_directory =
-        workflow_runtime_base_directory(app, session_id, workflow_run_id, workflow_node_run_id)?;
+    validate_workflow_node_run(app, session_id, workflow_run_id, workflow_node_run_id)?;
     Some(
-        base_directory
-            .join(".chariox")
-            .join("workflow-runtime")
+        app.config()
+            .workflow_runtime_artifact_root()
             .join(session_id)
             .join(workflow_run_id)
             .join(category),
     )
+}
+
+fn validate_workflow_node_run(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Option<()> {
+    let session = app.sessions().get_session(session_id).ok()?;
+    let workflow_run = session.workflow_run(workflow_run_id)?;
+    workflow_run
+        .node_runs()
+        .iter()
+        .find(|candidate| candidate.id() == workflow_node_run_id)?;
+    Some(())
 }
 
 fn workflow_runtime_base_directory(
@@ -869,8 +882,7 @@ fn workflow_runtime_base_directory(
         .node_runs()
         .iter()
         .find(|candidate| candidate.id() == workflow_node_run_id)?;
-    let base_directory = app
-        .providers()
+    app.providers()
         .get_latest_run_for_agent(session_id, node_run.agent_id())
         .and_then(|run| run.working_directory().cloned())
         .or_else(|| {
@@ -880,8 +892,7 @@ fn workflow_runtime_base_directory(
             } else {
                 std::env::current_dir().ok().map(|cwd| cwd.join(worktree))
             }
-        })?;
-    Some(base_directory)
+        })
 }
 
 fn serialize_handoff_payloads_json(handoff_messages: Option<&[WorkflowMessage]>) -> Option<String> {

@@ -4,6 +4,8 @@ node_modules/
 
 # chariox
 .chariox/
+# Legacy runtime artifacts must never be created or committed.
+.arroba/
 
 # Build artifacts
 dist/

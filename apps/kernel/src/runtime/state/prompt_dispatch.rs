@@ -56,12 +56,14 @@ impl KernelRuntimeState {
                     .remote_execution()
                     .is_some();
                 if crate::scheduler::runtime::is_workflow_prompt_attachment(&attachment_id) {
-                    let event_reply_enabled = owned
-                        .workflow_event_reply_enabled_for_prompt(&session_id, &prepared.prompt)?;
+                    let (event_reply_enabled, event_context_enabled, event_actions_enabled) = owned
+                        .workflow_event_capabilities_for_prompt(&session_id, &prepared.prompt)?;
                     owned.workflow_ensure_provider_run(
                         &session_id,
                         &target_agent_id,
                         event_reply_enabled,
+                        event_context_enabled,
+                        event_actions_enabled,
                     )?;
                 } else if is_remote_agent {
                     if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {

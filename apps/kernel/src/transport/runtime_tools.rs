@@ -41,6 +41,15 @@ pub const AGENT_APP_ACTION_TOOL: &str = "agent_app_action";
 pub const AGENT_APP_ACTION_TOOL_QUALIFIED: &str = "chariox.agent_app_action";
 pub const REPLY_TO_EVENT_TOOL: &str = "reply_to_event";
 pub const REPLY_TO_EVENT_TOOL_QUALIFIED: &str = "chariox.reply_to_event";
+pub const EVENT_CONTEXT_TOOL: &str = "event_context";
+pub const EVENT_CONTEXT_TOOL_QUALIFIED: &str = "chariox.event_context";
+/// Invoke an explicitly provider-declared action for the current event.
+///
+/// This is deliberately one generic, event-scoped tool rather than one tool
+/// per provider method. The AEGS remains the authority for the supported
+/// action IDs, scopes, target binding, and input validation.
+pub const EVENT_ACTION_TOOL: &str = "event_action";
+pub const EVENT_ACTION_TOOL_QUALIFIED: &str = "chariox.event_action";
 pub const LIST_EXTENSIONS_TOOL: &str = "chariox.list_extensions";
 pub const REQUEST_EXTENSION_TOOL: &str = "chariox.request_extension";
 pub const REGISTER_MCP_TOOL: &str = "chariox.register_mcp";

@@ -174,6 +174,11 @@ pub struct EventGeneratorCatalogSummary {
     pub recommended: bool,
     #[serde(default = "default_event_generator_availability")]
     pub availability: String,
+    /// Trusted registry metadata for the provider management endpoint. This is
+    /// a route only; authentication is negotiated separately and never stored
+    /// in the catalog response.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub management_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -188,11 +193,26 @@ pub struct EventGeneratorEventDefinition {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct EventGeneratorActionDefinition {
+    pub action_id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required_scopes: Vec<String>,
+    pub target: String,
+    pub mutation: bool,
+    pub idempotent: bool,
+    pub input_schema: Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct EventGeneratorCatalogDetail {
     #[serde(flatten)]
     pub summary: EventGeneratorCatalogSummary,
     pub authorization: Value,
     pub events: Vec<EventGeneratorEventDefinition>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<EventGeneratorActionDefinition>,
     pub signature: Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub deprecation: Option<Value>,
@@ -319,6 +339,8 @@ pub struct CreateWorkflowEventBindingRequest {
     /// `disabled`, `thread`, or `channel`; defaults to `disabled`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reply_mode: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub action_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

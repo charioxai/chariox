@@ -6,6 +6,7 @@ import { test } from "node:test"
 const dockerfile = await readFile(new URL("../docker/publication/Dockerfile", import.meta.url), "utf8")
 const egressDockerfile = await readFile(new URL("../docker/publication-egress/Dockerfile", import.meta.url), "utf8")
 const kernelTypes = await readFile(new URL("../packages/kernel-client/src/kernel-types.ts", import.meta.url), "utf8")
+const kernelCargo = await readFile(new URL("../apps/kernel/Cargo.toml", import.meta.url), "utf8")
 const workflowCode = await readFile(new URL("../apps/kernel/src/workflow_code.rs", import.meta.url), "utf8")
 const toolchainPackage = JSON.parse(await readFile(
   new URL("../docker/publication/toolchain/package.json", import.meta.url),
@@ -26,10 +27,32 @@ test("publication image copies compile-time workflow examples before building th
 
   const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
   const examplesCopy = rustStage.indexOf("COPY examples/workflow-code examples/workflow-code")
-  const kernelBuild = rustStage.indexOf("RUN cargo build --manifest-path apps/kernel/Cargo.toml")
+  const kernelBuild = rustStage.indexOf("RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml")
   assert.ok(examplesCopy >= 0, "the Rust build stage must copy compile-time workflow examples")
   assert.ok(kernelBuild >= 0, "the Rust build stage must compile the kernel")
   assert.ok(examplesCopy < kernelBuild, "compile-time workflow examples must be copied before the kernel build")
+})
+
+test("publication Rust build consumes the workspace lock and every kernel path dependency", () => {
+  const rustStageStart = dockerfile.indexOf("FROM rust:1.88-bookworm@sha256:")
+  const nextStageStart = dockerfile.indexOf("\nFROM ", rustStageStart + 1)
+  const rustStage = dockerfile.slice(rustStageStart, nextStageStart)
+  const kernelBuild = rustStage.indexOf("RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml")
+
+  assert.ok(kernelBuild >= 0, "the kernel must build with the committed Cargo.lock")
+  for (const requiredCopy of [
+    "COPY Cargo.toml Cargo.lock ./",
+    "COPY apps/relay apps/relay",
+    "COPY packages/event-protocol packages/event-protocol",
+  ]) {
+    const copy = rustStage.indexOf(requiredCopy)
+    assert.ok(copy >= 0, `the Rust stage must include ${requiredCopy}`)
+    assert.ok(copy < kernelBuild, `${requiredCopy} must happen before the kernel build`)
+  }
+
+  const kernelPathDependencies = [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)]
+    .map((match) => match[1])
+  assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/event-protocol", "../relay"])
 })
 
 test("publication images pin every base image by immutable digest", () => {

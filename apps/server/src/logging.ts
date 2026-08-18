@@ -1,5 +1,5 @@
 import { appendFileSync, mkdirSync, openSync, readdirSync, rmSync, statSync } from "node:fs"
-import { homedir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import path from "node:path"
 import process from "node:process"
 
@@ -122,6 +122,10 @@ function defaultLogDir() {
     return process.env.CHARIOX_LOG_DIR
   }
 
+  if (process.env.CHARIOX_HOME) {
+    return path.join(process.env.CHARIOX_HOME, "logs")
+  }
+
   if (process.env.XDG_STATE_HOME) {
     return path.join(process.env.XDG_STATE_HOME, "chariox", "logs")
   }
@@ -130,7 +134,7 @@ function defaultLogDir() {
     return path.join(homedir(), ".local", "state", "chariox", "logs")
   }
 
-  return path.join(process.cwd(), ".chariox", "logs")
+  return path.join(tmpdir(), "chariox", "logs")
 }
 
 function cleanupLogDir(logDir: string) {

@@ -23,7 +23,7 @@ RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=263
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=265
 WORKDIR /opt/chariox
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
@@ -32,10 +32,15 @@ RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archiv
     libdbus-1-dev \
     pkg-config \
   && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock ./
+COPY adapters/rust adapters/rust
+COPY apps/aegs-dummy apps/aegs-dummy
 COPY apps/kernel apps/kernel
 COPY apps/relay apps/relay
 COPY examples/workflow-code examples/workflow-code
-RUN cargo build --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
+COPY packages/aegs-sdk packages/aegs-sdk
+COPY packages/event-protocol packages/event-protocol
+RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
   && test "$(apps/kernel/target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
@@ -46,7 +51,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.4.1
 ARG CHARIOX_CLAUDE_VERSION=2.1.207
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=263
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=265
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

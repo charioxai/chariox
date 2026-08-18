@@ -553,12 +553,23 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             },
         ))
         .expect("ack should succeed");
+    let _ = harness.wait_for_session_where(
+        session.id(),
+        "first workflow prompt should be delivered before provider output",
+        |session| {
+            session
+                .active_prompt_for_agent(first_agent.id())
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+        },
+    );
     let provider_run_id = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_provider_run_id()
-            .expect("provider run should be active")
+        app.providers()
+            .get_run_for_agent(session.id(), first_agent.id())
+            .expect("first node provider run should be active")
+            .id()
             .to_string()
     });
     harness.with_app_mut(|app| {
@@ -638,10 +649,22 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
             },
         ))
         .expect("second node ack should succeed");
+    let _ = harness.wait_for_session_where(
+        session.id(),
+        "second workflow prompt should be delivered before provider output",
+        |session| {
+            session
+                .active_prompt_for_agent(second_agent.id())
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+        },
+    );
     let second_provider_run_id = harness.with_app(|app| {
         app.providers()
             .get_run_for_agent(session.id(), second_agent.id())
-            .expect("second workflow agent should have an active provider run")
+            .expect("second node provider run should be active")
             .id()
             .to_string()
     });

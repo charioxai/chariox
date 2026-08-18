@@ -2,9 +2,10 @@
 // Boxing only this module's results would introduce a second error contract for its callers.
 #![allow(clippy::result_large_err)]
 
-use std::collections::BTreeMap;
-use std::io::Read;
-use std::sync::{Mutex, OnceLock};
+use std::collections::{BTreeMap, BTreeSet};
+use std::io::{self, Read};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
@@ -14,6 +15,8 @@ use crate::local::{
     EventGeneratorEventDefinition, EventGeneratorEventPage, EventGeneratorParty,
     LocalDaemonRequest, LocalDaemonResponse, WorkflowEventBindingDependency,
 };
+use crate::runtime::aegs_network_policy::is_globally_reachable_aegs_destination;
+use crate::runtime::cloud_api_client::issue_event_generator_management_capability;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 
@@ -32,9 +35,97 @@ struct CatalogCacheEntry {
 
 static CATALOG_CACHE: OnceLock<Mutex<BTreeMap<String, CatalogCacheEntry>>> = OnceLock::new();
 
-pub(crate) async fn execute_event_catalog_request(
+type AegsAgentBuilderFactory =
+    dyn Fn(&crate::config::EventGeneratorManagementTarget) -> ureq::AgentBuilder + Send + Sync;
+
+#[derive(Clone)]
+pub(crate) struct AegsManagementHttpClient {
+    agent_builder: Arc<AegsAgentBuilderFactory>,
+}
+
+impl Default for AegsManagementHttpClient {
+    fn default() -> Self {
+        Self {
+            agent_builder: Arc::new(aegs_management_agent_builder),
+        }
+    }
+}
+
+impl AegsManagementHttpClient {
+    fn agent_builder(
+        &self,
+        target: &crate::config::EventGeneratorManagementTarget,
+    ) -> ureq::AgentBuilder {
+        (self.agent_builder)(target)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_agent_builder(
+        agent_builder: impl Fn(&crate::config::EventGeneratorManagementTarget) -> ureq::AgentBuilder
+            + Send
+            + Sync
+            + 'static,
+    ) -> Self {
+        Self {
+            agent_builder: Arc::new(agent_builder),
+        }
+    }
+}
+
+pub(crate) struct WorkflowEventBindingContract {
+    pub(crate) generator_id: String,
+    pub(crate) generator_version: String,
+    pub(crate) manifest_digest: String,
+    pub(crate) connection_id: String,
+    pub(crate) event_type: String,
+    pub(crate) event_type_version: u32,
+    pub(crate) action_ids: Vec<String>,
+    pub(crate) reply_mode: Option<String>,
+}
+
+impl From<&crate::local::CreateWorkflowEventBindingRequest> for WorkflowEventBindingContract {
+    fn from(request: &crate::local::CreateWorkflowEventBindingRequest) -> Self {
+        Self {
+            generator_id: request.generator_id.clone(),
+            generator_version: request.generator_version.clone(),
+            manifest_digest: request.manifest_digest.clone(),
+            connection_id: request.connection_id.clone(),
+            event_type: request.event_type.clone(),
+            event_type_version: request.event_type_version,
+            action_ids: request.action_ids.clone(),
+            reply_mode: request.reply_mode.clone(),
+        }
+    }
+}
+
+impl From<&crate::session::WorkflowEventBinding> for WorkflowEventBindingContract {
+    fn from(binding: &crate::session::WorkflowEventBinding) -> Self {
+        Self {
+            generator_id: binding.generator_id.clone(),
+            generator_version: binding.generator_version.clone(),
+            manifest_digest: binding.manifest_digest.clone(),
+            connection_id: binding.connection_id.clone(),
+            event_type: binding.event_type.clone(),
+            event_type_version: binding.event_type_version,
+            action_ids: binding.action_ids.clone(),
+            reply_mode: binding.reply_mode.clone(),
+        }
+    }
+}
+
+impl WorkflowEventBindingContract {
+    pub(crate) async fn required_scopes(
+        &self,
+        config_projection: &DaemonConfigProjectionStore,
+    ) -> Result<Vec<String>, DaemonError> {
+        validate_event_binding_contract(config_projection, self).await
+    }
+}
+
+pub(crate) async fn execute_event_catalog_request_with_client(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -51,18 +142,40 @@ pub(crate) async fn execute_event_catalog_request(
         request,
         LocalDaemonRequest::ListEventConnections(_)
             | LocalDaemonRequest::GetEventConnection(_)
-            | LocalDaemonRequest::InstallEventConnection(_)
+            | LocalDaemonRequest::ListEventConnectionDependencies(_)
+    ) {
+        return execute_event_connection_request(
+            runtime_state,
+            &BTreeMap::new(),
+            management_client,
+            &config.daemon_id,
+            caller_user_id,
+            request,
+        )
+        .await;
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::InstallEventConnection(_)
             | LocalDaemonRequest::ObserveEventConnectionAuthorization(_)
             | LocalDaemonRequest::RefreshEventConnection(_)
             | LocalDaemonRequest::TestEventConnection(_)
             | LocalDaemonRequest::ReconnectEventConnection(_)
             | LocalDaemonRequest::ListEventConnectionResources(_)
-            | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::RemoveEventConnection(_)
     ) {
+        let management_targets = resolve_event_generator_management_targets(
+            runtime_state,
+            config_projection,
+            &config,
+            caller_user_id,
+            &request,
+        )
+        .await?;
         return execute_event_connection_request(
             runtime_state,
-            &config.event_generator_management_targets,
+            &management_targets,
+            management_client,
             &config.daemon_id,
             caller_user_id,
             request,
@@ -74,10 +187,18 @@ pub(crate) async fn execute_event_catalog_request(
         LocalDaemonRequest::StartEventGeneratorAuthorization(_)
             | LocalDaemonRequest::ListEventGeneratorResources(_)
     ) {
-        let targets = config.event_generator_management_targets.clone();
+        let targets = resolve_event_generator_management_targets(
+            runtime_state,
+            config_projection,
+            &config,
+            caller_user_id,
+            &request,
+        )
+        .await?;
         let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
+        let management_client = management_client.clone();
         return tokio::task::spawn_blocking(move || {
-            aegs_management_request(&targets, &owner_id, &request)
+            aegs_management_request(&management_client, &targets, &owner_id, &request)
         })
         .await
         .map_err(|error| DaemonError::LocalTransport {
@@ -100,22 +221,242 @@ pub(crate) async fn execute_event_catalog_request(
     })?
 }
 
+pub(crate) async fn resolve_event_generator_management_targets(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    config: &crate::config::DaemonConfig,
+    caller_user_id: &str,
+    request: &LocalDaemonRequest,
+) -> Result<BTreeMap<String, crate::config::EventGeneratorManagementTarget>, DaemonError> {
+    let generator_ids =
+        event_generator_ids_from_management_request(runtime_state, caller_user_id, request)?;
+    let mut targets = config.event_generator_management_targets.clone();
+    if generator_ids.is_empty() {
+        // A generator-less list is limited to providers that already have a local connection.
+        // The kernel must not page the entire Store and mint capabilities for every provider
+        // merely to render an installed-connection list.
+        return Ok(targets);
+    }
+    let Some(profile) = config.cloud_relay.as_ref() else {
+        return Ok(targets);
+    };
+    let registry_url = config.event_registry_url.clone().ok_or_else(|| {
+        catalog_error("event generator management bootstrap requires a registry URL".to_string())
+    })?;
+    let requested_owner_ids = [
+        config.daemon_id.clone(),
+        event_connection_owner_id(&config.daemon_id, caller_user_id),
+    ];
+    for generator_id in generator_ids {
+        let refresh_before_ms = crate::session::unix_epoch_ms().saturating_add(30_000);
+        if targets.get(&generator_id).is_some_and(|target| {
+            requested_owner_ids.iter().all(|owner| {
+                let scoped_valid = target
+                    .owner_scoped
+                    .as_ref()
+                    .and_then(|scoped| scoped.get(owner))
+                    .is_some_and(|credential| {
+                        credential
+                            .expires_at_ms
+                            .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms)
+                    });
+                let legacy_valid = target.owner_scoped.is_none()
+                    && target
+                        .owner_ids
+                        .as_ref()
+                        .is_none_or(|owners| owners.contains(owner))
+                    && target
+                        .expires_at_ms
+                        .is_none_or(|expires_at_ms| expires_at_ms > refresh_before_ms);
+                scoped_valid || legacy_valid
+            })
+        }) {
+            continue;
+        }
+        let detail_request = LocalDaemonRequest::GetEventGeneratorDetail(
+            crate::local::GetEventGeneratorDetailRequest {
+                generator_id: generator_id.clone(),
+                version: None,
+            },
+        );
+        let detail_registry_url = registry_url.clone();
+        let detail_response = tokio::task::spawn_blocking(move || {
+            cached_remote_catalog_request(&detail_registry_url, &detail_request)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "query event generator detail for management bootstrap",
+            message: error.to_string(),
+        })??;
+        let LocalDaemonResponse::EventGeneratorDetail { detail } = detail_response else {
+            return Err(catalog_error(
+                "event catalog returned an unexpected detail response for management bootstrap"
+                    .to_string(),
+            ));
+        };
+        let Some(management_url) = detail.summary.management_url.clone() else {
+            continue;
+        };
+        let owner_ids = requested_owner_ids.to_vec();
+        let capability = issue_event_generator_management_capability(
+            profile,
+            &config.daemon_id,
+            &generator_id,
+            &detail.summary.version,
+            &detail.summary.manifest_digest,
+            &management_url,
+        )
+        .await?;
+        let expires_at_ms = chrono::DateTime::parse_from_rfc3339(&capability.expires_at)
+            .map_err(|error| {
+                catalog_error(format!(
+                    "cloud returned an invalid management capability expiry: {error}"
+                ))
+            })?
+            .timestamp_millis()
+            .try_into()
+            .map_err(|_| {
+                catalog_error("management capability expiry is before the Unix epoch".to_string())
+            })?;
+        let credential = crate::config::EventGeneratorManagementTargetCredential {
+            url: management_url.clone(),
+            token: capability.token.clone(),
+            expires_at_ms: Some(expires_at_ms),
+        };
+        let owner_scoped = requested_owner_ids
+            .iter()
+            .cloned()
+            .map(|owner| (owner, credential.clone()))
+            .collect();
+        let resolved_target = crate::config::EventGeneratorManagementTarget {
+            url: management_url,
+            token: capability.token,
+            expires_at_ms: Some(expires_at_ms),
+            owner_ids: Some(owner_ids),
+            owner_scoped: Some(owner_scoped),
+        };
+        config_projection.merge_event_generator_management_target(&generator_id, resolved_target);
+        // Read the merged projection so concurrent owner/generator resolutions
+        // are preserved in the map returned to this operation.
+        targets = config_projection
+            .snapshot()
+            .event_generator_management_targets;
+    }
+    Ok(targets)
+}
+
+fn event_generator_ids_from_management_request(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    request: &LocalDaemonRequest,
+) -> Result<Vec<String>, DaemonError> {
+    let connection_generator = |connection_id: &str| {
+        runtime_state
+            .event_connection_registry()
+            .get(caller_user_id, connection_id)
+            .ok()
+            .flatten()
+            .map(|connection| connection.generator_id)
+    };
+    let authorization_generator = |authorization_id: &str| {
+        runtime_state
+            .event_connection_registry()
+            .authorization(caller_user_id, authorization_id)
+            .ok()
+            .flatten()
+            .map(|authorization| authorization.generator_id)
+    };
+    let generator_id = match request {
+        LocalDaemonRequest::StartEventGeneratorAuthorization(request) => {
+            Some(request.generator_id.clone())
+        }
+        LocalDaemonRequest::ListEventGeneratorResources(request) => {
+            Some(request.generator_id.clone())
+        }
+        LocalDaemonRequest::ListEventConnections(request) => request.generator_id.clone(),
+        LocalDaemonRequest::GetEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::InstallEventConnection(request) => Some(request.generator_id.clone()),
+        LocalDaemonRequest::ObserveEventConnectionAuthorization(request) => {
+            authorization_generator(&request.authorization_id)
+        }
+        LocalDaemonRequest::RefreshEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::TestEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ReconnectEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ListEventConnectionResources(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::ListEventConnectionDependencies(request) => {
+            connection_generator(&request.connection_id)
+        }
+        LocalDaemonRequest::RemoveEventConnection(request) => {
+            connection_generator(&request.connection_id)
+        }
+        _ => None,
+    };
+    if let Some(generator_id) = generator_id {
+        return Ok(vec![generator_id]);
+    }
+    if matches!(
+        request,
+        LocalDaemonRequest::ListEventConnections(request) if request.generator_id.is_none()
+    ) {
+        return Ok(runtime_state
+            .event_connection_registry()
+            .list(caller_user_id, None)?
+            .into_iter()
+            .map(|connection| connection.generator_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect());
+    }
+    Ok(Vec::new())
+}
+
 pub(crate) async fn validate_event_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     generator_id: &str,
     connection_id: &str,
 ) -> Result<(), DaemonError> {
     let config = config_projection.snapshot();
     let owner_id = event_connection_owner_id(&config.daemon_id, caller_user_id);
-    let targets = config.event_generator_management_targets;
+    let target_request =
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some(generator_id.to_string()),
+            cursor: None,
+            limit: 1,
+        });
+    let targets = resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config,
+        caller_user_id,
+        &target_request,
+    )
+    .await?;
     let generator_id = generator_id.to_string();
     let connection_id = connection_id.to_string();
     let expected_generator_id = generator_id.clone();
     let expected_connection_id = connection_id.clone();
+    let management_client = management_client.clone();
     let page = match blocking_aegs(move || {
-        query_aegs_connections(&targets, &owner_id, &generator_id, Some(&connection_id))
+        query_aegs_connections(
+            &management_client,
+            &targets,
+            &owner_id,
+            &generator_id,
+            Some(&connection_id),
+        )
     })
     .await
     {
@@ -166,17 +507,13 @@ pub(crate) async fn validate_event_connection(
 
 pub(crate) async fn validate_event_binding_contract(
     config_projection: &DaemonConfigProjectionStore,
-    generator_id: &str,
-    generator_version: &str,
-    manifest_digest: &str,
-    event_type: &str,
-    event_type_version: u32,
-) -> Result<(), DaemonError> {
+    contract: &WorkflowEventBindingContract,
+) -> Result<Vec<String>, DaemonError> {
     let registry_url = config_projection.snapshot().event_registry_url;
     let request =
         LocalDaemonRequest::GetEventGeneratorDetail(crate::local::GetEventGeneratorDetailRequest {
-            generator_id: generator_id.to_string(),
-            version: Some(generator_version.to_string()),
+            generator_id: contract.generator_id.clone(),
+            version: Some(contract.generator_version.clone()),
         });
     let response = tokio::task::spawn_blocking(move || {
         if let Some(registry_url) = registry_url {
@@ -192,51 +529,116 @@ pub(crate) async fn validate_event_binding_contract(
             "event catalog returned an unexpected detail response".to_string(),
         ));
     };
-    validate_event_binding_detail(
-        &detail,
+    validate_event_binding_detail(&detail, contract)
+}
+
+fn validate_event_binding_detail(
+    detail: &EventGeneratorCatalogDetail,
+    contract: &WorkflowEventBindingContract,
+) -> Result<Vec<String>, DaemonError> {
+    let WorkflowEventBindingContract {
         generator_id,
         generator_version,
         manifest_digest,
         event_type,
         event_type_version,
-    )
-}
-
-fn validate_event_binding_detail(
-    detail: &EventGeneratorCatalogDetail,
-    generator_id: &str,
-    generator_version: &str,
-    manifest_digest: &str,
-    event_type: &str,
-    event_type_version: u32,
-) -> Result<(), DaemonError> {
-    if detail.summary.generator_id != generator_id || detail.summary.version != generator_version {
+        action_ids,
+        reply_mode,
+        ..
+    } = contract;
+    if detail.summary.generator_id != *generator_id || detail.summary.version != *generator_version
+    {
         return Err(connection_error(format!(
             "event catalog returned `{}`@`{}` for requested `{generator_id}@{generator_version}`",
             detail.summary.generator_id, detail.summary.version
         )));
     }
-    if detail.summary.manifest_digest != manifest_digest {
+    if detail.summary.manifest_digest != *manifest_digest {
         return Err(connection_error(format!(
             "event generator manifest changed; expected `{manifest_digest}`, catalog has `{}`",
             detail.summary.manifest_digest
         )));
     }
-    if !detail
+    let Some(event) = detail
         .events
         .iter()
-        .any(|event| event.event_type == event_type && event.version == event_type_version)
-    {
+        .find(|event| event.event_type == *event_type && event.version == *event_type_version)
+    else {
         return Err(connection_error(format!(
             "event `{event_type}@{event_type_version}` is not declared by `{generator_id}@{generator_version}`"
         )));
+    };
+    let mut required_scopes = event
+        .required_scopes
+        .iter()
+        .cloned()
+        .collect::<BTreeSet<_>>();
+    for action_id in action_ids {
+        let Some(action) = detail
+            .actions
+            .iter()
+            .find(|action| action.action_id == *action_id)
+        else {
+            return Err(connection_error(format!(
+                "action `{action_id}` is not declared by `{generator_id}@{generator_version}`"
+            )));
+        };
+        if action_id == "notification.reply"
+            && !matches!(reply_mode.as_deref(), Some("thread" | "channel"))
+        {
+            return Err(connection_error(
+                "notification.reply requires reply_mode thread or channel".to_string(),
+            ));
+        }
+        required_scopes.extend(action.required_scopes.iter().cloned());
     }
-    Ok(())
+    Ok(required_scopes.into_iter().collect())
+}
+
+pub(crate) fn validate_event_connection_scopes(
+    runtime_state: &KernelRuntimeState,
+    caller_user_id: &str,
+    connection_id: &str,
+    required_scopes: &[String],
+) -> Result<(), DaemonError> {
+    if required_scopes.is_empty() {
+        return Ok(());
+    }
+    let connection = runtime_state
+        .event_connection_registry()
+        .get(caller_user_id, connection_id)?
+        .ok_or_else(|| connection_error("event connection was removed or is not installed"))?;
+    validate_granted_event_connection_scopes(connection_id, &connection.scopes, required_scopes)
+}
+
+fn validate_granted_event_connection_scopes(
+    connection_id: &str,
+    connection_scopes: &[crate::local::EventConnectionScope],
+    required_scopes: &[String],
+) -> Result<(), DaemonError> {
+    let granted_scopes = connection_scopes
+        .iter()
+        .filter(|scope| scope.granted)
+        .map(|scope| scope.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let missing_scopes = required_scopes
+        .iter()
+        .filter(|required| !granted_scopes.contains(required.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+    if missing_scopes.is_empty() {
+        return Ok(());
+    }
+    Err(connection_error(format!(
+        "event connection `{connection_id}` is missing required scopes: {}; reconnect it before attaching",
+        missing_scopes.join(", ")
+    )))
 }
 
 pub(crate) async fn validate_registered_event_connection(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    management_client: &AegsManagementHttpClient,
     caller_user_id: &str,
     generator_id: &str,
     connection_id: &str,
@@ -253,6 +655,7 @@ pub(crate) async fn validate_registered_event_connection(
     validate_event_connection(
         runtime_state,
         config_projection,
+        management_client,
         caller_user_id,
         generator_id,
         connection_id,
@@ -260,9 +663,62 @@ pub(crate) async fn validate_registered_event_connection(
     .await
 }
 
+/// Ensure a workflow runtime action has a live management target before the
+/// synchronous action path reads the projection. This is deliberately shared
+/// by reply and event-context actions so registry-issued targets are resolved
+/// after a kernel restart as well as during connection/binding setup.
+pub(crate) async fn ensure_event_generator_management_target_for_workflow_run(
+    runtime_state: &KernelRuntimeState,
+    config_projection: &DaemonConfigProjectionStore,
+    session_id: &str,
+    workflow_run_ref: &str,
+) -> Result<(), DaemonError> {
+    let (generator_id, caller_user_id) = {
+        let session_store = runtime_state.session_store();
+        let session = session_store.read().get_session(session_id)?;
+        let workflow_run = session_store
+            .read()
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+        let invocation = workflow_run.publication_invocation().ok_or_else(|| {
+            connection_error("event runtime action is missing its invocation".to_string())
+        })?;
+        let binding_id = invocation.hook_id.as_deref().ok_or_else(|| {
+            connection_error("event runtime action is missing its binding identity".to_string())
+        })?;
+        let binding = session
+            .workflow_event_bindings()
+            .iter()
+            .find(|binding| binding.id == binding_id)
+            .ok_or_else(|| {
+                connection_error(format!("event binding `{binding_id}` was not found"))
+            })?;
+        (
+            binding.generator_id.clone(),
+            session.owner_user_id().to_string(),
+        )
+    };
+    let config = config_projection.snapshot();
+    let request =
+        LocalDaemonRequest::ListEventConnections(crate::local::ListEventConnectionsRequest {
+            generator_id: Some(generator_id),
+            cursor: None,
+            limit: 1,
+        });
+    resolve_event_generator_management_targets(
+        runtime_state,
+        config_projection,
+        &config,
+        &caller_user_id,
+        &request,
+    )
+    .await
+    .map(|_| ())
+}
+
 async fn execute_event_connection_request(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    management_client: &AegsManagementHttpClient,
     daemon_id: &str,
     caller_user_id: &str,
     request: LocalDaemonRequest,
@@ -311,9 +767,11 @@ async fn execute_event_connection_request(
         }
         LocalDaemonRequest::InstallEventConnection(request) => {
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let flow = blocking_aegs(move || {
                 start_aegs_authorization(
+                    &management_client,
                     &targets,
                     &owner_id,
                     &request.generator_id,
@@ -328,6 +786,7 @@ async fn execute_event_connection_request(
             let (authorization, observed) = observe_event_connection_authorization(
                 runtime_state,
                 targets,
+                management_client,
                 &owner_id,
                 caller_user_id,
                 &request.authorization_id,
@@ -341,11 +800,18 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::RefreshEventConnection(request) => {
             let current = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = current.generator_id.clone();
             let connection_id = current.connection_id.clone();
             let inspection = match blocking_aegs(move || {
-                refresh_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+                refresh_aegs_connection(
+                    &management_client,
+                    &targets,
+                    &owner_id,
+                    &generator_id,
+                    &connection_id,
+                )
             })
             .await
             {
@@ -371,11 +837,13 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::TestEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id;
             let connection_id = connection.connection_id;
             let result = blocking_aegs(move || {
                 test_aegs_connection(
+                    &management_client,
                     &targets,
                     &owner_id,
                     &generator_id,
@@ -389,6 +857,7 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::ReconnectEventConnection(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let reconnect = chariox_event_protocol::AegsConnectionReconnectRequest {
                 generator_id: connection.generator_id.clone(),
@@ -399,6 +868,7 @@ async fn execute_event_connection_request(
             let generator_id = reconnect.generator_id.clone();
             let flow = match blocking_aegs(move || {
                 post_aegs_json(
+                    &management_client,
                     &targets,
                     &generator_id,
                     "/v1/connections/reconnect",
@@ -423,18 +893,24 @@ async fn execute_event_connection_request(
         LocalDaemonRequest::ListEventConnectionResources(request) => {
             let connection = require_connection(registry, caller_user_id, &request.connection_id)?;
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
-            let connection_id = connection.connection_id.clone();
+            let resource_query = chariox_event_protocol::AegsProviderResourceQuery {
+                generator_id: generator_id.clone(),
+                owner_id,
+                connection_id: connection.connection_id.clone(),
+                query: request.query,
+                cursor: request.cursor,
+                limit: request.limit,
+            };
             let page = match blocking_aegs(move || {
-                query_aegs_resources(
+                post_aegs_json(
+                    &management_client,
                     &targets,
-                    &owner_id,
                     &generator_id,
-                    &connection_id,
-                    request.query,
-                    request.cursor,
-                    request.limit,
+                    "/v1/resources/query",
+                    &resource_query,
                 )
             })
             .await
@@ -488,11 +964,18 @@ async fn execute_event_connection_request(
                 ));
             }
             let targets = targets.clone();
+            let management_client = management_client.clone();
             let owner_id = owner_id.clone();
             let generator_id = connection.generator_id.clone();
             let connection_id = connection.connection_id.clone();
             let revoked = match blocking_aegs(move || {
-                revoke_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+                revoke_aegs_connection(
+                    &management_client,
+                    &targets,
+                    &owner_id,
+                    &generator_id,
+                    &connection_id,
+                )
             })
             .await
             {
@@ -533,6 +1016,7 @@ async fn execute_event_connection_request(
 async fn observe_event_connection_authorization(
     runtime_state: &KernelRuntimeState,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    management_client: &AegsManagementHttpClient,
     owner_id: &str,
     caller_user_id: &str,
     authorization_id: &str,
@@ -549,12 +1033,15 @@ async fn observe_event_connection_authorization(
         .ok_or_else(|| connection_error("event connection authorization was not found"))?;
     let query_targets = targets.clone();
     let inspection_targets = targets.clone();
+    let query_client = management_client.clone();
+    let inspection_client = management_client.clone();
     let owner_id = owner_id.to_string();
     let inspection_owner_id = owner_id.clone();
     let generator_id = authorization.generator_id.clone();
     let connection_id = authorization.connection_id.clone();
     let page = blocking_aegs(move || {
         query_aegs_connections(
+            &query_client,
             &query_targets,
             &owner_id,
             &generator_id,
@@ -571,9 +1058,16 @@ async fn observe_event_connection_authorization(
         let connection_id = summary.connection_id.clone();
         let mut connection = registry.upsert(caller_user_id, summary)?;
         let targets = inspection_targets.clone();
+        let management_client = inspection_client.clone();
         let owner_id = inspection_owner_id.clone();
         if let Ok(inspection) = blocking_aegs(move || {
-            inspect_aegs_connection(&targets, &owner_id, &generator_id, &connection_id)
+            inspect_aegs_connection(
+                &management_client,
+                &targets,
+                &owner_id,
+                &generator_id,
+                &connection_id,
+            )
         })
         .await
         {
@@ -680,11 +1174,11 @@ fn project_event_connection_usage(
     )
 }
 
-pub(crate) fn workflow_event_binding_connection(
+pub(crate) fn workflow_event_binding_contract(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
     binding_id: &str,
-) -> Option<(String, String)> {
+) -> Option<WorkflowEventBindingContract> {
     runtime_state
         .list_session_snapshots()
         .into_iter()
@@ -694,7 +1188,7 @@ pub(crate) fn workflow_event_binding_connection(
                 .workflow_event_bindings()
                 .iter()
                 .find(|binding| binding.id == binding_id)
-                .map(|binding| (binding.generator_id.clone(), binding.connection_id.clone()))
+                .map(WorkflowEventBindingContract::from)
         })
 }
 
@@ -710,7 +1204,48 @@ fn encode_offset(offset: usize) -> String {
     format!("offset-{offset}")
 }
 
+/// Select the capability scoped to one request owner. Static administrator
+/// targets have no owner scope and are returned unchanged; registry-issued
+/// targets must have an exact owner entry so a concurrent user cannot reuse a
+/// different user's short-lived token.
+pub(crate) fn select_event_generator_management_target(
+    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
+    generator_id: &str,
+    owner_id: &str,
+) -> Result<crate::config::EventGeneratorManagementTarget, DaemonError> {
+    let target = targets.get(generator_id).ok_or_else(|| {
+        catalog_error(format!(
+            "event generator `{generator_id}` has no configured management target"
+        ))
+    })?;
+    if let Some(scoped) = target.owner_scoped.as_ref() {
+        let credential = scoped.get(owner_id).ok_or_else(|| {
+            catalog_error(format!(
+                "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
+            ))
+        })?;
+        return Ok(crate::config::EventGeneratorManagementTarget {
+            url: credential.url.clone(),
+            token: credential.token.clone(),
+            expires_at_ms: credential.expires_at_ms,
+            owner_ids: Some(vec![owner_id.to_string()]),
+            owner_scoped: None,
+        });
+    }
+    if target
+        .owner_ids
+        .as_ref()
+        .is_some_and(|owners| !owners.iter().any(|owner| owner == owner_id))
+    {
+        return Err(catalog_error(format!(
+            "event generator `{generator_id}` management capability is not authorized for owner `{owner_id}`"
+        )));
+    }
+    Ok(target.clone())
+}
+
 fn aegs_management_request(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     request: &LocalDaemonRequest,
@@ -745,13 +1280,10 @@ fn aegs_management_request(
             ))
         }
     };
-    let target = targets.get(generator_id).ok_or_else(|| {
-        catalog_error(format!(
-            "event generator `{generator_id}` has no configured management target"
-        ))
-    })?;
+    let target = select_event_generator_management_target(targets, generator_id, owner_id)?;
     let url = format!("{}{path}", target.url);
-    let agent = ureq::AgentBuilder::new()
+    let agent = management_client
+        .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -759,6 +1291,7 @@ fn aegs_management_request(
     let response = agent
         .post(&url)
         .set("authorization", &format!("Bearer {}", target.token))
+        .set("x-chariox-owner-id", owner_id)
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?;
@@ -781,6 +1314,7 @@ fn aegs_management_request(
 }
 
 fn start_aegs_authorization(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -791,10 +1325,17 @@ fn start_aegs_authorization(
         owner_id: owner_id.to_string(),
         return_url,
     };
-    post_aegs_json(targets, generator_id, "/v1/authorizations", &request)
+    post_aegs_json(
+        management_client,
+        targets,
+        generator_id,
+        "/v1/authorizations",
+        &request,
+    )
 }
 
 fn query_aegs_connections(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -807,36 +1348,24 @@ fn query_aegs_connections(
         cursor: None,
         limit: 100,
     };
-    post_aegs_json(targets, generator_id, "/v1/connections/query", &request)
-}
-
-fn query_aegs_resources(
-    targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
-    owner_id: &str,
-    generator_id: &str,
-    connection_id: &str,
-    query: Option<String>,
-    cursor: Option<String>,
-    limit: u32,
-) -> Result<chariox_event_protocol::AegsProviderResourcePage, DaemonError> {
-    let request = chariox_event_protocol::AegsProviderResourceQuery {
-        generator_id: generator_id.to_string(),
-        owner_id: owner_id.to_string(),
-        connection_id: connection_id.to_string(),
-        query,
-        cursor,
-        limit,
-    };
-    post_aegs_json(targets, generator_id, "/v1/resources/query", &request)
+    post_aegs_json(
+        management_client,
+        targets,
+        generator_id,
+        "/v1/connections/query",
+        &request,
+    )
 }
 
 fn refresh_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
 ) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/refresh",
@@ -849,12 +1378,14 @@ fn refresh_aegs_connection(
 }
 
 fn inspect_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
     connection_id: &str,
 ) -> Result<chariox_event_protocol::AegsConnectionInspection, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/inspect",
@@ -867,6 +1398,7 @@ fn inspect_aegs_connection(
 }
 
 fn test_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -874,6 +1406,7 @@ fn test_aegs_connection(
     event_type: Option<String>,
 ) -> Result<chariox_event_protocol::AegsConnectionTestEventResponse, DaemonError> {
     post_aegs_json(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/test-event",
@@ -890,10 +1423,17 @@ pub(crate) fn invoke_aegs_action(
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     request: &chariox_event_protocol::AegsProviderActionRequest,
 ) -> Result<chariox_event_protocol::AegsProviderActionResponse, DaemonError> {
-    post_aegs_json(targets, &request.generator_id, "/v1/actions", request)
+    post_aegs_json(
+        &AegsManagementHttpClient::default(),
+        targets,
+        &request.generator_id,
+        "/v1/actions",
+        request,
+    )
 }
 
 fn revoke_aegs_connection(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     owner_id: &str,
     generator_id: &str,
@@ -905,6 +1445,7 @@ fn revoke_aegs_connection(
         connection_id: connection_id.to_string(),
     };
     post_aegs_json::<_, chariox_event_protocol::AegsConnectionRevokeResponse>(
+        management_client,
         targets,
         generator_id,
         "/v1/connections/revoke",
@@ -913,24 +1454,33 @@ fn revoke_aegs_connection(
 }
 
 fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
+    management_client: &AegsManagementHttpClient,
     targets: &BTreeMap<String, crate::config::EventGeneratorManagementTarget>,
     generator_id: &str,
     path: &str,
     request: &T,
 ) -> Result<R, DaemonError> {
-    let target = targets.get(generator_id).ok_or_else(|| {
-        catalog_error(format!(
-            "event generator `{generator_id}` has no configured management target"
-        ))
-    })?;
+    let owner_id = serde_json::to_value(request)
+        .ok()
+        .and_then(|value| {
+            value
+                .get("owner_id")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_string)
+        })
+        .ok_or_else(|| catalog_error("AEGS request is missing owner_id".to_string()))?;
+    let target = select_event_generator_management_target(targets, generator_id, &owner_id)?;
     let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
-    let response = ureq::AgentBuilder::new()
+    let mut http_request = management_client
+        .agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
         .build()
         .post(&format!("{}{path}", target.url))
-        .set("authorization", &format!("Bearer {}", target.token))
+        .set("authorization", &format!("Bearer {}", target.token));
+    http_request = http_request.set("x-chariox-owner-id", &owner_id);
+    let response = http_request
         .set("content-type", "application/json")
         .send_string(&body)
         .map_err(|error| catalog_error(format!("AEGS {generator_id} request failed: {error}")))?
@@ -945,6 +1495,66 @@ pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -
 
     let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());
     format!("kernel-user-{digest:x}")
+}
+
+/// Registry-issued management targets must resolve only to public addresses.
+/// Static targets are an explicit administrator action and retain loopback or
+/// private-network support for local/self-hosted deployments.
+pub(crate) fn aegs_management_agent_builder(
+    target: &crate::config::EventGeneratorManagementTarget,
+) -> ureq::AgentBuilder {
+    aegs_management_agent_builder_with_resolver(target, resolve_public_aegs_addresses)
+}
+
+pub(crate) fn aegs_management_agent_builder_with_resolver<R>(
+    target: &crate::config::EventGeneratorManagementTarget,
+    resolver: R,
+) -> ureq::AgentBuilder
+where
+    R: ureq::Resolver + 'static,
+{
+    let builder = ureq::AgentBuilder::new();
+    if is_registry_issued_management_target(target) {
+        builder.https_only(true).resolver(resolver)
+    } else {
+        builder
+    }
+}
+
+fn is_registry_issued_management_target(
+    target: &crate::config::EventGeneratorManagementTarget,
+) -> bool {
+    target.expires_at_ms.is_some() && target.owner_ids.is_some()
+}
+
+fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
+    let addresses = netloc.to_socket_addrs()?.collect::<Vec<_>>();
+    validate_public_aegs_addresses(netloc, addresses)
+}
+
+fn validate_public_aegs_addresses(
+    netloc: &str,
+    addresses: Vec<SocketAddr>,
+) -> io::Result<Vec<SocketAddr>> {
+    if addresses.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("AEGS management target `{netloc}` did not resolve"),
+        ));
+    }
+    if let Some(address) = addresses
+        .iter()
+        .find(|address| !is_globally_reachable_aegs_destination(address.ip()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "registry-issued AEGS management target `{netloc}` resolved to non-public address {}",
+                address.ip()
+            ),
+        ));
+    }
+    Ok(addresses)
 }
 
 fn connection_error(message: impl Into<String>) -> DaemonError {
@@ -1263,6 +1873,7 @@ fn builtin_summaries() -> Vec<EventGeneratorCatalogSummary> {
         installed_count: 0,
         recommended: true,
         availability: "available".to_string(),
+        management_url: None,
     }]
 }
 
@@ -1291,6 +1902,7 @@ fn builtin_detail(generator_id: &str) -> Option<EventGeneratorCatalogDetail> {
             }),
             required_scopes: Vec::new(),
         }],
+        actions: Vec::new(),
         signature: serde_json::json!({
             "key_id": "dev.chariox.fixture.2026-08-v3",
             "algorithm": "ed25519",
@@ -1381,6 +1993,24 @@ fn catalog_error(message: String) -> DaemonError {
 mod tests {
     use super::*;
 
+    fn binding_contract(
+        detail: &EventGeneratorCatalogDetail,
+        generator_id: &str,
+        event_type: &str,
+        action_ids: Vec<String>,
+    ) -> WorkflowEventBindingContract {
+        WorkflowEventBindingContract {
+            generator_id: generator_id.to_string(),
+            generator_version: detail.summary.version.clone(),
+            manifest_digest: detail.summary.manifest_digest.clone(),
+            connection_id: "connection-1".to_string(),
+            event_type: event_type.to_string(),
+            event_type_version: 1,
+            action_ids,
+            reply_mode: None,
+        }
+    }
+
     #[test]
     fn builtin_dummy_catalog_matches_publisher_manifest_fixture() {
         let manifest: serde_json::Value = serde_json::from_str(include_str!(
@@ -1404,44 +2034,139 @@ mod tests {
     #[test]
     fn event_binding_contract_rejects_undeclared_event_type() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let error = validate_event_binding_detail(
-            &detail,
-            &detail.summary.generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            "dummy_typo",
-            1,
-        )
-        .expect_err("undeclared event type must be rejected");
+        let contract =
+            binding_contract(&detail, &detail.summary.generator_id, "dummy_typo", vec![]);
+        let error = validate_event_binding_detail(&detail, &contract)
+            .expect_err("undeclared event type must be rejected");
         assert!(error.to_string().contains("is not declared"));
     }
 
     #[test]
     fn event_binding_contract_accepts_declared_event_type() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        validate_event_binding_detail(
+        let contract =
+            binding_contract(&detail, &detail.summary.generator_id, "dummy.test", vec![]);
+        validate_event_binding_detail(&detail, &contract)
+            .expect("declared event type should be accepted");
+    }
+
+    #[test]
+    fn event_binding_contract_returns_unique_event_and_action_scopes() {
+        let mut detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
+        detail.events[0].required_scopes = vec!["events:read".to_string()];
+        detail.actions = vec![crate::local::EventGeneratorActionDefinition {
+            action_id: "dummy.acknowledge".to_string(),
+            name: "Acknowledge".to_string(),
+            description: "Acknowledge the event".to_string(),
+            required_scopes: vec!["actions:write".to_string(), "events:read".to_string()],
+            target: "originating_resource".to_string(),
+            mutation: true,
+            idempotent: true,
+            input_schema: serde_json::json!({"type": "object"}),
+        }];
+
+        let contract = binding_contract(
             &detail,
             &detail.summary.generator_id,
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
             "dummy.test",
-            1,
+            vec!["dummy.acknowledge".to_string()],
+        );
+        let required_scopes = validate_event_binding_detail(&detail, &contract)
+            .expect("declared action should be accepted");
+
+        assert_eq!(required_scopes, vec!["actions:write", "events:read"]);
+    }
+
+    #[test]
+    fn event_binding_scope_validation_fails_closed_for_omitted_grants() {
+        let required_scopes = vec!["actions:write".to_string()];
+        let error = validate_granted_event_connection_scopes("connection-1", &[], &required_scopes)
+            .expect_err("omitted scopes must not grant a scope-bearing action");
+        assert!(error
+            .to_string()
+            .contains("missing required scopes: actions:write"));
+
+        validate_granted_event_connection_scopes("connection-1", &[], &[])
+            .expect("actions without required scopes remain available");
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_rejects_non_public_destinations() {
+        for destination in [
+            "127.0.0.1:443",
+            "10.0.0.1:443",
+            "169.254.169.254:443",
+            "192.168.1.1:443",
+            "[::1]:443",
+            "[::ffff:127.0.0.1]:443",
+            "[fc00::1]:443",
+            "[fe80::1]:443",
+        ] {
+            let error = resolve_public_aegs_addresses(destination)
+                .expect_err("non-public management destination must be rejected");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{destination}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_accepts_public_destinations() {
+        assert_eq!(
+            resolve_public_aegs_addresses("8.8.8.8:443").expect("public IPv4 destination"),
+            vec!["8.8.8.8:443".parse::<SocketAddr>().expect("socket address")]
+        );
+        assert_eq!(
+            resolve_public_aegs_addresses("[2606:4700:4700::1111]:443")
+                .expect("public IPv6 destination"),
+            vec!["[2606:4700:4700::1111]:443"
+                .parse::<SocketAddr>()
+                .expect("socket address")]
+        );
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_rejects_mixed_dns_answers() {
+        let error = validate_public_aegs_addresses(
+            "aegs.example.test:443",
+            vec![
+                "8.8.8.8:443".parse().expect("public socket address"),
+                "127.0.0.1:443".parse().expect("private socket address"),
+            ],
         )
-        .expect("declared event type should be accepted");
+        .expect_err("one private DNS answer must reject the entire target");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn static_management_targets_retain_self_hosted_network_access() {
+        let static_target = crate::config::EventGeneratorManagementTarget {
+            url: "http://127.0.0.1:43132".to_string(),
+            token: "operator-token".to_string(),
+            expires_at_ms: None,
+            owner_ids: None,
+            owner_scoped: None,
+        };
+        assert!(!is_registry_issued_management_target(&static_target));
+
+        let registry_target = crate::config::EventGeneratorManagementTarget {
+            url: "https://aegs.example.test".to_string(),
+            token: "signed-capability".to_string(),
+            expires_at_ms: Some(1_700_000_000_000),
+            owner_ids: Some(vec!["kernel-1".to_string()]),
+            owner_scoped: None,
+        };
+        assert!(is_registry_issued_management_target(&registry_target));
     }
 
     #[test]
     fn event_binding_contract_rejects_mismatched_generator_identity() {
         let detail = builtin_detail("dev.chariox.dummy").expect("dummy catalog detail");
-        let error = validate_event_binding_detail(
-            &detail,
-            "dev.chariox.other",
-            &detail.summary.version,
-            &detail.summary.manifest_digest,
-            "dummy.test",
-            1,
-        )
-        .expect_err("mismatched catalog identity must be rejected");
+        let contract = binding_contract(&detail, "dev.chariox.other", "dummy.test", vec![]);
+        let error = validate_event_binding_detail(&detail, &contract)
+            .expect_err("mismatched catalog identity must be rejected");
         assert!(error.to_string().contains("event catalog returned"));
     }
 }

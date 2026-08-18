@@ -1,0 +1,14 @@
+{
+  "suite": "chariox-aegs-conformance-v1",
+  "passed": true,
+  "checks": [
+    "identity",
+    "manifest_signature",
+    "webhook_normalization",
+    "filters",
+    "connection_lifecycle",
+    "test_events",
+    "provider_actions",
+    "protocol_compatibility"
+  ]
+}

@@ -189,9 +189,12 @@ Chariox now uses one machine-local shared log root for runtime processes instead
 Default log root resolution:
 
 - `CHARIOX_LOG_DIR`, if set
+- `CHARIOX_HOME/logs`, if `CHARIOX_HOME` is set
 - `XDG_STATE_HOME/chariox/logs`
 - `~/.local/state/chariox/logs`
-- `./.chariox/logs` as a final fallback
+- the operating-system temporary directory as a final fallback
+
+Chariox does not automatically create log or runtime-state directories inside a project. For persistent development and drill state, use an explicit path such as `CHARIOX_HOME=~/.chariox/dev/<task-or-kernel>`.
 
 Current process coverage:
 

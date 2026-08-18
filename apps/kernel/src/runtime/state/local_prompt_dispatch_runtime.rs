@@ -304,7 +304,13 @@ mod tests {
                     .name(format!("workflow-provider-admission-{index}"))
                     .spawn(move || {
                         barrier.wait();
-                        owned.workflow_ensure_provider_run(&session_id, &agent_id, false)
+                        owned.workflow_ensure_provider_run(
+                            &session_id,
+                            &agent_id,
+                            false,
+                            false,
+                            false,
+                        )
                     })
                     .expect("workflow provider admission thread should spawn"),
             );

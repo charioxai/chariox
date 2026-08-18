@@ -11,17 +11,176 @@ implementations. It provides:
 - a durable authoritative subscription store;
 - metadata-filter matching and replay-window helpers.
 
+## Start a provider
+
+Copy [`packages/aegs-sdk/examples/starter_aegs.rs`](../packages/aegs-sdk/examples/starter_aegs.rs)
+into a provider repository, implement provider authorization and webhook
+normalization, then run the public contract suite before submitting the
+implementation. The starter is deliberately not a production adapter: it
+shows the boundary while making missing provider authentication explicit. It
+also executes one deterministic local fixture through the same public
+`verify_webhook_conformance` harness used by provider tests:
+
+```sh
+cargo run -p chariox-aegs-sdk --example starter_aegs
+# starter AEGS conformance passed: example.created (demo-occurrence)
+```
+
+Replace the fixture and normalization with the provider's authenticated
+webhook path; do not treat this example as a substitute for signature
+verification or credential storage.
+
+Publisher manifests are signed locally. The SDK signs canonical unsigned JSON
+and records its digest in the envelope; it accepts only raw 32-byte Ed25519 keys in hexadecimal or
+base64. Keep the key in a secret manager or a file with restricted permissions;
+never put it in a manifest, Cloud, AEDS, a kernel, or a command-line argument:
+
+```sh
+export CHARIOX_AEGS_SIGNING_KEY='...raw-key-in-base64...'
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  sign --input manifest.json --output manifest.signed.json \
+  --key-id com.example.publisher.2026-01
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  validate --input manifest.signed.json
+```
+
+After the provider tests pass, record the exact public conformance report and
+bind it to the signed manifest. A passing report has this bounded shape:
+
+```json
+{
+  "suite": "chariox-aegs-conformance-v1",
+  "passed": true,
+  "checks": [
+    "identity",
+    "manifest_signature",
+    "webhook_normalization",
+    "filters",
+    "connection_lifecycle",
+    "test_events",
+    "provider_actions",
+    "protocol_compatibility"
+  ]
+}
+```
+
+The complete example is available at
+[`docs/fixtures/event-generators/dummy/conformance-report.json`](fixtures/event-generators/dummy/conformance-report.json).
+The SDK and Store reject an attestation that omits any required check, repeats
+a check, or uses an unbounded check name. Extra provider-specific checks are
+allowed and remain bound by the report digest.
+
+Each check is a concrete provider test obligation:
+
+| Check | Required proof in the provider repository |
+| --- | --- |
+| `identity` | `verify_provider_contract` accepts the publisher-scoped generator ID and exact webhook route, and rejects another provider's route. |
+| `manifest_signature` | The release manifest passes `validate_manifest_envelope` and `verify_manifest_signature`; changing any signed field fails verification. |
+| `webhook_normalization` | Authentic and invalid provider fixtures exercise `verify_webhook_conformance`, including deterministic occurrence identity and UTC timestamps. |
+| `filters` | Provider metadata uses documented filter paths and `metadata_matches_filter` accepts matching values and rejects non-matching values. |
+| `connection_lifecycle` | Authorization, inspection, refresh/reconnect, resource discovery, revocation, and expired/unavailable states are covered without exporting credentials. |
+| `test_events` | Supported test events use an active subscription's event type, scope, and filter and enter the ordinary AEDS publication path; unsupported behavior is explicit. |
+| `provider_actions` | Every declared action has bounded inputs/results, required scopes, target isolation, provider-error coverage, and durable idempotency for mutations; undeclared actions fail closed. |
+| `protocol_compatibility` | Tests compile against and assert event-delivery protocol 3 and management protocol 4, including the public request/response validation used by the implementation. |
+
+The public SDK tests prove the shared reference behavior for signatures,
+filters, durable lifecycle state, action receipts, and protocol validation.
+Provider repositories must add their own provider fixtures and live acceptance;
+the report is not permission to replace those tests with eight unchecked names.
+
+Create the Store attestation locally:
+
+```sh
+cargo run -p chariox-aegs-sdk --bin chariox-aegs-manifest -- \
+  attest --input conformance-report.json \
+  --manifest manifest.signed.json \
+  --output conformance-attestation.json
+```
+
+The attestation records the completed check matrix, exact report and manifest
+SHA-256 digests, event and management protocol versions, and completion time. A failed,
+empty, malformed, stale, future-dated, wrong-protocol, or wrong-manifest
+attestation is rejected. Keep the report with the provider's release evidence;
+Cloud stores its digest and the bounded attestation, not provider credentials
+or private signing material.
+
+The registry verifies the declared digest and the signature against the
+publisher key registered for the publisher namespace. A signed version is
+immutable: changing event definitions, scopes, endpoints, or display metadata
+requires a new version and digest.
+
+## Submit to the Chariox Store
+
+Store ingestion is a durable lifecycle, not a Cloud deployment or client
+release:
+
+1. A registry reviewer registers the publisher's Ed25519 public key and
+   namespace once. Key IDs are immutable; rotation uses a new key ID.
+2. The publisher submits the signed manifest, publisher/operator identity, and
+   HTTPS management URL. The registry verifies the namespace, public-key
+   binding, signature, schema, events, scopes, actions, and response bounds and
+   creates a `DRAFT`.
+3. The publisher submits the manifest-bound conformance attestation. The draft
+   moves through `SUBMITTED` and either `VALIDATION_FAILED` or
+   `AWAITING_REVIEW`. A failed draft may be corrected and resubmitted.
+4. A human reviewer may move a validated submission to `APPROVED`, then
+   `PUBLISHED`. Published entries appear through search, categories, and
+   paginated browsing without restarting Cloud, a kernel, or a client.
+5. A published version may be `DEPRECATED`. Updating signed content requires a
+   new immutable version; installations pinned to an older version never
+   silently upgrade.
+
+Submission and reviewer credentials are separate. A publisher can create and
+submit drafts but cannot approve or publish them. The registry never receives
+the private publisher key. The exact HTTP routes and operator commands are
+documented in the Cloud registry guide.
+
 Run the conformance tests with:
 
 ```sh
 cargo test -p chariox-event-protocol -p chariox-aegs-sdk -p chariox-aegs-dummy
 ```
 
+The SDK is intentionally developed in this repository as a workspace package:
+the local `chariox-event-protocol` path keeps protocol and SDK changes tested
+together. For a distributable release, publish the matching protocol crate
+before publishing `chariox-aegs-sdk`; the SDK dependency is versioned so an
+external provider can then depend on the public crates without this repository
+or any private AEDS/AEGS source. Until that release sequence is complete,
+external examples should use the public repository workspace (or a pinned
+source checkout) rather than an unpublished registry package.
+
+The repository contains a manual `Release public AEGS SDK` workflow for this
+ordered release. It checks out one immutable commit, verifies that the SDK's
+protocol requirement matches the protocol crate version, and queries the exact
+protocol and SDK versions through the crates.io API. It publishes only versions
+that are not already present, then resolves the exact protocol version through
+Cargo's index before publishing `chariox-aegs-sdk`; it does not rely on a REST
+record or an unrelated search result. This makes a rerun safe after a failure
+between the two publishes. To exercise that recovery
+path, run it with `confirm=publish` and `fail_after_protocol=true`, then rerun
+with the flag disabled; the existing protocol version is skipped and the SDK
+continues. It requires the repository's `CARGO_REGISTRY_TOKEN` secret and runs
+only when an operator explicitly types `publish`; normal pushes and pull
+requests never publish packages.
+
 An AEGS must expose `GET /healthz`, `GET /readyz`, `GET /version`, and the
 capability-protected `PUT /v1/subscriptions/reconcile` endpoint. It must accept
 only authentic provider events, normalize a provider occurrence once, apply
 the subscription filter, and publish once per distinct event-interest key.
 AEDS owns route fan-out, durable retry, and kernel delivery.
+
+Before a submission can await review, Cloud resolves the complete management
+hostname answer set, rejects any non-public destination, pins the verified
+socket address, and checks these unauthenticated release surfaces:
+
+- `/healthz` returns `{"status":"ok"}`;
+- `/readyz` returns `{"status":"ready"}`;
+- `/version` identifies `component=chariox-aegs`, the exact generator ID, and
+  management protocol version 4.
+
+Redirects are not followed. Private or loopback targets are self-hosted
+administrator configuration and cannot enter the public Store.
 
 The event-delivery wire contract is version 3. AEDS and every producer that sends
 reply-capable events must use the same protocol revision so the opaque provider
@@ -35,6 +194,17 @@ lifecycle endpoints documented in [EVENT_TRIGGER_PROTOCOL.md](EVENT_TRIGGER_PROT
 - reconnect and revoke/disconnect;
 - emit an authentic test occurrence through AEDS when supported.
 
+Mutation actions such as `notification.reply` are idempotent and are retained
+as durable action receipts so a retry cannot repeat the provider side effect.
+`event.context` (and the compatibility alias `notification.context`) is
+different: it is a bounded, read-only query. The SDK serializes requests with
+the same idempotency key while they are in flight within one AEGS process, but
+deliberately does not persist the response or conversation data in
+`action_receipts`; a retry after completion performs a fresh provider query.
+This in-memory coordination is not a cross-replica deduplication guarantee.
+AEGS implementations must keep context responses bounded and must not turn this
+path into a general provider API proxy.
+
 Implement `AegsProvider::inspect_connection`, `refresh_connection`, and
 `test_event` for provider-specific behavior. The SDK supplies a conservative
 baseline inspection, but it intentionally does not claim that provider health
@@ -47,7 +217,10 @@ the private `chariox-aeds` and `chariox-aegs-<provider>` repositories, consume
 this SDK, and run the same public conformance contracts. The only runnable AEGS
 kept here is `chariox-aegs-dummy` for deterministic local development.
 
-Reconciliation is authoritative only for the request's `owner_id`. An AEGS
+Reconciliation is authoritative only for the request's `owner_id`. A signed
+management capability may authorize the exact kernel owner and one or more
+kernel-user connection owners needed by the same kernel; the request header and
+body must still name one of those exact identities. An AEGS
 must not deactivate subscriptions owned by another kernel when one kernel
 reconciles an empty or partial set. A higher binding revision may transfer the
 same logical binding to a new owner; equal or older revisions from a different
@@ -77,3 +250,10 @@ Every implementation should call `verify_provider_contract` from its tests.
 Provider webhook fixtures can additionally use `verify_webhook_conformance` to
 prove deterministic occurrence identity, bounded canonical fields, route
 ownership, event type, and connection scope.
+
+Common submission failures are actionable: an unknown/revoked key requires
+publisher registration or rotation; a digest/signature error requires signing
+the canonical unsigned manifest again; `VALIDATION_FAILED` reports the bounded
+attestation or management-surface error; protocol mismatches require the
+matching public SDK; and a non-public management target must be installed as an
+explicit self-hosted target instead of submitted to the Store.

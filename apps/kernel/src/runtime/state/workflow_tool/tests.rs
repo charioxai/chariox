@@ -54,6 +54,123 @@ fn runtime_state_from_app(app: DaemonApp) -> KernelRuntimeState {
 }
 
 #[test]
+fn runtime_tool_snapshot_policy_keeps_external_context_tools_out_of_large_writes() {
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::ACK_WORKFLOW_TURN_TOOL
+    ));
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::VALIDATE_AND_SUBMIT_WORKFLOW_RUN_OUTPUT_TOOL
+    ));
+    assert!(super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::WORKFLOW_CONSOLE_WRITE_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::READ_WORKFLOW_TURN_CONTEXT_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL
+    ));
+    assert!(!super::runtime_tool_requires_session_snapshot(
+        crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL
+    ));
+}
+
+#[test]
+fn event_context_idempotency_fingerprint_scopes_request_parameters() {
+    let first = super::event_context_request_fingerprint("thread", 20, None, None);
+    let same_request = super::event_context_request_fingerprint("thread", 20, None, None);
+    let next_page = super::event_context_request_fingerprint("thread", 20, Some("cursor-2"), None);
+    let different_limit = super::event_context_request_fingerprint("thread", 50, None, None);
+    let different_users =
+        super::event_context_request_fingerprint("users", 20, None, Some(&[String::from("U123")]));
+
+    assert_eq!(first, same_request);
+    assert_ne!(first, next_page);
+    assert_ne!(first, different_limit);
+    assert_ne!(first, different_users);
+}
+
+#[test]
+fn event_context_runtime_receipts_redact_provider_payloads() {
+    let result = crate::transport::runtime_tools::RuntimeToolResult {
+        ok: true,
+        payload: serde_json::json!({
+            "result": {
+                "messages": [{"text": "private conversation body"}],
+                "users": [{"id": "U123", "profile": "private profile"}]
+            }
+        }),
+    };
+    let receipt = super::workflow_runtime_tool_result_json(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
+        &result,
+    );
+
+    assert!(receipt.contains("\"redacted\":true"));
+    assert!(!receipt.contains("private conversation body"));
+    assert!(!receipt.contains("private profile"));
+
+    let mut envelope = crate::session::WorkflowTurnEnvelope::new(
+        "workflow-ack:test",
+        "mention".to_string(),
+        None,
+        None,
+    );
+    envelope.add_runtime_tool_call(crate::session::WorkflowRuntimeToolCallEvent::new(
+        crate::transport::runtime_tools::EVENT_CONTEXT_TOOL,
+        "{\"kind\":\"thread\"}",
+        Some(receipt),
+        true,
+    ));
+    let snapshot = serde_json::to_string(&envelope).expect("turn envelope should serialize");
+    assert!(!snapshot.contains("private conversation body"));
+    assert!(!snapshot.contains("private profile"));
+}
+
+#[test]
+fn event_context_tool_is_discovered_without_reply_tool() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "event-context-workspace",
+            "event-context-worktree",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id())
+            .with_workflow_event_context(true),
+        )
+        .expect("provider should launch");
+    app.providers()
+        .enable_workflow_tools(run.id())
+        .expect("workflow tools should be enabled");
+    let auth_token = run
+        .runtime_mcp_auth_token()
+        .expect("provider should expose runtime MCP auth")
+        .to_string();
+    let runtime = runtime_state_from_app(app);
+    let specs = runtime.runtime_tool_specs_for_auth_token(&auth_token);
+    assert!(specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::EVENT_CONTEXT_TOOL_QUALIFIED
+    }));
+    assert!(!specs
+        .iter()
+        .any(|spec| { spec.name == crate::transport::runtime_tools::EVENT_ACTION_TOOL_QUALIFIED }));
+    assert!(!specs.iter().any(|spec| {
+        spec.name == crate::transport::runtime_tools::REPLY_TO_EVENT_TOOL_QUALIFIED
+    }));
+}
+
+#[test]
 fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -475,15 +592,13 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
         .owned
         .durable_state_store
         .load_subject_events_by_kind(session.id(), "session.updated", 10)
-        .expect("durable workflow runtime tool events should load");
-    let latest_event = durable_events
-        .last()
-        .expect("workflow runtime tool call should be durable before returning");
-    assert_eq!(latest_event.payload["reason"], "workflow_runtime_tool");
-    serde_json::from_value::<crate::session::RuntimeSession>(
-        latest_event.payload["session"].clone(),
-    )
-    .expect("durable workflow runtime session should deserialize");
+        .expect("durable session events should load");
+    assert!(
+        durable_events
+            .iter()
+            .all(|event| event.payload["reason"] != "workflow_runtime_tool"),
+        "read-only workflow tools must not append a full session snapshot"
+    );
     let outgoing = result.payload["outgoing_edges"]
         .as_array()
         .expect("outgoing edges should be an array");

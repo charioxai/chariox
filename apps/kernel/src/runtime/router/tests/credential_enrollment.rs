@@ -389,6 +389,10 @@ async fn run_two_client_credential_enrollment_scenario() {
 
 #[tokio::test]
 async fn credential_enrollment_cancel_and_timeout_return_no_callback() {
+    Box::pin(run_credential_enrollment_cancel_and_timeout_scenario()).await;
+}
+
+async fn run_credential_enrollment_cancel_and_timeout_scenario() {
     let env = EnrollmentTestEnv::new();
 
     let cancel_enrollment_id = "enrollment-cancel";
@@ -448,6 +452,10 @@ async fn credential_enrollment_cancel_and_timeout_return_no_callback() {
 
 #[tokio::test]
 async fn matching_credential_service_can_cancel_only_its_own_interaction() {
+    Box::pin(run_matching_credential_service_cancel_scenario()).await;
+}
+
+async fn run_matching_credential_service_cancel_scenario() {
     let env = EnrollmentTestEnv::new();
     let enrollment_id = "enrollment-worker-cancel";
     env.arm(enrollment_id).await;
@@ -550,6 +558,10 @@ async fn matching_credential_service_can_cancel_only_its_own_interaction() {
 
 #[tokio::test]
 async fn credential_enrollment_rejects_unverified_and_wrong_service_subject() {
+    Box::pin(run_credential_service_subject_rejection_scenario()).await;
+}
+
+async fn run_credential_service_subject_rejection_scenario() {
     let env = EnrollmentTestEnv::new();
     let enrollment_id = "enrollment-service-identity";
     env.arm(enrollment_id).await;
@@ -664,6 +676,10 @@ async fn credential_enrollment_arm_requires_attached_focused_target() {
 
 #[tokio::test]
 async fn credential_enrollment_rearm_retries_only_the_exact_pending_route() {
+    Box::pin(run_credential_enrollment_rearm_scenario()).await;
+}
+
+async fn run_credential_enrollment_rearm_scenario() {
     let env = EnrollmentTestEnv::new();
     let enrollment_id = "enrollment-arm-retry";
     let original_request = env.arm_request(enrollment_id);

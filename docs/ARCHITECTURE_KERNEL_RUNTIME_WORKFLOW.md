@@ -338,7 +338,7 @@ Recommended layout:
 Current local baseline:
 
 - `CHARIOX_LOG_DIR` overrides the log root when set
-- otherwise Chariox resolves `XDG_STATE_HOME/chariox/logs`, then `~/.local/state/chariox/logs`, then a local `./.chariox/logs` fallback
+- otherwise Chariox resolves `CHARIOX_HOME/logs`, `XDG_STATE_HOME/chariox/logs`, `~/.local/state/chariox/logs`, then an operating-system temporary-directory fallback; it never creates logs in the workspace automatically
 - the daemon, the Rust `chariox-cli` launcher, and the TypeScript CLI all write per-process NDJSON log files under that root
 - the local Fastify server now uses the same root and record shape
 - local inspection can happen either with standard tools (`tail`, `jq`) or through the built-in `chariox-cli logs` command

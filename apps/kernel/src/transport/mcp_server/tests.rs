@@ -37,10 +37,34 @@ where
 mod slice_tools;
 
 #[tokio::test]
-async fn mcp_initialize_succeeds_and_unknown_token_lists_no_runtime_tools() {
-    let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
-    ));
+async fn mcp_initialize_and_tools_list_return_runtime_tools() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "mcp-workflow-tools-workspace",
+            "mcp-workflow-tools-worktree",
+        ))
+        .expect("session should be created");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider should launch");
+    app.providers()
+        .enable_workflow_tools(run.id())
+        .expect("workflow tools should be enabled");
+    let workflow_auth_token = run
+        .runtime_mcp_auth_token()
+        .expect("provider should expose runtime MCP auth")
+        .to_string();
+    let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
 
     let initialize = handle_json_rpc_value(
@@ -97,8 +121,46 @@ async fn mcp_initialize_succeeds_and_unknown_token_lists_no_runtime_tools() {
         .expect("tools should be an array");
     assert!(
         tools.is_empty(),
-        "an unknown provider token must not discover runtime capabilities"
+        "an unknown MCP token must not discover runtime tools"
     );
+
+    let workflow_tools_list = handle_json_rpc_value(
+        router.clone(),
+        &workflow_auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/list",
+            "params": {}
+        }),
+    )
+    .await
+    .expect("authenticated workflow tools/list should succeed");
+    assert_eq!(workflow_tools_list.status(), StatusCode::OK);
+    let workflow_tools_body = workflow_tools_list
+        .into_body()
+        .collect()
+        .await
+        .expect("workflow tools list body should collect")
+        .to_bytes();
+    let workflow_tools_value: Value = serde_json::from_slice(&workflow_tools_body)
+        .expect("workflow tools list body should be json");
+    let tools = workflow_tools_value["result"]["tools"]
+        .as_array()
+        .expect("workflow tools should be an array");
+    assert!(tools.iter().any(|tool| tool["name"] == "ack_workflow_turn"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "validate_workflow_handoff"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_read"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_write"));
+    assert!(tools
+        .iter()
+        .any(|tool| tool["name"] == "workflow_console_clear"));
 }
 
 #[tokio::test]

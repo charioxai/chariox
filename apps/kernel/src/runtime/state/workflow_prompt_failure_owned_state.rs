@@ -373,6 +373,7 @@ mod tests {
                 None,
                 None,
                 Some("disabled".to_string()),
+                Vec::new(),
             )
             .expect("event binding should create");
         let invocation = crate::session::WorkflowPublicationInvocationEnvelope {

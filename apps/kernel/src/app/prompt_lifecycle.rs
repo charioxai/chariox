@@ -56,23 +56,27 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
                     "workflow node run `{workflow_node_run_id}` has no prepared turn envelope"
                 ),
             })?;
-        let event_reply_enabled = workflow_run
+        let (event_reply_enabled, event_context_enabled, event_actions_enabled) = workflow_run
             .publication_invocation()
-            .and_then(|invocation| invocation.hook_id.as_deref())
-            .and_then(|binding_id| {
-                self.app
-                    .sessions()
-                    .get_session(session_id)
-                    .ok()
-                    .map(|session| {
-                        session
-                            .workflow_event_binding(binding_id)
-                            .is_some_and(|binding| {
-                                matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"))
-                            })
-                    })
+            .filter(|invocation| invocation.transport == "event")
+            .and_then(|invocation| {
+                let binding_id = invocation.hook_id.as_deref()?;
+                let session = self.app.sessions().get_session(session_id).ok()?;
+                let binding = session.workflow_event_binding(binding_id)?;
+                let reply_enabled =
+                    matches!(binding.reply_mode.as_deref(), Some("thread" | "channel"));
+                let context_enabled = binding.active()
+                    && invocation
+                        .input
+                        .get("reply_context")
+                        .is_some_and(|context| !context.is_null());
+                Some((
+                    reply_enabled,
+                    context_enabled,
+                    !binding.action_ids.is_empty(),
+                ))
             })
-            .unwrap_or(false);
+            .unwrap_or((false, false, false));
         Ok(RemoteWorkflowTurnContext {
             home_kernel_id: self.app.config().daemon_id.clone(),
             home_session_id: session_id.to_string(),
@@ -81,6 +85,8 @@ impl<'a> RemoteWorkflowTurnContextResolver<'a> {
             workflow_node_run_id: workflow_node_run_id.to_string(),
             delivery_token,
             event_reply_enabled,
+            event_context_enabled,
+            event_actions_enabled,
         })
     }
 }

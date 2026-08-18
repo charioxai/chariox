@@ -7,8 +7,9 @@ use crate::runtime::capability_registry::execute_capability_registry_request;
 use crate::runtime::command::KernelCommand;
 use crate::runtime::daemon_health_projection::execute_daemon_health_request;
 use crate::runtime::event_catalog_control::{
-    execute_event_catalog_request, validate_event_binding_contract, validate_event_connection,
-    validate_registered_event_connection, workflow_event_binding_connection,
+    execute_event_catalog_request_with_client, validate_event_connection,
+    validate_event_connection_scopes, validate_registered_event_connection,
+    workflow_event_binding_contract, WorkflowEventBindingContract,
 };
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
@@ -73,9 +74,10 @@ impl CommandRouter {
                 .event_connection_lanes
                 .lock(caller_user_id, &connection_id)
                 .await;
-            return execute_event_catalog_request(
+            return execute_event_catalog_request_with_client(
                 &self.runtime_state,
                 &self.config_projection,
+                &self.aegs_management_http_client,
                 caller_user_id,
                 request.clone(),
             )
@@ -180,9 +182,10 @@ impl CommandRouter {
             | LocalDaemonRequest::ListEventConnectionResources(_)
             | LocalDaemonRequest::ListEventConnectionDependencies(_)
             | LocalDaemonRequest::GetEventDeliveryStatus(_)) => {
-                return execute_event_catalog_request(
+                return execute_event_catalog_request_with_client(
                     &self.runtime_state,
                     &self.config_projection,
+                    &self.aegs_management_http_client,
                     caller_user_id,
                     request.clone(),
                 )
@@ -260,45 +263,35 @@ impl CommandRouter {
                 .map(Some);
         }
         let connection_mutation = match request {
-            LocalDaemonRequest::CreateWorkflowEventBinding(request) => Some((
-                request.generator_id.clone(),
-                request.connection_id.clone(),
-                false,
-            )),
+            LocalDaemonRequest::CreateWorkflowEventBinding(request) => {
+                Some((WorkflowEventBindingContract::from(request), false))
+            }
             LocalDaemonRequest::SetWorkflowEventBindingStatus(request)
                 if request.status == crate::session::WorkflowEventBindingStatus::Active =>
             {
-                workflow_event_binding_connection(
+                workflow_event_binding_contract(
                     &self.runtime_state,
                     &request.session_id,
                     &request.binding_id,
                 )
-                .map(|(generator_id, connection_id)| (generator_id, connection_id, true))
+                .map(|contract| (contract, true))
             }
             LocalDaemonRequest::TransferWorkflowEventBinding(request) => {
-                workflow_event_binding_connection(
+                workflow_event_binding_contract(
                     &self.runtime_state,
                     &request.source_session_id,
                     &request.binding_id,
                 )
-                .map(|(generator_id, connection_id)| (generator_id, connection_id, true))
+                .map(|contract| (contract, true))
             }
             _ => None,
         };
-        if let Some((generator_id, connection_id, requires_registered_connection)) =
-            connection_mutation
-        {
-            if let LocalDaemonRequest::CreateWorkflowEventBinding(request) = request {
-                validate_event_binding_contract(
-                    &self.config_projection,
-                    &request.generator_id,
-                    &request.generator_version,
-                    &request.manifest_digest,
-                    &request.event_type,
-                    request.event_type_version,
-                )
+        if let Some((binding_contract, requires_registered_connection)) = connection_mutation {
+            let required_scopes = binding_contract
+                .required_scopes(&self.config_projection)
                 .await?;
-            }
+            let generator_id = binding_contract.generator_id;
+            let connection_id = binding_contract.connection_id;
             let _connection_guard = self
                 .event_connection_lanes
                 .lock(caller_user_id, &connection_id)
@@ -307,6 +300,7 @@ impl CommandRouter {
                 validate_registered_event_connection(
                     &self.runtime_state,
                     &self.config_projection,
+                    &self.aegs_management_http_client,
                     caller_user_id,
                     &generator_id,
                     &connection_id,
@@ -316,12 +310,19 @@ impl CommandRouter {
                 validate_event_connection(
                     &self.runtime_state,
                     &self.config_projection,
+                    &self.aegs_management_http_client,
                     caller_user_id,
                     &generator_id,
                     &connection_id,
                 )
                 .await?;
             }
+            validate_event_connection_scopes(
+                &self.runtime_state,
+                caller_user_id,
+                &connection_id,
+                &required_scopes,
+            )?;
             let response = self
                 .workflow_runtime
                 .dispatch_workflow_command(command.clone(), request.clone())
