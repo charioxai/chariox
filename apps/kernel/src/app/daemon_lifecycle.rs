@@ -124,9 +124,8 @@ impl DaemonApp {
         self.run_with_listener(Some(listener)).await
     }
 
-    async fn run_with_listener(mut self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
-        let pending_legacy_workflow_history =
-            std::mem::take(&mut self.pending_legacy_workflow_history);
+    async fn run_with_listener(self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
+        let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
         let app = Arc::new(tokio::sync::Mutex::new(self));
@@ -138,11 +137,11 @@ impl DaemonApp {
         );
         let runtime_state = router.runtime_state();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
-        let history_migration_task = (!pending_legacy_workflow_history.is_empty()).then(|| {
+        let history_migration_task = (!legacy_workflow_history.is_empty()).then(|| {
             tokio::spawn(run_legacy_workflow_history_migration(
                 history_migration_store,
                 history_migration_owner,
-                pending_legacy_workflow_history,
+                legacy_workflow_history,
                 shutdown_rx.clone(),
             ))
         });
@@ -229,7 +228,7 @@ impl DaemonApp {
 async fn run_legacy_workflow_history_migration(
     store: crate::durable_state::DurableKernelStateStore,
     owner_id: String,
-    workflow_runs: Vec<(String, crate::session::WorkflowRun)>,
+    workflow_runs: crate::app::LegacyWorkflowHistoryStore,
     shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     const MIGRATION_CHUNK_SIZE: usize = 256;
@@ -242,27 +241,35 @@ async fn run_legacy_workflow_history_migration(
             "chunk_size": MIGRATION_CHUNK_SIZE,
         }),
     );
-    for (index, chunk) in workflow_runs.chunks(MIGRATION_CHUNK_SIZE).enumerate() {
+    let mut completed_run_count = 0usize;
+    loop {
         if *shutdown.borrow() {
             return;
         }
+        let chunk = workflow_runs.next_chunk(MIGRATION_CHUNK_SIZE);
+        if chunk.is_empty() {
+            break;
+        }
         let store = store.clone();
         let owner_id = owner_id.clone();
-        let chunk = chunk.to_vec();
-        let completed = (index + 1) * MIGRATION_CHUNK_SIZE >= run_count;
+        let migration_chunk = chunk.clone();
+        let completed = chunk.len() == workflow_runs.len();
         let result = tokio::task::spawn_blocking(move || {
-            store.migrate_legacy_workflow_history_chunk(&owner_id, &chunk, completed)
+            store.migrate_legacy_workflow_history_chunk(&owner_id, &migration_chunk, completed)
         })
         .await;
         match result {
-            Ok(Ok(())) => {}
+            Ok(Ok(())) => {
+                workflow_runs.remove_committed(&chunk);
+                completed_run_count += chunk.len();
+            }
             Ok(Err(error)) => {
                 crate::logging::warn_with_fields(
                     "durable_state.migration",
                     "background workflow history migration failed",
                     serde_json::json!({
                         "error": error.to_string(),
-                        "completed_run_count": index * MIGRATION_CHUNK_SIZE,
+                        "completed_run_count": completed_run_count,
                         "workflow_run_count": run_count,
                     }),
                 );

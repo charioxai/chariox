@@ -427,22 +427,24 @@ pub(crate) fn redact_response_for_user(
             endpoint,
             session: session.redacted_for_user(caller_user_id),
         },
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => {
-            LocalDaemonResponse::WorkflowRunsListed {
-                workflow_runs: workflow_runs
-                    .into_iter()
-                    .map(|workflow_run| {
-                        let workflow = workflow_run_context.and_then(|session| {
-                            session
-                                .workflows()
-                                .iter()
-                                .find(|workflow| workflow.id() == workflow_run.workflow_id())
-                        });
-                        workflow_run.redacted_for_user(workflow, caller_user_id)
-                    })
-                    .collect(),
-            }
-        }
+        LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs,
+            next_cursor,
+        } => LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: workflow_runs
+                .into_iter()
+                .map(|workflow_run| {
+                    let workflow = workflow_run_context.and_then(|session| {
+                        session
+                            .workflows()
+                            .iter()
+                            .find(|workflow| workflow.id() == workflow_run.workflow_id())
+                    });
+                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                })
+                .collect(),
+            next_cursor,
+        },
         LocalDaemonResponse::WorkflowRun { workflow_run } => LocalDaemonResponse::WorkflowRun {
             workflow_run: {
                 let workflow = workflow_run_context.and_then(|session| {
@@ -646,12 +648,18 @@ mod tests {
                 caller,
                 LocalDaemonResponse::WorkflowRunsListed {
                     workflow_runs: vec![active.clone(), archived.clone()],
+                    next_cursor: Some("cursor-1".to_string()),
                 },
                 &session,
             );
-            let LocalDaemonResponse::WorkflowRunsListed { workflow_runs } = response else {
+            let LocalDaemonResponse::WorkflowRunsListed {
+                workflow_runs,
+                next_cursor,
+            } = response
+            else {
                 panic!("unexpected response")
             };
+            assert_eq!(next_cursor.as_deref(), Some("cursor-1"));
             assert_eq!(workflow_runs.len(), 2);
             assert_eq!(
                 workflow_runs[0].invocation_prompt().is_some(),

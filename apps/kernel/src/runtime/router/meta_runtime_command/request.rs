@@ -506,6 +506,8 @@ pub(super) fn meta_workflow_request(
             ListWorkflowRunsRequest {
                 session_id: session.id().to_string(),
                 workflow_ref: args.get(1).cloned(),
+                cursor: None,
+                limit: None,
             },
         )),
         Some("get-run" | "run-status") => {

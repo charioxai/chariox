@@ -14,6 +14,7 @@ mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
+mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
@@ -100,6 +101,7 @@ use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
+pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
@@ -139,7 +141,7 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
-    pending_legacy_workflow_history: Vec<(String, crate::session::WorkflowRun)>,
+    legacy_workflow_history: LegacyWorkflowHistoryStore,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
@@ -242,7 +244,7 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
-            pending_legacy_workflow_history: Vec::new(),
+            legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             metaagent_trace_subscriptions:
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
@@ -356,6 +358,10 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {
+        self.legacy_workflow_history.clone()
     }
 
     pub(crate) fn metaagent_event_store(

@@ -342,10 +342,11 @@ impl DaemonApp {
             for session_id in &session_ids {
                 let archived = sessions.archive_terminal_workflow_runs(session_id)?;
                 archived_run_count += archived.len();
-                self.pending_legacy_workflow_history.extend(
+                self.legacy_workflow_history.insert_all(
                     archived
                         .into_iter()
-                        .map(|workflow_run| (session_id.clone(), workflow_run)),
+                        .map(|workflow_run| (session_id.clone(), workflow_run))
+                        .collect(),
                 );
                 hot_sessions.push(sessions.get_session(session_id)?);
             }
@@ -407,7 +408,7 @@ impl DaemonApp {
         self.durable_state.migrate_legacy_workflow_history_chunk(
             &self.config.daemon_id,
             &[],
-            self.pending_legacy_workflow_history.is_empty(),
+            self.legacy_workflow_history.is_empty(),
         )?;
         crate::logging::info_with_fields(
             "durable_state.restore",
