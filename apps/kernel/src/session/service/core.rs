@@ -7,6 +7,11 @@ mod publication;
 
 impl SessionService {
     pub fn new(config: &DaemonConfig) -> Self {
+        #[cfg(test)]
+        let prompt_id_allocator = PromptIdAllocator::default();
+        #[cfg(not(test))]
+        let prompt_id_allocator =
+            PromptIdAllocator::persistent(config.kernel_prompt_counter_path());
         Self {
             store: SessionStore::new(),
             projects: BTreeMap::new(),
@@ -14,7 +19,7 @@ impl SessionService {
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
             event_environment_id: config.event_delivery_environment_id.clone(),
-            prompt_id_allocator: PromptIdAllocator::persistent(config.kernel_prompt_counter_path()),
+            prompt_id_allocator,
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
             next_workflow_endpoint_number: 0,

@@ -971,11 +971,18 @@ async fn workflow_prompt_without_structured_output_schedules_a_corrective_turn()
     assert!(settled_session
         .active_prompt_for_agent(agent.id())
         .is_none());
+    let settled_workflow_run = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(
+            settled_session.host_daemon_id(),
+            settled_session.id(),
+            workflow_run.id(),
+        )
+        .expect("workflow run lookup should succeed")
+        .expect("completed workflow run should exist in durable history");
     assert_eq!(
-        settled_session
-            .workflow_run(workflow_run.id())
-            .expect("workflow run should exist")
-            .status(),
+        settled_workflow_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
     assert_eq!(

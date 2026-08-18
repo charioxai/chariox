@@ -1799,6 +1799,9 @@ mod tests {
                 }),
             )
             .expect("legacy snapshot should save");
+        store
+            .migrate_legacy_workflow_history_chunk("owner-1", &[], true)
+            .expect("history migration should be verified before legacy compaction");
         let session = DurableCheckpointEntity {
             kind: "sessions".to_string(),
             id: "session-1".to_string(),
@@ -1951,6 +1954,12 @@ mod tests {
                 serde_json::json!({"session": {"id": "session-b"}}),
             )
             .expect("second owner update should append");
+        store
+            .migrate_legacy_workflow_history_chunk("kernel-a", &[], true)
+            .expect("first owner history migration should verify");
+        store
+            .migrate_legacy_workflow_history_chunk("kernel-b", &[], true)
+            .expect("second owner history migration should verify");
 
         store
             .save_entity_checkpoint(

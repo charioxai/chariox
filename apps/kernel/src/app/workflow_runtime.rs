@@ -880,7 +880,7 @@ mod tests {
         complete_workflow_prompt_from_runtime(&mut app, session.id(), &prompt, None)
             .expect("workflow prompt should complete");
 
-        let durable_event = app
+        let _durable_event = app
             .durable_state_store()
             .load_events_by_kind("workflow.runtime.updated")
             .expect("durable workflow events should load")
@@ -895,10 +895,13 @@ mod tests {
                         == Some("workflow_prompt_completed")
             })
             .expect("workflow completion should persist its runtime transition");
-        let hot_session: crate::session::RuntimeSession =
-            serde_json::from_value(durable_event.payload["session"].clone())
-                .expect("hot workflow session should decode");
-        assert!(hot_session.workflow_run(workflow_run.id()).is_none());
+        let active_runs = app
+            .durable_state_store()
+            .load_active_workflow_runs(session.host_daemon_id())
+            .expect("active workflow runs should load");
+        assert!(!active_runs.iter().any(|(session_id, active_run)| {
+            session_id == session.id() && active_run.id() == workflow_run.id()
+        }));
         let durable_run = app
             .durable_state_store()
             .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
