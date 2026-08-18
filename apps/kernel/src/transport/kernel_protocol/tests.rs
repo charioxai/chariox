@@ -548,6 +548,7 @@ fn waiting_room_snapshot(
     sessions: Vec<WaitingRoomPublicSessionSummary>,
 ) -> WaitingRoomPublicSnapshot {
     WaitingRoomPublicSnapshot {
+        provider_accounts: Vec::new(),
         schema_version: 11,
         inventory_version: inventory_version.to_string(),
         structural_version: format!("structural-{inventory_version}"),

@@ -306,12 +306,12 @@ function formatSliceAuthNextAction(
     if (coverage.missingProviders.length > 0) {
       const provider = coverage.missingProviders[0]!
       const list = formatSliceProviderList(coverage.missingProviders)
-      return `run /slice doctor ${ref}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${list} with /slice auth import ${ref} ${provider} or /slice auth login ${ref} ${provider} before sending prompts to agents in that slice`
+      return `run /slice doctor ${ref}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${list} with /slice auth import ${ref} ${provider} <account-profile> or /slice auth login ${ref} ${provider} <account-profile> before sending prompts to agents in that slice`
     }
     if (coverage.staleProviders.length > 0) {
       const provider = coverage.staleProviders[0]!
       const list = formatSliceProviderList(coverage.staleProviders)
-      return `run /slice doctor ${ref}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${list} with /slice auth login ${ref} ${provider} before sending prompts to agents in that slice`
+      return `run /slice doctor ${ref}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${list} with /slice auth login ${ref} ${provider} <account-profile> before sending prompts to agents in that slice`
     }
   }
   return null

@@ -30,6 +30,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
+                account_profile: None,
                 alias: Some("mixed-owned".to_string()),
                 provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
@@ -43,6 +44,7 @@ async fn mixed_spawn_agents_preserves_response_order_and_final_focus() {
                 metaagent: false,
             },
             crate::local::SpawnAgentsRequestItem {
+                account_profile: None,
                 alias: Some("mixed-local-kernel-ref".to_string()),
                 provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
@@ -113,6 +115,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
         session_id: session_id.clone(),
         agents: vec![
             crate::local::SpawnAgentsRequestItem {
+                account_profile: None,
                 alias: Some("duplicate".to_string()),
                 provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
@@ -126,6 +129,7 @@ async fn local_spawn_agents_batch_rejects_duplicate_aliases_without_partial_crea
                 metaagent: false,
             },
             crate::local::SpawnAgentsRequestItem {
+                account_profile: None,
                 alias: Some(" duplicate ".to_string()),
                 provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
@@ -187,6 +191,7 @@ async fn local_spawn_agents_batch_recalculates_layout_and_focus_once() {
         session_id: session_id.clone(),
         agents: (0..50)
             .map(|index| crate::local::SpawnAgentsRequestItem {
+                account_profile: None,
                 alias: Some(format!("bulk-{index}")),
                 provider: Some("dev-stub".to_string()),
                 model: Some("default".to_string()),
@@ -255,6 +260,7 @@ async fn local_spawn_agent_creates_requested_git_worktree_in_kernel() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("feature-worker".to_string()),
         provider: Some("dev-stub".to_string()),
@@ -324,6 +330,7 @@ async fn local_spawn_agent_inherits_session_agent_defaults_when_omitted() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("inherited-agent".to_string()),
         provider: None,
@@ -384,6 +391,7 @@ async fn local_spawn_agent_rejects_deprecated_metaagent_creation() {
     );
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("meta".to_string()),
         provider: Some("dev-stub".to_string()),

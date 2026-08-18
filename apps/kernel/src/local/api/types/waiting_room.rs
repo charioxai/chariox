@@ -18,7 +18,7 @@ pub struct WaitingRoomLaunchTarget {
     pub worktree_label: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitingRoomInventorySnapshot {
     pub inventory_version: String,
     pub structural_version: String,
@@ -40,9 +40,11 @@ pub struct WaitingRoomInventorySnapshot {
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
+    #[serde(default)]
+    pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WaitingRoomPublicSnapshot {
     pub schema_version: u32,
     pub inventory_version: String,
@@ -66,6 +68,8 @@ pub struct WaitingRoomPublicSnapshot {
     #[serde(default)]
     pub terminals: Vec<TerminalRecord>,
     pub launch_target: Option<WaitingRoomLaunchTarget>,
+    #[serde(default)]
+    pub provider_accounts: Vec<crate::account_profile::ProviderAccountProfile>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -165,6 +169,9 @@ pub struct WaitingRoomPublicAgentSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_prompt_sent_at_ms: Option<u64>,
     pub provider: String,
+    pub account_profile: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -262,6 +269,7 @@ impl From<WaitingRoomPublicSnapshot> for WaitingRoomInventorySnapshot {
             remote_kernels: snapshot.remote_kernels,
             terminals: snapshot.terminals,
             launch_target: snapshot.launch_target,
+            provider_accounts: snapshot.provider_accounts,
         }
     }
 }

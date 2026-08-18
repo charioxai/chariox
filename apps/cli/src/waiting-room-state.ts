@@ -65,6 +65,7 @@ export function createWaitingRoomState(
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
+      accountProfileId: "default",
       modelId: selected?.id ?? model,
       effort: selectConfiguredVariant(selected, effort),
       executionMode: "build",
@@ -101,6 +102,12 @@ export function normalizeWaitingRoomState(
     selectedKernelRef: placement.selectedKernelRef,
   })
   const providerId = normalizeBackendProvider(state.providerId)
+  const providerAccounts = (remote.providerAccounts ?? []).filter((profile) => profile.provider === providerId)
+  const accountProfileId = providerAccounts.some((profile) => profile.profile_id === state.accountProfileId)
+    ? state.accountProfileId ?? "default"
+    : providerAccounts.find((profile) => profile.is_default)?.profile_id
+      ?? providerAccounts[0]?.profile_id
+      ?? "default"
   const selected = selectConfiguredModel(catalog, state.modelId, providerId)
   const efforts = waitingRoomEfforts(selected)
   const sliceSelection = normalizeWaitingRoomSliceSelection(
@@ -133,6 +140,7 @@ export function normalizeWaitingRoomState(
     ...state,
     focus,
     providerId,
+    accountProfileId,
     sessionIndex: visibleSessions.length === 0 ? 0 : modulo(state.sessionIndex, visibleSessions.length),
     projectIndex: projects.length === 0 ? 0 : modulo(state.projectIndex ?? 0, projects.length),
     showArchivedProjects: Boolean(state.showArchivedProjects),

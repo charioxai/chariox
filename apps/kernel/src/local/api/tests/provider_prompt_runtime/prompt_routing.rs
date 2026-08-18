@@ -28,6 +28,7 @@ fn local_request_api_rejects_config_updates_for_native_tui_provider_agents() {
                 session_id: session.id().to_string(),
                 agent_id: agent.id().to_string(),
                 provider: Some("codex".to_string()),
+                account_profile: None,
                 model: Some("gpt-5.5".to_string()),
                 effort: Some("high".to_string()),
                 clear_effort: false,
@@ -174,6 +175,7 @@ fn focusing_another_agent_during_a_prompt_keeps_the_working_run_active() {
 
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("reviewer".to_string()),
             provider: Some("claude-code".to_string()),
@@ -350,6 +352,7 @@ fn spawning_agent_during_active_prompt_keeps_snapshot_on_working_run() {
         .expect("prompt should start");
     let spawned = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some("observer".to_string()),
             provider: Some("claude-code".to_string()),

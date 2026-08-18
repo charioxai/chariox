@@ -141,8 +141,8 @@ test("session status renders home authority and runtime blockers", async () => {
       providers: ["opencode"],
       provider_auth: [{
         provider: "opencode",
+        account_profile: "daily",
         state: "authenticated",
-        alias: "daily",
         email: "daily@example.com",
         source: "test",
       }],

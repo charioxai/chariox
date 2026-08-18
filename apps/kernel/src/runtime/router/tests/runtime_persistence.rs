@@ -86,6 +86,7 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
         .all(|agent| agent.id() != destroyed_agent_id));
     let external_sessions = app.external_provider_session_index_store();
     external_sessions.upsert(crate::local::ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: "codex:thread-deleted".to_string(),
         provider: "codex".to_string(),
         provider_session_id: "thread-deleted".to_string(),
@@ -95,7 +96,7 @@ async fn runtime_destroy_agent_survives_kernel_restart() {
         created_at_ms: None,
         last_modified_at_ms: 30,
         worktree_path: None,
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: crate::local::ExternalProviderSessionCapabilities {
             ..crate::local::ExternalProviderSessionCapabilities::default()
         },

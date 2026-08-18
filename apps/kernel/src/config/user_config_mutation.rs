@@ -24,10 +24,6 @@ impl CharioxUserConfig {
             "providers.model" => {
                 self.providers.model = Some(non_empty_config_string("providers.model", value)?)
             }
-            "providers.account_profile" => {
-                self.providers.account_profile =
-                    Some(non_empty_config_string("providers.account_profile", value)?)
-            }
             "providers.effort" => {
                 self.providers.effort = Some(non_empty_config_string("providers.effort", value)?)
             }
@@ -425,7 +421,6 @@ impl CharioxUserConfig {
         match normalized {
             "providers.default" => self.providers.default = None,
             "providers.model" => self.providers.model = None,
-            "providers.account_profile" => self.providers.account_profile = None,
             "providers.effort" => self.providers.effort = None,
             "ui.theme" => self.ui.theme = None,
             "ui.multi_agent_response_layout" => self.ui.multi_agent_response_layout = None,

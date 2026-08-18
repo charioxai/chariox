@@ -282,6 +282,7 @@ pub(super) fn execute_output_poll_command(
             resolved_variant: None,
             resolved_usage_tokens_total: poll.resolved_usage.and_then(|usage| usage.total_tokens),
             resolved_usage: poll.resolved_usage,
+            account_usage: None,
             resolved_resume_state,
         }));
     }
@@ -336,6 +337,7 @@ pub(super) fn execute_output_poll_command(
         resolved_variant: drain.resolved_variant,
         resolved_usage_tokens_total: drain.resolved_usage_tokens_total,
         resolved_usage: None,
+        account_usage: None,
         resolved_resume_state: None,
     }))
 }

@@ -41,6 +41,7 @@ export type WaitingRoomReconcileControllerDeps = {
   rebuildTranscript: () => void
   updateSessionChrome: () => void
   syncCommandCenter: () => void
+  refreshProviderCatalogForSelection?: (state: WaitingRoomState) => void
   deriveStateUpdate?: typeof deriveWaitingRoomStateUpdate
 }
 
@@ -63,6 +64,14 @@ export function createWaitingRoomReconcileController(
     })
 
     deps.setWaitingRoomState(update.normalizedState)
+    if (
+      currentState.providerId !== update.normalizedState.providerId
+      || currentState.accountProfileId !== update.normalizedState.accountProfileId
+      || currentState.selectedKernelRef !== update.normalizedState.selectedKernelRef
+      || currentState.sliceSelectionId !== update.normalizedState.sliceSelectionId
+    ) {
+      deps.refreshProviderCatalogForSelection?.(update.normalizedState)
+    }
     deps.setProviderDefaults({
       provider: update.nextProvider,
       model: update.nextModel,

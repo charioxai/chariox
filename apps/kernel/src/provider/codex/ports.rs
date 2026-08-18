@@ -45,17 +45,6 @@ pub(super) fn resolve_codex_catalog_port() -> Result<u16, DaemonError> {
     Ok(reserved)
 }
 
-pub(super) fn clear_codex_catalog_port_if_unset() {
-    if env::var_os(CODEX_PORT_OVERRIDE).is_some() {
-        return;
-    }
-    if let Some(port) = CODEX_MANAGED_CATALOG_PORT.get() {
-        if let Ok(mut guard) = port.lock() {
-            *guard = None;
-        }
-    }
-}
-
 fn reserve_unused_port() -> Result<u16, DaemonError> {
     TcpListener::bind(("127.0.0.1", 0))
         .map_err(|error| DaemonError::LocalTransport {

@@ -479,6 +479,7 @@ fn local_ipc_round_trip_exercises_workflow_run_lifecycle() {
 
             let agent = match client
                 .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("reviewer".to_string()),
                     provider: Some("dev-stub".to_string()),
@@ -712,6 +713,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
 
             let first_agent = match client
                 .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("planner".to_string()),
                     provider: Some("dev-stub".to_string()),
@@ -733,6 +735,7 @@ fn local_ipc_round_trip_routes_downstream_workflow_nodes() {
 
             let second_agent = match client
                 .send(&LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("reviewer".to_string()),
                     provider: Some("dev-stub".to_string()),

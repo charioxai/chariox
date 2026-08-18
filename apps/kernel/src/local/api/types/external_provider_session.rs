@@ -8,6 +8,8 @@ pub struct ExternalProviderSessionCapabilities {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ExternalProviderSessionRecord {
+    #[serde(skip)]
+    pub(crate) owner_user_id: String,
     pub external_session_id: String,
     pub provider: String,
     pub provider_session_id: String,
@@ -22,8 +24,8 @@ pub struct ExternalProviderSessionRecord {
     pub last_modified_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub account_profile: Option<String>,
+    #[serde(default = "default_external_provider_account_profile")]
+    pub account_profile: String,
     #[serde(default)]
     pub capabilities: ExternalProviderSessionCapabilities,
     #[serde(default, skip)]
@@ -32,6 +34,10 @@ pub struct ExternalProviderSessionRecord {
     pub attached_session_ids: Vec<String>,
     #[serde(default, skip)]
     pub attached_agent_ids: Vec<String>,
+}
+
+fn default_external_provider_account_profile() -> String {
+    "default".to_string()
 }
 
 impl ExternalProviderSessionRecord {
@@ -128,6 +134,7 @@ mod tests {
     #[test]
     fn external_provider_session_record_tracks_chariox_attachment_state() {
         let mut record = ExternalProviderSessionRecord {
+            owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
             external_session_id: "codex:thread-1".to_string(),
             provider: "codex".to_string(),
             provider_session_id: "thread-1".to_string(),
@@ -137,7 +144,7 @@ mod tests {
             created_at_ms: None,
             last_modified_at_ms: 42,
             worktree_path: None,
-            account_profile: None,
+            account_profile: "default".to_string(),
             capabilities: ExternalProviderSessionCapabilities::default(),
             attached_to_chariox: false,
             attached_session_ids: Vec::new(),

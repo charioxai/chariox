@@ -75,6 +75,9 @@ export function waitingRoomChoice(
     kernelRef: placement.kernelRef,
     workerKernelRef: placement.workerKernelRef,
     providerId: state.providerId,
+    accountProfile: (remote.providerAccounts ?? []).find((profile) => (
+      profile.provider === state.providerId && profile.profile_id === state.accountProfileId
+    )) ?? null,
     model,
     effort: state.effort,
     projectSelection: projectSelectionFromId(normalizeWaitingRoomProjectSelectionId(

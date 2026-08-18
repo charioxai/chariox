@@ -339,7 +339,7 @@ impl SliceLifecycleHealthSnapshot {
                         provider_auth_state: Some(
                             slice_provider_auth_state_key(&auth.state).to_string(),
                         ),
-                        alias: auth.alias.clone(),
+                        alias: Some(auth.account_profile.clone()),
                         identity: slice_provider_auth_identity(auth),
                         details: "slice provider account needs login or import".to_string(),
                     });
@@ -426,7 +426,7 @@ fn slice_provider_auth_state_key(state: &SliceProviderAuthState) -> &'static str
 }
 
 fn slice_provider_auth_identity(auth: &SliceProviderAuthSummary) -> Option<String> {
-    auth.alias_or_identity()
+    auth.identity()
         .or(auth.organization_name.as_deref())
         .or(auth.organization_id.as_deref())
         .or(auth.auth_type.as_deref())

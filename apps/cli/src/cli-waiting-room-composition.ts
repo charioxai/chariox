@@ -80,6 +80,8 @@ export type CliWaitingRoomCompositionDeps = {
   setRemoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
   setRemoteKernelsState: AnyFn
+  providerAccountsState: AnyFn
+  setProviderAccountsState: AnyFn
   terminalsState: AnyFn
   setTerminalsState: AnyFn
   slicesState: AnyFn
@@ -123,6 +125,7 @@ export type CliWaitingRoomCompositionDeps = {
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
   const waitingRoomInventoryCache = createWaitingRoomInventoryCache()
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
+  let providerCatalogSelectionRevision = 0
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
@@ -137,6 +140,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -172,6 +176,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     rebuildTranscript: () => deps.rebuildTranscript(),
     updateSessionChrome: () => deps.updateSessionChrome(),
     syncCommandCenter: () => deps.syncCommandCenter(),
+    refreshProviderCatalogForSelection: (state) => {
+      const revision = ++providerCatalogSelectionRevision
+      const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
+        ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
+        : state.selectedKernelRef && state.selectedKernelRef !== "local"
+          ? { kind: "worker" as const, kernel_ref: state.selectedKernelRef }
+          : { kind: "local" as const }
+      void getProviderCatalog(deps.client, deps.appLogger, {
+        provider: state.providerId,
+        accountProfile: state.accountProfileId ?? "default",
+        executionLocation,
+      }, false).then((catalog) => {
+        if (revision !== providerCatalogSelectionRevision) return
+        deps.setProviderCatalogState(catalog)
+        reconcileWaitingRoom(deps.waitingRoomState())
+      }).catch((error) => {
+        deps.appLogger?.warn("failed to refresh provider catalog for account selection", {
+          error: deps.formatError(error),
+        })
+      })
+    },
   })
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
 
@@ -189,6 +214,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRelayStatus: deps.setRelayStatusState,
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
+    setProviderAccounts: deps.setProviderAccountsState,
     setTerminals: deps.setTerminalsState,
     setSlices: deps.setSlicesState,
     setExternalProviderSessions: deps.setExternalProviderSessionsState,
@@ -276,6 +302,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),
@@ -289,7 +316,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getProviderCatalog: deps.providerCatalogState,
     getCurrentProvider: () => deps.options.provider ?? "opencode",
     getCurrentModel: () => deps.options.model,
-    getAccountProfile: () => deps.options.accountProfile,
+    getAccountProfile: () => deps.waitingRoomState().accountProfileId,
     handleCloudCommand: () => deps.handleCloudCommand({ kind: "cloud", raw: "/cloud", args: [] }),
     setPromptText: deps.setPromptText,
     focusPrompt: deps.focusPrompt,
@@ -372,6 +399,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
+      providerAccounts: deps.providerAccountsState(),
       terminals: deps.terminalsState(),
       slices: deps.slicesState(),
       externalProviderSessions: deps.externalProviderSessionsState(),

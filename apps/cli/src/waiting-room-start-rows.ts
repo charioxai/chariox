@@ -3,11 +3,8 @@ import {
   type BackendProviderId,
   type CatalogModelOption,
 } from "./provider-catalog.js"
-import {
-  formatProviderAccountForBackend,
-  formatSliceBackendProviderAccount,
-} from "@chariox/kernel-client/slice-format"
 import type { SliceRecord } from "./cli-types.js"
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
 import {
   formatWaitingRoomLaunchKernelValue,
@@ -25,6 +22,7 @@ export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
   model: CatalogModelOption | null
   effort: string
+  accountProfile?: ProviderAccountProfile | null
   slice?: SliceRecord | null
   providerCatalogFallback?: boolean
 }
@@ -111,14 +109,21 @@ export function waitingRoomStartRows(
       title: "Provider",
       value: formatProviderValue(
         choice.providerId,
-        choice.slice ?? null,
-        state,
-        remote,
         choice.providerCatalogFallback,
       ),
       titleWidth: options.titleWidth,
       indent: 1,
       focused: state.focus === "provider",
+      selectable: true,
+      scrollbar: "",
+    },
+    {
+      id: "account",
+      title: "Account",
+      value: formatAccountValue(choice.accountProfile ?? null),
+      titleWidth: options.titleWidth,
+      indent: 1,
+      focused: state.focus === "account",
       selectable: true,
       scrollbar: "",
     },
@@ -213,6 +218,30 @@ export function waitingRoomStartRows(
   ]
 }
 
+function formatAccountValue(profile: ProviderAccountProfile | null): string {
+  if (!profile) {
+    return "Default (not discovered)"
+  }
+  const identity = profile.identity_summary ? ` · ${profile.identity_summary}` : ""
+  const usage = compactUsage(profile)
+  return `${profile.label}${identity}${usage ? ` · ${usage}` : ""}`
+}
+
+function compactUsage(profile: ProviderAccountProfile): string | null {
+  const meters = profile.usage.meters ?? []
+  const meter = meters.find((candidate) => candidate.state === "exhausted") ?? meters[0]
+  if (!meter) {
+    return profile.usage.availability === "unavailable" ? "usage not observed" : null
+  }
+  if (meter.used_percent !== undefined && meter.used_percent !== null) {
+    return `${Math.round(meter.used_percent)}% used`
+  }
+  if (meter.remaining !== undefined && meter.remaining !== null) {
+    return `${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining`
+  }
+  return meter.label
+}
+
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
 }
@@ -223,45 +252,10 @@ function formatBackendProviderLabel(providerId: BackendProviderId) {
 
 function formatProviderValue(
   providerId: BackendProviderId,
-  slice: SliceRecord | null,
-  state: Pick<WaitingRoomState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomRemoteState,
   fallback = false,
 ) {
   const label = formatBackendProviderLabel(providerId)
-  const account = slice
-    ? formatSliceBackendProviderAccount(slice, providerId)
-    : formatRemoteProviderAccount(providerId, state, remote)
-  const providerLabel = account ? `${label} (${account})` : label
-  return fallback ? `${providerLabel} (local list)` : providerLabel
-}
-
-function formatRemoteProviderAccount(
-  providerId: BackendProviderId,
-  state: Pick<WaitingRoomState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomRemoteState,
-): string | null {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const kernelRef = waitingRoomSelectedLaunchKernelRef({ ...state, selectedMachineRef: machineRef }, remote)
-  const kernel = waitingRoomLaunchKernelOptions(remote, machineRef)
-    .find((option) => option.id === kernelRef)
-    ?.kernel
-  const kernelAccount = formatProviderAccountForBackend(
-    kernel?.provider_accounts ?? [],
-    providerId,
-    kernel?.available_providers ?? [],
-  )
-  if (kernelAccount) {
-    return kernelAccount
-  }
-  const machine = waitingRoomLaunchMachineOptions(remote)
-    .find((option) => option.id === machineRef)
-    ?.machine
-  return formatProviderAccountForBackend(
-    machine?.provider_accounts ?? [],
-    providerId,
-    machine?.available_providers ?? [],
-  )
+  return fallback ? `${label} (local list)` : label
 }
 
 function formatWaitingRoomModelValue(

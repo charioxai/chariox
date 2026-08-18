@@ -428,7 +428,7 @@ async fn provider_process_teardown_only_terminates_caller_owned_processes_inner(
         &session_id,
         peer_agent.id(),
         "dev-stub",
-        "codex",
+        "managed-dev-stub",
         "gpt-5.4",
     );
     let process_before_teardown = app

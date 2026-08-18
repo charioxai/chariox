@@ -167,7 +167,7 @@ fn import_codex_session_without_model_uses_persisted_thread_model() {
                     worktree_id: None,
                 },
             ),
-            "external-import-user",
+            crate::session::DEFAULT_LOCAL_USER_ID,
         )
         .await
         .expect("import should succeed");
@@ -302,9 +302,12 @@ fn import_external_provider_session_rejects_thread_owned_by_agent_resume_state()
         .expect_err("Chariox-owned Codex thread should not import as a second session");
 
         let message = error.to_string();
-        assert!(message.contains(&format!(
-            "already attached to Chariox session `{session_id}` agent `{agent_id}`"
-        )));
+        assert!(
+            message.contains(&format!(
+                "already attached to Chariox session `{session_id}` agent `{agent_id}`"
+            )),
+            "unexpected import error: {message}"
+        );
         assert!(store
             .get("codex:thread-owned-by-resume")
             .expect("record should remain indexed")
@@ -380,9 +383,12 @@ fn import_external_provider_session_rejects_discovered_thread_owned_by_agent_res
         .expect_err("discovered Chariox-owned Codex thread should not import");
 
         let message = error.to_string();
-        assert!(message.contains(&format!(
-            "already attached to Chariox session `{session_id}` agent `{agent_id}`"
-        )));
+        assert!(
+            message.contains(&format!(
+                "already attached to Chariox session `{session_id}` agent `{agent_id}`"
+            )),
+            "unexpected import error: {message}"
+        );
         assert!(store
             .get("codex:thread-owned-discovered")
             .expect("discovered record should remain indexed")
@@ -634,7 +640,7 @@ fn changed_attached_resume_state_returns_previous_provider_session_to_attachable
             .iter()
             .map(|session| session.external_session_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["codex:thread-old"],
+        vec!["codex:default:thread-old"],
         "the previous provider session should be attachable once the agent points elsewhere"
     );
     let current = store
@@ -667,7 +673,7 @@ fn live_provider_run_provider_session_id_counts_as_attached_to_chariox() {
     push_provider_run_attachment(&mut attached, &run);
 
     assert!(attached.contains(&AttachedExternalProviderSessionRef {
-        external_session_id: "codex:thread-live-run".to_string(),
+        external_session_id: "codex:default:thread-live-run".to_string(),
         session_id: "session-1".to_string(),
         agent_id: "agent-1".to_string(),
     }));
@@ -692,7 +698,7 @@ fn chariox_owned_provider_run_provider_session_id_becomes_observer_target() {
     assert_eq!(target.session_id, session.id());
     assert_eq!(target.agent_id, agent.id());
     assert_eq!(target.provider_run_id.as_deref(), Some(run.id()));
-    assert_eq!(target.external_session_id, "codex:thread-chariox");
+    assert_eq!(target.external_session_id, "codex:default:thread-chariox");
     assert_eq!(target.provider, "codex");
     assert_eq!(target.provider_session_id, "thread-chariox");
     assert!(matches!(

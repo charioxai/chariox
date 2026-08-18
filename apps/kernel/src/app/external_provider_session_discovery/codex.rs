@@ -9,7 +9,6 @@ pub(super) fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSess
     let mut provider_session_id = None;
     let mut worktree_path = None;
     let mut created_at_ms = None;
-    let mut account_profile = None;
     let mut first_prompt = None;
 
     for value in lines {
@@ -18,8 +17,6 @@ pub(super) fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSess
                 provider_session_id = provider_session_id
                     .or_else(|| string_field(payload, &["id", "session_id", "sessionId"]));
                 worktree_path = worktree_path.or_else(|| string_field(payload, &["cwd"]));
-                account_profile =
-                    account_profile.or_else(|| string_field(payload, &["model_provider"]));
                 created_at_ms = created_at_ms.or_else(|| {
                     string_field(payload, &["timestamp"])
                         .and_then(|timestamp| parse_rfc3339_millis_utc(&timestamp))
@@ -41,7 +38,7 @@ pub(super) fn parse_codex_transcript(path: &Path) -> Option<ExternalProviderSess
         worktree_path,
         created_at_ms,
         fingerprint.modified_at_ms,
-        account_profile,
+        None,
         capabilities,
     );
     remember_provider_discovery_record(

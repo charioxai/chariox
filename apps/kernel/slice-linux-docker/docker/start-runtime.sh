@@ -40,7 +40,7 @@ wait_for_screen_session() {
 if [[ ! -f "$HOME/.chariox/config.toml" ]]; then
   cat >"$HOME/.chariox/config.toml" <<'EOF'
 [state]
-path = "/tmp/chariox-slice-state/kernel.db"
+path = "/home/slice/.chariox/daemon/kernel.db"
 
 [credential_vault]
 backend = "process_memory"

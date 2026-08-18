@@ -91,6 +91,7 @@ async fn agent_lifecycle_refresh_uses_published_projection_without_app_lock() {
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("projected-agent".to_string()),
         provider: Some("claude-code".to_string()),
@@ -323,6 +324,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
         display_url: None,
         provider_auth: vec![crate::slice_provider_auth::SliceProviderAuthSummary {
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
             state: crate::slice_provider_auth::SliceProviderAuthState::Authenticated,
             auth_type: Some("forged".to_string()),
             account_id: Some("forged-account".to_string()),
@@ -330,7 +332,6 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: Some("forged".to_string()),
             source: "client".to_string(),
         }],
         from_saved_state: None,
@@ -413,6 +414,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         LocalDaemonRequest::ImportSliceProviderAuth(crate::local::ImportSliceProviderAuthRequest {
             slice_ref: slice.id.clone(),
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
         });
     let import_command =
         KernelCommand::from_local_request("cmd-import-ssh-slice-auth", None, None, &import_request);
@@ -452,6 +454,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         LocalDaemonRequest::RemoveSliceProviderAuth(crate::local::RemoveSliceProviderAuthRequest {
             slice_ref: slice.id.clone(),
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
         });
     let remove_command =
         KernelCommand::from_local_request("cmd-remove-ssh-slice-auth", None, None, &remove_request);
@@ -514,6 +517,7 @@ async fn spawn_agent_rejects_slice_from_another_worktree() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
         session_id,
         alias: Some("slice-agent".to_string()),
         provider: Some("dev-stub".to_string()),

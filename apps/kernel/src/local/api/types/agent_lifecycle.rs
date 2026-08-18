@@ -13,6 +13,8 @@ pub struct SpawnAgentRequest {
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -41,6 +43,8 @@ pub struct SpawnAgentsRequestItem {
     pub alias: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
     pub model: Option<String>,
     pub effort: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -64,6 +68,7 @@ impl SpawnAgentsRequestItem {
             session_id,
             alias: self.alias,
             provider: self.provider,
+            account_profile: self.account_profile,
             model: self.model,
             effort: self.effort,
             execution_mode: self.execution_mode,

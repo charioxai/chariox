@@ -875,12 +875,14 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
             delete_session.id(),
             delete_agent.id(),
             "codex",
+            "default",
             "deleted-session-thread",
         );
         let end_cursor_key = crate::app::AttachedProviderTranscriptCursorKey::new(
             end_session.id(),
             end_agent.id(),
             "codex",
+            "default",
             "ended-session-thread",
         );
         app_locked.attached_provider_transcript_cursor_store().set(
@@ -947,7 +949,7 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
     let ended_record = end_page
         .sessions
         .iter()
-        .find(|session| session.external_session_id == "codex:ended-session-thread")
+        .find(|session| session.external_session_id == "codex:default:ended-session-thread")
         .expect("ending a session with an attached external provider agent should return its provider thread to the unattached list");
     assert!(ended_record.is_attachable_to_chariox());
     assert_eq!(
@@ -997,17 +999,17 @@ async fn end_and_delete_use_owned_runtime_state_without_app_lock() {
         .map(|session| session.external_session_id.as_str())
         .collect::<Vec<_>>();
     assert!(
-        listed_external_session_ids.contains(&"codex:deleted-session-thread"),
+        listed_external_session_ids.contains(&"codex:default:deleted-session-thread"),
         "deleting a session with an attached external provider agent should return its provider thread to the unattached list"
     );
     assert!(
-        listed_external_session_ids.contains(&"codex:ended-session-thread"),
+        listed_external_session_ids.contains(&"codex:default:ended-session-thread"),
         "ending a session should leave its returned provider thread in the unattached list"
     );
     let deleted_record = page
         .sessions
         .iter()
-        .find(|session| session.external_session_id == "codex:deleted-session-thread")
+        .find(|session| session.external_session_id == "codex:default:deleted-session-thread")
         .expect("deleted provider thread should be listed as unattached");
     assert!(deleted_record.is_attachable_to_chariox());
     assert_eq!(
@@ -1210,6 +1212,7 @@ fn session_command_external_provider_session_record(
     last_modified_at_ms: u64,
 ) -> ExternalProviderSessionRecord {
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("{provider}:{provider_session_id}"),
         provider: provider.to_string(),
         provider_session_id: provider_session_id.to_string(),
@@ -1219,7 +1222,7 @@ fn session_command_external_provider_session_record(
         created_at_ms: None,
         last_modified_at_ms,
         worktree_path: None,
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },

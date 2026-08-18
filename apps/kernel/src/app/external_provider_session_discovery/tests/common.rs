@@ -29,6 +29,50 @@ fn external_provider_filters_normalize_provider_ids() {
 }
 
 #[test]
+fn registered_profile_discovery_scopes_colliding_native_session_ids() {
+    let personal = temp_dir("codex-profile-personal");
+    let work = temp_dir("codex-profile-work");
+    for root in [personal.path(), work.path()] {
+        let session_dir = root.join("sessions");
+        fs::create_dir_all(&session_dir).unwrap();
+        fs::write(
+            session_dir.join("rollout.jsonl"),
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"same-thread\",\"cwd\":\"/repo\"}}\n",
+        )
+        .unwrap();
+    }
+    let sessions = discover_external_provider_sessions_for_profiles(
+        &[
+            ExternalProviderSessionProfileRoot {
+                owner_user_id: "owner-1".to_string(),
+                provider: "codex".to_string(),
+                account_profile: "personal".to_string(),
+                roots: vec![personal.path().to_path_buf()],
+            },
+            ExternalProviderSessionProfileRoot {
+                owner_user_id: "owner-1".to_string(),
+                provider: "codex".to_string(),
+                account_profile: "work".to_string(),
+                roots: vec![work.path().to_path_buf()],
+            },
+        ],
+        Some("codex"),
+    );
+
+    assert_eq!(sessions.len(), 2);
+    assert_eq!(
+        sessions
+            .iter()
+            .map(|session| session.external_session_id.as_str())
+            .collect::<BTreeSet<_>>(),
+        BTreeSet::from(["codex:personal:same-thread", "codex:work:same-thread"]),
+    );
+    assert!(sessions
+        .iter()
+        .all(|session| session.owner_user_id == "owner-1"));
+}
+
+#[test]
 fn observed_turn_model_derives_history_kind_and_external_keys() {
     let user = ObservedExternalProviderTurn {
         role: ObservedExternalProviderTurnRole::User,
@@ -101,7 +145,7 @@ fn discovers_codex_jsonl_sessions_with_first_real_prompt_title() {
         Some("Fix the broken JournalView build.")
     );
     assert_eq!(sessions[0].worktree_path.as_deref(), Some("/repo"));
-    assert_eq!(sessions[0].account_profile.as_deref(), Some("openai"));
+    assert_eq!(sessions[0].account_profile, "default");
     assert!(sessions[0].capabilities.can_read_history);
 }
 
@@ -386,6 +430,7 @@ fn recovery_session(
     last_modified_at_ms: u64,
 ) -> ExternalProviderSessionRecord {
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("codex:{provider_session_id}"),
         provider: "codex".to_string(),
         provider_session_id: provider_session_id.to_string(),
@@ -395,7 +440,7 @@ fn recovery_session(
         created_at_ms: None,
         last_modified_at_ms,
         worktree_path: Some(worktree_path.to_string()),
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities::default(),
         attached_to_chariox: false,
         attached_session_ids: Vec::new(),

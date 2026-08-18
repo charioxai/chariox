@@ -899,6 +899,7 @@ impl KernelRuntimeState {
         agent_id: &str,
         caller_user_id: &str,
         provider: Option<String>,
+        account_profile: Option<String>,
         model: Option<String>,
         effort: Option<Option<String>>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
@@ -907,6 +908,7 @@ impl KernelRuntimeState {
             agent_id,
             caller_user_id,
             provider.clone(),
+            account_profile.clone(),
             model.clone(),
             effort.clone(),
         )?;
@@ -936,6 +938,7 @@ impl KernelRuntimeState {
             let request = RelayPeerRequest::UpdateLeasedAgentProfile {
                 leased_agent_id: remote_update.leased_agent_id,
                 provider: remote_update.provider.clone(),
+                account_profile: remote_update.account_profile.clone(),
                 model: remote_update.model.clone(),
                 effort: remote_update.effort.clone(),
             };
@@ -970,6 +973,7 @@ impl KernelRuntimeState {
                 session_id,
                 agent_id,
                 remote_update.provider,
+                remote_update.account_profile,
                 remote_update.model,
                 remote_update.effort,
             )?;

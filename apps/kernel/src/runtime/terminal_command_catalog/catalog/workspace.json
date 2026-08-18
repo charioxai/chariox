@@ -276,18 +276,6 @@
               "remove credentials",
               "provider account remove"
             ]
-          },
-          {
-            "id": "slice-auth-alias",
-            "label": "alias",
-            "description": "Set a Chariox display alias when the provider account label is unclear",
-            "value": "/slice auth alias ",
-            "surfaces": ["session", "waiting_room"],
-            "searchAliases": [
-              "slice account alias",
-              "provider account alias",
-              "account label"
-            ]
           }
         ],
         "searchAliases": [

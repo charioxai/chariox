@@ -130,6 +130,7 @@ fn plan_claude_launch_unlocked(
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
         let mut pty_env = claude_process_env();
+        pty_env.extend(request.provider_account_env.clone());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -176,6 +177,7 @@ fn plan_claude_launch_unlocked(
         let mut native = prepare_claude_native_tui_files(request)?;
         native.materialize_mcp_config(request)?;
         let mut pty_env = claude_process_env();
+        pty_env.extend(request.provider_account_env.clone());
         pty_env.insert(
             "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
             native.events_file.display().to_string(),
@@ -227,6 +229,7 @@ fn plan_claude_launch_unlocked(
     }
     let mut native = prepare_claude_native_tui_files(request)?;
     let mut pty_env = claude_process_env();
+    pty_env.extend(request.provider_account_env.clone());
     pty_env.insert(
         "CHARIOX_CLAUDE_NATIVE_EVENTS".to_string(),
         native.events_file.display().to_string(),

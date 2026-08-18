@@ -42,6 +42,7 @@ async fn user_agent_lifecycle_events_notify_metaagent_but_meta_commands_do_not_i
         session_id: session.id().to_string(),
         alias: Some("human-worker".to_string()),
         provider: Some("dev-stub".to_string()),
+        account_profile: None,
         model: Some("default".to_string()),
         effort: None,
         execution_mode: None,
@@ -182,6 +183,7 @@ async fn forged_metaagent_caller_id_does_not_suppress_lifecycle_events() {
     let router = CommandRouter::with_interactive_capacity(Arc::new(Mutex::new(app)), 4);
 
     let request = LocalDaemonRequest::SpawnAgent(crate::local::SpawnAgentRequest {
+        account_profile: None,
         session_id,
         alias: Some("forged-worker".to_string()),
         provider: Some("dev-stub".to_string()),

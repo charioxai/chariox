@@ -80,7 +80,7 @@ test("parseArgs help lists remote runtime once next to kernel health", () => {
   assert.match(output, /\/slice auth import\s+copy this machine's provider credentials into the slice/)
   assert.match(output, /\/slice auth remove\s+remove slice-local provider credentials and account summary/)
   assert.match(output, /\/slice auth login\s+start provider login inside the slice for a different account/)
-  assert.match(output, /\/slice auth alias\s+set a Chariox display alias for the slice account/)
+  assert.doesNotMatch(output, /\/slice auth alias/)
   assert.equal(output.match(/\/kernel health/g)?.length, 1)
   assert.equal(output.match(/\/kernel remote-runtime/g)?.length, 1)
 })

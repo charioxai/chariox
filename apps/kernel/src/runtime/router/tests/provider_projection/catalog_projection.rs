@@ -9,8 +9,8 @@ fn get_provider_catalog_uses_warmed_projection_without_app_lock() {
 }
 
 async fn get_provider_catalog_uses_warmed_projection_without_app_lock_inner() {
-    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    app.cache_provider_catalog(OpenCodeProviderCatalog {
+    let app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let catalog = OpenCodeProviderCatalog {
         all: vec![OpenCodeProviderInfo {
             id: "codex".to_string(),
             name: "Codex".to_string(),
@@ -19,12 +19,19 @@ async fn get_provider_catalog_uses_warmed_projection_without_app_lock_inner() {
         }],
         default: Default::default(),
         connected: vec!["codex".to_string()],
-    });
+    };
+    let request = GetProviderCatalogRequest::default();
+    let cache_key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        &request,
+    );
+    app.provider_catalog_projection_store()
+        .update_scoped(&cache_key, catalog);
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
     let app_guard = app.lock().await;
-    let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+    let catalog_request = LocalDaemonRequest::GetProviderCatalog(request);
     let catalog_command = KernelCommand::from_local_request(
         "cmd-provider-catalog-projection",
         None,
@@ -63,7 +70,7 @@ fn relay_configure_invalidates_provider_catalog_projection() {
 
 async fn relay_configure_invalidates_provider_catalog_projection_inner() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
-    app.cache_provider_catalog(OpenCodeProviderCatalog {
+    let catalog = OpenCodeProviderCatalog {
         all: vec![OpenCodeProviderInfo {
             id: "codex".to_string(),
             name: "Codex".to_string(),
@@ -72,7 +79,14 @@ async fn relay_configure_invalidates_provider_catalog_projection_inner() {
         }],
         default: Default::default(),
         connected: vec!["codex".to_string()],
-    });
+    };
+    let request = GetProviderCatalogRequest::default();
+    let cache_key = crate::runtime::provider_catalog_control::provider_catalog_cache_key(
+        crate::session::DEFAULT_LOCAL_USER_ID,
+        &request,
+    );
+    app.provider_catalog_projection_store()
+        .update_scoped(&cache_key, catalog);
     app.configure_relay(None, None)
         .expect("relay configure should invalidate provider catalog projection");
     app.invalidate_provider_catalog_projection();
@@ -80,7 +94,7 @@ async fn relay_configure_invalidates_provider_catalog_projection_inner() {
     let app = Arc::new(Mutex::new(app));
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
     let app_guard = app.lock().await;
-    let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+    let catalog_request = LocalDaemonRequest::GetProviderCatalog(request);
     let catalog_command = KernelCommand::from_local_request(
         "cmd-provider-catalog-invalidated",
         None,

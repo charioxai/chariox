@@ -37,6 +37,7 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
     let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 4);
 
     let spawn_one = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("owned-a".to_string()),
         provider: Some("dev-stub".to_string()),
@@ -64,6 +65,7 @@ async fn remote_owned_session_objects_record_caller_user_inner() {
     assert_eq!(agent_one.owner_user_id(), "user-2");
 
     let spawn_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("owned-b".to_string()),
         provider: Some("dev-stub".to_string()),
@@ -401,6 +403,7 @@ async fn remote_user_cannot_control_other_users_agents_or_endpoint_inner() {
     );
 
     let spawn_user_two = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("user-two-owned".to_string()),
         provider: Some("dev-stub".to_string()),

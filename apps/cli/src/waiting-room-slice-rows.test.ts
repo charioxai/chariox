@@ -16,7 +16,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
         worktree_id: "/repo",
         agent_ids: ["agent-1", "agent-2", "agent-3", "agent-4"],
         relay_endpoint: { url: "wss://relay.example/slice", private: false },
-        provider_auth: [{ provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" }],
+        provider_auth: [{ provider: "codex", account_profile: "default", state: "configured", account_id: "acct-1", source: "slice" }],
       }),
     ],
   }, 16)
@@ -25,7 +25,7 @@ test("waiting room slice rows list slices with lifecycle and auth context", () =
   assert.equal(rows[0]?.value, "2 configured")
   assert.deepEqual(rows.slice(1).map((row) => row.id), ["slice:slice-a", "slice:slice-b"])
   assert.equal(rows[1]?.title, "alpha")
-  assert.equal(rows[1]?.value, "running headed 4 agents: agent-1, agent-2, agent-3 +1 more relay shared /repo auth codex work (acct-1)")
+  assert.equal(rows[1]?.value, "running headed 4 agents: agent-1, agent-2, agent-3 +1 more relay shared /repo auth codex default (acct-1)")
   assert.equal(rows[2]?.value, "stopped headless 0 agents - auth missing codex")
   assert.equal(rows[1]?.focused, true)
   assert.equal(rows[1]?.selectable, true)
@@ -40,14 +40,14 @@ test("waiting room slice rows show partial provider auth coverage", () => {
         status: "running",
         providers: ["codex", "opencode", "claude"],
         provider_auth: [
-          { provider: "codex", state: "configured", alias: "work", account_id: "acct-1", source: "slice" },
-          { provider: "claude", state: "unknown", source: "slice" },
+          { provider: "codex", account_profile: "default", state: "configured", account_id: "acct-1", source: "slice" },
+          { provider: "claude", account_profile: "default", state: "unknown", source: "slice" },
         ],
       }),
     ],
   }, 16)
 
-  assert.equal(rows[1]?.value, "running headless 0 agents - auth codex work (acct-1),claude auth missing/state=unknown,missing opencode,refresh claude")
+  assert.equal(rows[1]?.value, "running headless 0 agents - auth codex default (acct-1),claude default (auth missing)/state=unknown,missing opencode,refresh claude")
 })
 
 test("waiting room slice rows show empty and loading states", () => {

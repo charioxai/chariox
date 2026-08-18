@@ -1,5 +1,25 @@
 use super::*;
 
+fn materialize_empty_codex_profile_for_test(app: &DaemonApp, owner_user_id: &str) {
+    app.provider_account_profile_registry()
+        .materialize_replica(
+            owner_user_id,
+            &crate::account_profile::ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: owner_user_id.to_string(),
+                    provider: "codex".to_string(),
+                    profile_id: "default".to_string(),
+                    label: "Default".to_string(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+                    is_default: true,
+                },
+                files: Vec::new(),
+                generated_at_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("test worker should materialize the selected Codex profile");
+}
+
 #[test]
 fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
     let mut config = DaemonConfig::for_tests();
@@ -22,6 +42,7 @@ fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -109,6 +130,7 @@ fn leased_prompt_submit_replays_the_active_run_for_the_same_home_prompt_id() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -212,6 +234,7 @@ fn leased_prompt_identity_uses_the_accepted_prompt_timestamp_when_backing_activi
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -308,6 +331,7 @@ fn leased_projection_recovers_a_queued_prompt_left_idle_by_completion_reordering
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -382,6 +406,7 @@ fn leased_projection_keeps_queued_prompt_while_provider_run_is_starting() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -460,6 +485,7 @@ fn queued_leased_workflow_context_rotates_by_backing_prompt_after_completion() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -627,6 +653,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
         .create_leased_agent(
             &lease_one.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -649,6 +676,7 @@ fn leased_workflow_bindings_do_not_overwrite_equal_home_prompt_ids() {
         .create_leased_agent(
             &lease_two.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -771,6 +799,7 @@ fn leased_projection_forwards_completion_when_backing_prompt_already_settled() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -835,6 +864,7 @@ fn leased_projection_drops_completion_records_older_than_the_active_home_prompt(
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -934,6 +964,7 @@ fn leased_projection_does_not_complete_a_running_turn_without_turn_evidence() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -984,6 +1015,7 @@ fn leased_projection_pull_replays_a_completion_lost_after_worker_drain() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1100,6 +1132,7 @@ fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1135,6 +1168,7 @@ fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
         )
         .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
     app.fan_out_output_for_agent(
         &leased_agent.backing_session_id,
@@ -1202,6 +1236,7 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1211,6 +1246,7 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
             None,
         )
         .expect("leased agent should be created");
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
 
     let first_home_prompt_id = "home-prompt-consecutive-1";
@@ -1381,6 +1417,7 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1390,6 +1427,7 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
             None,
         )
         .expect("leased agent should be created");
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
     let home_prompt_id = "home-prompt-explicit-output-only";
     let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)
@@ -1529,6 +1567,7 @@ fn native_completion_does_not_reuse_prior_home_prompt_identity() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1643,6 +1682,7 @@ fn leased_projection_does_not_reflect_home_origin_prompt_back_to_home() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1724,6 +1764,7 @@ fn leased_projection_does_not_promote_passive_external_observation_to_prompt_or_
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1797,6 +1838,7 @@ fn leased_projection_pump_forwards_completion_after_provider_run_ends() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1855,6 +1897,7 @@ fn leased_projection_pump_leaves_home_prompt_records_for_authoritative_drain() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,
@@ -1943,6 +1986,7 @@ fn leased_projection_pump_settles_quiet_non_workflow_prompt() {
         .create_leased_agent(
             &lease.id,
             "managed-dev-stub",
+            "default",
             Some("sonnet".to_string()),
             None,
             None,

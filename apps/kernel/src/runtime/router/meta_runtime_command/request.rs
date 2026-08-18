@@ -24,6 +24,7 @@ pub(super) fn meta_agent_request(
                 ));
             }
             Ok(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                account_profile: None,
                 session_id: session.id().to_string(),
                 alias: spawn.alias,
                 provider: spawn

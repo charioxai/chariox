@@ -578,7 +578,6 @@ mod tests {
                 "slice-auth-login",
                 "slice-auth-import",
                 "slice-auth-remove",
-                "slice-auth-alias",
                 "workspace",
                 "workspace-set",
                 "workspace-sync-default",

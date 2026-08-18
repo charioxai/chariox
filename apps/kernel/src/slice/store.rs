@@ -674,52 +674,6 @@ impl SliceStore {
         Ok(record.clone())
     }
 
-    pub fn set_provider_auth_alias(
-        &self,
-        slice_ref: &str,
-        provider: &str,
-        alias: Option<&str>,
-        now_ms: u64,
-    ) -> Result<SliceRecord, DaemonError> {
-        let resolved = self.resolve(slice_ref)?;
-        let provider = provider.trim();
-        if provider.is_empty() {
-            return Err(DaemonError::LocalTransport {
-                operation: "slice.provider_auth_alias",
-                message: "provider must not be empty".to_string(),
-            });
-        }
-        let alias = alias
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(str::to_string);
-        let mut state = self
-            .inner
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let record =
-            state
-                .records
-                .get_mut(&resolved.id)
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "slice.provider_auth_alias",
-                    message: format!("unknown slice `{slice_ref}`"),
-                })?;
-        let Some(auth) = record
-            .provider_auth
-            .iter_mut()
-            .find(|auth| auth.provider == provider)
-        else {
-            return Err(DaemonError::LocalTransport {
-                operation: "slice.provider_auth_alias",
-                message: format!("slice `{}` has no `{provider}` auth summary", record.name),
-            });
-        };
-        auth.alias = alias;
-        record.updated_at_ms = now_ms;
-        Ok(record.clone())
-    }
-
     pub fn delete(&self, slice_ref: &str) -> Result<SliceRecord, DaemonError> {
         let resolved = self.resolve(slice_ref)?;
         let mut state = self

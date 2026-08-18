@@ -12,7 +12,7 @@ export function formatProviderAuthStatus(status: ProviderAuthStatus): string {
   ].filter(Boolean).join(" • ")
 }
 
-export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "reauth"): string {
+export function formatProviderLoginStart(login: ProviderLoginStart, verb: "login" | "logout" | "reauth"): string {
   return [
     `${login.provider} ${verb} started`,
     login.user_code ? `code ${login.user_code}` : null,

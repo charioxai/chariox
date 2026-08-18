@@ -93,7 +93,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             other => panic!("unexpected response: {other:?}"),
         };
 
-        assert_eq!(snapshot.schema_version, 11);
+        assert_eq!(snapshot.schema_version, 12);
         assert!(snapshot.generated_at_ms > 0);
         let session = snapshot
             .sessions
@@ -249,6 +249,7 @@ fn waiting_room_public_snapshot_includes_public_workflow_summaries() {
         };
         let second_agent = match harness
             .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                account_profile: None,
                 session_id: session.id().to_string(),
                 alias: Some("second".to_string()),
                 provider: Some("dev-stub".to_string()),
@@ -404,6 +405,7 @@ fn waiting_room_public_snapshot_includes_public_session_activity_counts() {
             };
             let idle_agent = match harness
                 .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+                    account_profile: None,
                     session_id: session.id().to_string(),
                     alias: Some("idle".to_string()),
                     provider: Some("dev-stub".to_string()),

@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-mod catalog_process;
 mod claude;
 mod claude_runtime;
 mod codex;
@@ -25,14 +24,12 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
-pub(crate) use catalog_process::ProviderCatalogEndpoint;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
-pub(crate) use codex::lease_codex_catalog_endpoint;
 pub use codex::{
-    codex_catalog_endpoint, ensure_codex_catalog_endpoint, logout_codex, plan_codex_launch,
-    resolve_codex_executable,
+    codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
+pub(crate) use codex::{ensure_codex_account_endpoint, invalidate_codex_account_endpoint};
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
@@ -48,21 +45,19 @@ pub(crate) use external_observation::{
     ObservedExternalProviderTurn, ObservedExternalProviderTurnRole,
 };
 pub use launch_contract::{
-    canonical_external_provider_session_id, default_provider_control_capabilities,
-    external_provider_import_model, external_provider_session_providers,
-    normalize_provider_resume_model, provider_resume_failure_notice,
-    provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode, AgentPermissionLevel,
-    ExternalProviderImportMetadata, ExternalProviderObservedCursor, LaunchProviderRequest,
-    ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode, RuntimeMcpBinding,
+    canonical_external_provider_session_id, canonical_profile_external_provider_session_id,
+    default_provider_control_capabilities, external_provider_import_model,
+    external_provider_session_providers, normalize_provider_resume_model,
+    provider_resume_failure_notice, provider_uses_inferred_runtime_mcp_binding, AgentExecutionMode,
+    AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
+    LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
+    RuntimeMcpBinding,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
-pub(crate) use opencode::lease_opencode_catalog_endpoint;
-pub use opencode::{
-    ensure_opencode_catalog_endpoint, opencode_catalog_endpoint, plan_opencode_launch,
-    resolve_opencode_executable,
-};
+pub(crate) use opencode::{ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint};
+pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,
     OpenCodeMessageCacheTokens, OpenCodeMessageInfo, OpenCodeMessageTime, OpenCodeMessageTokens,

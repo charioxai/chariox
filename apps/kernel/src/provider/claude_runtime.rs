@@ -911,6 +911,33 @@ mod tests {
     }
 
     #[test]
+    fn normalizes_claude_rate_limit_event_for_selected_account() {
+        let (mut state, mut batch) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "rate_limit_event",
+                "rate_limit_info": {
+                    "rate_limit_type": "five_hour",
+                    "utilization": 0.84,
+                    "status": "allowed",
+                    "resets_at": 1_800_000_000
+                }
+            }),
+            &mut batch,
+        );
+
+        let usage = batch.account_usage.expect("rate limit usage");
+        assert_eq!(usage.provider, "claude");
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].used_percent, Some(84.0));
+        assert_eq!(usage.meters[0].window_duration_minutes, Some(300));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_000_000_000));
+    }
+
+    #[test]
     fn rejects_unsupported_claude_tool_use_without_completing_turn() {
         let (mut state, mut batch) = parser_state();
 
