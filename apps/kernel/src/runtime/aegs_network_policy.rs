@@ -136,6 +136,10 @@ pub(crate) fn is_globally_reachable_aegs_destination(address: IpAddr) -> bool {
                 .any(|prefix| prefix.contains(address))
         }
         IpAddr::V6(address) => {
+            if IPV6_WELL_KNOWN_TRANSLATION.contains(address) {
+                let embedded = Ipv4Addr::from(u128::from(address) as u32);
+                return is_globally_reachable_aegs_destination(IpAddr::V4(embedded));
+            }
             if GLOBAL_IPV6_EXCEPTIONS
                 .iter()
                 .any(|prefix| prefix.contains(address))
@@ -148,7 +152,7 @@ pub(crate) fn is_globally_reachable_aegs_destination(address: IpAddr) -> bool {
             {
                 return false;
             }
-            IPV6_GLOBAL_UNICAST.contains(address) || IPV6_WELL_KNOWN_TRANSLATION.contains(address)
+            IPV6_GLOBAL_UNICAST.contains(address)
         }
     }
 }
@@ -255,7 +259,13 @@ mod tests {
 
     #[test]
     fn rejects_mapped_multicast_and_unallocated_ipv6_destinations() {
-        for address in ["::ffff:8.8.8.8", "ff0e::1", "4000::1"] {
+        for address in [
+            "::ffff:8.8.8.8",
+            "64:ff9b::7f00:1",
+            "64:ff9b::a00:1",
+            "ff0e::1",
+            "4000::1",
+        ] {
             let address = address.parse::<Ipv6Addr>().expect("IPv6 test vector");
             assert!(!is_globally_reachable_aegs_destination(IpAddr::V6(address)));
         }
