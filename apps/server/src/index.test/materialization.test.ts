@@ -59,7 +59,11 @@ test("gateway materializes exported publication packages through the kernel", as
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+      allowedProviders: ["codex", "opencode"],
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -402,7 +406,11 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "missing-provider",
+      allowedProviders: ["missing-provider", "codex"],
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -507,7 +515,10 @@ test("gateway accepts provider-prefixed captured models when the provider matche
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -602,7 +613,10 @@ test("gateway fails before materialization when provider/model bindings cannot b
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "missing-provider",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
@@ -678,7 +692,10 @@ test("gateway fails package materialization before runtime creation when require
         methods: ["GET"],
       }],
     }))
-    await writeDeploymentContractFixture(root, "pub-1")
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "codex",
+    }])
     await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
       schema_version: 1,
       source_session: {
