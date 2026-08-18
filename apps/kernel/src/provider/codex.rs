@@ -14,9 +14,9 @@ mod catalog_endpoint;
 mod mcp_config;
 mod ports;
 
-pub use catalog_endpoint::{codex_catalog_endpoint, ensure_codex_catalog_endpoint};
+pub use catalog_endpoint::codex_catalog_endpoint;
 pub(crate) use catalog_endpoint::{
-    ensure_codex_account_endpoint, invalidate_codex_account_endpoint, lease_codex_catalog_endpoint,
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
 };
 
 const CODEX_ENV_OVERRIDE: &str = "CHARIOX_CODEX_BIN";

@@ -3,7 +3,9 @@ import {
   type ProviderAuthStatus,
   type ProviderAccountProfile,
   type ProviderLoginStart,
+  type ProviderLoginStatus,
   type ProviderLogoutResult,
+  type ProviderLogoutOutcome,
   type ProviderProcessInfo,
   type RuntimeProviderRun,
   type RuntimeSession,
@@ -13,6 +15,9 @@ import type { LocalIpcClient } from "./ipc.js"
 import type { CharioxLogger } from "./logging.js"
 import {
   getProviderAuthStatusRequest,
+  getProviderLoginStatusRequest,
+  sendProviderLoginInputRequest,
+  cancelProviderLoginRequest,
   listProviderAccountProfilesRequest,
   createProviderAccountProfileRequest,
   linkProviderAccountProfileRequest,
@@ -43,9 +48,14 @@ import {
 } from "./provider-command-catalog.js"
 import { describeCliError } from "./runtime.js"
 
-export async function getProviderCatalog(client: LocalIpcClient, logger?: CharioxLogger | null): Promise<ProviderCatalog> {
+export async function getProviderCatalog(
+  client: LocalIpcClient,
+  logger?: CharioxLogger | null,
+  options: Parameters<typeof getProviderCatalogRequest>[0] = {},
+  fallbackOnError = true,
+): Promise<ProviderCatalog> {
   try {
-    const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest())
+    const response = await client.send<Record<string, unknown>>(getProviderCatalogRequest(options))
     const payload = expectVariant<{ catalog: ProviderCatalog }>(response, "ProviderCatalog")
     logger?.info("Received provider catalog from daemon", {
       provider_count: payload.catalog.all.length,
@@ -54,6 +64,7 @@ export async function getProviderCatalog(client: LocalIpcClient, logger?: Chario
     })
     return { ...payload.catalog, source: "daemon" }
   } catch (error) {
+    if (!fallbackOnError) throw error
     const message = describeCliError(error)
     logger?.warn("provider catalog lookup failed; using fallback catalog", {
       error: message,
@@ -216,13 +227,44 @@ export async function startProviderLogin(
   return payload.login
 }
 
+export async function getProviderLoginStatus(
+  client: LocalIpcClient,
+  loginId: string,
+): Promise<ProviderLoginStatus> {
+  const response = await client.send<Record<string, unknown>>(getProviderLoginStatusRequest(loginId))
+  return expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginStatus").login
+}
+
+export async function sendProviderLoginInput(
+  client: LocalIpcClient,
+  loginId: string,
+  dataBase64: string,
+): Promise<{ login_id: string; byte_count: number }> {
+  const response = await client.send<Record<string, unknown>>(sendProviderLoginInputRequest(loginId, dataBase64))
+  return expectVariant<{ login_id: string; byte_count: number }>(response, "ProviderLoginInputSent")
+}
+
+export async function cancelProviderLogin(
+  client: LocalIpcClient,
+  loginId: string,
+): Promise<ProviderLoginStatus> {
+  const response = await client.send<Record<string, unknown>>(cancelProviderLoginRequest(loginId))
+  return expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginCancelled").login
+}
+
 export async function logoutProvider(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
-): Promise<ProviderLogoutResult> {
+): Promise<ProviderLogoutOutcome> {
   const response = await client.send<Record<string, unknown>>(logoutProviderRequest(provider, accountProfile))
-  return expectVariant<ProviderLogoutResult>(response, "ProviderLoggedOut")
+  if ("ProviderLoggedOut" in response) {
+    return { kind: "logged_out", result: response.ProviderLoggedOut as ProviderLogoutResult }
+  }
+  return {
+    kind: "interaction_required",
+    workflow: expectVariant<{ logout: ProviderLoginStart }>(response, "ProviderLogoutStarted").logout,
+  }
 }
 
 export async function listProviderAccountProfiles(client: LocalIpcClient, provider?: string | null): Promise<ProviderAccountProfile[]> {

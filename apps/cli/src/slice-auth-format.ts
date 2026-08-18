@@ -26,9 +26,9 @@ export function formatSliceProviderAuthActionResult(
   }
   if (status === "not_implemented") {
     const fallback = action === "import"
-      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
+      ? `use /slice auth login ${sliceRef} ${provider} <account-profile>, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
       : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
     return `slice auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
   }
-  return `slice auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
+  return `slice auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider} <account-profile>.`
 }

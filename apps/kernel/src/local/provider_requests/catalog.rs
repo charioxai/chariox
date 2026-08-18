@@ -1,9 +1,9 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
-    claude_provider_catalog, default_provider_command_catalogs, lease_codex_catalog_endpoint,
-    lease_opencode_catalog_endpoint, resolve_claude_executable, resolve_opencode_executable,
-    CodexClient, OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
+    claude_provider_catalog, default_provider_command_catalogs, resolve_claude_executable,
+    resolve_opencode_executable, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
+    OpenCodeProviderInfo, ProviderAuthStatus,
 };
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -12,8 +12,8 @@ use std::thread;
 use std::time::Duration;
 
 use super::super::api::{
-    GetProviderAuthStatusRequest, LocalDaemonResponse, LogoutProviderRequest,
-    StartProviderLoginRequest,
+    GetProviderAuthStatusRequest, GetProviderCatalogRequest, LocalDaemonResponse,
+    LogoutProviderRequest, ProviderCatalogExecutionLocation, StartProviderLoginRequest,
 };
 use super::blocking::block_on_relay_query;
 
@@ -27,6 +27,9 @@ pub(crate) fn provider_command_catalogs_response() -> Result<LocalDaemonResponse
 
 pub(crate) fn load_provider_catalog(
     config: DaemonConfig,
+    registry: crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: String,
+    request: GetProviderCatalogRequest,
 ) -> Result<OpenCodeProviderCatalog, DaemonError> {
     if config.provider_catalog_read_delay_ms > 0 {
         thread::sleep(Duration::from_millis(config.provider_catalog_read_delay_ms));
@@ -38,7 +41,17 @@ pub(crate) fn load_provider_catalog(
     }
     let mut source_errors = Vec::new();
 
-    match lease_opencode_catalog_endpoint() {
+    let selected_profiles = resolve_catalog_profiles(&registry, &owner_user_id, &request)?;
+    let opencode_profile = selected_profiles
+        .get("opencode")
+        .expect("OpenCode default profile is migrated");
+    let opencode_environment =
+        registry.resolve_environment(&owner_user_id, "opencode", &opencode_profile.profile_id)?;
+    match crate::provider::ensure_opencode_account_endpoint(
+        &owner_user_id,
+        &opencode_profile.profile_id,
+        opencode_environment,
+    ) {
         Ok(endpoint) => match OpenCodeClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(opencode_backend_catalog(catalog)),
@@ -48,7 +61,16 @@ pub(crate) fn load_provider_catalog(
         },
         Err(error) => source_errors.push(format!("opencode endpoint: {error}")),
     }
-    match lease_codex_catalog_endpoint() {
+    let codex_profile = selected_profiles
+        .get("codex")
+        .expect("Codex default profile is migrated");
+    let codex_environment =
+        registry.resolve_environment(&owner_user_id, "codex", &codex_profile.profile_id)?;
+    match crate::provider::ensure_codex_account_endpoint(
+        &owner_user_id,
+        &codex_profile.profile_id,
+        codex_environment,
+    ) {
         Ok(endpoint) => match CodexClient::new("catalog", endpoint.as_str()) {
             Ok(client) => match client.provider_catalog() {
                 Ok(catalog) => catalogs.push(catalog),
@@ -115,6 +137,100 @@ pub(crate) fn load_provider_catalog(
         }),
     );
     Ok(catalog)
+}
+
+fn resolve_catalog_profiles(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    request: &GetProviderCatalogRequest,
+) -> Result<BTreeMap<String, crate::account_profile::ProviderAccountProfile>, DaemonError> {
+    let focus_provider = match request.provider.as_deref() {
+        Some(provider) => Some(
+            crate::provider::canonical_provider_family(provider).ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "get_provider_catalog",
+                    message: format!("unsupported provider `{provider}` in catalog request"),
+                }
+            })?,
+        ),
+        None => None,
+    };
+    let mut overrides = BTreeMap::new();
+    for (provider, profile_id) in &request.account_profiles {
+        let provider = crate::provider::canonical_provider_family(provider).ok_or_else(|| {
+            DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: format!("unsupported provider `{provider}` in account profile selection"),
+            }
+        })?;
+        if overrides
+            .insert(provider.to_string(), profile_id.clone())
+            .is_some()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "get_provider_catalog",
+                message: format!(
+                    "provider `{provider}` has more than one account profile selection"
+                ),
+            });
+        }
+    }
+
+    let mut selected = BTreeMap::new();
+    for provider in ["codex", "claude", "opencode"] {
+        let profile = if let Some(profile_id) = overrides.get(provider) {
+            registry.get(owner_user_id, provider, profile_id)?
+        } else {
+            registry
+                .list(owner_user_id, Some(provider))?
+                .into_iter()
+                .find(|profile| profile.is_default)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "get_provider_catalog",
+                    message: format!(
+                        "provider `{provider}` does not have a registered default account profile"
+                    ),
+                })?
+        };
+        if focus_provider == Some(provider) {
+            validate_catalog_materialization(&profile, &request.execution_location)?;
+        }
+        selected.insert(provider.to_string(), profile);
+    }
+    Ok(selected)
+}
+
+fn validate_catalog_materialization(
+    profile: &crate::account_profile::ProviderAccountProfile,
+    location: &ProviderCatalogExecutionLocation,
+) -> Result<(), DaemonError> {
+    let target = match location {
+        ProviderCatalogExecutionLocation::Local => return Ok(()),
+        ProviderCatalogExecutionLocation::Worker { kernel_ref } => (
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker,
+            kernel_ref.as_str(),
+        ),
+        ProviderCatalogExecutionLocation::Slice { slice_ref } => (
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+            slice_ref.as_str(),
+        ),
+    };
+    let materialized = profile.materializations.iter().any(|status| {
+        status.target_kind == target.0
+            && status.target_ref == target.1
+            && status.state
+                == crate::account_profile::ProviderAccountMaterializationState::Materialized
+    });
+    if materialized {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "get_provider_catalog",
+        message: format!(
+            "account profile `{}` is not materialized at the selected execution location",
+            profile.profile_id
+        ),
+    })
 }
 
 pub(crate) fn provider_auth_status_response(
@@ -823,6 +939,56 @@ mod tests {
         assert_eq!(catalog.all.len(), 1);
         assert_eq!(catalog.all[0].id, "dev-stub");
         assert!(catalog.all[0].models.is_empty());
+    }
+
+    #[test]
+    fn catalog_profile_resolution_uses_override_and_requires_target_materialization() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-catalog-profile-selection-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("profiles.json"),
+        )
+        .expect("registry should open");
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .expect("defaults should migrate");
+        let work = registry
+            .create_managed("owner-a", "codex", "Work")
+            .expect("work profile should be created");
+        let request = GetProviderCatalogRequest {
+            provider: Some("codex".to_string()),
+            account_profiles: BTreeMap::from([("codex".to_string(), work.profile_id.clone())]),
+            execution_location: ProviderCatalogExecutionLocation::Slice {
+                slice_ref: "slice-a".to_string(),
+            },
+        };
+
+        let error = resolve_catalog_profiles(&registry, "owner-a", &request)
+            .expect_err("unmaterialized profile should be rejected");
+        assert!(error.to_string().contains("not materialized"));
+        registry
+            .update_materialization_status(
+                "owner-a",
+                "codex",
+                &work.profile_id,
+                crate::account_profile::ProviderAccountMaterializationStatus {
+                    target_kind:
+                        crate::account_profile::ProviderAccountMaterializationTargetKind::Slice,
+                    target_ref: "slice-a".to_string(),
+                    state:
+                        crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                    observed_at_ms: 1,
+                    last_error: None,
+                },
+            )
+            .expect("materialization should be recorded");
+        let selected = resolve_catalog_profiles(&registry, "owner-a", &request)
+            .expect("materialized selection should resolve");
+        assert_eq!(selected["codex"].profile_id, work.profile_id);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

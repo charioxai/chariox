@@ -26,7 +26,7 @@ export function spawnAgentRequest(
     SpawnAgent: {
       session_id: sessionId,
       provider: provider ?? null,
-      account_profile: accountProfile ?? null,
+      ...(accountProfile ? { account_profile: accountProfile } : {}),
       alias: alias ?? null,
       model: model ?? null,
       effort: effort ?? null,
@@ -60,7 +60,7 @@ export function spawnAgentsRequest(sessionId: string, agents: SpawnAgentBatchIte
       session_id: sessionId,
       agents: agents.map((agent) => ({
         provider: agent.provider ?? null,
-        account_profile: agent.accountProfile ?? null,
+        ...(agent.accountProfile ? { account_profile: agent.accountProfile } : {}),
         alias: agent.alias ?? null,
         model: agent.model ?? null,
         effort: agent.effort ?? null,
@@ -137,7 +137,7 @@ export function updateAgentProfileRequest(options: {
       session_id: options.sessionId,
       agent_id: options.agentId,
       provider: options.provider ?? null,
-      account_profile: options.accountProfile ?? null,
+      ...(options.accountProfile ? { account_profile: options.accountProfile } : {}),
       model: options.model ?? null,
       effort: options.effort ?? null,
       clear_effort: options.clearEffort ?? false,

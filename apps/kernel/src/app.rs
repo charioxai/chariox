@@ -47,15 +47,18 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
+    discover_external_provider_sessions, discover_external_provider_sessions_for_profiles,
+    external_provider_session_candidate_paths_for_profiles,
+    external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
-    external_provider_session_transcript_needs_refresh, read_external_provider_observed_turns,
-    ExternalProviderSessionDiscoverySignature,
+    external_provider_session_transcript_needs_refresh,
+    external_provider_session_transcript_needs_refresh_for_profile,
+    read_external_provider_observed_turns, read_external_provider_observed_turns_for_profile,
+    ExternalProviderSessionDiscoverySignature, ExternalProviderSessionProfileRoot,
 };
 pub(crate) use external_provider_sessions::{
-    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
-    AttachedProviderTranscriptCursorStore, ExternalProviderSessionAttachmentRef,
-    ExternalProviderSessionIndexStore,
+    AttachedProviderTranscriptCursorKey, AttachedProviderTranscriptCursorStore,
+    ExternalProviderSessionAttachmentRef, ExternalProviderSessionIndexStore,
 };
 pub(crate) use history_event_context::{HistoryEventContextOverrides, HistoryEventContextResolver};
 pub(crate) use prompt_activity::{

@@ -47,13 +47,18 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(&request.provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config,
+                    &request.owner_user_id,
+                );
             let profile = self.provider_account_profiles.get(
-                &request.owner_user_id,
+                &account_owner_user_id,
                 &request.provider,
                 &request.account_profile,
             )?;
             let provider_account_env = self.provider_account_profiles.resolve_environment(
-                &request.owner_user_id,
+                &account_owner_user_id,
                 &request.provider,
                 &profile.profile_id,
             )?;

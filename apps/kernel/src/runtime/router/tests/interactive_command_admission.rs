@@ -630,7 +630,8 @@ async fn focus_resize_and_cancel_do_not_wait_behind_slow_provider_catalog_inner(
         .await
         .expect("prompt should start before catalog drill");
 
-    let catalog_request = LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest);
+    let catalog_request =
+        LocalDaemonRequest::GetProviderCatalog(GetProviderCatalogRequest::default());
     let catalog_command =
         KernelCommand::from_local_request("cmd-slow-catalog", None, None, &catalog_request);
     let catalog_router = router.clone();

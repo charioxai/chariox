@@ -143,7 +143,7 @@ test("formatSessionRuntimeStatus renders slice provider auth recovery", () => {
   })
 
   assert.match(rendered, /slice_auth=missing codex/)
-  assert.match(rendered, /next: run \/slice doctor linux-dev; configure missing provider account codex with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex before sending prompts to agents in that slice/)
+  assert.match(rendered, /next: run \/slice doctor linux-dev; configure missing provider account codex with \/slice auth import linux-dev codex <account-profile> or \/slice auth login linux-dev codex <account-profile> before sending prompts to agents in that slice/)
 })
 
 test("formatSessionRuntimeStatus uses projected activity over stale legacy prompt state", () => {

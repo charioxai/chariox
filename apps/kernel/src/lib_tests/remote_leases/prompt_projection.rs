@@ -1,5 +1,25 @@
 use super::*;
 
+fn materialize_empty_codex_profile_for_test(app: &DaemonApp, owner_user_id: &str) {
+    app.provider_account_profile_registry()
+        .materialize_replica(
+            owner_user_id,
+            &crate::account_profile::ProviderAccountMaterialization {
+                profile: crate::account_profile::ProviderAccountReplicaMetadata {
+                    owner_user_id: owner_user_id.to_string(),
+                    provider: "codex".to_string(),
+                    profile_id: "default".to_string(),
+                    label: "Default".to_string(),
+                    origin: crate::account_profile::ProviderAccountProfileOrigin::Default,
+                    is_default: true,
+                },
+                files: Vec::new(),
+                generated_at_ms: crate::session::unix_epoch_ms(),
+            },
+        )
+        .expect("test worker should materialize the selected Codex profile");
+}
+
 #[test]
 fn leased_agents_can_submit_and_complete_prompts_through_backing_session() {
     let mut config = DaemonConfig::for_tests();
@@ -1148,6 +1168,7 @@ fn explicit_completion_replay_keeps_the_settled_home_prompt_output_key() {
         )
         .expect("leased prompt should submit");
     assert!(matches!(outcome, PromptSubmissionOutcome::Started { .. }));
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
     app.fan_out_output_for_agent(
         &leased_agent.backing_session_id,
@@ -1225,6 +1246,7 @@ fn new_home_prompt_clears_prior_explicit_completion_replay() {
             None,
         )
         .expect("leased agent should be created");
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
 
     let first_home_prompt_id = "home-prompt-consecutive-1";
@@ -1405,6 +1427,7 @@ fn explicit_provider_synthesizes_completion_after_authoritative_output_only_sett
             None,
         )
         .expect("leased agent should be created");
+    materialize_empty_codex_profile_for_test(&app, "user-home");
     RemoteLeaseRuntime::new(&mut app).set_leased_agent_provider_for_test(&leased_agent.id, "codex");
     let home_prompt_id = "home-prompt-explicit-output-only";
     let (provider_run_id, outcome) = RemoteLeaseRuntime::new(&mut app)

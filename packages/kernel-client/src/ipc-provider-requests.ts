@@ -39,8 +39,26 @@ export function updateProviderRunSelectionRequest(
   }
 }
 
-export function getProviderCatalogRequest() {
-  return { GetProviderCatalog: null }
+export type ProviderCatalogExecutionLocation =
+  | { kind: "local" }
+  | { kind: "worker"; kernel_ref: string }
+  | { kind: "slice"; slice_ref: string }
+
+export function getProviderCatalogRequest(options: {
+  provider?: string | null
+  accountProfile?: string | null
+  executionLocation?: ProviderCatalogExecutionLocation
+} = {}) {
+  const accountProfiles = options.provider && options.accountProfile
+    ? { [options.provider]: options.accountProfile }
+    : {}
+  return {
+    GetProviderCatalog: {
+      provider: options.provider ?? null,
+      account_profiles: accountProfiles,
+      execution_location: options.executionLocation ?? { kind: "local" },
+    },
+  }
 }
 
 export function getProviderCommandCatalogsRequest() {
@@ -63,6 +81,18 @@ export function startProviderLoginRequest(provider: string, accountProfile = "de
       account_profile: accountProfile,
     },
   }
+}
+
+export function getProviderLoginStatusRequest(loginId: string) {
+  return { GetProviderLoginStatus: { login_id: loginId } }
+}
+
+export function sendProviderLoginInputRequest(loginId: string, dataBase64: string) {
+  return { SendProviderLoginInput: { login_id: loginId, data_base64: dataBase64 } }
+}
+
+export function cancelProviderLoginRequest(loginId: string) {
+  return { CancelProviderLogin: { login_id: loginId } }
 }
 
 export function logoutProviderRequest(provider: string, accountProfile = "default") {

@@ -419,11 +419,11 @@ function formatSliceProviderAuthCommandResult(
   }
   if (status === "not_implemented") {
     const fallback = action === "import"
-      ? `use /slice auth login ${sliceRef} ${provider}, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
+      ? `use /slice auth login ${sliceRef} ${provider} <account-profile>, open /slice screen ${sliceRef} to configure the account inside the slice, or update/restart the worker kernel if auth import should be available`
       : `open /slice screen ${sliceRef} to remove the provider account inside the slice, or update/restart the worker kernel if auth removal should be available`
     return `slice ${label} auth ${action} ${provider} is unavailable on this kernel. Next action: ${fallback}.`
   }
-  return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider}.`
+  return `slice ${label} auth ${action} ${provider} failed${status ? ` with status ${status}` : ""}. Next action: run /slice doctor ${sliceRef}, then retry or use /slice auth login ${sliceRef} ${provider} <account-profile>.`
 }
 
 function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord | null): string {
@@ -671,11 +671,11 @@ function formatProviderRecoveryCommands(providers: readonly string[], commandFor
 }
 
 function formatSliceAuthImportCommand(slice: SliceRecord, provider: string): string {
-  return `/slice auth import ${formatSliceCommandRef(slice)} ${provider}`
+  return `/slice auth import ${formatSliceCommandRef(slice)} ${provider} <account-profile>`
 }
 
 function formatSliceAuthLoginCommand(slice: SliceRecord, provider: string): string {
-  return `/slice auth login ${formatSliceCommandRef(slice)} ${provider}`
+  return `/slice auth login ${formatSliceCommandRef(slice)} ${provider} <account-profile>`
 }
 
 function formatSliceCommandRef(slice: SliceRecord): string {
@@ -732,9 +732,12 @@ function sliceAuditNextAction(action: string, outcome: string, payload: Record<s
   }
   const sliceRef = String(label || payload.slice_id || "<slice>")
   const provider = typeof payload.provider === "string" && payload.provider ? payload.provider : null
+  const accountProfile = typeof payload.account_profile === "string" && payload.account_profile
+    ? payload.account_profile
+    : "<account-profile>"
   if (action.startsWith("auth.")) {
     return provider
-      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} ${accountProfile} or /slice auth import ${sliceRef} ${provider} ${accountProfile}`
       : `run /slice doctor ${sliceRef}; inspect provider account state, then retry the matching /slice auth command`
   }
   if (["start", "stop", "delete", "state.save", "state.reset", "backup.create"].includes(action)) {

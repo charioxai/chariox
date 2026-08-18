@@ -147,12 +147,25 @@ export type ProviderAuthStatus = {
 
 export type ProviderLoginStart = {
   provider: string
-  account_profile?: string
+  account_profile: string
   login_kind: string
   login_id: string | null
   auth_url: string | null
   verification_url: string | null
   user_code: string | null
+}
+
+export type ProviderLoginProcessState = "running" | "succeeded" | "failed" | "cancelled"
+
+export type ProviderLoginStatus = {
+  provider: string
+  account_profile: string
+  login_id: string
+  state: ProviderLoginProcessState
+  interaction?: Record<string, unknown> | null
+  terminal_output_base64: string
+  started_at_ms: number
+  updated_at_ms: number
 }
 
 export type SliceProviderLoginStart = {
@@ -169,6 +182,10 @@ export type ProviderLogoutResult = {
   provider: string
   account_profile: string
 }
+
+export type ProviderLogoutOutcome =
+  | { kind: "logged_out"; result: ProviderLogoutResult }
+  | { kind: "interaction_required"; workflow: ProviderLoginStart }
 
 export type ProviderAccountUsageAvailability = "available" | "partial" | "unavailable" | "stale" | "error"
 export type ProviderAccountUsageMeterKind = "rolling_limit" | "credit_balance" | "spend_limit" | "token_usage" | "local_cost" | "other"
@@ -215,6 +232,15 @@ export type ProviderAccountProfile = {
   detected_provider_version?: string | null
   last_validated_at_ms?: number | null
   usage: ProviderAccountUsageSnapshot
+  materializations?: ProviderAccountMaterializationStatus[]
+}
+
+export type ProviderAccountMaterializationStatus = {
+  target_kind: "worker" | "slice"
+  target_ref: string
+  state: "materialized" | "stale" | "error"
+  observed_at_ms: number
+  last_error?: string | null
 }
 
 export type PromptAttachmentPart = {

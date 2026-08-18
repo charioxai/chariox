@@ -3,10 +3,6 @@ import {
   type BackendProviderId,
   type CatalogModelOption,
 } from "./provider-catalog.js"
-import {
-  formatProviderAccountForBackend,
-  formatSliceBackendProviderAccount,
-} from "@chariox/kernel-client/slice-format"
 import type { SliceRecord } from "./cli-types.js"
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import { formatWaitingRoomSliceSelection, waitingRoomSlices } from "./waiting-room-slices.js"
@@ -113,9 +109,6 @@ export function waitingRoomStartRows(
       title: "Provider",
       value: formatProviderValue(
         choice.providerId,
-        choice.slice ?? null,
-        state,
-        remote,
         choice.providerCatalogFallback,
       ),
       titleWidth: options.titleWidth,
@@ -259,45 +252,10 @@ function formatBackendProviderLabel(providerId: BackendProviderId) {
 
 function formatProviderValue(
   providerId: BackendProviderId,
-  slice: SliceRecord | null,
-  state: Pick<WaitingRoomState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomRemoteState,
   fallback = false,
 ) {
   const label = formatBackendProviderLabel(providerId)
-  const account = slice
-    ? formatSliceBackendProviderAccount(slice, providerId)
-    : formatRemoteProviderAccount(providerId, state, remote)
-  const providerLabel = account ? `${label} (${account})` : label
-  return fallback ? `${providerLabel} (local list)` : providerLabel
-}
-
-function formatRemoteProviderAccount(
-  providerId: BackendProviderId,
-  state: Pick<WaitingRoomState, "selectedMachineRef" | "selectedKernelRef">,
-  remote: WaitingRoomRemoteState,
-): string | null {
-  const machineRef = waitingRoomSelectedLaunchMachineRef(state, remote)
-  const kernelRef = waitingRoomSelectedLaunchKernelRef({ ...state, selectedMachineRef: machineRef }, remote)
-  const kernel = waitingRoomLaunchKernelOptions(remote, machineRef)
-    .find((option) => option.id === kernelRef)
-    ?.kernel
-  const kernelAccount = formatProviderAccountForBackend(
-    kernel?.provider_accounts ?? [],
-    providerId,
-    kernel?.available_providers ?? [],
-  )
-  if (kernelAccount) {
-    return kernelAccount
-  }
-  const machine = waitingRoomLaunchMachineOptions(remote)
-    .find((option) => option.id === machineRef)
-    ?.machine
-  return formatProviderAccountForBackend(
-    machine?.provider_accounts ?? [],
-    providerId,
-    machine?.available_providers ?? [],
-  )
+  return fallback ? `${label} (local list)` : label
 }
 
 function formatWaitingRoomModelValue(

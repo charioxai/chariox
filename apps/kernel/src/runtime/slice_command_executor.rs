@@ -424,12 +424,13 @@ fn resolve_local_docker_provider_account(
     provider: &str,
     account_profile: &str,
 ) -> Result<crate::slice::LocalDockerProviderAccount, DaemonError> {
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
     let registry = runtime_state.provider_account_profile_registry();
-    let profile = registry.get(owner_user_id, provider, account_profile)?;
+    let profile = registry.get(&owner_user_id, provider, account_profile)?;
     Ok(crate::slice::LocalDockerProviderAccount {
-        owner_path_component: crate::account_profile::account_owner_path_component(owner_user_id),
+        owner_path_component: crate::account_profile::account_owner_path_component(&owner_user_id),
         profile_id: profile.profile_id.clone(),
-        environment: registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?,
+        environment: registry.resolve_environment(&owner_user_id, provider, &profile.profile_id)?,
     })
 }
 

@@ -597,7 +597,7 @@ async fn provider_auth_status_does_not_use_generic_app_fallback_inner() {
 
     match error {
         DaemonError::LocalTransport { operation, message } => {
-            assert_eq!(operation, "get_provider_auth_status");
+            assert_eq!(operation, "validate account profile");
             assert!(message.contains("unsupported-provider"));
         }
         error => panic!("unexpected error: {error}"),

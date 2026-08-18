@@ -160,6 +160,8 @@ impl CommandRouter {
                 return execute_provider_catalog_request(
                     &self.provider_catalog_projection,
                     &self.config_projection,
+                    self.runtime_state.provider_account_profile_registry(),
+                    caller_user_id,
                     request.clone(),
                 )
                 .await

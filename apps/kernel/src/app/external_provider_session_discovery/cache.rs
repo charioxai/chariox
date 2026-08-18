@@ -142,6 +142,37 @@ pub(super) fn provider_observed_transcript_needs_refresh(
         || entry.observed_modified_at_ms != Some(fingerprint.modified_at_ms)
 }
 
+pub(super) fn provider_observed_transcript_needs_refresh_in_roots(
+    provider: &str,
+    provider_session_id: &str,
+    roots: &[PathBuf],
+) -> bool {
+    let key = provider_transcript_path_index_key(provider, provider_session_id);
+    let entry = provider_transcript_path_index()
+        .lock()
+        .ok()
+        .and_then(|index| index.get(&key).cloned());
+    let Some(entry) = entry else {
+        return true;
+    };
+    if !roots.iter().any(|root| entry.path.starts_with(root)) {
+        // A colliding native session ID from another account profile may be
+        // the currently cached entry. Treat this profile as uncached.
+        return true;
+    }
+    let fingerprint = if provider == "opencode" && is_opencode_sqlite_db(&entry.path) {
+        opencode_sqlite_session_fingerprint(&entry.path, provider_session_id)
+    } else {
+        provider_transcript_file_fingerprint(&entry.path)
+    };
+    let Some(fingerprint) = fingerprint else {
+        return true;
+    };
+    entry.observed_turns.is_none()
+        || entry.observed_len != Some(fingerprint.len)
+        || entry.observed_modified_at_ms != Some(fingerprint.modified_at_ms)
+}
+
 pub(super) fn cached_provider_discovery_record_for_path(
     provider: &str,
     path: &Path,

@@ -5,7 +5,7 @@ use crate::local::{
     ExternalProviderSessionPage, ExternalProviderSessionRecord, ListExternalProviderSessionsRequest,
 };
 use crate::provider::{
-    canonical_external_provider_session_id, external_provider_session_providers,
+    canonical_profile_external_provider_session_id, external_provider_session_providers,
     ExternalProviderImportMetadata, ExternalProviderObservedCursor, ProviderResumeState,
 };
 use crate::session::unix_epoch_ms;
@@ -23,6 +23,7 @@ pub(crate) struct AttachedProviderTranscriptCursorKey {
     pub(crate) session_id: String,
     pub(crate) agent_id: String,
     pub(crate) provider: String,
+    pub(crate) account_profile: String,
     pub(crate) provider_session_id: String,
 }
 
@@ -31,6 +32,7 @@ impl AttachedProviderTranscriptCursorKey {
         session_id: impl Into<String>,
         agent_id: impl Into<String>,
         provider: impl Into<String>,
+        account_profile: impl Into<String>,
         provider_session_id: impl Into<String>,
     ) -> Self {
         let provider = provider.into();
@@ -41,6 +43,7 @@ impl AttachedProviderTranscriptCursorKey {
             session_id: session_id.into(),
             agent_id: agent_id.into(),
             provider,
+            account_profile: account_profile.into().trim().to_string(),
             provider_session_id,
         }
     }
@@ -216,12 +219,16 @@ impl ExternalProviderSessionIndexStore {
     pub(crate) fn mark_provider_session_attached(
         &self,
         provider: &str,
+        account_profile: &str,
         provider_session_id: &str,
         session_id: &str,
         agent_id: &str,
     ) -> Option<ExternalProviderSessionRecord> {
-        let external_session_id =
-            external_session_id_for_provider_session(provider, provider_session_id)?;
+        let external_session_id = canonical_profile_external_provider_session_id(
+            provider,
+            account_profile,
+            provider_session_id,
+        )?;
         self.mark_attached(&external_session_id, session_id, agent_id)
     }
 
@@ -237,6 +244,7 @@ impl ExternalProviderSessionIndexStore {
     pub(crate) fn mark_resume_state_attached(
         &self,
         resume_state: &ProviderResumeState,
+        account_profile: &str,
         session_id: &str,
         agent_id: &str,
     ) -> usize {
@@ -244,6 +252,7 @@ impl ExternalProviderSessionIndexStore {
         for (provider, provider_session_id) in resume_state.external_provider_sessions() {
             self.mark_provider_session_attached(
                 provider,
+                account_profile,
                 provider_session_id,
                 session_id,
                 agent_id,
@@ -256,15 +265,17 @@ impl ExternalProviderSessionIndexStore {
     pub(crate) fn mark_provider_run_attached(
         &self,
         provider: &str,
+        account_profile: &str,
         provider_session_id: Option<&str>,
         resume_state: &ProviderResumeState,
         session_id: &str,
         agent_id: &str,
     ) {
-        self.mark_resume_state_attached(resume_state, session_id, agent_id);
+        self.mark_resume_state_attached(resume_state, account_profile, session_id, agent_id);
         if let Some(provider_session_id) = provider_session_id {
             self.mark_provider_session_attached(
                 provider,
+                account_profile,
                 provider_session_id,
                 session_id,
                 agent_id,
@@ -413,8 +424,25 @@ impl ExternalProviderSessionIndexStore {
             .cloned()
     }
 
+    #[cfg(test)]
     pub(crate) fn list(
         &self,
+        request: &ListExternalProviderSessionsRequest,
+    ) -> ExternalProviderSessionPage {
+        self.list_scoped(None, request)
+    }
+
+    pub(crate) fn list_for_owner(
+        &self,
+        owner_user_id: &str,
+        request: &ListExternalProviderSessionsRequest,
+    ) -> ExternalProviderSessionPage {
+        self.list_scoped(Some(owner_user_id), request)
+    }
+
+    fn list_scoped(
+        &self,
+        owner_user_id: Option<&str>,
         request: &ListExternalProviderSessionsRequest,
     ) -> ExternalProviderSessionPage {
         let limit = request
@@ -434,6 +462,9 @@ impl ExternalProviderSessionIndexStore {
             .sessions
             .values()
             .filter(|session| {
+                if owner_user_id.is_some_and(|owner| session.owner_user_id != owner) {
+                    return false;
+                }
                 if !session.is_attachable_to_chariox() {
                     return false;
                 }
@@ -469,13 +500,6 @@ impl ExternalProviderSessionIndexStore {
     }
 }
 
-pub(crate) fn external_session_id_for_provider_session(
-    provider: &str,
-    provider_session_id: &str,
-) -> Option<String> {
-    canonical_external_provider_session_id(provider, provider_session_id)
-}
-
 fn apply_attachment_marker(
     session: &mut ExternalProviderSessionRecord,
     attachment: &ExternalProviderSessionAttachment,
@@ -504,11 +528,18 @@ fn normalize_external_provider_filter(provider: &str) -> Option<String> {
 
 fn normalize_external_session_id_key(external_session_id: &str) -> String {
     let external_session_id = external_session_id.trim();
-    external_session_id
-        .split_once(':')
-        .and_then(|(provider, provider_session_id)| {
-            canonical_external_provider_session_id(provider, provider_session_id)
-        })
+    let mut parts = external_session_id.splitn(3, ':');
+    let Some(provider) = parts.next() else {
+        return external_session_id.to_string();
+    };
+    let Some(profile_or_session) = parts.next() else {
+        return external_session_id.to_string();
+    };
+    let (account_profile, provider_session_id) = match parts.next() {
+        Some(provider_session_id) => (profile_or_session, provider_session_id),
+        None => ("default", profile_or_session),
+    };
+    canonical_profile_external_provider_session_id(provider, account_profile, provider_session_id)
         .unwrap_or_else(|| external_session_id.to_string())
 }
 
@@ -516,9 +547,11 @@ fn normalize_external_provider_session_record(session: &mut ExternalProviderSess
     if let Some(provider) = normalize_external_provider_filter(&session.provider) {
         session.provider = provider.clone();
         session.provider_session_id = session.provider_session_id.trim().to_string();
-        if let Some(external_session_id) =
-            canonical_external_provider_session_id(&provider, &session.provider_session_id)
-        {
+        if let Some(external_session_id) = canonical_profile_external_provider_session_id(
+            &provider,
+            &session.account_profile,
+            &session.provider_session_id,
+        ) {
             session.external_session_id = external_session_id;
         } else {
             session.external_session_id =

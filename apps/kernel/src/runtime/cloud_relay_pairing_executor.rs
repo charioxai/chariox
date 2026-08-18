@@ -80,6 +80,7 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
             "runtimeProfile": machine_runtime_profile_payload(
                 config_projection,
                 provider_catalog_projection,
+                runtime_state.provider_account_profile_registry(),
             ).await,
         }),
     )
@@ -97,11 +98,16 @@ pub(crate) async fn execute_pair_cloud_relay_machine_request(
 async fn machine_runtime_profile_payload(
     config_projection: &DaemonConfigProjectionStore,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
+    account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
 ) -> serde_json::Value {
     let config = config_projection.snapshot();
     let user_config = config.user_config.clone();
-    let provider_catalog =
-        provider_catalog_json_value(provider_catalog_projection, config_projection).await;
+    let provider_catalog = provider_catalog_json_value(
+        provider_catalog_projection,
+        config_projection,
+        account_profiles,
+    )
+    .await;
     let launch_target = infer_waiting_room_launch_target();
     serde_json::json!({
         "profileVersion": 1,

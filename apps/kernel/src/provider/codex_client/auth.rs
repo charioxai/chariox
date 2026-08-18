@@ -22,7 +22,7 @@ pub struct ProviderAuthStatus {
     pub detected_version: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderLoginStart {
     pub provider: String,
     pub account_profile: String,
@@ -31,6 +31,24 @@ pub struct ProviderLoginStart {
     pub auth_url: Option<String>,
     pub verification_url: Option<String>,
     pub user_code: Option<String>,
+}
+
+impl std::fmt::Debug for ProviderLoginStart {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderLoginStart")
+            .field("provider", &self.provider)
+            .field("account_profile", &self.account_profile)
+            .field("login_kind", &self.login_kind)
+            .field("login_id", &self.login_id)
+            .field("auth_url", &self.auth_url.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "verification_url",
+                &self.verification_url.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field("user_code", &self.user_code.as_ref().map(|_| "[REDACTED]"))
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -103,6 +121,18 @@ impl CodexClient {
             verification_url: response.verification_url,
             user_code: response.user_code,
         })
+    }
+
+    pub fn cancel_login(&self, login_id: &str) -> Result<(), DaemonError> {
+        let mut socket = self.connect_initialized()?;
+        let mut next_request_id = 1;
+        let _: serde_json::Value = self.send_request(
+            &mut socket,
+            &mut next_request_id,
+            "account/login/cancel",
+            json!({ "loginId": login_id }),
+        )?;
+        Ok(())
     }
 
     /// Reads every account-usage surface exposed by the official Codex app

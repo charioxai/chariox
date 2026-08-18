@@ -28,6 +28,7 @@ fn external_provider_session_record(
     last_modified_at_ms: u64,
 ) -> ExternalProviderSessionRecord {
     ExternalProviderSessionRecord {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         external_session_id: format!("{provider}:{provider_session_id}"),
         provider: provider.to_string(),
         provider_session_id: provider_session_id.to_string(),
@@ -37,7 +38,7 @@ fn external_provider_session_record(
         created_at_ms: None,
         last_modified_at_ms,
         worktree_path: None,
-        account_profile: None,
+        account_profile: "default".to_string(),
         capabilities: ExternalProviderSessionCapabilities {
             ..ExternalProviderSessionCapabilities::default()
         },

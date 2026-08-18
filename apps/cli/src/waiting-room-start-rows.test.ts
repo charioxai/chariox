@@ -29,6 +29,7 @@ test("waiting room start rows render configuration labels and join action", () =
     "launch-machine",
     "launch-kernel",
     "provider",
+    "account",
     "model",
     "effort",
     "workspace",
@@ -41,6 +42,7 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "local")
   assert.equal(rows.find((row) => row.id === "launch-kernel")?.value, "local")
   assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
+  assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
   assert.equal(rows.find((row) => row.id === "model")?.value, "GPT-5.4")
   assert.equal(rows.find((row) => row.id === "effort")?.value, "High")
   assert.equal(rows.find((row) => row.id === "workspace")?.value, "/workspace")
@@ -224,10 +226,11 @@ test("waiting room start rows include selected slice provider account", () => {
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (acct-123...cdef)")
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
+  assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
 })
 
-test("waiting room start rows include selected worker kernel provider account", () => {
+test("waiting room start rows do not conflate worker auth with the selected account", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
   const rows = waitingRoomStartRows(
@@ -264,7 +267,8 @@ test("waiting room start rows include selected worker kernel provider account", 
     },
   )
 
-  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode (worker-openai)")
+  assert.equal(rows.find((row) => row.id === "provider")?.value, "OpenCode")
+  assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
 })
 
 function waitingRoomState(overrides: Partial<WaitingRoomState> = {}): WaitingRoomState {

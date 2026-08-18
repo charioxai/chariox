@@ -2,6 +2,8 @@ import type {
   ProviderAuthStatus,
   ProviderAccountProfile,
   ProviderLoginStart,
+  ProviderLoginStatus,
+  ProviderLogoutOutcome,
   ProviderProcessInfo,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -16,7 +18,11 @@ export type ProviderCommandHandlerDeps = {
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
   startProviderLogin?: (provider: string, accountProfile?: string) => Promise<ProviderLoginStart>
-  logoutProvider?: (provider: string, accountProfile?: string) => Promise<{ provider: string; account_profile?: string }>
+  getProviderLoginStatus?: (loginId: string) => Promise<ProviderLoginStatus>
+  sendProviderLoginInput?: (loginId: string, dataBase64: string) => Promise<{ login_id: string; byte_count: number }>
+  cancelProviderLogin?: (loginId: string) => Promise<ProviderLoginStatus>
+  readSecret?: (prompt: string) => Promise<string>
+  logoutProvider?: (provider: string, accountProfile?: string) => Promise<ProviderLogoutOutcome>
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
   linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
@@ -35,7 +41,7 @@ export async function handleProviderSlashCommand(
 ): Promise<void> {
   const { value } = command
   if (!value) {
-    deps.flashFooter("usage: /provider <opencode|codex|claude-headless|claude-p|status|login|logout|reauth|processes>", "error")
+    deps.flashFooter("usage: /provider <opencode|codex|claude-headless|claude-p|status|login|login-status|login-input|login-cancel|logout|reauth|processes>", "error")
     return
   }
 
@@ -51,6 +57,18 @@ export async function handleProviderSlashCommand(
   }
   if (action === "login") {
     await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
+    return
+  }
+  if (action === "login-status") {
+    await showProviderLoginStatus(deps, maybeProvider)
+    return
+  }
+  if (action === "login-input") {
+    await sendProviderLoginInput(deps, maybeProvider)
+    return
+  }
+  if (action === "login-cancel") {
+    await cancelProviderLogin(deps, maybeProvider)
     return
   }
   if (action === "logout") {
@@ -161,6 +179,49 @@ async function startProviderLogin(
   deps.flashFooter(message, "info")
 }
 
+async function showProviderLoginStatus(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.getProviderLoginStatus) {
+    deps.flashFooter("usage: /provider login-status <login-id>", "error")
+    return
+  }
+  const login = await deps.getProviderLoginStatus(loginId)
+  const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
+  if (output) deps.appendNotice(output)
+  deps.flashFooter(`${login.provider}/${login.account_profile} login ${login.state}`, login.state === "failed" ? "error" : "info")
+}
+
+async function sendProviderLoginInput(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.sendProviderLoginInput) {
+    deps.flashFooter("usage: /provider login-input <login-id>", "error")
+    return
+  }
+  if (!deps.readSecret) {
+    deps.flashFooter("provider login input requires hidden input support", "error")
+    return
+  }
+  const value = await deps.readSecret("provider login input: ")
+  await deps.sendProviderLoginInput(loginId, Buffer.from(`${value}\r`, "utf8").toString("base64"))
+  deps.flashFooter(`input sent; run /provider login-status ${loginId}`, "info")
+}
+
+async function cancelProviderLogin(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.cancelProviderLogin) {
+    deps.flashFooter("usage: /provider login-cancel <login-id>", "error")
+    return
+  }
+  const login = await deps.cancelProviderLogin(loginId)
+  deps.flashFooter(`${login.provider}/${login.account_profile} login cancelled`, "info")
+}
+
 async function logoutProvider(
   deps: ProviderCommandHandlerDeps,
   provider: string,
@@ -170,8 +231,10 @@ async function logoutProvider(
     deps.flashFooter("provider logout is not available in this daemon", "error")
     return
   }
-  const loggedOut = await deps.logoutProvider(provider, accountProfile)
-  const message = `${loggedOut.provider}/${loggedOut.account_profile ?? accountProfile ?? "default"} logged out`
+  const outcome = await deps.logoutProvider(provider, accountProfile)
+  const message = outcome.kind === "logged_out"
+    ? `${outcome.result.provider}/${outcome.result.account_profile} logged out`
+    : formatProviderLoginNotice(outcome.workflow, "logout started")
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
@@ -185,7 +248,13 @@ async function reauthProvider(
     deps.flashFooter("provider reauth is not available in this daemon", "error")
     return
   }
-  await deps.logoutProvider(provider, accountProfile)
+  const logout = await deps.logoutProvider(provider, accountProfile)
+  if (logout.kind === "interaction_required") {
+    const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth")
+    deps.appendNotice(message)
+    deps.flashFooter(message, "info")
+    return
+  }
   const login = await deps.startProviderLogin(provider, accountProfile)
   const message = formatProviderLoginNotice(login, "reauth started")
   deps.appendNotice(message)
@@ -250,6 +319,9 @@ function formatProviderLoginNotice(
 ): string {
   return [
     `${login.provider} ${action}`,
+    login.login_kind.startsWith("terminal") && login.login_id
+      ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
+      : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")

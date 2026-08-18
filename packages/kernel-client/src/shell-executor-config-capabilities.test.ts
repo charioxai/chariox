@@ -78,7 +78,7 @@ test("executeShellCommand shows config and provider auth status", async () => {
     if ("GetUserConfig" in request) {
       return { UserConfig: { path: "/home/.chariox/config.json", config: { version: 1, providers: { default: "codex" } } } }
     }
-    assert.deepEqual(request, { GetProviderAuthStatus: { provider: "codex" } })
+      assert.deepEqual(request, { GetProviderAuthStatus: { provider: "codex", account_profile: "default" } })
     return {
       ProviderAuthStatus: {
         status: {

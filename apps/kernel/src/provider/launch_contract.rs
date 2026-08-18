@@ -34,6 +34,20 @@ pub fn canonical_external_provider_session_id(
     .then(|| format!("{provider}:{provider_session_id}"))
 }
 
+pub fn canonical_profile_external_provider_session_id(
+    provider: &str,
+    account_profile: &str,
+    provider_session_id: &str,
+) -> Option<String> {
+    let provider = provider.trim().to_ascii_lowercase();
+    let account_profile = account_profile.trim();
+    let provider_session_id = provider_session_id.trim();
+    (!account_profile.is_empty()
+        && !provider_session_id.is_empty()
+        && EXTERNAL_PROVIDER_SESSION_PROVIDERS.contains(&provider.as_str()))
+    .then(|| format!("{provider}:{account_profile}:{provider_session_id}"))
+}
+
 pub fn external_provider_import_model(provider: &str, requested_model: Option<String>) -> String {
     requested_model.unwrap_or_else(|| match provider.trim().to_ascii_lowercase().as_str() {
         "codex" => "default".to_string(),
@@ -319,6 +333,8 @@ pub struct ExternalProviderImportMetadata {
     pub external_provider_session_id: String,
     pub external_provider: String,
     pub external_provider_session_provider_id: String,
+    #[serde(default = "default_external_provider_account_profile")]
+    pub account_profile: String,
     #[serde(
         default,
         skip_serializing_if = "ExternalProviderObservedCursor::is_empty"
@@ -343,8 +359,9 @@ impl ExternalProviderImportMetadata {
             .trim()
             .to_string();
         let external_provider_session_id = external_provider_session_id.into().trim().to_string();
-        let external_provider_session_id = canonical_external_provider_session_id(
+        let external_provider_session_id = canonical_profile_external_provider_session_id(
             &external_provider,
+            "default",
             &external_provider_session_provider_id,
         )
         .unwrap_or(external_provider_session_id);
@@ -352,6 +369,38 @@ impl ExternalProviderImportMetadata {
             external_provider_session_id,
             external_provider,
             external_provider_session_provider_id,
+            account_profile: "default".to_string(),
+            observed_cursor: ExternalProviderObservedCursor::default(),
+            last_observed_turn_id: None,
+            last_observed_at_ms: None,
+            imported_at_ms: crate::session::unix_epoch_ms(),
+        }
+    }
+
+    pub fn observed_history_for_profile(
+        external_provider: impl Into<String>,
+        account_profile: &str,
+        external_provider_session_provider_id: impl Into<String>,
+    ) -> Self {
+        let external_provider = external_provider.into().trim().to_ascii_lowercase();
+        let provider_session_id = external_provider_session_provider_id
+            .into()
+            .trim()
+            .to_string();
+        let external_provider_session_id = canonical_profile_external_provider_session_id(
+            &external_provider,
+            account_profile,
+            &provider_session_id,
+        )
+        .or_else(|| {
+            canonical_external_provider_session_id(&external_provider, &provider_session_id)
+        })
+        .unwrap_or_else(|| format!("{external_provider}:{provider_session_id}"));
+        Self {
+            external_provider_session_id,
+            external_provider,
+            external_provider_session_provider_id: provider_session_id,
+            account_profile: account_profile.to_string(),
             observed_cursor: ExternalProviderObservedCursor::default(),
             last_observed_turn_id: None,
             last_observed_at_ms: None,
@@ -369,6 +418,7 @@ impl ExternalProviderImportMetadata {
     pub fn same_observed_provider_session(&self, other: &Self) -> bool {
         self.external_provider_session_id == other.external_provider_session_id
             && self.external_provider == other.external_provider
+            && self.account_profile == other.account_profile
             && self.external_provider_session_provider_id
                 == other.external_provider_session_provider_id
     }
@@ -379,6 +429,10 @@ impl ExternalProviderImportMetadata {
             self.external_provider_session_id.as_str(),
         )
     }
+}
+
+fn default_external_provider_account_profile() -> String {
+    "default".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -829,7 +883,7 @@ mod tests {
 
         assert!(first.same_observed_provider_session(&second));
         assert!(!first.same_observed_provider_session(&different));
-        assert_eq!(first.import_order_key(), (1, "codex:thread-1"));
+        assert_eq!(first.import_order_key(), (1, "codex:default:thread-1"));
     }
 
     #[test]
@@ -840,7 +894,10 @@ mod tests {
             " thread-1 ",
         );
 
-        assert_eq!(import.external_provider_session_id, "codex:thread-1");
+        assert_eq!(
+            import.external_provider_session_id,
+            "codex:default:thread-1"
+        );
         assert_eq!(import.external_provider, "codex");
         assert_eq!(import.external_provider_session_provider_id, "thread-1");
     }

@@ -10,10 +10,15 @@ pub(crate) async fn execute_provider_account_request(
     owner_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let owner_user_id = runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    let invalidates_catalog = !matches!(
+        request,
+        LocalDaemonRequest::ListProviderAccountProfiles(_)
+            | LocalDaemonRequest::GetProviderAccountProfile(_)
+    );
     let registry = runtime_state.provider_account_profile_registry().clone();
-    let owner_user_id = owner_user_id.to_string();
-    let runtime_state = runtime_state.clone();
-    tokio::task::spawn_blocking(move || match request {
+    let runtime_for_checks = runtime_state.clone();
+    let response = tokio::task::spawn_blocking(move || match request {
         LocalDaemonRequest::ListProviderAccountProfiles(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfilesListed {
                 profiles: registry.list(&owner_user_id, request.provider.as_deref())?,
@@ -79,12 +84,17 @@ pub(crate) async fn execute_provider_account_request(
         }
         LocalDaemonRequest::RemoveProviderAccountProfile(request) => {
             ensure_profile_idle(
-                &runtime_state,
+                &runtime_for_checks,
                 &registry,
                 &owner_user_id,
                 &request.provider,
                 &request.account_profile,
             )?;
+            invalidate_profile_endpoint(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            );
             Ok(LocalDaemonResponse::ProviderAccountProfileRemoved {
                 profile: registry.remove_registration(
                     &owner_user_id,
@@ -95,12 +105,17 @@ pub(crate) async fn execute_provider_account_request(
         }
         LocalDaemonRequest::DeleteProviderAccountProfileData(request) => {
             ensure_profile_idle(
-                &runtime_state,
+                &runtime_for_checks,
                 &registry,
                 &owner_user_id,
                 &request.provider,
                 &request.account_profile,
             )?;
+            invalidate_profile_endpoint(
+                &owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            );
             Ok(LocalDaemonResponse::ProviderAccountProfileDataDeleted {
                 profile: registry.delete_managed_profile_data(
                     &owner_user_id,
@@ -119,7 +134,25 @@ pub(crate) async fn execute_provider_account_request(
     .map_err(|error| DaemonError::LocalTransport {
         operation: "provider account request",
         message: error.to_string(),
-    })?
+    })??;
+    if invalidates_catalog {
+        runtime_state
+            .with_app_side_effect(|app| app.invalidate_provider_catalog_cache())
+            .await;
+    }
+    Ok(response)
+}
+
+fn invalidate_profile_endpoint(owner_user_id: &str, provider: &str, account_profile: &str) {
+    match crate::provider::canonical_provider_family(provider) {
+        Some("codex") => {
+            crate::provider::invalidate_codex_account_endpoint(owner_user_id, account_profile)
+        }
+        Some("opencode") => {
+            crate::provider::invalidate_opencode_account_endpoint(owner_user_id, account_profile)
+        }
+        _ => {}
+    }
 }
 
 pub(crate) fn ensure_profile_idle(
@@ -134,7 +167,8 @@ pub(crate) fn ensure_profile_idle(
         .provider_runs_for_external_session_attachment()
         .into_iter()
         .any(|run| {
-            run.owner_user_id() == owner_user_id
+            runtime_state.provider_account_authority_owner_user_id(run.owner_user_id())
+                == owner_user_id
                 && crate::provider::canonical_provider_family(run.provider())
                     == crate::provider::canonical_provider_family(provider)
                 && run.account_profile() == profile.profile_id

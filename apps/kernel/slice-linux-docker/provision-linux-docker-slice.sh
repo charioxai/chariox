@@ -851,10 +851,10 @@ provider_login_command() {
       printf '%s\n' "CODEX_HOME='$SLICE_ACCOUNT_ROOT/codex/$SLICE_ACCOUNT_PROFILE/codex' codex login --device-auth"
       ;;
     opencode|opencode:openai)
-      printf '%s\n' "XDG_DATA_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data' XDG_CONFIG_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config' XDG_STATE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/state' XDG_CACHE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/cache' OPENCODE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config/opencode' opencode providers login -p openai -m '$SLICE_OPENCODE_LOGIN_METHOD'"
+      printf '%s\n' "XDG_DATA_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/data' XDG_CONFIG_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config' XDG_STATE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/state' XDG_CACHE_HOME='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/cache' OPENCODE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/opencode/$SLICE_ACCOUNT_PROFILE/config/opencode' opencode auth login"
       ;;
     claude|claude:claudeai)
-      printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login --claudeai"
+      printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
       printf '%s\n' "gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
@@ -1036,14 +1036,12 @@ main() {
     login-opencode)
       require_docker
       ensure_container
-      docker exec -it -u slice "$SLICE_NAME" opencode providers login \
-        -p "$SLICE_OPENCODE_PROVIDER" \
-        -m "$SLICE_OPENCODE_LOGIN_METHOD"
+      docker exec -it -u slice "$SLICE_NAME" opencode auth login
       ;;
     logout-opencode)
       require_docker
       ensure_container
-      docker exec -it -u slice "$SLICE_NAME" opencode providers logout
+      docker exec -it -u slice "$SLICE_NAME" opencode auth logout
       ;;
     start-desktop)
       require_docker

@@ -251,12 +251,12 @@ Current architectural interpretation:
 
 ### Docker Remote-Machine Lab
 
-The Docker lab models containers as ordinary Chariox machines. The base image should include every Chariox app: CLI, daemon/kernel, and relay. It should not include provider credentials or manage provider login. Users install and authenticate provider CLIs inside each persistent container. This intentionally supports multiple concurrent accounts for the same provider by isolating each container's home directory, Chariox identity, provider config, and provider credentials.
+The Docker lab models containers as ordinary Chariox machines. The base image includes Chariox and provider harnesses but no baked credentials. For home-managed slices and trusted home-workers, the home kernel materializes only the selected named provider profile through the existing encrypted worker channel. Ordinary independently managed machines may still authenticate locally, but that is not a second account authority for a home-owned agent. See [PROVIDER_ACCOUNTS.md](PROVIDER_ACCOUNTS.md).
 
 Required container properties:
 
 - outbound internet for provider APIs, package installation, hosted relay access, and auth flows
-- persistent `/home/chariox` or equivalent so machine identity and provider credentials survive restart
+- persistent runtime state so machine identity and authorized profile replicas survive restart
 - separate machine identity per container, derived from persisted config rather than baked into the image
 - optional URL-printing browser/`xdg-open` shims for provider login flows that request a browser
 - documented provider compatibility for the small launch-provider set, including login method, callback-port behavior, and tested CLI versions
@@ -795,7 +795,7 @@ Mandatory behavior:
 - workflow node failure propagation and retry policy MUST remain daemon-owned and explicit
 - workflow concurrency/resource limits MUST be centrally enforced by the daemon runtime
 - unsupported provider versions emit compatibility warnings but retain best-effort `/<provider> ...` completions
-- provider-auth failures are surfaced as structured local host warnings and MUST NOT cause Chariox to take ownership of provider credentials
+- provider-auth failures are surfaced as structured local host warnings; Chariox owns account metadata and orchestration while official provider CLIs remain credential-format and token-refresh authorities
 - relay-mediated remote attachment must not change daemon authority over sessions, provider runs, or workflow state
 
 ## 9. Deployment and Evolution Notes

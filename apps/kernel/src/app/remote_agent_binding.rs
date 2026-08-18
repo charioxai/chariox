@@ -337,65 +337,127 @@ impl DaemonApp {
                 ),
             });
         }
-        let account_materialization = match self.provider_account_profiles.export_materialization(
-            agent.owner_user_id(),
-            agent.provider(),
-            agent.provider_account_profile(),
-        ) {
-            Ok(materialization) => materialization,
-            Err(error) => {
-                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                return Err(error);
-            }
-        };
-        match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-            &relay_config,
-            target.clone(),
-            RelayPeerRequest::EnsureRemoteProviderAccount {
-                context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
-                    home_kernel_id: self.config.daemon_id.clone(),
-                    home_session_id: agent.session_id().to_string(),
-                    home_agent_id: agent.id().to_string(),
-                    execution_lease_id: lease.id.clone(),
-                },
-                materialization: account_materialization,
-            },
-        )) {
-            Ok(RelayPeerResponse::RemoteProviderAccountEnsured {
-                provider,
-                account_profile,
-            }) if provider == agent.provider()
-                && account_profile == agent.provider_account_profile() => {
-                if let Err(error) = self.provider_account_profiles.update_materialization_status(
+        if crate::provider::canonical_provider_family(agent.provider())
+            .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
+        {
+            let materialization_target_kind = if relay_override.is_some() {
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+            } else {
+                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+            };
+            let materialization_target_ref = worker_kernel.kernel_id.clone();
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config,
                     agent.owner_user_id(),
+                );
+            let mut account_materialization = match self
+                .provider_account_profiles
+                .export_materialization(
+                    &account_owner_user_id,
                     agent.provider(),
                     agent.provider_account_profile(),
-                    crate::account_profile::ProviderAccountMaterializationStatus {
-                        target_kind: if relay_override.is_some() {
-                            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
-                        } else {
-                            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
-                        },
-                        target_ref: worker_kernel.kernel_id.clone(),
-                        state: crate::account_profile::ProviderAccountMaterializationState::Materialized,
-                        observed_at_ms: crate::session::unix_epoch_ms(),
-                        last_error: None,
-                    },
                 ) {
+                Ok(materialization) => materialization,
+                Err(error) => {
+                    let _ = self
+                        .provider_account_profiles
+                        .update_materialization_status(
+                        &account_owner_user_id,
+                        agent.provider(),
+                        agent.provider_account_profile(),
+                        crate::account_profile::ProviderAccountMaterializationStatus {
+                            target_kind: materialization_target_kind,
+                            target_ref: materialization_target_ref.clone(),
+                            state:
+                                crate::account_profile::ProviderAccountMaterializationState::Error,
+                            observed_at_ms: crate::session::unix_epoch_ms(),
+                            last_error: Some("account materialization export failed".to_string()),
+                        },
+                    );
                     cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
                     return Err(error);
                 }
-            }
-            Ok(other) => {
-                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                return Err(DaemonError::LocalTransport {
-                    operation: "materialize remote provider account",
-                    message: format!("unexpected peer response: {other:?}"),
-                });
-            }
-            Err(error) => {
-                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                return Err(error);
+            };
+            // The home registry aliases the configured Cloud owner to `local`.
+            // The worker lease remains scoped to the runtime owner identity, so
+            // stamp that identity on the encrypted replica envelope.
+            account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
+            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                &relay_config,
+                target.clone(),
+                RelayPeerRequest::EnsureRemoteProviderAccount {
+                    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext {
+                        home_kernel_id: self.config.daemon_id.clone(),
+                        home_session_id: agent.session_id().to_string(),
+                        home_agent_id: agent.id().to_string(),
+                        execution_lease_id: lease.id.clone(),
+                    },
+                    materialization: account_materialization,
+                },
+            )) {
+                Ok(RelayPeerResponse::RemoteProviderAccountEnsured {
+                    provider,
+                    account_profile,
+                }) if provider == agent.provider()
+                    && account_profile == agent.provider_account_profile() => {
+                    if let Err(error) =
+                        self.provider_account_profiles.update_materialization_status(
+                            &account_owner_user_id,
+                            agent.provider(),
+                            agent.provider_account_profile(),
+                            crate::account_profile::ProviderAccountMaterializationStatus {
+                                target_kind: materialization_target_kind,
+                                target_ref: materialization_target_ref.clone(),
+                                state: crate::account_profile::ProviderAccountMaterializationState::Materialized,
+                                observed_at_ms: crate::session::unix_epoch_ms(),
+                                last_error: None,
+                            },
+                        )
+                    {
+                        cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                        return Err(error);
+                    }
+                }
+                Ok(other) => {
+                    let _ = self.provider_account_profiles.update_materialization_status(
+                        &account_owner_user_id,
+                        agent.provider(),
+                        agent.provider_account_profile(),
+                        crate::account_profile::ProviderAccountMaterializationStatus {
+                            target_kind: materialization_target_kind,
+                            target_ref: materialization_target_ref.clone(),
+                            state:
+                                crate::account_profile::ProviderAccountMaterializationState::Error,
+                            observed_at_ms: crate::session::unix_epoch_ms(),
+                            last_error: Some(
+                                "worker rejected account materialization".to_string(),
+                            ),
+                        },
+                    );
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                    return Err(DaemonError::LocalTransport {
+                        operation: "materialize remote provider account",
+                        message: format!("unexpected peer response: {other:?}"),
+                    });
+                }
+                Err(error) => {
+                    let _ = self.provider_account_profiles.update_materialization_status(
+                        &account_owner_user_id,
+                        agent.provider(),
+                        agent.provider_account_profile(),
+                        crate::account_profile::ProviderAccountMaterializationStatus {
+                            target_kind: materialization_target_kind,
+                            target_ref: materialization_target_ref,
+                            state:
+                                crate::account_profile::ProviderAccountMaterializationState::Error,
+                            observed_at_ms: crate::session::unix_epoch_ms(),
+                            last_error: Some("account materialization failed".to_string()),
+                        },
+                    );
+                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                    return Err(error);
+                }
             }
         }
         let leased_agent =

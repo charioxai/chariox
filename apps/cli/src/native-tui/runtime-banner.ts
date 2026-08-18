@@ -264,13 +264,13 @@ function formatSliceAuthNextLines(slice: SliceRecord): string[] {
   if (coverage.missingProviders.length > 0) {
     const provider = coverage.missingProviders[0]!
     return [
-      `  slice next:     run /slice doctor ${sliceRef}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.missingProviders)} with /slice auth import ${sliceRef} ${provider} or /slice auth login ${sliceRef} ${provider}`,
+      `  slice next:     run /slice doctor ${sliceRef}; configure missing provider account${coverage.missingProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.missingProviders)} with /slice auth import ${sliceRef} ${provider} <account-profile> or /slice auth login ${sliceRef} ${provider} <account-profile>`,
     ]
   }
   if (coverage.staleProviders.length > 0) {
     const provider = coverage.staleProviders[0]!
     return [
-      `  slice next:     run /slice doctor ${sliceRef}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.staleProviders)} with /slice auth login ${sliceRef} ${provider}`,
+      `  slice next:     run /slice doctor ${sliceRef}; refresh provider account${coverage.staleProviders.length === 1 ? "" : "s"} ${formatSliceProviderList(coverage.staleProviders)} with /slice auth login ${sliceRef} ${provider} <account-profile>`,
     ]
   }
   return []

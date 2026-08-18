@@ -125,6 +125,7 @@ export type CliWaitingRoomCompositionDeps = {
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
   const waitingRoomInventoryCache = createWaitingRoomInventoryCache()
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
+  let providerCatalogSelectionRevision = 0
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
@@ -175,6 +176,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     rebuildTranscript: () => deps.rebuildTranscript(),
     updateSessionChrome: () => deps.updateSessionChrome(),
     syncCommandCenter: () => deps.syncCommandCenter(),
+    refreshProviderCatalogForSelection: (state) => {
+      const revision = ++providerCatalogSelectionRevision
+      const executionLocation = state.sliceSelectionId && !["none", "new"].includes(state.sliceSelectionId)
+        ? { kind: "slice" as const, slice_ref: state.sliceSelectionId }
+        : state.selectedKernelRef && state.selectedKernelRef !== "local"
+          ? { kind: "worker" as const, kernel_ref: state.selectedKernelRef }
+          : { kind: "local" as const }
+      void getProviderCatalog(deps.client, deps.appLogger, {
+        provider: state.providerId,
+        accountProfile: state.accountProfileId ?? "default",
+        executionLocation,
+      }, false).then((catalog) => {
+        if (revision !== providerCatalogSelectionRevision) return
+        deps.setProviderCatalogState(catalog)
+        reconcileWaitingRoom(deps.waitingRoomState())
+      }).catch((error) => {
+        deps.appLogger?.warn("failed to refresh provider catalog for account selection", {
+          error: deps.formatError(error),
+        })
+      })
+    },
   })
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
 

@@ -34,6 +34,7 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
             session.id(),
             extra_agent.id(),
             "codex",
+            "default",
             "destroyed-agent-thread",
         );
         app_locked.attached_provider_transcript_cursor_store().set(
@@ -128,7 +129,7 @@ async fn local_destroy_agent_uses_owned_runtime_state_without_app_lock() {
             .iter()
             .map(|session| session.external_session_id.as_str())
             .collect::<Vec<_>>(),
-        vec!["codex:destroyed-agent-thread"],
+        vec!["codex:default:destroyed-agent-thread"],
         "destroying an attached agent should return its provider thread to the unattached list"
     );
     assert!(page.sessions[0].is_attachable_to_chariox());

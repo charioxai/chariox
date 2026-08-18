@@ -412,7 +412,7 @@ fn filter_provider_processes(
 
 #[derive(Clone, Default)]
 pub(crate) struct ProviderCatalogProjectionStore {
-    catalog: Arc<StdMutex<Option<CachedProviderCatalogProjection>>>,
+    catalogs: Arc<StdMutex<BTreeMap<String, CachedProviderCatalogProjection>>>,
     refresh_in_progress: Arc<std::sync::atomic::AtomicBool>,
     generation: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -425,11 +425,20 @@ struct CachedProviderCatalogProjection {
 
 impl ProviderCatalogProjectionStore {
     pub(crate) fn get(&self, ttl: Duration) -> Option<OpenCodeProviderCatalog> {
+        self.get_scoped("", ttl)
+    }
+
+    pub(crate) fn get_scoped(
+        &self,
+        cache_key: &str,
+        ttl: Duration,
+    ) -> Option<OpenCodeProviderCatalog> {
         let cached = self
-            .catalog
+            .catalogs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone()?;
+            .get(cache_key)
+            .cloned()?;
         if cached.cached_at.elapsed() < ttl {
             Some(cached.catalog)
         } else {
@@ -438,21 +447,31 @@ impl ProviderCatalogProjectionStore {
     }
 
     pub(crate) fn update(&self, catalog: OpenCodeProviderCatalog) {
-        *self
-            .catalog
+        self.update_scoped("", catalog);
+    }
+
+    pub(crate) fn update_scoped(&self, cache_key: &str, catalog: OpenCodeProviderCatalog) {
+        self.catalogs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) =
-            Some(CachedProviderCatalogProjection {
-                cached_at: Instant::now(),
-                catalog,
-            });
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(
+                cache_key.to_string(),
+                CachedProviderCatalogProjection {
+                    cached_at: Instant::now(),
+                    catalog,
+                },
+            );
     }
 
     pub(crate) fn cached(&self) -> Option<OpenCodeProviderCatalog> {
-        self.catalog
+        self.cached_scoped("")
+    }
+
+    pub(crate) fn cached_scoped(&self, cache_key: &str) -> Option<OpenCodeProviderCatalog> {
+        self.catalogs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .as_ref()
+            .get(cache_key)
             .map(|cached| cached.catalog.clone())
     }
 
@@ -468,8 +487,9 @@ impl ProviderCatalogProjectionStore {
             .then(|| self.generation.load(std::sync::atomic::Ordering::Acquire))
     }
 
-    pub(crate) fn update_if_generation(
+    pub(crate) fn update_scoped_if_generation(
         &self,
+        cache_key: &str,
         catalog: OpenCodeProviderCatalog,
         generation: u64,
     ) -> bool {
@@ -477,16 +497,19 @@ impl ProviderCatalogProjectionStore {
             return false;
         }
         let mut cached = self
-            .catalog
+            .catalogs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if self.generation.load(std::sync::atomic::Ordering::Acquire) != generation {
             return false;
         }
-        *cached = Some(CachedProviderCatalogProjection {
-            cached_at: Instant::now(),
-            catalog,
-        });
+        cached.insert(
+            cache_key.to_string(),
+            CachedProviderCatalogProjection {
+                cached_at: Instant::now(),
+                catalog,
+            },
+        );
         true
     }
 
@@ -498,18 +521,19 @@ impl ProviderCatalogProjectionStore {
     pub(crate) fn invalidate(&self) {
         self.generation
             .fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-        *self
-            .catalog
+        self.catalogs
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
     }
 
     pub(crate) fn health_snapshot(&self, ttl: Duration) -> ProviderCatalogHealthSnapshot {
         let cached = self
-            .catalog
+            .catalogs
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
+            .get("")
+            .cloned();
         let Some(cached) = cached else {
             return ProviderCatalogHealthSnapshot {
                 cached: false,
@@ -570,9 +594,39 @@ mod provider_catalog_projection_tests {
 
         store.invalidate();
 
-        assert!(!store.update_if_generation(catalog("opencode"), generation));
+        assert!(!store.update_scoped_if_generation("", catalog("opencode"), generation));
         assert!(store.cached().is_none());
         store.finish_refresh();
         assert!(store.begin_refresh().is_some());
+    }
+
+    #[test]
+    fn catalogs_are_isolated_by_owner_profile_and_execution_location_key() {
+        let store = ProviderCatalogProjectionStore::default();
+        store.update_scoped("owner-a:codex:work:local", catalog("codex-work"));
+        store.update_scoped("owner-a:codex:personal:slice-a", catalog("codex-personal"));
+        store.update_scoped("owner-b:codex:work:local", catalog("codex-owner-b"));
+
+        assert_eq!(
+            store
+                .cached_scoped("owner-a:codex:work:local")
+                .expect("work catalog")
+                .connected,
+            vec!["codex-work"]
+        );
+        assert_eq!(
+            store
+                .cached_scoped("owner-a:codex:personal:slice-a")
+                .expect("personal slice catalog")
+                .connected,
+            vec!["codex-personal"]
+        );
+        assert_eq!(
+            store
+                .cached_scoped("owner-b:codex:work:local")
+                .expect("other owner catalog")
+                .connected,
+            vec!["codex-owner-b"]
+        );
     }
 }

@@ -624,6 +624,7 @@ impl DaemonApp {
         }
         self.external_provider_sessions.mark_resume_state_attached(
             agent.provider_resume_state(),
+            agent.account_profile().unwrap_or("default"),
             agent.session_id(),
             agent.id(),
         );
@@ -736,6 +737,7 @@ impl DaemonApp {
         }
         count += self.external_provider_sessions.mark_resume_state_attached(
             agent.provider_resume_state(),
+            agent.account_profile().unwrap_or("default"),
             agent.session_id(),
             agent.id(),
         );

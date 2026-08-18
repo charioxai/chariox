@@ -72,6 +72,7 @@ test("waiting room activation stages existing worktree selections for session cr
       action: "create",
       launch: {
         provider: "opencode",
+        accountProfile: "default",
         model: "opencode/gpt-5.4",
         effort: "high",
         ownerMachineRef: "local",
@@ -408,6 +409,7 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
     session: sessions[0],
     launch: {
       provider: "opencode",
+      accountProfile: "default",
       model: "opencode/gpt-5.4",
       effort: "high",
       ownerMachineRef: "local",

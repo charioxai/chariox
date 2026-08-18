@@ -117,15 +117,20 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let account_owner_user_id =
+        runtime_state.provider_account_authority_owner_user_id(caller_user_id);
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = paired_terminal_records();
     let (external_provider_session_page, metaagent_events) = runtime_state
-        .waiting_room_auxiliary_projection(&ListExternalProviderSessionsRequest {
-            provider: None,
-            cursor: None,
-            limit: Some(25),
-        });
+        .waiting_room_auxiliary_projection(
+            &account_owner_user_id,
+            &ListExternalProviderSessionsRequest {
+                provider: None,
+                cursor: None,
+                limit: Some(25),
+            },
+        );
     let external_working_agents = session_projection.external_observed_working_agents();
     let runtime_projects = runtime_state.list_waiting_room_projects(caller_user_id);
     let slices = runtime_state.list_slices();
@@ -151,7 +156,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     )?;
     let accounts = runtime_state
         .provider_account_profile_registry()
-        .list(caller_user_id, None)?;
+        .list(&account_owner_user_id, None)?;
     for session in &mut snapshot.sessions {
         for agent in &mut session.agents {
             agent.account_label = accounts

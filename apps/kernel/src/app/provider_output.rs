@@ -843,6 +843,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .external_provider_sessions
             .mark_provider_run_attached(
                 provider_run.adapter_key(),
+                provider_run.account_profile(),
                 provider_run.provider_session_id(),
                 provider_run.resume_state(),
                 provider_run.session_id(),

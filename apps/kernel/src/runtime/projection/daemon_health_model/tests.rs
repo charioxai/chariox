@@ -544,7 +544,7 @@ fn slice_lifecycle_health_identifies_provider_auth_issues_for_attached_slices() 
     );
     assert_eq!(
         snapshot.provider_auth_issues[1].identity.as_deref(),
-        Some("work")
+        Some("acct-1")
     );
 }
 

@@ -1,10 +1,13 @@
 import type {
   ProviderAuthStatus,
   ProviderLoginStart,
+  ProviderLoginStatus,
   ProviderProcessInfo,
 } from "./kernel-types.js"
 import {
   getProviderAuthStatusRequest,
+  getProviderLoginStatusRequest,
+  cancelProviderLoginRequest,
   listProviderProcessesRequest,
   logoutProviderRequest,
   startProviderLoginRequest,
@@ -39,16 +42,41 @@ export async function executeProviderCommand(
     const provider = providerArg ?? context.provider
     if (action === "logout") {
       const response = await deps.client.send(logoutProviderRequest(provider))
+      if ("ProviderLogoutStarted" in response) {
+        const logout = (response.ProviderLogoutStarted as { logout: ProviderLoginStart }).logout
+        return { ok: true, message: formatProviderLoginStart(logout, "logout"), data: { logout } }
+      }
       const result = expectVariant<{ provider: string }>(response, "ProviderLoggedOut")
       return { ok: true, message: `${result.provider} logged out`, data: result }
     }
     if (action === "reauth") {
-      await deps.client.send(logoutProviderRequest(provider))
+      const logoutResponse = await deps.client.send(logoutProviderRequest(provider))
+      if ("ProviderLogoutStarted" in logoutResponse) {
+        const logout = (logoutResponse.ProviderLogoutStarted as { logout: ProviderLoginStart }).logout
+        return { ok: true, message: `${formatProviderLoginStart(logout, "logout")}\nFinish logout before starting reauthentication.`, data: { logout } }
+      }
     }
     const response = await deps.client.send(startProviderLoginRequest(provider))
     const login = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted").login
     const verb = action === "reauth" ? "reauth" : "login"
     return { ok: true, message: formatProviderLoginStart(login, verb), data: { login } }
+  }
+  if (action === "login-status") {
+    if (!providerArg) return { ok: false, message: "usage: provider login-status <login-id>" }
+    const response = await deps.client.send(getProviderLoginStatusRequest(providerArg))
+    const login = expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginStatus").login
+    const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
+    return {
+      ok: login.state !== "failed",
+      message: [output, `${login.provider}/${login.account_profile} login ${login.state}`].filter(Boolean).join("\n"),
+      data: { login },
+    }
+  }
+  if (action === "login-cancel") {
+    if (!providerArg) return { ok: false, message: "usage: provider login-cancel <login-id>" }
+    const response = await deps.client.send(cancelProviderLoginRequest(providerArg))
+    const login = expectVariant<{ login: ProviderLoginStatus }>(response, "ProviderLoginCancelled").login
+    return { ok: true, message: `${login.provider}/${login.account_profile} login cancelled`, data: { login } }
   }
   if (action === "processes") {
     const subcommand = providerArg
@@ -66,7 +94,7 @@ export async function executeProviderCommand(
     const processes = expectVariant<{ processes: ProviderProcessInfo[] }>(response, "ProviderProcessesListed").processes
     return { ok: true, message: formatProviderProcesses(processes), data: { processes } }
   }
-  return { ok: false, message: "usage: provider status|login|logout|reauth|processes [provider]|processes teardown <provider>" }
+  return { ok: false, message: "usage: provider status|login|login-status|login-cancel|logout|reauth|processes [provider]|processes teardown <provider>" }
 }
 
 function expectVariant<T>(response: Record<string, unknown>, variant: string): T {

@@ -18,6 +18,25 @@ const REGISTRY_VERSION: u32 = 1;
 const SUPPORTED_PROVIDERS: [&str; 3] = ["codex", "claude", "opencode"];
 const MAX_MATERIALIZATION_BYTES: usize = 64 * 1024 * 1024;
 
+/// Provider accounts belong to the person operating the home kernel. Local
+/// clients identify that person as `local`, while the owner's Cloud clients
+/// use the configured Cloud user id. Only that configured id aliases the host
+/// owner; collaborators retain independent account namespaces.
+pub(crate) fn provider_account_authority_owner_user_id(
+    config: &crate::config::DaemonConfig,
+    runtime_owner_user_id: &str,
+) -> String {
+    if config
+        .cloud_relay
+        .as_ref()
+        .is_some_and(|profile| profile.user_id == runtime_owner_user_id)
+    {
+        crate::session::DEFAULT_LOCAL_USER_ID.to_string()
+    } else {
+        runtime_owner_user_id.to_string()
+    }
+}
+
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAccountMaterializationFile {
     pub relative_path: String,
@@ -532,6 +551,15 @@ impl ProviderAccountProfileRegistry {
             .collect())
     }
 
+    pub(crate) fn list_all(&self) -> Result<Vec<ProviderAccountProfile>, DaemonError> {
+        let document = self.read_document()?;
+        Ok(document
+            .profiles
+            .iter()
+            .map(|profile| profile.public.clone())
+            .collect())
+    }
+
     pub fn get(
         &self,
         owner_user_id: &str,
@@ -559,6 +587,12 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let profile =
             resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        let identity_changed = profile.public.identity_summary.is_some()
+            && identity_summary.is_some()
+            && profile.public.identity_summary != identity_summary;
+        if identity_changed || auth_state != ProviderAccountAuthState::Authenticated {
+            mark_profile_materializations_stale(&mut profile.public);
+        }
         profile.public.auth_state = auth_state;
         profile.public.identity_summary = identity_summary;
         profile.public.plan = plan;
@@ -567,6 +601,27 @@ impl ProviderAccountProfileRegistry {
         if let Some(usage) = usage {
             profile.public.usage = usage;
         }
+        let result = profile.public.clone();
+        self.persist_locked(&document)?;
+        Ok(result)
+    }
+
+    pub fn mark_logged_out(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let mut document = self.write_document()?;
+        let profile =
+            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        profile.public.auth_state = ProviderAccountAuthState::NotConfigured;
+        profile.public.identity_summary = None;
+        profile.public.plan = None;
+        profile.public.last_validated_at_ms = Some(crate::session::unix_epoch_ms());
+        profile.public.usage = ProviderAccountUsageSnapshot::unavailable(profile_id, provider);
+        mark_profile_materializations_stale(&mut profile.public);
         let result = profile.public.clone();
         self.persist_locked(&document)?;
         Ok(result)
@@ -914,6 +969,26 @@ impl ProviderAccountProfileRegistry {
             .join(safe_path_component(owner_user_id))
             .join(provider)
             .join(profile_id);
+        let replace_existing_replica = {
+            let document = self.read_document()?;
+            match document.profiles.iter().find(|stored| {
+                stored.public.owner_user_id == owner_user_id
+                    && stored.public.provider == provider
+                    && stored.public.profile_id == profile_id
+            }) {
+                Some(stored) if !stored.materialized_replica => {
+                    return Err(registry_error(
+                        "materialize account profile",
+                        "refusing to replace an authoritative local account profile",
+                    ));
+                }
+                Some(_) => true,
+                None => false,
+            }
+        };
+        if replace_existing_replica && managed_root.exists() {
+            remove_managed_root(&managed_root, &self.path)?;
+        }
         let locator = ProviderAccountLocator::managed(provider, &managed_root)?;
         create_private_roots(&locator)?;
         for file in &materialization.files {
@@ -1012,6 +1087,15 @@ fn new_public_profile(
         last_validated_at_ms: None,
         usage: ProviderAccountUsageSnapshot::unavailable(profile_id, provider),
         materializations: Vec::new(),
+    }
+}
+
+fn mark_profile_materializations_stale(profile: &mut ProviderAccountProfile) {
+    let now_ms = crate::session::unix_epoch_ms();
+    for materialization in &mut profile.materializations {
+        materialization.state = ProviderAccountMaterializationState::Stale;
+        materialization.observed_at_ms = now_ms;
+        materialization.last_error = None;
     }
 }
 
@@ -1517,6 +1601,31 @@ fn unsupported_provider(provider: &str) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cloud_owner_aliases_local_accounts_without_aliasing_collaborators() {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+            user_id: "cloud-owner".to_string(),
+            ..Default::default()
+        });
+
+        assert_eq!(
+            provider_account_authority_owner_user_id(&config, "cloud-owner"),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+        assert_eq!(
+            provider_account_authority_owner_user_id(&config, "collaborator"),
+            "collaborator"
+        );
+        assert_eq!(
+            provider_account_authority_owner_user_id(
+                &config,
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            ),
+            crate::session::DEFAULT_LOCAL_USER_ID
+        );
+    }
 
     fn fixture() -> (PathBuf, ProviderAccountProfileRegistry) {
         let root = std::env::temp_dir().join(format!(

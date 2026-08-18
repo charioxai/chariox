@@ -2071,7 +2071,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 11);
+        assert_eq!(snapshot.schema_version, 12);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());

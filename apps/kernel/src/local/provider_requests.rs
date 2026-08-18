@@ -62,7 +62,12 @@ impl DaemonApp {
             return Ok(LocalDaemonResponse::ProviderCatalog { catalog });
         }
 
-        let catalog = load_provider_catalog(self.config().clone())?;
+        let catalog = load_provider_catalog(
+            self.config().clone(),
+            self.provider_account_profile_registry(),
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            crate::local::GetProviderCatalogRequest::default(),
+        )?;
         self.cache_provider_catalog(catalog.clone());
         Ok(LocalDaemonResponse::ProviderCatalog { catalog })
     }

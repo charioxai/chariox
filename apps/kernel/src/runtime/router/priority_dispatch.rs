@@ -190,6 +190,8 @@ impl CommandRouter {
                 execute_provider_catalog_request(
                     &self.provider_catalog_projection,
                     &self.config_projection,
+                    self.runtime_state.provider_account_profile_registry(),
+                    &command_caller_user_id(&command),
                     request,
                 )
                 .await
@@ -458,7 +460,10 @@ impl CommandRouter {
                 .await
             }
             request @ (LocalDaemonRequest::GetProviderAuthStatus(_)
-            | LocalDaemonRequest::StartProviderLogin(_)) => {
+            | LocalDaemonRequest::StartProviderLogin(_)
+            | LocalDaemonRequest::GetProviderLoginStatus(_)
+            | LocalDaemonRequest::SendProviderLoginInput(_)
+            | LocalDaemonRequest::CancelProviderLogin(_)) => {
                 let caller_user_id = command_caller_user_id(&command);
                 execute_provider_auth_request(&self.runtime_state, &caller_user_id, request).await
             }

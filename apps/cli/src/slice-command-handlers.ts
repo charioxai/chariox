@@ -208,9 +208,12 @@ function sliceAuditNextAction(action: string, outcome: string, payload: Record<s
   }
   const sliceRef = String(label || payload.slice_id || "<slice>")
   const provider = typeof payload.provider === "string" && payload.provider ? payload.provider : null
+  const accountProfile = typeof payload.account_profile === "string" && payload.account_profile
+    ? payload.account_profile
+    : "<account-profile>"
   if (action.startsWith("auth.")) {
     return provider
-      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} ${accountProfile} or /slice auth import ${sliceRef} ${provider} ${accountProfile}`
       : `run /slice doctor ${sliceRef}; inspect provider account state, then retry the matching /slice auth command`
   }
   if (["start", "stop", "delete", "state.save", "state.reset", "backup.create"].includes(action)) {
@@ -785,11 +788,11 @@ function sliceProviderNames(providers: readonly string[]): string[] {
 
 function formatSliceAuthRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
   return formatProviderRecoveryCommands(providers, (provider) =>
-    `/slice auth import ${formatSliceLabel(slice)} ${provider} or /slice auth login ${formatSliceLabel(slice)} ${provider}`)
+    `/slice auth import ${formatSliceLabel(slice)} ${provider} <account-profile> or /slice auth login ${formatSliceLabel(slice)} ${provider} <account-profile>`)
 }
 
 function formatSliceAuthLoginRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
-  return formatProviderRecoveryCommands(providers, (provider) => `/slice auth login ${formatSliceLabel(slice)} ${provider}`)
+  return formatProviderRecoveryCommands(providers, (provider) => `/slice auth login ${formatSliceLabel(slice)} ${provider} <account-profile>`)
 }
 
 function formatProviderRecoveryCommands(providers: readonly string[], commandForProvider: (provider: string) => string): string {
