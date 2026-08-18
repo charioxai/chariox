@@ -639,11 +639,10 @@ fn local_request_api_inlines_mailbox_content_and_retains_inputs_when_validation_
         ))
         .expect("second node ack should succeed");
     let second_provider_run_id = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should resolve")
-            .active_provider_run_id()
-            .expect("provider run should be active")
+        app.providers()
+            .get_run_for_agent(session.id(), second_agent.id())
+            .expect("second workflow agent should have an active provider run")
+            .id()
             .to_string()
     });
     harness.with_app_mut(|app| {
