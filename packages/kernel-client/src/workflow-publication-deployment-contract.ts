@@ -475,7 +475,9 @@ function assertNoSecretPayloadFields(value: unknown, path = "deployment contract
   if (!value || typeof value !== "object") return
   const forbidden = new Set(["authorization", "account_profile", "credential_payload", "password", "secret", "token"])
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (forbidden.has(key.toLowerCase())) {
+    const normalizedKey = key.toLowerCase()
+    const secretMetadataFlag = normalizedKey === "secret" && typeof child === "boolean"
+    if (forbidden.has(normalizedKey) && !secretMetadataFlag) {
       throw new Error(`${path} contains forbidden secret payload field ${key}`)
     }
     assertNoSecretPayloadFields(child, `${path}.${key}`)

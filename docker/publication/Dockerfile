@@ -23,7 +23,7 @@ RUN pnpm --filter @chariox/tool-display run build \
   && pnpm --filter @chariox/server run build
 
 FROM rust:1.88-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0 AS rust-builder
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=262
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=263
 WORKDIR /opt/chariox
 RUN printf '%s\n' 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/20250701T000000Z bookworm main' > /etc/apt/sources.list \
   && rm -f /etc/apt/sources.list.d/debian.sources \
@@ -46,7 +46,7 @@ LABEL dev.chariox.debian-snapshot="20250701T000000Z"
 ARG CHARIOX_CODEX_VERSION=0.144.0
 ARG CHARIOX_OPENCODE_VERSION=1.4.1
 ARG CHARIOX_CLAUDE_VERSION=2.1.207
-ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=262
+ARG CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION=263
 LABEL dev.chariox.provider.codex.version="${CHARIOX_CODEX_VERSION}"
 LABEL dev.chariox.provider.opencode.version="${CHARIOX_OPENCODE_VERSION}"
 LABEL dev.chariox.provider.claude.version="${CHARIOX_CLAUDE_VERSION}"

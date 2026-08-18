@@ -83,6 +83,20 @@ test("publication deployment contract rejects unsafe paths, mismatches, and secr
     }, { ...fixture(), token: "must-not-appear" }),
     /forbidden secret payload field token/,
   )
+  const secretMetadataContract = fixture()
+  secretMetadataContract.presentation = { secret: false }
+  assert.doesNotThrow(() => resolveWorkflowPublicationDeploymentContract({
+    package_version: 3,
+    deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+  }, secretMetadataContract))
+  secretMetadataContract.presentation = { secret: "must-not-appear" }
+  assert.throws(
+    () => resolveWorkflowPublicationDeploymentContract({
+      package_version: 3,
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+    }, secretMetadataContract),
+    /forbidden secret payload field secret/,
+  )
   assert.throws(
     () => workflowPublicationDeploymentContractPath({ package_version: 4 }),
     /unsupported publication package_version 4/,

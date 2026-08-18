@@ -394,9 +394,11 @@ pub struct BindWorkflowPublicationDeploymentRequest {
     pub setup_id: String,
     pub operation_key: String,
     pub deployment_id: String,
+    pub environment_id: String,
     pub release_id: String,
     pub package_digest: String,
     pub desired_revision: u64,
+    pub caller_claims_public_key_pem: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
