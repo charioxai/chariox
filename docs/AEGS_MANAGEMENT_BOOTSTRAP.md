@@ -34,3 +34,17 @@ The private key must never be submitted in a manifest, stored in the catalog,
 placed in AEDS, or copied to a kernel. Capabilities expire after at most five
 minutes and are not a replacement for provider authorization. A deployment can
 continue to use `CHARIOX_AEGS_MANAGEMENT_TOKEN(_FILE)` for a self-hosted AEGS.
+
+Registry-issued targets are public-network only. Cloud rejects non-public
+literal management hosts during submission and capability issuance. The kernel
+also resolves every registry-issued target through a restricted resolver and
+rejects the entire DNS answer set if any address is loopback, private,
+link-local, multicast, documentation-only, or reserved. The restricted
+resolver is used for authorization, resource discovery, connection lifecycle,
+subscription reconciliation, context reads, and provider actions, including
+redirect destinations. This runtime check is authoritative and prevents DNS
+rebinding between a separate validation lookup and the actual connection.
+
+Static `CHARIOX_AEGS_MANAGEMENT_TARGETS_JSON` or file targets are an explicit
+administrator action and retain HTTPS or loopback HTTP support for local and
+self-hosted deployments. Store metadata never enables that exception.

@@ -462,14 +462,20 @@ async fn reconcile_aegs_subscriptions(
         tokio::task::spawn_blocking(move || {
             let url = format!("{}/v1/subscriptions/reconcile", target.url);
             let encoded = serde_json::to_string(&request).map_err(|error| error.to_string())?;
-            let response = ureq::put(&url)
-                .set("authorization", &format!("Bearer {}", target.token))
-                .set("x-chariox-owner-id", &kernel_owner_id)
-                .set("content-type", "application/json")
-                .send_string(&encoded)
-                .map_err(|error| {
-                    format!("AEGS {generator_id} reconciliation request failed: {error}")
-                })?;
+            let response =
+                crate::runtime::event_catalog_control::aegs_management_agent_builder(&target)
+                    .timeout_connect(Duration::from_secs(3))
+                    .timeout_read(Duration::from_secs(10))
+                    .timeout_write(Duration::from_secs(10))
+                    .build()
+                    .put(&url)
+                    .set("authorization", &format!("Bearer {}", target.token))
+                    .set("x-chariox-owner-id", &kernel_owner_id)
+                    .set("content-type", "application/json")
+                    .send_string(&encoded)
+                    .map_err(|error| {
+                        format!("AEGS {generator_id} reconciliation request failed: {error}")
+                    })?;
             let response_body = response.into_string().map_err(|error| error.to_string())?;
             let response: chariox_event_protocol::AegsSubscriptionReconcileResponse =
                 serde_json::from_str(&response_body)

@@ -3,7 +3,8 @@
 #![allow(clippy::result_large_err)]
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::io::Read;
+use std::io::{self, Read};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -1189,7 +1190,7 @@ fn aegs_management_request(
     };
     let target = select_event_generator_management_target(targets, generator_id, owner_id)?;
     let url = format!("{}{path}", target.url);
-    let agent = ureq::AgentBuilder::new()
+    let agent = aegs_management_agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -1368,7 +1369,7 @@ fn post_aegs_json<T: serde::Serialize, R: serde::de::DeserializeOwned>(
         .ok_or_else(|| catalog_error("AEGS request is missing owner_id".to_string()))?;
     let target = select_event_generator_management_target(targets, generator_id, &owner_id)?;
     let body = serde_json::to_string(request).map_err(|error| catalog_error(error.to_string()))?;
-    let mut http_request = ureq::AgentBuilder::new()
+    let mut http_request = aegs_management_agent_builder(&target)
         .timeout_connect(Duration::from_secs(3))
         .timeout_read(Duration::from_secs(10))
         .timeout_write(Duration::from_secs(10))
@@ -1391,6 +1392,99 @@ pub(crate) fn event_connection_owner_id(daemon_id: &str, caller_user_id: &str) -
 
     let digest = Sha256::digest(format!("{daemon_id}\0{caller_user_id}").as_bytes());
     format!("kernel-user-{digest:x}")
+}
+
+/// Registry-issued management targets must resolve only to public addresses.
+/// Static targets are an explicit administrator action and retain loopback or
+/// private-network support for local/self-hosted deployments.
+pub(crate) fn aegs_management_agent_builder(
+    target: &crate::config::EventGeneratorManagementTarget,
+) -> ureq::AgentBuilder {
+    let builder = ureq::AgentBuilder::new();
+    if is_registry_issued_management_target(target) {
+        builder
+            .https_only(true)
+            .resolver(resolve_public_aegs_addresses)
+    } else {
+        builder
+    }
+}
+
+fn is_registry_issued_management_target(
+    target: &crate::config::EventGeneratorManagementTarget,
+) -> bool {
+    target.expires_at_ms.is_some() && target.owner_ids.is_some()
+}
+
+fn resolve_public_aegs_addresses(netloc: &str) -> io::Result<Vec<SocketAddr>> {
+    let addresses = netloc.to_socket_addrs()?.collect::<Vec<_>>();
+    validate_public_aegs_addresses(netloc, addresses)
+}
+
+fn validate_public_aegs_addresses(
+    netloc: &str,
+    addresses: Vec<SocketAddr>,
+) -> io::Result<Vec<SocketAddr>> {
+    if addresses.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            format!("AEGS management target `{netloc}` did not resolve"),
+        ));
+    }
+    if let Some(address) = addresses
+        .iter()
+        .find(|address| !is_public_aegs_ip(address.ip()))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            format!(
+                "registry-issued AEGS management target `{netloc}` resolved to non-public address {}",
+                address.ip()
+            ),
+        ));
+    }
+    Ok(addresses)
+}
+
+fn is_public_aegs_ip(address: IpAddr) -> bool {
+    match address {
+        IpAddr::V4(address) => {
+            let [first, second, third, _] = address.octets();
+            !(matches!(
+                (first, second, third),
+                (0, _, _)
+                    | (10, _, _)
+                    | (127, _, _)
+                    | (169, 254, _)
+                    | (172, 16..=31, _)
+                    | (192, 0, 0)
+                    | (192, 0, 2)
+                    | (192, 88, 99)
+                    | (192, 168, _)
+                    | (198, 18..=19, _)
+                    | (198, 51, 100)
+                    | (203, 0, 113)
+                    | (224..=255, _, _)
+            ) || first == 100 && (64..=127).contains(&second))
+        }
+        IpAddr::V6(address) => {
+            if let Some(mapped) = address.to_ipv4() {
+                return is_public_aegs_ip(IpAddr::V4(mapped));
+            }
+            let segments = address.segments();
+            !address.is_unspecified()
+                && !address.is_loopback()
+                && !address.is_multicast()
+                && segments[0] & 0xfe00 != 0xfc00
+                && segments[0] & 0xffc0 != 0xfe80
+                && !(segments[0] == 0x0064 && segments[1] == 0xff9b && segments[2] == 0x0001)
+                && !(segments[0] == 0x0100
+                    && segments[1] == 0
+                    && segments[2] == 0
+                    && segments[3] == 0)
+                && !(segments[0] == 0x2001 && segments[1] == 0x0db8)
+        }
+    }
 }
 
 fn connection_error(message: impl Into<String>) -> DaemonError {
@@ -1924,6 +2018,77 @@ mod tests {
 
         validate_granted_event_connection_scopes("connection-1", &[], &[])
             .expect("actions without required scopes remain available");
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_rejects_non_public_destinations() {
+        for destination in [
+            "127.0.0.1:443",
+            "10.0.0.1:443",
+            "169.254.169.254:443",
+            "192.168.1.1:443",
+            "[::1]:443",
+            "[::ffff:127.0.0.1]:443",
+            "[fc00::1]:443",
+            "[fe80::1]:443",
+        ] {
+            let error = resolve_public_aegs_addresses(destination)
+                .expect_err("non-public management destination must be rejected");
+            assert_eq!(
+                error.kind(),
+                io::ErrorKind::PermissionDenied,
+                "{destination}"
+            );
+        }
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_accepts_public_destinations() {
+        assert_eq!(
+            resolve_public_aegs_addresses("8.8.8.8:443").expect("public IPv4 destination"),
+            vec!["8.8.8.8:443".parse::<SocketAddr>().expect("socket address")]
+        );
+        assert_eq!(
+            resolve_public_aegs_addresses("[2606:4700:4700::1111]:443")
+                .expect("public IPv6 destination"),
+            vec!["[2606:4700:4700::1111]:443"
+                .parse::<SocketAddr>()
+                .expect("socket address")]
+        );
+    }
+
+    #[test]
+    fn registry_issued_aegs_resolver_rejects_mixed_dns_answers() {
+        let error = validate_public_aegs_addresses(
+            "aegs.example.test:443",
+            vec![
+                "8.8.8.8:443".parse().expect("public socket address"),
+                "127.0.0.1:443".parse().expect("private socket address"),
+            ],
+        )
+        .expect_err("one private DNS answer must reject the entire target");
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+    }
+
+    #[test]
+    fn static_management_targets_retain_self_hosted_network_access() {
+        let static_target = crate::config::EventGeneratorManagementTarget {
+            url: "http://127.0.0.1:43132".to_string(),
+            token: "operator-token".to_string(),
+            expires_at_ms: None,
+            owner_ids: None,
+            owner_scoped: None,
+        };
+        assert!(!is_registry_issued_management_target(&static_target));
+
+        let registry_target = crate::config::EventGeneratorManagementTarget {
+            url: "https://aegs.example.test".to_string(),
+            token: "signed-capability".to_string(),
+            expires_at_ms: Some(1_700_000_000_000),
+            owner_ids: Some(vec!["kernel-1".to_string()]),
+            owner_scoped: None,
+        };
+        assert!(is_registry_issued_management_target(&registry_target));
     }
 
     #[test]
