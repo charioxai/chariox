@@ -78,6 +78,40 @@ pub(crate) fn classify_provider_terminal_failure_text(
     ))
 }
 
+/// Classifies untrusted terminal output without treating ordinary assistant prose as a provider
+/// failure. Structured provider error notifications use `classify_provider_terminal_failure_text`
+/// directly because their provenance is already authoritative.
+pub(crate) fn classify_provider_terminal_failure_output_text(
+    adapter_key: &str,
+    text: &str,
+) -> Option<String> {
+    text.lines().find_map(|line| {
+        let normalized = line.trim().to_lowercase();
+        let exact_provider_dialog = adapter_key == "claude"
+            && claude_normalized_text_reports_resource_limit_dialog(&normalized);
+        if !provider_normalized_text_has_error_frame(&normalized) && !exact_provider_dialog {
+            return None;
+        }
+        classify_provider_terminal_failure_text(adapter_key, line)
+    })
+}
+
+fn provider_normalized_text_has_error_frame(normalized: &str) -> bool {
+    normalized.lines().any(|line| {
+        let line = line.trim();
+        line.starts_with("error:")
+            || line.starts_with("error ")
+            || line.starts_with("fatal:")
+            || line.starts_with("fatal ")
+            || line.starts_with("api error")
+            || line.starts_with("codex error")
+            || line.starts_with("opencode error")
+            || line.starts_with("claude error")
+            || (line.starts_with('{')
+                && (line.contains("\"error\"") || line.contains("\"type\":\"error\"")))
+    })
+}
+
 pub(crate) fn classify_provider_substitutable_failure_text(
     adapter_key: &str,
     text: &str,
@@ -134,6 +168,26 @@ fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
     quota_or_billing || rate_or_run_limit
 }
 
+fn claude_normalized_text_reports_resource_limit_dialog(normalized: &str) -> bool {
+    normalized
+        .trim_start()
+        .starts_with("you've hit your usage limit")
+        || normalized
+            .trim_start()
+            .starts_with("you have hit your usage limit")
+        || (normalized
+            .trim_start()
+            .starts_with("fable 5 now uses usage credits")
+            && (normalized.contains("don't have usage credits")
+                || normalized.contains("don’t have usage credits")))
+        || (normalized
+            .trim_start()
+            .starts_with("fable5nowusesusagecredits")
+            && (normalized.contains("don'thaveusagecredits")
+                || normalized.contains("don’thaveusagecredits")
+                || normalized.contains("donothaveusagecredits")))
+}
+
 fn compact_provider_error_snippet(text: &str) -> String {
     let mut seen_lines = std::collections::BTreeSet::new();
     let mut snippet = text
@@ -155,7 +209,8 @@ fn compact_provider_error_snippet(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+        classify_provider_substitutable_failure_text,
+        classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
     };
 
     #[test]
@@ -187,14 +242,44 @@ mod tests {
         let review = "Two reviewer findings are not supported by the code at this exact head.\n\
             The merge has conflicts in packages/db/prisma/models.prisma and schema.prisma.";
 
-        assert!(classify_provider_terminal_failure_text("claude", review).is_none());
+        assert!(classify_provider_terminal_failure_output_text("claude", review).is_none());
+
+        let model_classifier_review = "The implementation treats any assistant prose containing \
+            unsupported model, invalid model, model_not_found, or model not found as a terminal \
+            provider error. Even a review discussing the HTTP 400 test would terminate the run.";
+        assert!(
+            classify_provider_terminal_failure_output_text("claude", model_classifier_review)
+                .is_none(),
+            "ordinary reviewer prose must not be reinterpreted as a provider transport error"
+        );
+
+        let quota_classifier_review = "The usage limit and insufficient_quota classifiers are \
+            intentionally discussed in this review; that prose is not a provider billing error.";
+        assert!(
+            classify_provider_terminal_failure_output_text("claude", quota_classifier_review)
+                .is_none(),
+            "ordinary reviewer prose must not be reinterpreted as a provider quota error"
+        );
+
+        let framed_review = "Error: this classifier is intentionally under review.\n\
+            The phrase unsupported model is reviewer prose, not a provider response.";
+        assert!(
+            classify_provider_terminal_failure_output_text("claude", framed_review).is_none(),
+            "an unrelated framed line must not lend error provenance to another line"
+        );
+
+        assert!(classify_provider_terminal_failure_output_text(
+            "codex",
+            "Error: HTTP 400 Bad Request: unsupported model gpt-5.2-codex",
+        )
+        .is_some());
     }
 
     #[test]
     fn substitute_classifier_detects_shared_quota_and_limit_errors() {
         let codex_failure = classify_provider_substitutable_failure_text(
             "codex",
-            "Error: insufficient_quota: You exceeded your current quota.",
+            "insufficient_quota: You exceeded your current quota.",
         )
         .expect("codex quota error should be substitutable");
         assert!(codex_failure.contains("substitutable resource limit"));

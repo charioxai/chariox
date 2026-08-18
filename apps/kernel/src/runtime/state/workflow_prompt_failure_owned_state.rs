@@ -65,14 +65,14 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         message: &str,
-    ) -> Result<(), DaemonError> {
-        self.workflow_fail_provider_prompt_with_queue_advance(
-            session_id,
-            prompt,
-            provider_run_id,
-            message,
-            true,
-        )
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
+        if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
+            return Ok(WorkflowPromptDispatches::default());
+        }
+        self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
+        let dispatches = self.workflow_maybe_start_next_queued_prompt(session_id);
+        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
+        Ok(dispatches)
     }
 
     pub(super) fn workflow_fail_provider_prompt_without_queue_advance(
@@ -82,22 +82,20 @@ impl KernelRuntimeOwnedState {
         provider_run_id: Option<&str>,
         message: &str,
     ) -> Result<(), DaemonError> {
-        self.workflow_fail_provider_prompt_with_queue_advance(
-            session_id,
-            prompt,
-            provider_run_id,
-            message,
-            false,
-        )
+        if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
+            return Ok(());
+        }
+        self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
+        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
+        Ok(())
     }
 
-    fn workflow_fail_provider_prompt_with_queue_advance(
+    fn workflow_fail_provider_prompt_state(
         &self,
         session_id: &str,
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         message: &str,
-        advance_queue: bool,
     ) -> Result<(), DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
@@ -135,10 +133,6 @@ impl KernelRuntimeOwnedState {
                 message
             ),
         );
-        if advance_queue {
-            self.workflow_maybe_start_next_queued_prompt(session_id);
-        }
-        self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
         Ok(())
     }
 }
@@ -268,15 +262,36 @@ mod tests {
             PromptStatus::Running,
         )
         .with_workflow_context(workflow_run.id(), &node_run_id);
+        app.sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review the next exact revision".to_string()),
+                None,
+                crate::session::WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("a subsequent workflow invocation should queue");
         let session_id = session.id().to_string();
         let workflow_run_id = workflow_run.id().to_string();
         let app = Arc::new(Mutex::new(app));
         let runtime = owned_runtime_state(&app).await;
 
-        runtime
+        let dispatches = runtime
             .owned
             .workflow_fail_provider_prompt(&session_id, &prompt, None, "provider unavailable")
             .expect("provider failure should settle workflow");
+        assert!(
+            !dispatches.is_empty(),
+            "the failure transition must return the queued invocation's provider launch to its runtime caller: local={}, remote={}, starting_runs={}, starting_meta={}, admitted={}",
+            dispatches.local.len(),
+            dispatches.remote.len(),
+            dispatches.starting_provider_runs.len(),
+            dispatches.starting_metaagent_tasks.len(),
+            dispatches.admitted_workflow_prompt,
+        );
+        assert_eq!(dispatches.starting_provider_runs.len(), 1);
 
         let durable_session = runtime
             .owned

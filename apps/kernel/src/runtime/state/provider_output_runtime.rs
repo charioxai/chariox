@@ -145,7 +145,7 @@ impl KernelRuntimeState {
             owned
                 .schedule_provider_output_check_after(provider_run_id, PTY_PROMPT_SETTLE_QUIET_FOR);
         }
-        let terminal_failure = crate::provider::classify_provider_terminal_failure_text(
+        let terminal_failure = crate::provider::classify_provider_terminal_failure_output_text(
             provider_run.adapter_key(),
             &chunks
                 .iter()

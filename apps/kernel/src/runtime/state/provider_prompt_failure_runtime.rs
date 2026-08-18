@@ -53,19 +53,22 @@ impl KernelRuntimeState {
             Some(provider_run_id),
             message,
         );
-        if active_prompt.workflow_run_id().is_some() {
+        let workflow_dispatches = if active_prompt.workflow_run_id().is_some() {
             owned.workflow_fail_provider_prompt(
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
                 message,
-            )?;
-        }
+            )?
+        } else {
+            WorkflowPromptDispatches::default()
+        };
         let completion = owned.complete_local_prompt_without_advance(
             session_id,
             &agent_id,
             Some(provider_run_id),
         )?;
+        self.spawn_workflow_prompt_dispatches(workflow_dispatches);
         if completion
             .as_ref()
             .is_some_and(|completion| completion.released_claim)

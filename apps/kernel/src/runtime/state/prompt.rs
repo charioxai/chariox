@@ -26,7 +26,7 @@ impl KernelRuntimeOwnedState {
             return Ok(None);
         }
         if active_prompt.workflow_run_id().is_some() {
-            if let Err(error) = self.workflow_fail_provider_prompt(
+            if let Err(error) = self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),

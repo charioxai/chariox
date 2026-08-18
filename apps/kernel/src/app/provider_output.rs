@@ -1,7 +1,7 @@
 use crate::app::{DaemonApp, PromptActivityStore};
 use crate::error::DaemonError;
 use crate::provider::{
-    classify_provider_terminal_failure_text, ProviderPromptSignalBatch, RuntimeProviderRun,
+    classify_provider_terminal_failure_output_text, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
 use crate::provider::{AgentEndpointMode, ProviderProcessServiceStore, ProviderRunState};
 use crate::pty::PtyOutputChunk;
@@ -198,7 +198,7 @@ impl<'a> ProviderOutputPump<'a> {
                 &rendered,
             )?;
         }
-        let terminal_failure = classify_provider_terminal_failure_text(
+        let terminal_failure = classify_provider_terminal_failure_output_text(
             provider_run.adapter_key(),
             &chunks
                 .iter()

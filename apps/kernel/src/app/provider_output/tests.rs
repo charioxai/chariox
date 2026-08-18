@@ -106,6 +106,94 @@ fn exited_pty_is_drained_before_liveness_settlement() {
 }
 
 #[test]
+fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_error() {
+    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-reviewer-prose",
+            "worktree-reviewer-prose",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-reviewer-prose",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.4",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-reviewer-prose",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-reviewer-prose".to_string(),
+            pty_target: Some("test-reviewer-prose".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                "printf '%s\\n' 'Error: this classifier is under review.' 'The phrase unsupported model is reviewer prose.'; exit 0".to_string(),
+            ],
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "review the classifier",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+
+    for _ in 0..50 {
+        if matches!(
+            app.pty.poll_process_state(run.id()),
+            Ok(crate::pty::PtyProcessState::Exited)
+        ) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: session.id(),
+            provider_run_id: run.id(),
+            recipient_attachment_ids: vec![attachment.id().to_string()],
+            initial_liveness_already_checked: false,
+        })
+        .expect("reviewer output should remain ordinary provider output");
+
+    let run = app
+        .providers()
+        .get_run(run.id())
+        .expect("provider run should remain available");
+    assert!(run.terminal_diagnostic().is_none());
+}
+
+#[test]
 fn idle_claude_native_tui_projects_startup_terminal_output() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
