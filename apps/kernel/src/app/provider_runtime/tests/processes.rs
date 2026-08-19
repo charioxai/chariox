@@ -425,7 +425,7 @@ fn detaching_attachment_with_queued_prompts_preserves_queue() {
 }
 
 #[test]
-fn queued_prompt_promotes_after_source_attachment_reconnects() {
+fn queued_prompt_promotes_with_original_source_after_replacement_attaches() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -493,6 +493,18 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
         .expect("queued prompt should become active");
     assert_eq!(started_next.prompt(), "queued prompt\n");
     assert_eq!(
+        started_next.source_attachment_id(),
+        original_attachment.id()
+    );
+    assert_eq!(
+        started_next.source_client_id(),
+        Some(original_attachment.client_id())
+    );
+    assert_eq!(
+        started_next.source_user_id(),
+        Some(original_attachment.owner_user_id())
+    );
+    assert_eq!(
         started_next.created_at_ms(),
         queued_created_at_ms,
         "promoting a queued prompt must retain its original acceptance timestamp"
@@ -501,10 +513,21 @@ fn queued_prompt_promotes_after_source_attachment_reconnects() {
     let input_records = app.terminal().input_records();
     assert!(
         input_records.iter().any(|record| {
-            record.source_attachment_id == replacement_attachment.id()
+            record.source_attachment_id == original_attachment.id()
                 && String::from_utf8_lossy(&record.bytes).contains("queued prompt")
         }),
-        "promoted queued prompt should be delivered through the replacement attachment: {input_records:?}"
+        "promoted queued prompt should retain its admitted source attribution: {input_records:?}"
+    );
+    assert!(
+        app.terminal().output_records().iter().any(|record| {
+            record.kind == crate::terminal::TerminalOutputKind::PromptEcho
+                && record.source_attachment_id.as_deref() == Some(original_attachment.id())
+                && record
+                    .recipient_attachment_ids
+                    .iter()
+                    .any(|recipient| recipient == replacement_attachment.id())
+        }),
+        "the replacement attachment should still observe the promoted prompt echo"
     );
 
     let expected_merge_key = format!("prompt:{}", started_next.id());

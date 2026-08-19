@@ -528,13 +528,9 @@ impl TerminalStreamStore {
 
     fn record_change_for_record(&self, record: &TerminalOutputRecord) {
         if record.recipient_attachment_ids.is_empty() {
-            self.record_change_for_session(&record.session_id);
-        } else {
-            self.record_change_for_attachment_ids(
-                &record.session_id,
-                &record.recipient_attachment_ids,
-            );
+            return;
         }
+        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
     }
 
     fn record_change_for_notice(&self, record: &RuntimeNoticeRecord) {
@@ -550,13 +546,9 @@ impl TerminalStreamStore {
 
     fn record_change_for_completion(&self, record: &AssistantMessageCompletionRecord) {
         if record.recipient_attachment_ids.is_empty() {
-            self.record_change_for_session(&record.session_id);
-        } else {
-            self.record_change_for_attachment_ids(
-                &record.session_id,
-                &record.recipient_attachment_ids,
-            );
+            return;
         }
+        self.record_change_for_attachment_ids(&record.session_id, &record.recipient_attachment_ids);
     }
 
     fn record_change_for_attachment_ids(&self, session_id: &str, attachment_ids: &[String]) {
