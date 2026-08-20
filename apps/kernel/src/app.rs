@@ -183,6 +183,15 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        if config.user_config.credential_vault.backend
+            == crate::config::CredentialVaultBackend::CharioxEncrypted
+        {
+            crate::secret::restore_transferred_vault_unlock(
+                &config.user_config.credential_vault.path,
+                &config.daemon_id,
+                &config.relay_private_key,
+            )?;
+        }
         crate::logging::info_with_fields(
             "daemon.startup",
             "daemon config validated",

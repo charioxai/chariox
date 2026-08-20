@@ -21,9 +21,11 @@ mod vault;
 use vault::vault_store_for_config;
 pub use vault::{
     chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
-    extend_chariox_encrypted_vault, is_chariox_vault_locked_error, lock_chariox_encrypted_vault,
-    unlock_chariox_encrypted_vault, CharioxVaultUnlockStatus, CredentialVaultStore,
-    VaultUnlockLease,
+    export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
+    install_transferred_vault_snapshot, is_chariox_vault_locked_error,
+    lock_chariox_encrypted_vault, restore_transferred_vault_unlock, unlock_chariox_encrypted_vault,
+    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
+    TransferredVaultSourceBinding, VaultUnlockLease,
 };
 
 type HmacSha256 = Hmac<Sha256>;
