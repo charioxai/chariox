@@ -3,7 +3,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 use crate::mcp::validate_registry_name;
@@ -42,12 +41,6 @@ impl CharioxSkillRegistry {
     }
 
     pub fn project_root(workspace: impl AsRef<Path>) -> PathBuf {
-        if let Some(root) = managed_capability_root() {
-            return root
-                .join("project")
-                .join(workspace_registry_hash(workspace.as_ref()))
-                .join("skills");
-        }
         workspace.as_ref().join(".chariox").join("skills")
     }
 
@@ -647,16 +640,6 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<(), DaemonError> 
     Ok(())
 }
 
-fn hex_digest(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
 fn skill_content_url(input: &str) -> Result<String, DaemonError> {
     let trimmed = input.trim();
     let parsed = url::Url::parse(trimmed).map_err(|error| DaemonError::LocalTransport {
@@ -708,10 +691,6 @@ fn managed_capability_root() -> Option<PathBuf> {
     std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-}
-
-fn workspace_registry_hash(workspace: &Path) -> String {
-    hex_digest(Sha256::digest(workspace.to_string_lossy().as_bytes()).as_slice())
 }
 
 fn prompt_explicitly_requests_skill(prompt: &str, skill_name: &str) -> bool {

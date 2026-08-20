@@ -8,16 +8,16 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-const KERNEL_CONTEXT_SCHEMA_VERSION: u32 = 1;
-const MAX_EXTENSIONS: usize = 2_048;
-const MAX_DEPENDENCIES: usize = 2_048;
-const MAX_PACKAGE_FILES: usize = 1_024;
+pub(super) const KERNEL_CONTEXT_SCHEMA_VERSION: u32 = 1;
+pub(super) const MAX_EXTENSIONS: usize = 2_048;
+pub(super) const MAX_DEPENDENCIES: usize = 2_048;
+pub(super) const MAX_PACKAGE_FILES: usize = 1_024;
 const MAX_PACKAGE_ENTRIES: usize = 2_048;
 const MAX_DIRECTORY_DEPTH: usize = 64;
-const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
-const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
-const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
-const MAX_SNAPSHOT_FILES: usize = 16_384;
+pub(super) const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
+pub(super) const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+pub(super) const MAX_SNAPSHOT_FILES: usize = 16_384;
 
 struct SnapshotMemoryBudget {
     bytes: usize,
@@ -93,7 +93,7 @@ impl Write for BoundedJsonHashWriter {
     }
 }
 
-fn serialized_json_measure<T: Serialize>(
+pub(super) fn serialized_json_measure<T: Serialize>(
     value: &T,
     maximum_bytes: usize,
 ) -> Result<(usize, String), DaemonError> {
@@ -567,7 +567,9 @@ fn normalize_lexical_path(path: &Path) -> Option<PathBuf> {
     Some(normalized)
 }
 
-fn validate_python_requirements_lock(files: &[KernelPackageFile]) -> Result<(), DaemonError> {
+pub(super) fn validate_python_requirements_lock(
+    files: &[KernelPackageFile],
+) -> Result<(), DaemonError> {
     let bytes = decoded_package_file(files, "requirements.lock")?;
     let text = std::str::from_utf8(&bytes)
         .map_err(|_| kernel_context_error("Python requirements lock is not UTF-8"))?;
@@ -597,7 +599,7 @@ fn validate_python_requirements_lock(files: &[KernelPackageFile]) -> Result<(), 
     Ok(())
 }
 
-fn validate_node_package_files(files: &[KernelPackageFile]) -> Result<(), DaemonError> {
+pub(super) fn validate_node_package_files(files: &[KernelPackageFile]) -> Result<(), DaemonError> {
     let package =
         serde_json::from_slice::<serde_json::Value>(&decoded_package_file(files, "package.json")?)
             .map_err(|error| {
@@ -646,7 +648,10 @@ fn validate_node_package_files(files: &[KernelPackageFile]) -> Result<(), Daemon
     reject_secret_package_metadata(&lock)
 }
 
-fn decoded_package_file(files: &[KernelPackageFile], path: &str) -> Result<Vec<u8>, DaemonError> {
+pub(super) fn decoded_package_file(
+    files: &[KernelPackageFile],
+    path: &str,
+) -> Result<Vec<u8>, DaemonError> {
     let file = files
         .iter()
         .find(|file| file.path == path)
@@ -819,7 +824,7 @@ fn export_credentials(
     Ok(())
 }
 
-fn validate_portable_credential_injection(
+pub(super) fn validate_portable_credential_injection(
     credential: &crate::config::UserCredentialConfig,
 ) -> Result<(), DaemonError> {
     let UserCredentialInjectionConfig::Header { value, .. } = &credential.injection else {
@@ -891,7 +896,7 @@ fn push_dependency(
     Ok(())
 }
 
-fn bundled_adapter_artifact_hash(
+pub(super) fn bundled_adapter_artifact_hash(
     adapter: &CharioxConnectorAdapterDefinition,
 ) -> Result<String, DaemonError> {
     validate_portable_bundled_adapter(adapter)?;
@@ -947,7 +952,7 @@ fn validate_portable_bundled_adapter(
     Ok(())
 }
 
-fn extension_definition_hash(
+pub(super) fn extension_definition_hash(
     definition: &KernelExtensionDefinition,
 ) -> Result<String, DaemonError> {
     serde_json::to_vec(definition)
@@ -991,7 +996,7 @@ fn skill_executable_paths(
     Ok(executable_paths)
 }
 
-fn validate_portable_mcp(config: &CharioxMcpServerConfig) -> Result<(), DaemonError> {
+pub(super) fn validate_portable_mcp(config: &CharioxMcpServerConfig) -> Result<(), DaemonError> {
     match &config.transport {
         CharioxMcpTransportConfig::Stdio { .. } => {
             return Err(kernel_context_error(format!(
@@ -1029,7 +1034,7 @@ fn validate_portable_mcp(config: &CharioxMcpServerConfig) -> Result<(), DaemonEr
     Ok(())
 }
 
-fn validate_portable_user_adapter(
+pub(super) fn validate_portable_user_adapter(
     adapter: &CharioxConnectorAdapterDefinition,
 ) -> Result<(), DaemonError> {
     if adapter.command.is_absolute() || adapter.command.components().count() < 2 {
@@ -1381,7 +1386,7 @@ fn sensitive_extension_package_path(path: &str) -> bool {
     })
 }
 
-fn validate_safe_package_file(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
+pub(super) fn validate_safe_package_file(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
     if sensitive_extension_package_path(path)
         || bytes
             .windows(b"PRIVATE KEY-----".len())
@@ -1394,7 +1399,7 @@ fn validate_safe_package_file(path: &str, bytes: &[u8]) -> Result<(), DaemonErro
     Ok(())
 }
 
-fn reject_literal_secrets_in_json(value: &serde_json::Value) -> Result<(), DaemonError> {
+pub(super) fn reject_literal_secrets_in_json(value: &serde_json::Value) -> Result<(), DaemonError> {
     match value {
         serde_json::Value::Object(fields) => {
             for (name, value) in fields {
@@ -1490,7 +1495,7 @@ fn opened_metadata_is_reparse_point(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-fn package_definition_hash(files: &[KernelPackageFile]) -> String {
+pub(super) fn package_definition_hash(files: &[KernelPackageFile]) -> String {
     let mut hasher = Sha256::new();
     for file in files {
         hasher.update(file.path.as_bytes());
@@ -1514,7 +1519,7 @@ fn is_executable(_metadata: &fs::Metadata) -> bool {
     false
 }
 
-fn validate_identifier(value: &str, label: &str) -> Result<(), DaemonError> {
+pub(super) fn validate_identifier(value: &str, label: &str) -> Result<(), DaemonError> {
     if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
         return Err(kernel_context_error(format!(
             "kernel context {label} is invalid"
@@ -1523,7 +1528,7 @@ fn validate_identifier(value: &str, label: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn validate_sha256(value: &str, label: &str) -> Result<(), DaemonError> {
+pub(super) fn validate_sha256(value: &str, label: &str) -> Result<(), DaemonError> {
     if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(kernel_context_error(format!(
             "kernel context {label} is invalid"

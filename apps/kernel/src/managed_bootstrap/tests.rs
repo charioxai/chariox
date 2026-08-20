@@ -270,6 +270,8 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "Group=chariox",
         "Environment=CHARIOX_HOME=/var/lib/chariox/home",
         "Environment=HOME=/var/lib/chariox/home",
+        "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel",
+        "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
         "KillMode=control-group",
         "StartLimitIntervalSec=0",

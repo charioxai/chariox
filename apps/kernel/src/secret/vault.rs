@@ -564,7 +564,40 @@ pub fn restore_transferred_vault_unlock(
     target_kernel_id: &str,
     target_private_key: &str,
 ) -> Result<bool, DaemonError> {
-    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    restore_transferred_vault_unlock_bound(
+        path.as_ref(),
+        None,
+        target_kernel_id,
+        target_private_key,
+    )
+}
+
+pub fn validate_installed_transferred_vault(
+    path: impl AsRef<Path>,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    if !restore_transferred_vault_unlock_bound(
+        path.as_ref(),
+        Some(expected_source),
+        target_kernel_id,
+        target_private_key,
+    )? {
+        return Err(secret_error(
+            "transferred Vault key envelope is missing".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn restore_transferred_vault_unlock_bound(
+    path: &Path,
+    expected_source: Option<&TransferredVaultSourceBinding>,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.to_path_buf());
     let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
     cleanup_private_staging(&path, target_kernel_id)?;
     cleanup_private_staging(&envelope_path, target_kernel_id)?;
@@ -580,6 +613,15 @@ pub fn restore_transferred_vault_unlock(
             ))
         },
     )?;
+    if expected_source.is_some_and(|expected| {
+        envelope.context_id != expected.context_id
+            || envelope.source_kernel_id != expected.source_kernel_id
+            || envelope.source_key_thumbprint != expected.source_key_thumbprint
+    }) {
+        return Err(secret_error(
+            "stored transferred Vault source or context binding does not match".to_string(),
+        ));
+    }
     validate_transfer_envelope(&envelope, target_kernel_id, target_private_key)?;
     let vault_bytes = read_bounded_regular_file(&path, MAX_TRANSFERRED_VAULT_BYTES)?;
     let key = unseal_transferred_vault_key(

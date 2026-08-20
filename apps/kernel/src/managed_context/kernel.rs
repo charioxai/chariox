@@ -1,4 +1,5 @@
 use std::fmt;
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -9,8 +10,10 @@ use crate::mcp::CharioxMcpServerConfig;
 use crate::script::CharioxScriptRuntime;
 
 mod export;
+mod import;
 mod source_snapshot;
 pub use export::export_kernel_context;
+pub use import::import_kernel_context;
 pub use source_snapshot::scavenge_source_snapshots;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,6 +24,31 @@ pub struct KernelContextExportRequest {
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
     pub vault: crate::secret::TransferredVaultSnapshot,
+}
+
+#[derive(Clone, PartialEq)]
+pub struct KernelContextImportRequest {
+    pub snapshot: KernelContextSnapshot,
+    pub expected_source: crate::secret::TransferredVaultSourceBinding,
+    pub target_kernel_id: String,
+    pub target_private_key: String,
+    pub capability_root: PathBuf,
+    pub vault_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct KernelContextImportReceipt {
+    pub schema_version: u32,
+    pub context_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+    pub target_kernel_id: String,
+    pub target_key_thumbprint: String,
+    pub snapshot_sha256: String,
+    pub capability_root: PathBuf,
+    pub extension_count: usize,
+    pub dependency_count: usize,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -140,6 +168,7 @@ enum PortableEnvironmentKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct PortableEnvironmentManifest {
     schema_version: u32,
     runtime: PortableEnvironmentKind,
@@ -161,6 +190,20 @@ impl fmt::Debug for KernelContextSnapshot {
             .debug_struct("KernelContextSnapshot")
             .field("payload", &self.payload)
             .field("snapshot_sha256", &self.snapshot_sha256)
+            .finish()
+    }
+}
+
+impl fmt::Debug for KernelContextImportRequest {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("KernelContextImportRequest")
+            .field("snapshot", &self.snapshot)
+            .field("expected_source", &self.expected_source)
+            .field("target_kernel_id", &self.target_kernel_id)
+            .field("target_private_key", &"[REDACTED]")
+            .field("capability_root", &self.capability_root)
+            .field("vault_path", &self.vault_path)
             .finish()
     }
 }

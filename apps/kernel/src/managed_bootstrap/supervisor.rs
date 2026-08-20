@@ -87,6 +87,18 @@ fn spawn_kernel(config: &BootstrapConfig, release: &VerifiedRelease) -> Result<C
     Command::new(&release.kernel_binary)
         .current_dir(&config.chariox_home)
         .env("CHARIOX_HOME", &config.chariox_home)
+        .env(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            config.chariox_home.join("managed-context").join("kernel"),
+        )
+        .env(
+            "CHARIOX_MANAGED_VAULT_PATH",
+            config
+                .chariox_home
+                .join(".chariox")
+                .join("vault")
+                .join("vault.json"),
+        )
         .env("CHARIOX_KERNEL_HOST", &config.kernel_host)
         .env("CHARIOX_KERNEL_PORT", config.kernel_port.to_string())
         .env_remove("CHARIOX_DAEMON_ID")

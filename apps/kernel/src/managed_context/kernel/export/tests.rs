@@ -172,7 +172,7 @@ fn kernel_context_exports_one_unified_extension_set() {
     std::os::unix::fs::symlink("../tool/bin.js", node_modules.join(".bin"))
         .expect("installed Node link should create");
 
-    let adapter_root = chariox_home.join("connectors/adapters/http");
+    let adapter_root = isolation.join("user/connectors/adapters/http");
     fs::create_dir_all(&adapter_root).expect("adapter root should create");
     fs::write(
             adapter_root.join("adapter.yaml"),
@@ -180,7 +180,7 @@ fn kernel_context_exports_one_unified_extension_set() {
         )
         .expect("adapter should write");
     fs::write(adapter_root.join("adapter.sh"), "#!/bin/sh\n").expect("adapter script");
-    let unused_adapter_root = chariox_home.join("connectors/adapters/unused");
+    let unused_adapter_root = isolation.join("user/connectors/adapters/unused");
     fs::create_dir_all(&unused_adapter_root).expect("unused adapter root should create");
     fs::write(
             unused_adapter_root.join("adapter.yaml"),
@@ -189,7 +189,7 @@ fn kernel_context_exports_one_unified_extension_set() {
         .expect("unused adapter should write");
     fs::write(unused_adapter_root.join("unused.sh"), "#!/bin/sh\n")
         .expect("unused adapter script should write");
-    let connector_root = chariox_home.join("connectors/definitions");
+    let connector_root = isolation.join("user/connectors/definitions");
     fs::create_dir_all(&connector_root).expect("connector root should create");
     fs::write(
             connector_root.join("status.yaml"),
@@ -197,7 +197,7 @@ fn kernel_context_exports_one_unified_extension_set() {
         )
         .expect("connector should write");
 
-    let credential_root = chariox_home.join("credentials");
+    let credential_root = isolation.join("user/credentials");
     fs::create_dir_all(&credential_root).expect("credential root should create");
     fs::write(
             credential_root.join("api.yaml"),
@@ -423,7 +423,7 @@ fn kernel_context_rejects_prefixed_connector_auth_fields() {
         root.join("capabilities"),
     );
     std::env::set_var("CHARIOX_HOME", root.join("home"));
-    let connector_root = root.join("home/connectors/definitions");
+    let connector_root = root.join("capabilities/user/connectors/definitions");
     fs::create_dir_all(&connector_root).expect("connector root should create");
     for (config, expected_error) in [
         (
@@ -474,7 +474,7 @@ fn kernel_context_rejects_non_vault_credential_definitions() {
     let chariox_home = root.join("home");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
     std::env::set_var("CHARIOX_HOME", &chariox_home);
-    let credential_root = chariox_home.join("credentials");
+    let credential_root = isolation.join("user/credentials");
     fs::create_dir_all(&credential_root).expect("credential root should create");
     fs::write(
             credential_root.join("ambient.yaml"),
@@ -504,7 +504,7 @@ fn kernel_context_rejects_literal_vault_credential_injection() {
         root.join("capabilities"),
     );
     std::env::set_var("CHARIOX_HOME", root.join("home"));
-    let credential_root = root.join("home/credentials");
+    let credential_root = root.join("capabilities/user/credentials");
     fs::create_dir_all(&credential_root).expect("credential root should create");
     fs::write(
         credential_root.join("literal.yaml"),
