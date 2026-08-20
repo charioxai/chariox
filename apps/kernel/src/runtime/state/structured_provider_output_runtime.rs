@@ -338,6 +338,7 @@ impl KernelRuntimeState {
             || poll_result.resolved_variant.is_some()
             || poll_result.resolved_usage_tokens_total.is_some()
             || poll_result.resolved_usage.is_some()
+            || poll_result.account_usage.is_some()
             || poll_result.resolved_resume_state.is_some()
         {
             crate::logging::debug_with_fields(
@@ -352,6 +353,14 @@ impl KernelRuntimeState {
                     "terminal_failure": poll_result.terminal_failure,
                 }),
             );
+        }
+        if let Some(usage) = poll_result.account_usage.clone() {
+            owned.provider_account_profiles.update_usage(
+                provider_run.owner_user_id(),
+                provider_run.provider(),
+                provider_run.account_profile(),
+                usage,
+            )?;
         }
         let projected_provider_run = owned
             .provider_store
@@ -391,6 +400,7 @@ impl KernelRuntimeState {
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
                 provider_run.adapter_key(),
+                provider_run.account_profile(),
                 provider_run.provider_session_id(),
                 provider_run.resume_state(),
                 provider_run.session_id(),

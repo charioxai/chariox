@@ -85,6 +85,7 @@ pub(crate) async fn create_relay_leased_agent(
     runtime_state: &KernelRuntimeState,
     lease_id: &str,
     provider: &str,
+    account_profile: &str,
     model: Option<String>,
     effort: Option<String>,
     execution_mode: Option<AgentExecutionMode>,
@@ -97,6 +98,7 @@ pub(crate) async fn create_relay_leased_agent(
         .create_relay_leased_agent(
             lease_id,
             provider,
+            account_profile,
             model,
             effort,
             execution_mode,
@@ -132,11 +134,18 @@ pub(crate) async fn update_relay_leased_agent_profile(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
     provider: String,
+    account_profile: String,
     model: Option<String>,
     effort: Option<String>,
 ) -> Result<LeasedAgent, DaemonError> {
     runtime_state
-        .update_relay_leased_agent_profile(leased_agent_id, provider, model, effort)
+        .update_relay_leased_agent_profile(
+            leased_agent_id,
+            provider,
+            account_profile,
+            model,
+            effort,
+        )
         .await
 }
 
@@ -282,6 +291,16 @@ pub(crate) async fn ensure_relay_remote_skill_packages(
 ) -> Result<Vec<RemoteSkillMaterialization>, DaemonError> {
     runtime_state
         .ensure_relay_remote_skill_packages(context, packages)
+        .await
+}
+
+pub(crate) async fn ensure_relay_remote_provider_account(
+    runtime_state: &KernelRuntimeState,
+    context: crate::transport::relay_peer::RemoteProviderAccountSyncContext,
+    materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<crate::account_profile::ProviderAccountProfile, DaemonError> {
+    runtime_state
+        .ensure_relay_remote_provider_account(context, materialization)
         .await
 }
 

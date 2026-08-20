@@ -140,7 +140,7 @@ test("native TUI runtime banner calls out missing slice provider auth", () => {
   assert.match(banner, /placement:      slice linux-dev/)
   assert.match(banner, /slice auth:     missing codex, opencode:openai/)
   assert.match(banner, /slice accounts: none/)
-  assert.match(banner, /slice next:     run \/slice doctor linux-dev; configure missing provider accounts codex, opencode:openai with \/slice auth import linux-dev codex or \/slice auth login linux-dev codex/)
+  assert.match(banner, /slice next:     run \/slice doctor linux-dev; configure missing provider accounts codex, opencode:openai with \/slice auth import linux-dev codex <account-profile> or \/slice auth login linux-dev codex <account-profile>/)
 })
 
 test("native TUI runtime banner reports stopped slice lifecycle recovery", () => {
@@ -418,8 +418,8 @@ function slice(overrides: Partial<SliceRecord> = {}): SliceRecord {
     worker_machine_id: "hetzner",
     provider_auth: [{
       provider: "codex",
+      account_profile: "work",
       state: "authenticated",
-      alias: "work",
       email: "work@example.com",
       source: "slice",
     }],

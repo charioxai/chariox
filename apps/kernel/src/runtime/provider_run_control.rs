@@ -12,6 +12,7 @@ use crate::runtime::state::KernelRuntimeState;
 pub(crate) async fn execute_provider_run_request(
     runtime_state: &KernelRuntimeState,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
+    caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     match request {
@@ -23,7 +24,9 @@ pub(crate) async fn execute_provider_run_request(
         }
         LocalDaemonRequest::LogoutProvider(request) => {
             execute_logout_provider_and_invalidate_catalog_request(
+                runtime_state,
                 provider_catalog_projection,
+                caller_user_id,
                 request,
             )
             .await
@@ -81,10 +84,12 @@ pub(crate) fn refresh_provider_run_projection_from_response(
 }
 
 pub(crate) async fn execute_logout_provider_and_invalidate_catalog_request(
+    runtime_state: &KernelRuntimeState,
     provider_catalog_projection: &ProviderCatalogProjectionStore,
+    caller_user_id: &str,
     request: LogoutProviderRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let response = execute_provider_logout(request).await?;
+    let response = execute_provider_logout(runtime_state, caller_user_id, request).await?;
     invalidate_provider_catalog_caches(provider_catalog_projection);
     Ok(response)
 }

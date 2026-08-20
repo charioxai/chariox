@@ -117,21 +117,26 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     remote_relay_inventory_projection: RemoteRelayInventoryProjectionStore,
     caller_user_id: &str,
 ) -> Result<WaitingRoomPublicSnapshot, DaemonError> {
+    let account_owner_user_id =
+        runtime_state.provider_account_authority_owner_user_id(caller_user_id);
     let relay_status = projected_relay_status_view(relay_state, config_projection).await;
     let (remote_machines, remote_kernels) = remote_relay_inventory_projection.snapshot();
     let terminals = paired_terminal_records();
     let (external_provider_session_page, metaagent_events) = runtime_state
-        .waiting_room_auxiliary_projection(&ListExternalProviderSessionsRequest {
-            provider: None,
-            cursor: None,
-            limit: Some(25),
-        });
+        .waiting_room_auxiliary_projection(
+            &account_owner_user_id,
+            &ListExternalProviderSessionsRequest {
+                provider: None,
+                cursor: None,
+                limit: Some(25),
+            },
+        );
     let external_working_agents = session_projection.external_observed_working_agents();
     let runtime_projects = runtime_state.list_waiting_room_projects(caller_user_id);
     let slices = runtime_state.list_slices();
     let (runtime_sessions, session_revision) = session_projection.list_shared_with_revision();
     let runtime_sessions = runtime_sessions.unwrap_or_else(|| Arc::from([]));
-    build_waiting_room_public_snapshot_from_cached_shared(
+    let mut snapshot = build_waiting_room_public_snapshot_from_cached_shared(
         runtime_sessions.as_ref(),
         session_revision,
         waiting_room_session_summaries,
@@ -148,7 +153,36 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
         terminals,
         unix_epoch_ms(),
         caller_user_id,
-    )
+    )?;
+    let accounts = runtime_state
+        .provider_account_profile_registry()
+        .list(&account_owner_user_id, None)?;
+    for session in &mut snapshot.sessions {
+        for agent in &mut session.agents {
+            agent.account_label = accounts
+                .iter()
+                .find(|profile| {
+                    profile.provider
+                        == crate::provider::canonical_provider_family(&agent.provider)
+                            .unwrap_or(agent.provider.as_str())
+                        && profile.profile_id == agent.account_profile
+                })
+                .map(|profile| profile.label.clone());
+        }
+    }
+    let account_fingerprint =
+        serde_json::to_vec(&accounts).map_err(|error| DaemonError::LocalTransport {
+            operation: "project waiting room provider accounts",
+            message: error.to_string(),
+        })?;
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(snapshot.structural_version.as_bytes());
+    hasher.update(account_fingerprint);
+    snapshot.structural_version = format!("{:x}", hasher.finalize());
+    snapshot.inventory_version = snapshot.structural_version.clone();
+    snapshot.provider_accounts = accounts;
+    Ok(snapshot)
 }
 
 #[cfg(test)]

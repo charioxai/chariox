@@ -13,8 +13,10 @@ mod catalog_endpoint;
 mod mcp_config;
 mod ports;
 
-pub(crate) use catalog_endpoint::lease_opencode_catalog_endpoint;
-pub use catalog_endpoint::{ensure_opencode_catalog_endpoint, opencode_catalog_endpoint};
+pub use catalog_endpoint::opencode_catalog_endpoint;
+pub(crate) use catalog_endpoint::{
+    ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
+};
 
 const OPENCODE_ENV_OVERRIDE: &str = "CHARIOX_OPENCODE_BIN";
 static OPENCODE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
@@ -85,12 +87,16 @@ fn plan_opencode_launch_unlocked(
         let executable = resolve_opencode_executable_unlocked()?;
         let port = resolve_opencode_launch_port(true)?;
         let base_url = format!("http://127.0.0.1:{port}");
+        let mut environment = runtime_mcp_env(request)?;
+        if let Some(request) = request {
+            environment.extend(request.provider_account_env.clone());
+        }
         return Ok(managed_launch(
             executable,
             port,
             resolve_opencode_bind_host(),
             base_url,
-            runtime_mcp_env(request)?,
+            environment,
             request
                 .map(|request| request.provider_env_remove.clone())
                 .unwrap_or_default(),
@@ -101,12 +107,16 @@ fn plan_opencode_launch_unlocked(
     let base_url = format!("http://127.0.0.1:{port}");
     let executable = resolve_opencode_executable_unlocked()?;
 
+    let mut environment = runtime_mcp_env(request)?;
+    if let Some(request) = request {
+        environment.extend(request.provider_account_env.clone());
+    }
     Ok(managed_launch(
         executable,
         port,
         resolve_opencode_bind_host(),
         base_url,
-        runtime_mcp_env(request)?,
+        environment,
         request
             .map(|request| request.provider_env_remove.clone())
             .unwrap_or_default(),
@@ -168,13 +178,9 @@ mod tests {
     use crate::mcp::CharioxMcpServerConfig;
     use crate::provider::{AgentEndpointMode, LaunchProviderRequest, RuntimeMcpBinding};
     use std::fs;
-    use std::io::{Read, Write};
     use std::net::TcpListener;
-    use std::thread;
 
-    use super::{
-        ensure_opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable,
-    };
+    use super::{plan_opencode_launch, resolve_opencode_executable};
 
     fn env_guard() -> crate::env_lock::EnvGuard {
         crate::env_lock::lock()
@@ -186,24 +192,6 @@ mod tests {
             .local_addr()
             .expect("listener should expose a local address")
             .port()
-    }
-
-    fn start_health_server() -> (String, thread::JoinHandle<()>) {
-        let listener = TcpListener::bind(("127.0.0.1", 0)).expect("test listener should bind");
-        let address = listener
-            .local_addr()
-            .expect("listener should expose a local address");
-        let handle = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            let mut request = [0_u8; 1024];
-            let _ = stream.read(&mut request);
-            let response = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"healthy\":true}";
-            stream
-                .write_all(response.as_bytes())
-                .expect("server should write health response");
-            stream.flush().expect("server should flush response");
-        });
-        (format!("http://{}", address), handle)
     }
 
     #[test]
@@ -592,33 +580,5 @@ mod tests {
             .structured_endpoint
             .as_deref()
             .is_some_and(|endpoint| endpoint.starts_with("http://127.0.0.1:")));
-    }
-
-    #[test]
-    fn ensures_healthy_catalog_opencode_endpoint_without_spawning_duplicate_process() {
-        let _guard = env_guard();
-        let (endpoint, server) = start_health_server();
-        let port = endpoint
-            .rsplit(':')
-            .next()
-            .expect("endpoint should include a port")
-            .to_string();
-        let path = std::env::temp_dir().join(format!(
-            "chariox-opencode-resolve-test-{}-healthy-catalog",
-            std::process::id()
-        ));
-        fs::write(&path, "#!/bin/sh\nsleep 60\n").expect("fixture should exist");
-        std::env::set_var("CHARIOX_OPENCODE_BIN", &path);
-        std::env::set_var("CHARIOX_OPENCODE_PORT", &port);
-
-        let resolved =
-            ensure_opencode_catalog_endpoint().expect("healthy catalog endpoint should resolve");
-
-        std::env::remove_var("CHARIOX_OPENCODE_BIN");
-        std::env::remove_var("CHARIOX_OPENCODE_PORT");
-        let _ = fs::remove_file(&path);
-        let _ = server.join();
-
-        assert_eq!(resolved, endpoint);
     }
 }

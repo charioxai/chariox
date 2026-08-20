@@ -205,6 +205,7 @@ export type SliceLogEntry = {
 
 export type SliceProviderAuthSummary = {
   provider: string
+  account_profile: string
   state: "unknown" | "not_configured" | "configured" | "authenticated"
   auth_type?: string | null
   account_id?: string | null
@@ -212,7 +213,6 @@ export type SliceProviderAuthSummary = {
   organization_id?: string | null
   organization_name?: string | null
   subscription_type?: string | null
-  alias?: string | null
   source: string
 }
 
@@ -327,6 +327,7 @@ export type WaitingRoomInventorySnapshot = {
     directory?: string | null
     worktree_label?: string | null
   } | null
+  provider_accounts?: import("./kernel-types-provider.js").ProviderAccountProfile[]
 }
 
 export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {

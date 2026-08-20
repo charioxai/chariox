@@ -67,6 +67,7 @@ export type CliPrimaryTranscriptCompositionDeps = {
   relayStatusState: AnyFn
   remoteMachinesState: AnyFn
   remoteKernelsState: AnyFn
+  providerAccountsState: AnyFn
   terminalsState: AnyFn
   externalProviderSessionsState: AnyFn
   externalProviderSessionsPageState: AnyFn
@@ -163,6 +164,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
         relay: deps.relayStatusState(),
         machines: deps.remoteMachinesState(),
         kernels: deps.remoteKernelsState(),
+        providerAccounts: deps.providerAccountsState(),
         terminals: deps.terminalsState(),
         externalProviderSessions: deps.externalProviderSessionsState(),
         externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,

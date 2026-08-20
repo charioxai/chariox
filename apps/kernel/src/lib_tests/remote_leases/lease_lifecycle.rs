@@ -53,6 +53,7 @@ fn leased_agents_require_existing_lease_and_can_be_destroyed() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -105,6 +106,7 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -127,6 +129,7 @@ fn leased_agents_project_workspace_live_sync_mode_to_backing_session() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -173,6 +176,7 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -186,6 +190,7 @@ fn destroying_one_shared_session_leased_agent_preserves_other_leases() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -232,6 +237,7 @@ fn leased_agents_reject_missing_working_directory() {
         .create_leased_agent(
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,
@@ -281,6 +287,7 @@ fn leased_agents_materialize_remote_git_worktree_before_creation() {
             &root,
             &lease.id,
             "opencode",
+            "default",
             Some("kimi2.5".to_string()),
             None,
             None,

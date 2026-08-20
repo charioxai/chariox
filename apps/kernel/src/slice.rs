@@ -11,7 +11,8 @@ pub use local_docker::{
     local_docker_private_relay_token, remove_local_docker_saved_state,
     run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
-    start_local_docker_slice_provider_login, LocalDockerSliceOptions, LocalDockerSliceRelay,
+    start_local_docker_slice_provider_login, LocalDockerProviderAccount, LocalDockerSliceOptions,
+    LocalDockerSliceRelay,
 };
 #[cfg(test)]
 use local_docker::{
@@ -522,41 +523,6 @@ mod tests {
     }
 
     #[test]
-    fn slice_store_sets_and_clears_provider_auth_aliases() {
-        let store = SliceStore::default();
-        let mut input = create_input("dev");
-        input.provider_auth = vec![SliceProviderAuthSummary {
-            provider: "codex".to_string(),
-            state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
-            auth_type: Some("chatgpt".to_string()),
-            account_id: Some("acct-1".to_string()),
-            email: None,
-            organization_id: None,
-            organization_name: None,
-            subscription_type: None,
-            alias: None,
-            source: "test".to_string(),
-        }];
-        let slice = store
-            .create("kernel-1", "machine-1", input)
-            .expect("slice should create");
-
-        let aliased = store
-            .set_provider_auth_alias(&slice.id, "codex", Some("Work"), 44)
-            .expect("alias should update");
-        assert_eq!(aliased.provider_auth[0].alias.as_deref(), Some("Work"));
-        assert_eq!(aliased.updated_at_ms, 44);
-
-        let cleared = store
-            .set_provider_auth_alias(&slice.id, "codex", Some("  "), 45)
-            .expect("empty alias should clear");
-        assert_eq!(cleared.provider_auth[0].alias, None);
-        assert!(store
-            .set_provider_auth_alias(&slice.id, "claude", Some("Personal"), 46)
-            .is_err());
-    }
-
-    #[test]
     fn slice_store_keeps_provider_auth_summaries_per_slice() {
         let store = SliceStore::default();
         let first = store
@@ -571,6 +537,7 @@ mod tests {
                 &first.id,
                 vec![SliceProviderAuthSummary {
                     provider: "codex".to_string(),
+                    account_profile: "default".to_string(),
                     state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
                     auth_type: Some("api-key".to_string()),
                     account_id: Some("acct-1".to_string()),
@@ -578,7 +545,6 @@ mod tests {
                     organization_id: None,
                     organization_name: None,
                     subscription_type: None,
-                    alias: Some("work".to_string()),
                     source: "test".to_string(),
                 }],
                 44,
@@ -589,6 +555,7 @@ mod tests {
                 &second.id,
                 vec![SliceProviderAuthSummary {
                     provider: "codex".to_string(),
+                    account_profile: "default".to_string(),
                     state: crate::slice_provider_auth::SliceProviderAuthState::Configured,
                     auth_type: Some("api-key".to_string()),
                     account_id: Some("acct-2".to_string()),
@@ -596,7 +563,6 @@ mod tests {
                     organization_id: None,
                     organization_name: None,
                     subscription_type: None,
-                    alias: Some("personal".to_string()),
                     source: "test".to_string(),
                 }],
                 45,
@@ -607,24 +573,6 @@ mod tests {
         assert_eq!(
             second.provider_auth[0].account_id.as_deref(),
             Some("acct-2")
-        );
-        assert_eq!(
-            store
-                .resolve(&first.id)
-                .expect("first should resolve")
-                .provider_auth[0]
-                .alias
-                .as_deref(),
-            Some("work")
-        );
-        assert_eq!(
-            store
-                .resolve(&second.id)
-                .expect("second should resolve")
-                .provider_auth[0]
-                .alias
-                .as_deref(),
-            Some("personal")
         );
     }
 

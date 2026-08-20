@@ -314,6 +314,61 @@ impl RuntimeSession {
         workflow_run
     }
 
+    pub(crate) fn durable_runtime_snapshot(&self) -> Self {
+        let mut snapshot = self.clone();
+        snapshot
+            .workflow_runs
+            .retain(|workflow_run| !workflow_run.status().is_terminal());
+        snapshot
+            .workflow_publication_state
+            .workflow_event_delivery_receipts
+            .clear();
+        snapshot
+    }
+
+    pub(crate) fn archive_terminal_workflow_runs(&mut self) -> Vec<WorkflowRun> {
+        let mut active = Vec::with_capacity(self.workflow_runs.len());
+        let mut archived = Vec::new();
+        for workflow_run in self.workflow_runs.drain(..) {
+            if workflow_run.status().is_terminal() {
+                archived.push(workflow_run);
+            } else {
+                active.push(workflow_run);
+            }
+        }
+        self.workflow_runs = active;
+        archived
+    }
+
+    pub(crate) fn restore_active_workflow_runs(&mut self, workflow_runs: Vec<WorkflowRun>) {
+        for workflow_run in workflow_runs {
+            if workflow_run.status().is_terminal() {
+                continue;
+            }
+            match self
+                .workflow_runs
+                .iter()
+                .position(|current| current.id() == workflow_run.id())
+            {
+                Some(index) => self.workflow_runs[index] = workflow_run,
+                None => self.workflow_runs.push(workflow_run),
+            }
+        }
+    }
+
+    pub(crate) fn restore_workflow_event_delivery_receipts(
+        &mut self,
+        receipts: impl IntoIterator<Item = WorkflowEventDeliveryReceipt>,
+    ) {
+        self.workflow_publication_state
+            .workflow_event_delivery_receipts
+            .extend(
+                receipts
+                    .into_iter()
+                    .map(|receipt| (receipt.delivery_id.clone(), receipt)),
+            );
+    }
+
     pub fn has_active_workflow_run(&self) -> bool {
         self.workflow_runs.iter().any(|workflow_run| {
             matches!(

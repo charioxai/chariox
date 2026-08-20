@@ -6,9 +6,7 @@ use crate::local::{
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::state::KernelRuntimeState;
-use crate::runtime::workflow_projection::{
-    projected_resolve_workflow, projected_resolve_workflow_run, projected_workflow_id,
-};
+use crate::runtime::workflow_projection::{projected_resolve_workflow, projected_workflow_id};
 use crate::session::RuntimeSession;
 
 fn ensure_projected_workflow_metaagent_scope(
@@ -224,91 +222,9 @@ pub(crate) fn projected_session_inspection_response(
                 }),
             )
         }
-        LocalDaemonRequest::ListWorkflowRuns(request) => {
-            let session =
-                match projected_session_or_absence(session_projection, &request.session_id)? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-            Some(
-                projected_workflow_id(&session, request.workflow_ref.as_deref()).and_then(
-                    |workflow_id| {
-                        if let Some(workflow_id) = workflow_id.as_deref() {
-                            let workflow = session
-                                .workflows()
-                                .iter()
-                                .find(|workflow| workflow.id() == workflow_id);
-                            ensure_projected_workflow_metaagent_scope(
-                                workflow.and_then(|workflow| workflow.controlled_by_metaagent_id()),
-                                caller_metaagent_id,
-                                request.workflow_ref.as_deref().unwrap_or(workflow_id),
-                                "list workflow runs",
-                            )?;
-                        }
-                        let workflow_runs = session
-                            .workflow_runs()
-                            .iter()
-                            .filter(|workflow_run| {
-                                workflow_id
-                                    .as_deref()
-                                    .is_none_or(|id| workflow_run.workflow_id() == id)
-                            })
-                            .filter(|workflow_run| {
-                                caller_metaagent_id.is_none_or(|metaagent_id| {
-                                    session
-                                        .workflows()
-                                        .iter()
-                                        .find(|workflow| {
-                                            workflow.id() == workflow_run.workflow_id()
-                                        })
-                                        .is_some_and(|workflow| {
-                                            workflow.controlled_by_metaagent_id()
-                                                == Some(metaagent_id)
-                                        })
-                                })
-                            })
-                            .cloned()
-                            .map(|workflow_run| {
-                                let workflow = workflow_id.as_deref().and_then(|id| {
-                                    session
-                                        .workflows()
-                                        .iter()
-                                        .find(|workflow| workflow.id() == id)
-                                });
-                                workflow_run.redacted_for_user(workflow, caller_user_id)
-                            })
-                            .collect();
-                        Ok(LocalDaemonResponse::WorkflowRunsListed { workflow_runs })
-                    },
-                ),
-            )
-        }
-        LocalDaemonRequest::GetWorkflowRun(request) => {
-            let session =
-                match projected_session_or_absence(session_projection, &request.session_id)? {
-                    Ok(session) => session,
-                    Err(error) => return Some(Err(error)),
-                };
-            Some(
-                projected_resolve_workflow_run(&session, &request.workflow_run_ref).and_then(
-                    |workflow_run| {
-                        let workflow = session
-                            .workflows()
-                            .iter()
-                            .find(|workflow| workflow.id() == workflow_run.workflow_id());
-                        ensure_projected_workflow_metaagent_scope(
-                            workflow.and_then(|workflow| workflow.controlled_by_metaagent_id()),
-                            caller_metaagent_id,
-                            &request.workflow_run_ref,
-                            "get workflow run",
-                        )?;
-                        Ok(LocalDaemonResponse::WorkflowRun {
-                            workflow_run: workflow_run.redacted_for_user(workflow, caller_user_id),
-                        })
-                    },
-                ),
-            )
-        }
+        // Workflow run history is intentionally not served from the hot session projection.
+        // The workflow lane merges active runs with the durable paginated history store.
+        LocalDaemonRequest::ListWorkflowRuns(_) | LocalDaemonRequest::GetWorkflowRun(_) => None,
         LocalDaemonRequest::ListWorkflowWatchdogs(request) => {
             let session =
                 match projected_session_or_absence(session_projection, &request.session_id)? {

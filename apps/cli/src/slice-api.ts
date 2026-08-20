@@ -20,7 +20,6 @@ import {
   removeSliceProviderAuthRequest,
   resetSliceStateRequest,
   saveSliceStateRequest,
-  setSliceProviderAuthAliasRequest,
   startSliceProviderLoginRequest,
   startSliceRequest,
   stopSliceRequest,
@@ -76,8 +75,9 @@ export async function importSliceProviderAuth(
   client: LocalIpcClient,
   sliceRef: string,
   provider: string,
+  accountProfile: string,
 ): Promise<{ slice: SliceRecord; provider: string; status: string }> {
-  const response = await client.send<Record<string, unknown>>(importSliceProviderAuthRequest(sliceRef, provider))
+  const response = await client.send<Record<string, unknown>>(importSliceProviderAuthRequest(sliceRef, provider, accountProfile))
   return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthImported")
 }
 
@@ -85,8 +85,9 @@ export async function removeSliceProviderAuth(
   client: LocalIpcClient,
   sliceRef: string,
   provider: string,
+  accountProfile: string,
 ): Promise<{ slice: SliceRecord; provider: string; status: string }> {
-  const response = await client.send<Record<string, unknown>>(removeSliceProviderAuthRequest(sliceRef, provider))
+  const response = await client.send<Record<string, unknown>>(removeSliceProviderAuthRequest(sliceRef, provider, accountProfile))
   return expectVariant<{ slice: SliceRecord; provider: string; status: string }>(response, "SliceProviderAuthRemoved")
 }
 
@@ -94,19 +95,10 @@ export async function startSliceProviderLogin(
   client: LocalIpcClient,
   sliceRef: string,
   provider: string,
+  accountProfile: string,
 ): Promise<{ slice: SliceRecord; login: { provider: string; login_kind: string; auth_url?: string | null; verification_url?: string | null; user_code?: string | null; status: string; message: string } }> {
-  const response = await client.send<Record<string, unknown>>(startSliceProviderLoginRequest(sliceRef, provider))
+  const response = await client.send<Record<string, unknown>>(startSliceProviderLoginRequest(sliceRef, provider, accountProfile))
   return expectVariant<{ slice: SliceRecord; login: { provider: string; login_kind: string; auth_url?: string | null; verification_url?: string | null; user_code?: string | null; status: string; message: string } }>(response, "SliceProviderLoginStarted")
-}
-
-export async function setSliceProviderAuthAlias(
-  client: LocalIpcClient,
-  sliceRef: string,
-  provider: string,
-  alias: string | null,
-): Promise<{ slice: SliceRecord; provider: string; alias: string | null }> {
-  const response = await client.send<Record<string, unknown>>(setSliceProviderAuthAliasRequest(sliceRef, provider, alias))
-  return expectVariant<{ slice: SliceRecord; provider: string; alias: string | null }>(response, "SliceProviderAuthAliasSet")
 }
 
 export async function getSliceDisplayEndpoint(client: LocalIpcClient, sliceRef: string): Promise<SliceDisplayEndpoint> {

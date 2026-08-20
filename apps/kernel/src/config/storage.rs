@@ -321,6 +321,12 @@ pub struct UserStateConfig {
     pub path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_interval_events: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_interval_bytes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_interval_seconds: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_max_tail_bytes: Option<u32>,
 }
 
 impl Default for UserStateConfig {
@@ -329,6 +335,9 @@ impl Default for UserStateConfig {
             backend: StateBackend::Sqlite,
             path: Some("~/.chariox/state/kernel.db".to_string()),
             snapshot_interval_events: Some(1_000),
+            snapshot_interval_bytes: Some(4 * 1024 * 1024),
+            snapshot_interval_seconds: Some(300),
+            snapshot_max_tail_bytes: Some(16 * 1024 * 1024),
         }
     }
 }
@@ -342,6 +351,28 @@ impl UserStateConfig {
             "state.snapshot_interval_events",
             self.snapshot_interval_events,
         )?;
+        validate_optional_nonzero(
+            "state.snapshot_interval_bytes",
+            self.snapshot_interval_bytes,
+        )?;
+        validate_optional_nonzero(
+            "state.snapshot_interval_seconds",
+            self.snapshot_interval_seconds,
+        )?;
+        validate_optional_nonzero(
+            "state.snapshot_max_tail_bytes",
+            self.snapshot_max_tail_bytes,
+        )?;
+        if let (Some(interval), Some(maximum)) =
+            (self.snapshot_interval_bytes, self.snapshot_max_tail_bytes)
+        {
+            if maximum < interval {
+                return Err(DaemonError::InvalidConfig {
+                    field: "state.snapshot_max_tail_bytes",
+                    message: "must be greater than or equal to state.snapshot_interval_bytes",
+                });
+            }
+        }
         Ok(())
     }
 }

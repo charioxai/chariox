@@ -6,15 +6,19 @@ pub(super) fn import_external_provider_session(
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderSessionRequest,
     caller_user_id: &str,
+    account_owner_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external =
         external_session_or_refresh(app, runtime_state, store, &request.external_session_id)?;
     ensure_external_session_is_attachable(&external)?;
+    ensure_external_session_owner(&external, account_owner_user_id)?;
     let provider = request
         .provider
         .unwrap_or_else(|| external.provider.clone());
     let model = external_provider_import_model(&provider, request.model);
-    let mut defaults = SessionAgentDefaults::new(provider.clone()).with_model(model.clone());
+    let mut defaults = SessionAgentDefaults::new(provider.clone())
+        .with_account_profile(external.account_profile.clone())
+        .with_model(model.clone());
     if let Some(effort) = request.effort.clone() {
         defaults = defaults.with_effort(effort);
     }
@@ -59,13 +63,20 @@ pub(super) fn import_external_provider_session(
         &model,
         request.effort,
     )?;
-    let import = ExternalProviderImportMetadata::observed_history(
-        external.external_session_id.clone(),
+    let import = ExternalProviderImportMetadata::observed_history_for_profile(
         external.provider.clone(),
+        &external.account_profile,
         external.provider_session_id.clone(),
     );
     let agent = persist_external_import_metadata(app, session.id(), agent.id(), import.clone())?;
-    append_observed_external_history(app, &session, &agent, Some(&provider_run), &external);
+    append_observed_external_history(
+        app,
+        runtime_state,
+        &session,
+        &agent,
+        Some(&provider_run),
+        &external,
+    );
     store.mark_attached(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderSessionImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
@@ -80,10 +91,12 @@ pub(super) fn import_external_provider_agent(
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderAgentRequest,
     caller_user_id: &str,
+    account_owner_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let external =
         external_session_or_refresh(app, runtime_state, store, &request.external_session_id)?;
     ensure_external_session_is_attachable(&external)?;
+    ensure_external_session_owner(&external, account_owner_user_id)?;
     let session = app.session_state_store().get_session(&request.session_id)?;
     let provider = request
         .provider
@@ -96,6 +109,7 @@ pub(super) fn import_external_provider_agent(
         .unwrap_or_else(|| external.provider_session_id.clone());
     let mut create_request = CreateAgentRequest::new(session.id(), provider.clone())
         .with_alias(alias)
+        .with_account_profile(external.account_profile.clone())
         .with_model(model.clone())
         .with_owner_user_id(caller_user_id.to_string());
     if let Some(effort) = request.effort.clone() {
@@ -117,13 +131,20 @@ pub(super) fn import_external_provider_agent(
         &model,
         request.effort,
     )?;
-    let import = ExternalProviderImportMetadata::observed_history(
-        external.external_session_id.clone(),
+    let import = ExternalProviderImportMetadata::observed_history_for_profile(
         external.provider.clone(),
+        &external.account_profile,
         external.provider_session_id.clone(),
     );
     let agent = persist_external_import_metadata(app, session.id(), agent.id(), import.clone())?;
-    append_observed_external_history(app, &session, &agent, Some(&provider_run), &external);
+    append_observed_external_history(
+        app,
+        runtime_state,
+        &session,
+        &agent,
+        Some(&provider_run),
+        &external,
+    );
     store.mark_attached(&external.external_session_id, session.id(), agent.id());
     Ok(LocalDaemonResponse::ExternalProviderAgentImported {
         session: crate::app::KernelSessionReadService::new(app).session_snapshot(session.id())?,
@@ -145,7 +166,16 @@ pub(super) fn external_session_or_refresh(
     let provider = external_session_id
         .split_once(':')
         .map(|(provider, _)| provider);
-    for session in crate::app::discover_external_provider_sessions(provider) {
+    let discovered = runtime_state.map_or_else(
+        || crate::app::discover_external_provider_sessions(provider),
+        |runtime_state| {
+            crate::app::discover_external_provider_sessions_for_profiles(
+                &registered_external_provider_profile_roots(runtime_state, None),
+                provider,
+            )
+        },
+    );
+    for session in discovered {
         store.upsert(session);
     }
     mark_attached_external_provider_sessions(app, runtime_state, store);
@@ -155,6 +185,19 @@ pub(super) fn external_session_or_refresh(
             operation: "import external provider session",
             message: format!("external provider session `{external_session_id}` was not found"),
         })
+}
+
+fn ensure_external_session_owner(
+    external: &ExternalProviderSessionRecord,
+    caller_user_id: &str,
+) -> Result<(), DaemonError> {
+    if external.owner_user_id == caller_user_id {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "import external provider session",
+        message: "external provider session was not found".to_string(),
+    })
 }
 
 pub(super) fn ensure_external_session_is_attachable(
@@ -183,19 +226,26 @@ pub(super) fn launch_imported_external_provider(
     model: &str,
     effort: Option<String>,
 ) -> Result<RuntimeProviderRun, DaemonError> {
-    let mut request =
-        LaunchProviderRequest::new(session.id(), provider, provider, "default", model)
-            .with_agent_id(agent.id())
-            .with_owner_user_id(agent.owner_user_id().to_string())
-            .with_resume_state(ProviderResumeState::from_external_provider_session(
-                provider,
-                &external.provider_session_id,
-            ))
-            .with_external_provider_import(ExternalProviderImportMetadata::observed_history(
-                external.external_session_id.clone(),
-                external.provider.clone(),
-                external.provider_session_id.clone(),
-            ));
+    let mut request = LaunchProviderRequest::new(
+        session.id(),
+        provider,
+        provider,
+        &external.account_profile,
+        model,
+    )
+    .with_agent_id(agent.id())
+    .with_owner_user_id(agent.owner_user_id().to_string())
+    .with_resume_state(ProviderResumeState::from_external_provider_session(
+        provider,
+        &external.provider_session_id,
+    ))
+    .with_external_provider_import(
+        ExternalProviderImportMetadata::observed_history_for_profile(
+            external.provider.clone(),
+            &external.account_profile,
+            external.provider_session_id.clone(),
+        ),
+    );
     if let Some(effort) = effort {
         request = request.with_variant(Some(effort));
     }

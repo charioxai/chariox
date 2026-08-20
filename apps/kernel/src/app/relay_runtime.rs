@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use chariox_relay::protocol::{DaemonRegistration, RelayProviderAccountSummary};
 use tokio::runtime::{Handle, Runtime, RuntimeFlavor};
 
@@ -9,24 +7,24 @@ use crate::error::DaemonError;
 impl DaemonApp {
     pub fn relay_registration(&mut self) -> DaemonRegistration {
         let available_providers = self.providers.registry().advertised_provider_ids();
-        let provider_accounts = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .map(|home_dir| crate::slice_provider_auth::inspect_home_provider_auth(&home_dir))
+        let provider_accounts = self
+            .provider_account_profiles
+            .list(crate::session::DEFAULT_LOCAL_USER_ID, None)
             .unwrap_or_default()
             .into_iter()
             .map(|account| RelayProviderAccountSummary {
                 provider: account.provider,
-                state: serde_json::to_value(account.state)
+                state: serde_json::to_value(account.auth_state)
                     .ok()
                     .and_then(|value| value.as_str().map(str::to_string))
                     .unwrap_or_else(|| "unknown".to_string()),
-                auth_type: account.auth_type,
-                account_id: account.account_id,
-                email: account.email,
-                organization_id: account.organization_id,
-                organization_name: account.organization_name,
-                subscription_type: account.subscription_type,
-                alias: account.alias,
+                auth_type: None,
+                account_id: Some(account.profile_id),
+                email: account.identity_summary,
+                organization_id: None,
+                organization_name: None,
+                subscription_type: account.plan,
+                alias: Some(account.label),
             })
             .collect();
         DaemonRegistration {

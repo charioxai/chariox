@@ -56,6 +56,13 @@ impl DaemonConfig {
             })
     }
 
+    pub fn account_profile_registry_path(&self) -> PathBuf {
+        self.durable_state_path()
+            .parent()
+            .map(|root| root.join("provider-accounts.json"))
+            .unwrap_or_else(|| default_config_dir().join("provider-accounts.json"))
+    }
+
     pub fn workflow_runtime_artifact_root(&self) -> PathBuf {
         self.durable_state_path()
             .parent()
@@ -100,6 +107,12 @@ impl DaemonConfig {
         self.event_counter_root()
             .join(&self.daemon_id)
             .join("relay-event-counter.json")
+    }
+
+    pub fn kernel_prompt_counter_path(&self) -> PathBuf {
+        self.event_counter_root()
+            .join(&self.daemon_id)
+            .join("prompt-counter.json")
     }
 
     fn event_counter_root(&self) -> PathBuf {

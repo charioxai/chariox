@@ -4,11 +4,13 @@ use crate::runtime::projection::ProviderRunProjectionStore;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
 use crate::runtime::provider_run_control::ensure_provider_run_visible_to_user;
 use crate::runtime::session_projection_refresh::redact_agent_activity_for_session;
+use crate::session::RuntimeSession;
 
 pub(crate) fn redact_response_for_user(
     response: LocalDaemonResponse,
     caller_user_id: &str,
     provider_run_projection: &ProviderRunProjectionStore,
+    workflow_run_context: Option<&RuntimeSession>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     Ok(match response {
         LocalDaemonResponse::SessionCreated { session, agent } => {
@@ -425,16 +427,34 @@ pub(crate) fn redact_response_for_user(
             endpoint,
             session: session.redacted_for_user(caller_user_id),
         },
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => {
-            LocalDaemonResponse::WorkflowRunsListed {
-                workflow_runs: workflow_runs
-                    .into_iter()
-                    .map(|workflow_run| workflow_run.redacted_for_user(None, caller_user_id))
-                    .collect(),
-            }
-        }
+        LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs,
+            next_cursor,
+        } => LocalDaemonResponse::WorkflowRunsListed {
+            workflow_runs: workflow_runs
+                .into_iter()
+                .map(|workflow_run| {
+                    let workflow = workflow_run_context.and_then(|session| {
+                        session
+                            .workflows()
+                            .iter()
+                            .find(|workflow| workflow.id() == workflow_run.workflow_id())
+                    });
+                    workflow_run.redacted_for_user(workflow, caller_user_id)
+                })
+                .collect(),
+            next_cursor,
+        },
         LocalDaemonResponse::WorkflowRun { workflow_run } => LocalDaemonResponse::WorkflowRun {
-            workflow_run: workflow_run.redacted_for_user(None, caller_user_id),
+            workflow_run: {
+                let workflow = workflow_run_context.and_then(|session| {
+                    session
+                        .workflows()
+                        .iter()
+                        .find(|workflow| workflow.id() == workflow_run.workflow_id())
+                });
+                workflow_run.redacted_for_user(workflow, caller_user_id)
+            },
         },
         LocalDaemonResponse::WorkflowRunCancelled {
             workflow_run,
@@ -553,4 +573,125 @@ pub(crate) fn redact_response_for_user(
         }
         other => other,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::{
+        RuntimeSession, WorkflowDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition,
+        WorkflowRun, WorkflowRunStatus,
+    };
+
+    fn workflow_run_redaction_fixture() -> (RuntimeSession, WorkflowRun, WorkflowRun) {
+        let mut session = RuntimeSession::new(
+            "session-redaction",
+            None,
+            "workspace-redaction",
+            "worktree-redaction",
+            "machine-redaction",
+            "daemon-redaction",
+        );
+        let mut workflow = WorkflowDefinition::new("workflow-redaction", None);
+        let mut node = WorkflowNodeDefinition::new("node-redaction", "agent-redaction");
+        node.set_owner_user_id("owner");
+        workflow.add_node(node);
+        let mut endpoint =
+            WorkflowEndpointDefinition::new("endpoint-redaction", None, "node-redaction");
+        endpoint.set_owner_user_id("owner");
+        workflow.add_endpoint(endpoint);
+        session.create_workflow(workflow);
+
+        let active = WorkflowRun::new(
+            "run-active",
+            "workflow-redaction",
+            "endpoint-redaction",
+            "node-redaction",
+            Some("active private prompt".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut archived = WorkflowRun::new(
+            "run-archived",
+            "workflow-redaction",
+            "endpoint-redaction",
+            "node-redaction",
+            Some("archived private prompt".to_string()),
+            None,
+            Vec::new(),
+            Vec::new(),
+        );
+        archived.set_status(WorkflowRunStatus::Completed);
+        (session, active, archived)
+    }
+
+    fn redacted_runs_for(
+        caller_user_id: &str,
+        response: LocalDaemonResponse,
+        session: &RuntimeSession,
+    ) -> LocalDaemonResponse {
+        redact_response_for_user(
+            response,
+            caller_user_id,
+            &ProviderRunProjectionStore::default(),
+            Some(session),
+        )
+        .expect("workflow run response should redact")
+    }
+
+    #[test]
+    fn workflow_run_list_preserves_owner_inputs_and_redacts_collaborators() {
+        let (session, active, archived) = workflow_run_redaction_fixture();
+        for caller in ["owner", "collaborator"] {
+            let response = redacted_runs_for(
+                caller,
+                LocalDaemonResponse::WorkflowRunsListed {
+                    workflow_runs: vec![active.clone(), archived.clone()],
+                    next_cursor: Some("cursor-1".to_string()),
+                },
+                &session,
+            );
+            let LocalDaemonResponse::WorkflowRunsListed {
+                workflow_runs,
+                next_cursor,
+            } = response
+            else {
+                panic!("unexpected response")
+            };
+            assert_eq!(next_cursor.as_deref(), Some("cursor-1"));
+            assert_eq!(workflow_runs.len(), 2);
+            assert_eq!(
+                workflow_runs[0].invocation_prompt().is_some(),
+                caller == "owner"
+            );
+            assert_eq!(
+                workflow_runs[1].invocation_prompt().is_some(),
+                caller == "owner"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_run_get_preserves_owner_inputs_and_redacts_collaborators() {
+        let (session, active, archived) = workflow_run_redaction_fixture();
+        for run in [active, archived] {
+            for caller in ["owner", "collaborator"] {
+                let response = redacted_runs_for(
+                    caller,
+                    LocalDaemonResponse::WorkflowRun {
+                        workflow_run: run.clone(),
+                    },
+                    &session,
+                );
+                let LocalDaemonResponse::WorkflowRun { workflow_run } = response else {
+                    panic!("unexpected response")
+                };
+                assert_eq!(
+                    workflow_run.invocation_prompt().is_some(),
+                    caller == "owner"
+                );
+            }
+        }
+    }
 }

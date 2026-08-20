@@ -2,14 +2,31 @@ use super::*;
 
 pub(super) fn append_observed_external_history(
     app: &mut DaemonApp,
+    runtime_state: Option<&KernelRuntimeState>,
     session: &RuntimeSession,
     agent: &AgentInstance,
     provider_run: Option<&RuntimeProviderRun>,
     external: &ExternalProviderSessionRecord,
 ) {
-    let turns = crate::app::read_external_provider_observed_turns(
-        &external.provider,
-        &external.provider_session_id,
+    let turns = runtime_state.map_or_else(
+        || {
+            crate::app::read_external_provider_observed_turns(
+                &external.provider,
+                &external.provider_session_id,
+            )
+        },
+        |runtime_state| {
+            crate::app::read_external_provider_observed_turns_for_profile(
+                &external.provider,
+                &external.provider_session_id,
+                &registered_external_provider_profile_roots_for(
+                    runtime_state,
+                    &external.owner_user_id,
+                    &external.provider,
+                    &external.account_profile,
+                ),
+            )
+        },
     );
     let provider_run_id = provider_run.map(|run| run.id().to_string()).or_else(|| {
         app.providers()
@@ -20,18 +37,20 @@ pub(super) fn append_observed_external_history(
         .external_provider_import()
         .cloned()
         .unwrap_or_else(|| {
-            ExternalProviderImportMetadata::observed_history(
-                external.external_session_id.clone(),
+            ExternalProviderImportMetadata::observed_history_for_profile(
                 external.provider.clone(),
+                &external.account_profile,
                 external.provider_session_id.clone(),
             )
         });
     let target = AttachedExternalObserverTarget {
+        owner_user_id: external.owner_user_id.clone(),
         session_id: session.id().to_string(),
         agent_id: agent.id().to_string(),
         provider_run_id,
         external_session_id: import.external_provider_session_id.clone(),
         provider: import.external_provider.clone(),
+        account_profile: import.account_profile.clone(),
         provider_session_id: import.external_provider_session_provider_id.clone(),
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),

@@ -20,11 +20,13 @@ export function spawnAgentRequest(
   kernelRef?: string,
   worktreePlacement?: Record<string, unknown>,
   sliceRef?: string,
+  accountProfile?: string | null,
 ) {
   return {
     SpawnAgent: {
       session_id: sessionId,
       provider: provider ?? null,
+      ...(accountProfile ? { account_profile: accountProfile } : {}),
       alias: alias ?? null,
       model: model ?? null,
       effort: effort ?? null,
@@ -40,6 +42,7 @@ export function spawnAgentRequest(
 
 export type SpawnAgentBatchItem = {
   provider?: string | null
+  accountProfile?: string | null
   alias?: string | null
   model?: string | null
   worktreeId?: string | null
@@ -57,6 +60,7 @@ export function spawnAgentsRequest(sessionId: string, agents: SpawnAgentBatchIte
       session_id: sessionId,
       agents: agents.map((agent) => ({
         provider: agent.provider ?? null,
+        ...(agent.accountProfile ? { account_profile: agent.accountProfile } : {}),
         alias: agent.alias ?? null,
         model: agent.model ?? null,
         effort: agent.effort ?? null,
@@ -123,6 +127,7 @@ export function updateAgentProfileRequest(options: {
   sessionId: string
   agentId: string
   provider?: string | null
+  accountProfile?: string | null
   model?: string | null
   effort?: string | null
   clearEffort?: boolean
@@ -132,6 +137,7 @@ export function updateAgentProfileRequest(options: {
       session_id: options.sessionId,
       agent_id: options.agentId,
       provider: options.provider ?? null,
+      ...(options.accountProfile ? { account_profile: options.accountProfile } : {}),
       model: options.model ?? null,
       effort: options.effort ?? null,
       clear_effort: options.clearEffort ?? false,

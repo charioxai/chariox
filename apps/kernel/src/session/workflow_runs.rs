@@ -138,6 +138,14 @@ impl WorkflowRun {
         self.created_at_ms
     }
 
+    pub fn started_at_ms(&self) -> Option<u64> {
+        self.started_at_ms
+    }
+
+    pub fn completed_at_ms(&self) -> Option<u64> {
+        self.completed_at_ms
+    }
+
     pub(crate) fn set_invocation_context(
         &mut self,
         workflow_revision: u64,

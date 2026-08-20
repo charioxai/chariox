@@ -223,6 +223,8 @@ export type WaitingRoomPublicAgentSummary = {
   created_at_ms: number
   last_prompt_sent_at_ms?: number | null
   provider: string
+  account_profile: string
+  account_label?: string | null
   model?: string | null
   variant?: string | null
   permission?: string | null

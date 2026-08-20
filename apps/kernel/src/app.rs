@@ -14,6 +14,7 @@ mod history_event_context;
 mod kernel_agent;
 mod kernel_api_facade;
 mod kernel_session;
+mod legacy_workflow_history;
 mod prompt_activity;
 mod prompt_lifecycle;
 mod prompt_state_owner;
@@ -48,15 +49,18 @@ mod workflow_workspace_claims;
 
 pub(crate) use attachment_artifacts::{attachment_artifact_root, attachment_artifact_roots};
 pub(crate) use external_provider_session_discovery::{
-    discover_external_provider_sessions, external_provider_session_discovery_candidate_paths,
+    discover_external_provider_sessions, discover_external_provider_sessions_for_profiles,
+    external_provider_session_candidate_paths_for_profiles,
+    external_provider_session_discovery_candidate_paths,
     external_provider_session_discovery_signature_for_candidates,
-    external_provider_session_transcript_needs_refresh, read_external_provider_observed_turns,
-    ExternalProviderSessionDiscoverySignature,
+    external_provider_session_transcript_needs_refresh,
+    external_provider_session_transcript_needs_refresh_for_profile,
+    read_external_provider_observed_turns, read_external_provider_observed_turns_for_profile,
+    ExternalProviderSessionDiscoverySignature, ExternalProviderSessionProfileRoot,
 };
 pub(crate) use external_provider_sessions::{
-    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
-    AttachedProviderTranscriptCursorStore, ExternalProviderSessionAttachmentRef,
-    ExternalProviderSessionIndexStore,
+    AttachedProviderTranscriptCursorKey, AttachedProviderTranscriptCursorStore,
+    ExternalProviderSessionAttachmentRef, ExternalProviderSessionIndexStore,
 };
 pub(crate) use history_event_context::{HistoryEventContextOverrides, HistoryEventContextResolver};
 pub(crate) use prompt_activity::{
@@ -101,6 +105,7 @@ use crate::terminal::{TerminalStreamHealthStore, TerminalStreamStore};
 use crate::transport::relay_client::RelayClientState;
 pub(crate) use kernel_agent::KernelAgentService;
 pub(crate) use kernel_session::{KernelSessionReadService, KernelSessionService};
+pub(crate) use legacy_workflow_history::LegacyWorkflowHistoryStore;
 pub(crate) use prompt_lifecycle::{ProviderPromptDispatcher, RemoteWorkflowTurnContextResolver};
 pub(crate) use provider_activation::StartedProviderLaunch;
 pub(crate) use provider_first_output_watchdog::{
@@ -144,6 +149,8 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    legacy_workflow_history: LegacyWorkflowHistoryStore,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
     metaagent_trace_subscriptions: crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
     config_projection: DaemonConfigProjectionStore,
@@ -229,6 +236,17 @@ impl DaemonApp {
             }),
         );
 
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )?;
+        let provider_home = std::env::var_os("HOME")
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(std::env::temp_dir);
+        provider_account_profiles
+            .migrate_effective_defaults(crate::session::DEFAULT_LOCAL_USER_ID, &provider_home)?;
+
         let mut app = Self {
             agents: AgentServiceStore::new(AgentService::new()),
             attachments: AttachmentServiceStore::new(AttachmentService::new()),
@@ -247,6 +265,8 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
+            provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
             metaagent_trace_subscriptions:
                 crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore::default(),
@@ -295,7 +315,6 @@ impl DaemonApp {
                 crate::session::unix_epoch_ms(),
             )
         };
-        app.seed_prompt_id_allocator()?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state restored",
@@ -315,14 +334,6 @@ impl DaemonApp {
             }),
         );
         Ok(app)
-    }
-
-    fn seed_prompt_id_allocator(&self) -> Result<(), DaemonError> {
-        let max_history_prompt_number = self.operational_history.max_prompt_number()?;
-        self.sessions
-            .observe_prompt_number(max_history_prompt_number);
-        self.sessions.seed_prompt_ids_from_sessions();
-        Ok(())
     }
 
     pub(crate) fn provider_run_operation_lanes(&self) -> ProviderRunOperationLanes {
@@ -369,6 +380,16 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {
+        self.legacy_workflow_history.clone()
+    }
+
+    pub(crate) fn provider_account_profile_registry(
+        &self,
+    ) -> crate::account_profile::ProviderAccountProfileRegistry {
+        self.provider_account_profiles.clone()
     }
 
     pub(crate) fn metaagent_event_store(

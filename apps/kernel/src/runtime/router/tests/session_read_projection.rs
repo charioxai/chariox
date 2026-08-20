@@ -320,6 +320,7 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
     let (app, router, session_id) = session_inspection_projection_setup();
 
     let spawn_request = LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+        account_profile: None,
         session_id: session_id.clone(),
         alias: Some("reviewer".to_string()),
         provider: Some("claude-code".to_string()),
@@ -388,6 +389,8 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
             session_id: session_id.clone(),
             workflow_ref: Some("inspection".to_string()),
+            cursor: None,
+            limit: None,
         }),
     );
     let list_watchdogs_task = spawn_session_inspection_request(
@@ -443,7 +446,7 @@ async fn session_inspection_reads_use_warmed_projection_without_app_lock() {
         .expect("list runs task should join")
         .expect("workflow runs should list")
     {
-        LocalDaemonResponse::WorkflowRunsListed { workflow_runs } => {
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => {
             assert!(workflow_runs.is_empty());
         }
         _ => panic!("unexpected workflow runs response"),

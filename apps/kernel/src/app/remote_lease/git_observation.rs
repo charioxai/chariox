@@ -235,6 +235,7 @@ mod tests {
             .create_leased_agent(
                 &lease.id,
                 "managed-dev-stub",
+                "default",
                 Some("sonnet".to_string()),
                 None,
                 None,

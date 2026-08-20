@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::future::Future;
+use std::io::{Read, Write};
 use std::net::TcpListener as StdTcpListener;
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, OnceLock};
@@ -494,6 +495,36 @@ where
     .await
 }
 
+pub(crate) async fn run_kernel_websocket_server_with_router_on_listener<F>(
+    router: Arc<CommandRouter>,
+    listener: StdTcpListener,
+    shutdown: F,
+) -> Result<(), DaemonError>
+where
+    F: Future<Output = ()>,
+{
+    initialize_kernel_local_auth_from_env()?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "configure kernel websocket listener",
+            message: error.to_string(),
+        })?;
+    let listener =
+        TcpListener::from_std(listener).map_err(|error| DaemonError::LocalTransport {
+            operation: "adopt kernel websocket listener",
+            message: error.to_string(),
+        })?;
+    let _local_presence = local_presence::LocalKernelPresenceLease::start(&router, &listener).await;
+    run_kernel_websocket_server_with_bound_listener(
+        router,
+        listener,
+        configured_kernel_local_auth_token(),
+        shutdown,
+    )
+    .await
+}
+
 async fn run_kernel_websocket_server_on_listener_with_auth<F>(
     app: Arc<Mutex<DaemonApp>>,
     listener: StdTcpListener,
@@ -599,6 +630,7 @@ where
         "daemon.startup",
         "kernel ready for local command",
         serde_json::json!({
+            "phase": "runtime_ready",
             "kernel_websocket_addr": local_addr,
             "kernel_local_auth_required": local_auth_token.is_some(),
             "recent_event_limit": RECENT_EVENT_LIMIT,
@@ -1415,5 +1447,171 @@ async fn handle_incoming_payload(
                 None,
             );
         }
+    }
+}
+pub struct KernelBootListener {
+    listener: Option<StdTcpListener>,
+    shutdown: Option<std::sync::mpsc::Sender<()>>,
+    worker: Option<std::thread::JoinHandle<()>>,
+}
+
+impl KernelBootListener {
+    pub fn bind(host: &str, port: u16) -> Result<Self, DaemonError> {
+        let listener =
+            StdTcpListener::bind((host, port)).map_err(|error| DaemonError::LocalTransport {
+                operation: "bind booting kernel websocket",
+                message: error.to_string(),
+            })?;
+        let boot_listener = listener
+            .try_clone()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "clone booting kernel websocket listener",
+                message: error.to_string(),
+            })?;
+        boot_listener
+            .set_nonblocking(true)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "configure booting kernel websocket listener",
+                message: error.to_string(),
+            })?;
+        let (shutdown_tx, shutdown_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::Builder::new()
+            .name("chariox-kernel-boot-listener".to_string())
+            .spawn(move || {
+                let body = br#"{"phase":"booting","runtime_ready":false,"event_ready":false}"#;
+                loop {
+                    if shutdown_rx.try_recv().is_ok() {
+                        break;
+                    }
+                    match boot_listener.accept() {
+                        Ok((mut stream, _)) => {
+                            consume_boot_request(&mut stream);
+                            let response = format!(
+                                "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/json\r\nCache-Control: no-store\r\nRetry-After: 1\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                                body.len()
+                            );
+                            let _ = stream.write_all(response.as_bytes());
+                            let _ = stream.write_all(body);
+                            let _ = stream.flush();
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(10));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "start booting kernel websocket listener",
+                message: error.to_string(),
+            })?;
+        Ok(Self {
+            listener: Some(listener),
+            shutdown: Some(shutdown_tx),
+            worker: Some(worker),
+        })
+    }
+
+    pub fn into_listener(mut self) -> Result<StdTcpListener, DaemonError> {
+        self.stop_worker();
+        self.listener
+            .take()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "adopt booting kernel websocket listener",
+                message: "boot listener was already consumed".to_string(),
+            })
+    }
+
+    pub fn local_addr(&self) -> std::io::Result<std::net::SocketAddr> {
+        self.listener
+            .as_ref()
+            .ok_or_else(|| std::io::Error::other("boot listener was already consumed"))?
+            .local_addr()
+    }
+
+    fn stop_worker(&mut self) {
+        if let Some(shutdown) = self.shutdown.take() {
+            let _ = shutdown.send(());
+        }
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+fn consume_boot_request(stream: &mut std::net::TcpStream) {
+    const MAX_BOOT_REQUEST_HEADER_BYTES: usize = 8 * 1024;
+    let _ = stream.set_read_timeout(Some(Duration::from_millis(100)));
+    let mut request = [0_u8; MAX_BOOT_REQUEST_HEADER_BYTES];
+    let mut consumed = 0;
+    while consumed < request.len() {
+        match stream.read(&mut request[consumed..]) {
+            Ok(0) => break,
+            Ok(read) => {
+                consumed += read;
+                if request[..consumed]
+                    .windows(4)
+                    .any(|window| window == b"\r\n\r\n")
+                {
+                    break;
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) =>
+            {
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+}
+
+impl Drop for KernelBootListener {
+    fn drop(&mut self) {
+        self.stop_worker();
+    }
+}
+
+#[cfg(test)]
+mod boot_listener_tests {
+    use super::KernelBootListener;
+    use std::io::{Read, Write};
+
+    #[test]
+    fn boot_listener_reports_booting_then_hands_off_the_same_socket() {
+        let boot = KernelBootListener::bind("127.0.0.1", 0).expect("boot listener should bind");
+        let address = boot.local_addr().expect("boot address should resolve");
+        let mut client = std::net::TcpStream::connect(address).expect("boot client should connect");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(1)))
+            .expect("read timeout should configure");
+        client.write_all(b"GET /kernel HTTP/1.1\r\n\r\n").unwrap();
+        let mut response = String::new();
+        client.read_to_string(&mut response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"));
+        assert!(response.contains(r#""phase":"booting""#));
+
+        let listener = boot.into_listener().expect("listener should hand off");
+        let second = std::thread::spawn(move || {
+            std::net::TcpStream::connect(address).expect("runtime client should connect")
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            match listener.accept() {
+                Ok(_) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "handed-off listener did not accept before deadline"
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => panic!("handed-off listener should accept: {error}"),
+            }
+        }
+        second.join().expect("runtime client should join");
     }
 }

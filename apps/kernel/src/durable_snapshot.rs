@@ -1,10 +1,14 @@
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::time::sleep;
 
 use crate::agent::{AgentInstance, AgentServiceStore};
-use crate::durable_state::{DurableCheckpointEntity, DurableKernelStateStore};
+use crate::durable_state::{
+    DurableCheckpointEntity, DurableCheckpointMarker, DurableEventTailStatistics,
+    DurableKernelStateStore,
+};
 use crate::error::DaemonError;
 use crate::runtime::metaagent_event::{
     MetaagentEventRecord, MetaagentEventStore, MetaagentEventSubscription,
@@ -77,8 +81,75 @@ impl DurableKernelSnapshotPayload {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DurableSnapshotTickOutcome {
     pub(crate) latest_event_sequence: u64,
-    pub(crate) latest_snapshot_sequence: u64,
+    pub(crate) previous_checkpoint_sequence: u64,
+    pub(crate) tail_event_count: u64,
+    pub(crate) tail_bytes: u64,
     pub(crate) wrote_snapshot: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DurableCheckpointPolicy {
+    pub(crate) changed_entity_limit: u64,
+    pub(crate) tail_byte_limit: u64,
+    pub(crate) elapsed_time_limit: Duration,
+    pub(crate) hard_tail_byte_limit: u64,
+}
+
+impl DurableCheckpointPolicy {
+    pub(crate) fn new(
+        changed_entity_limit: u64,
+        tail_byte_limit: u64,
+        elapsed_time_limit: Duration,
+        hard_tail_byte_limit: u64,
+    ) -> Self {
+        Self {
+            changed_entity_limit: changed_entity_limit.max(1),
+            tail_byte_limit: tail_byte_limit.max(1),
+            elapsed_time_limit: elapsed_time_limit.max(Duration::from_secs(1)),
+            hard_tail_byte_limit: hard_tail_byte_limit.max(tail_byte_limit.max(1)),
+        }
+    }
+
+    #[cfg(test)]
+    fn event_count_only(changed_entity_limit: u64) -> Self {
+        Self::new(
+            changed_entity_limit,
+            u64::MAX,
+            Duration::from_secs(u32::MAX as u64),
+            u64::MAX,
+        )
+    }
+
+    pub(crate) fn from_user_state_config(state: &crate::config::UserStateConfig) -> Option<Self> {
+        if state.snapshot_interval_events.is_none()
+            && state.snapshot_interval_bytes.is_none()
+            && state.snapshot_interval_seconds.is_none()
+            && state.snapshot_max_tail_bytes.is_none()
+        {
+            return None;
+        }
+        let tail_byte_limit = state
+            .snapshot_interval_bytes
+            .map(u64::from)
+            .unwrap_or(u64::MAX);
+        Some(Self::new(
+            state
+                .snapshot_interval_events
+                .map(u64::from)
+                .unwrap_or(u64::MAX),
+            tail_byte_limit,
+            Duration::from_secs(
+                state
+                    .snapshot_interval_seconds
+                    .map(u64::from)
+                    .unwrap_or(u32::MAX as u64),
+            ),
+            state
+                .snapshot_max_tail_bytes
+                .map(u64::from)
+                .unwrap_or(u64::MAX),
+        ))
+    }
 }
 
 #[derive(Clone)]
@@ -89,10 +160,12 @@ pub(crate) struct DurableSnapshotScheduler {
     agents: AgentServiceStore,
     slices: SliceStore,
     metaagent_events: MetaagentEventStore,
-    interval_events: u64,
+    policy: DurableCheckpointPolicy,
+    checkpoint_marker: Arc<Mutex<Option<DurableCheckpointMarker>>>,
 }
 
 impl DurableSnapshotScheduler {
+    #[cfg(test)]
     pub(crate) fn new(
         owner_id: impl Into<String>,
         durable_state: DurableKernelStateStore,
@@ -102,6 +175,26 @@ impl DurableSnapshotScheduler {
         metaagent_events: MetaagentEventStore,
         interval_events: u64,
     ) -> Self {
+        Self::new_with_policy(
+            owner_id,
+            durable_state,
+            sessions,
+            agents,
+            slices,
+            metaagent_events,
+            DurableCheckpointPolicy::event_count_only(interval_events),
+        )
+    }
+
+    pub(crate) fn new_with_policy(
+        owner_id: impl Into<String>,
+        durable_state: DurableKernelStateStore,
+        sessions: SessionStateStore,
+        agents: AgentServiceStore,
+        slices: SliceStore,
+        metaagent_events: MetaagentEventStore,
+        policy: DurableCheckpointPolicy,
+    ) -> Self {
         Self {
             owner_id: owner_id.into(),
             durable_state,
@@ -109,23 +202,87 @@ impl DurableSnapshotScheduler {
             agents,
             slices,
             metaagent_events,
-            interval_events,
+            policy,
+            checkpoint_marker: Arc::new(Mutex::new(None)),
         }
     }
 
     pub(crate) fn tick_once(&self) -> Result<DurableSnapshotTickOutcome, DaemonError> {
-        let latest_event_sequence = self.durable_state.latest_event_sequence()?;
-        let latest_snapshot_sequence = self
+        let checkpoint_marker = {
+            let cached = *self
+                .checkpoint_marker
+                .lock()
+                .expect("durable checkpoint marker lock poisoned");
+            match cached {
+                Some(marker) => marker,
+                None => self
+                    .durable_state
+                    .latest_checkpoint_marker_for_owner(&self.owner_id)?,
+            }
+        };
+        {
+            let mut cached = self
+                .checkpoint_marker
+                .lock()
+                .expect("durable checkpoint marker lock poisoned");
+            if cached.is_none() {
+                *cached = Some(checkpoint_marker);
+            }
+        }
+        let tail = self
             .durable_state
-            .latest_snapshot_sequence_for_owner(&self.owner_id)?;
-        if latest_event_sequence.saturating_sub(latest_snapshot_sequence) < self.interval_events {
+            .event_tail_statistics(checkpoint_marker.sequence)?;
+        let now_ms = crate::session::unix_epoch_ms();
+        let should_checkpoint = checkpoint_due(self.policy, checkpoint_marker, tail, now_ms);
+        if !should_checkpoint {
             return Ok(DurableSnapshotTickOutcome {
-                latest_event_sequence,
-                latest_snapshot_sequence,
+                latest_event_sequence: tail.latest_sequence,
+                previous_checkpoint_sequence: checkpoint_marker.sequence,
+                tail_event_count: tail.event_count,
+                tail_bytes: tail.encoded_bytes,
                 wrote_snapshot: false,
             });
         }
 
+        let mut checkpoint_sequence = tail.latest_sequence;
+        self.write_checkpoint(checkpoint_sequence)?;
+        let post_checkpoint_tail = self
+            .durable_state
+            .event_tail_statistics(checkpoint_sequence)?;
+        if post_checkpoint_tail.encoded_bytes > self.policy.hard_tail_byte_limit {
+            checkpoint_sequence = post_checkpoint_tail.latest_sequence;
+            self.write_checkpoint(checkpoint_sequence)?;
+            let remaining = self
+                .durable_state
+                .event_tail_statistics(checkpoint_sequence)?;
+            if remaining.encoded_bytes > self.policy.hard_tail_byte_limit {
+                return Err(DaemonError::LocalTransport {
+                    operation: "durable_state.enforce_checkpoint_tail_budget",
+                    message: format!(
+                        "post-checkpoint event tail is {} bytes, above hard limit {}",
+                        remaining.encoded_bytes, self.policy.hard_tail_byte_limit
+                    ),
+                });
+            }
+        }
+        *self
+            .checkpoint_marker
+            .lock()
+            .expect("durable checkpoint marker lock poisoned") = Some(DurableCheckpointMarker {
+            sequence: checkpoint_sequence,
+            timestamp_ms: now_ms,
+        });
+
+        Ok(DurableSnapshotTickOutcome {
+            latest_event_sequence: checkpoint_sequence,
+            previous_checkpoint_sequence: checkpoint_marker.sequence,
+            tail_event_count: tail.event_count,
+            tail_bytes: tail.encoded_bytes,
+            wrote_snapshot: true,
+        })
+    }
+
+    fn write_checkpoint(&self, sequence: u64) -> Result<(), DaemonError> {
         let payload = DurableKernelSnapshotPayload::capture(
             &self.sessions,
             &self.agents,
@@ -134,15 +291,10 @@ impl DurableSnapshotScheduler {
         );
         self.durable_state.save_entity_checkpoint(
             &self.owner_id,
-            latest_event_sequence,
+            sequence,
             checkpoint_entities(&payload)?,
         )?;
-
-        Ok(DurableSnapshotTickOutcome {
-            latest_event_sequence,
-            latest_snapshot_sequence,
-            wrote_snapshot: true,
-        })
+        Ok(())
     }
 
     pub(crate) async fn run(self, poll_interval: Duration) {
@@ -156,7 +308,9 @@ impl DurableSnapshotScheduler {
                         "saved durable state snapshot",
                         serde_json::json!({
                             "sequence": outcome.latest_event_sequence,
-                            "previous_snapshot_sequence": outcome.latest_snapshot_sequence,
+                            "previous_checkpoint_sequence": outcome.previous_checkpoint_sequence,
+                            "tail_event_count": outcome.tail_event_count,
+                            "tail_bytes": outcome.tail_bytes,
                             "writer_committed_batches": writer.committed_batches,
                             "writer_committed_records": writer.committed_records,
                             "writer_max_batch_records": writer.max_batch_records,
@@ -176,6 +330,24 @@ impl DurableSnapshotScheduler {
             }
         }
     }
+}
+
+fn checkpoint_due(
+    policy: DurableCheckpointPolicy,
+    marker: DurableCheckpointMarker,
+    tail: DurableEventTailStatistics,
+    now_ms: u64,
+) -> bool {
+    let elapsed_baseline_ms = if marker.timestamp_ms > 0 {
+        marker.timestamp_ms
+    } else {
+        tail.oldest_timestamp_ms.unwrap_or(now_ms)
+    };
+    let elapsed_ms = now_ms.saturating_sub(elapsed_baseline_ms);
+    tail.event_count > 0
+        && (tail.event_count >= policy.changed_entity_limit
+            || tail.encoded_bytes >= policy.tail_byte_limit
+            || elapsed_ms >= policy.elapsed_time_limit.as_millis() as u64)
 }
 
 fn checkpoint_entities(
@@ -238,6 +410,27 @@ mod tests {
     use crate::app::DaemonApp;
     use crate::config::DaemonConfig;
     use crate::session::CreateSessionRequest;
+
+    #[test]
+    fn checkpoint_policy_triggers_on_count_bytes_or_elapsed_time() {
+        let policy = DurableCheckpointPolicy::new(10, 1_000, Duration::from_secs(30), 2_000);
+        let marker = DurableCheckpointMarker {
+            sequence: 7,
+            timestamp_ms: 10_000,
+        };
+        let tail = |event_count, encoded_bytes| DurableEventTailStatistics {
+            event_count,
+            encoded_bytes,
+            oldest_timestamp_ms: Some(10_000),
+            latest_sequence: 7 + event_count,
+        };
+
+        assert!(checkpoint_due(policy, marker, tail(10, 100), 10_001));
+        assert!(checkpoint_due(policy, marker, tail(1, 1_000), 10_001));
+        assert!(checkpoint_due(policy, marker, tail(1, 100), 40_000));
+        assert!(!checkpoint_due(policy, marker, tail(1, 100), 39_999));
+        assert!(!checkpoint_due(policy, marker, tail(0, 2_000), 50_000));
+    }
 
     #[test]
     fn prompt_private_checkpoint_ids_are_scoped_by_session() {

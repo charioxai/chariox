@@ -7,8 +7,8 @@ use tokio::sync::{watch, Mutex};
 
 use crate::agent::{AgentInstance, CreateAgentRequest};
 use crate::app::{
-    external_session_id_for_provider_session, AttachedProviderTranscriptCursorKey,
-    AttachedProviderTranscriptCursorStore, DaemonApp, ExternalProviderSessionAttachmentRef,
+    AttachedProviderTranscriptCursorKey, AttachedProviderTranscriptCursorStore, DaemonApp,
+    ExternalProviderSessionAttachmentRef,
 };
 use crate::error::DaemonError;
 use crate::history::{
@@ -55,6 +55,76 @@ const EXTERNAL_PROVIDER_DISCOVERY_SLOW_SIGNATURE: Duration = Duration::from_mill
 const EXTERNAL_PROVIDER_DISCOVERY_SLOW_REFRESH: Duration = Duration::from_millis(500);
 const EXTERNAL_PROVIDER_DISCOVERY_FULL_SCAN_AFTER_CACHED_CHECKS: u32 = 10;
 const EXTERNAL_PROVIDER_IMPORT_ALIAS_MAX_LEN: usize = 64;
+
+fn registered_external_provider_profile_roots(
+    runtime_state: &KernelRuntimeState,
+    owner_filter: Option<&str>,
+) -> Vec<crate::app::ExternalProviderSessionProfileRoot> {
+    let registry = runtime_state.provider_account_profile_registry();
+    let profiles = match owner_filter {
+        Some(owner_user_id) => registry.list(owner_user_id, None),
+        None => registry.list_all(),
+    }
+    .unwrap_or_default();
+    profiles
+        .into_iter()
+        .filter_map(|profile| {
+            let environment = registry
+                .resolve_environment(
+                    &profile.owner_user_id,
+                    &profile.provider,
+                    &profile.profile_id,
+                )
+                .ok()?;
+            let roots = match profile.provider.as_str() {
+                "codex" => environment
+                    .get("CODEX_HOME")
+                    .map(PathBuf::from)
+                    .into_iter()
+                    .collect(),
+                "claude" => environment
+                    .get("CLAUDE_CONFIG_DIR")
+                    .map(PathBuf::from)
+                    .into_iter()
+                    .collect(),
+                "opencode" => {
+                    let mut roots = Vec::new();
+                    if let Some(path) = environment.get("XDG_DATA_HOME") {
+                        roots.push(PathBuf::from(path).join("opencode"));
+                    }
+                    if let Some(path) = environment.get("OPENCODE_CONFIG_DIR") {
+                        roots.push(PathBuf::from(path));
+                    }
+                    roots.sort();
+                    roots.dedup();
+                    roots
+                }
+                _ => Vec::new(),
+            };
+            (!roots.is_empty()).then_some(crate::app::ExternalProviderSessionProfileRoot {
+                owner_user_id: profile.owner_user_id,
+                provider: profile.provider,
+                account_profile: profile.profile_id,
+                roots,
+            })
+        })
+        .collect()
+}
+
+fn registered_external_provider_profile_roots_for(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+) -> Vec<PathBuf> {
+    let account_owner_user_id =
+        runtime_state.provider_account_authority_owner_user_id(owner_user_id);
+    registered_external_provider_profile_roots(runtime_state, Some(&account_owner_user_id))
+        .into_iter()
+        .find(|profile| profile.provider == provider && profile.account_profile == account_profile)
+        .map(|profile| profile.roots)
+        .unwrap_or_default()
+}
 
 #[derive(Debug, Default)]
 struct ExternalProviderSessionDiscoveryCache {
@@ -113,11 +183,13 @@ pub(crate) async fn run_external_provider_session_discovery_poller(
 
 #[derive(Debug, Clone)]
 struct AttachedExternalObserverTarget {
+    owner_user_id: String,
     session_id: String,
     agent_id: String,
     provider_run_id: Option<String>,
     external_session_id: String,
     provider: String,
+    account_profile: String,
     provider_session_id: String,
     observed_cursor: ExternalProviderObservedCursor,
     cursor_source: AttachedExternalObserverCursorSource,

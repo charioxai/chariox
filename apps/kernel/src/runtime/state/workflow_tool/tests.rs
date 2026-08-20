@@ -237,18 +237,19 @@ fn starting_workflow_prompt_persists_running_node_for_restart_recovery() {
     let latest = runtime
         .owned
         .durable_state_store
-        .load_subject_events_by_kind(session.id(), "session.updated", 10)
+        .load_subject_events_by_kind(session.id(), "workflow.runtime.updated", 10)
         .expect("workflow start event should load")
         .into_iter()
         .last()
-        .expect("workflow start should append a session event");
+        .expect("workflow start should append a bounded workflow event");
     assert_eq!(latest.payload["reason"], "workflow_prompt_started");
-    let persisted: crate::session::RuntimeSession =
-        serde_json::from_value(latest.payload["session"].clone())
-            .expect("persisted session should deserialize");
+    let persisted = runtime
+        .owned
+        .durable_state_store
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("persisted workflow run should load")
+        .expect("workflow run should persist");
     let persisted_node = persisted
-        .workflow_run(workflow_run.id())
-        .expect("workflow run should persist")
         .node_runs()
         .iter()
         .find(|node_run| node_run.id() == node_run_id)
@@ -591,13 +592,13 @@ fn workflow_turn_context_lists_public_outgoing_edges_without_downstream_instruct
     let durable_events = runtime
         .owned
         .durable_state_store
-        .load_subject_events_by_kind(session.id(), "session.updated", 10)
-        .expect("durable session events should load");
+        .load_subject_events_by_kind(session.id(), "workflow.runtime.updated", 10)
+        .expect("durable workflow events should load");
     assert!(
         durable_events
             .iter()
             .all(|event| event.payload["reason"] != "workflow_runtime_tool"),
-        "read-only workflow tools must not append a full session snapshot"
+        "read-only workflow tools must not append a workflow transition"
     );
     let outgoing = result.payload["outgoing_edges"]
         .as_array()

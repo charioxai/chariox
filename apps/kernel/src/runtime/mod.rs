@@ -39,6 +39,7 @@ pub mod process_health;
 pub mod projection;
 pub(crate) mod prompt_settings_executor;
 pub mod prompt_state;
+pub(crate) mod provider_account_control;
 pub(crate) mod provider_auth_control;
 pub(crate) mod provider_capability_import;
 pub(crate) mod provider_catalog_control;

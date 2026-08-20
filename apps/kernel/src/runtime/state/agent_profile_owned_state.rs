@@ -12,6 +12,7 @@ impl KernelRuntimeOwnedState {
         agent_id: &str,
         caller_user_id: &str,
         provider: Option<String>,
+        account_profile: Option<String>,
         model: Option<String>,
         effort: Option<Option<String>>,
     ) -> Result<owned::OwnedAgentProfileUpdate, DaemonError> {
@@ -60,13 +61,30 @@ impl KernelRuntimeOwnedState {
             .as_deref()
             .or_else(|| agent.model())
             .map(str::to_string);
+        let requested_account_profile = account_profile
+            .as_deref()
+            .unwrap_or_else(|| agent.provider_account_profile());
+        let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
+            .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
+        {
+            self.provider_account_profiles
+                .get(
+                    agent.owner_user_id(),
+                    &target_provider,
+                    requested_account_profile,
+                )?
+                .profile_id
+        } else {
+            requested_account_profile.to_string()
+        };
         let target_effort = match effort.as_ref() {
             Some(value) => value.as_deref(),
             None => agent.effort(),
         };
-        let provider_or_model_changed =
-            target_provider != agent.provider() || target_model.as_deref() != agent.model();
-        if !provider_or_model_changed && target_effort == agent.effort() {
+        let provider_model_or_account_changed = target_provider != agent.provider()
+            || target_model.as_deref() != agent.model()
+            || target_account_profile != agent.provider_account_profile();
+        if !provider_model_or_account_changed && target_effort == agent.effort() {
             return Ok(owned::OwnedAgentProfileUpdate {
                 agent,
                 terminated_run_ids: Vec::new(),
@@ -82,6 +100,7 @@ impl KernelRuntimeOwnedState {
                     relay_url: binding.relay_url.clone(),
                     relay_token: binding.relay_token.clone(),
                     provider: target_provider.clone(),
+                    account_profile: target_account_profile.clone(),
                     model: target_model.clone(),
                     effort: target_effort.map(str::to_string),
                 });
@@ -92,10 +111,11 @@ impl KernelRuntimeOwnedState {
                     crate::provider::ProviderRunState::Starting
                     | crate::provider::ProviderRunState::Running
                     | crate::provider::ProviderRunState::Parked => {
-                        if provider_or_model_changed {
+                        if provider_model_or_account_changed {
                             self.prepare_agent_profile_context_handoff(
                                 &run,
                                 &target_provider,
+                                &target_account_profile,
                                 target_model.as_deref(),
                             );
                         }
@@ -119,9 +139,22 @@ impl KernelRuntimeOwnedState {
         let agent = if remote_update.is_some() {
             agent
         } else {
+            let mut resume_state = agent.provider_resume_state().clone();
+            if provider_model_or_account_changed {
+                resume_state = resume_state
+                    .without_provider_session_id(agent.provider())
+                    .without_provider_session_id(&target_provider);
+            }
             let agent = self
                 .agent_store
-                .update_agent_profile(agent_id, provider, model, effort)?;
+                .set_agent_runtime_profile_with_account_profile(
+                    agent_id,
+                    &target_provider,
+                    target_model,
+                    target_effort.map(str::to_string),
+                    Some(target_account_profile),
+                    resume_state,
+                )?;
             let _ = self.session_snapshot(session_id)?;
             agent
         };
@@ -137,6 +170,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         agent_id: &str,
         provider: String,
+        account_profile: String,
         model: Option<String>,
         effort: Option<String>,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
@@ -160,8 +194,19 @@ impl KernelRuntimeOwnedState {
                 ),
             });
         }
+        let resume_state = agent
+            .provider_resume_state()
+            .without_provider_session_id(agent.provider())
+            .without_provider_session_id(&provider);
         self.agent_store
-            .update_agent_profile(agent_id, Some(provider), model, Some(effort))?;
+            .set_agent_runtime_profile_with_account_profile(
+                agent_id,
+                &provider,
+                model,
+                effort,
+                Some(account_profile),
+                resume_state,
+            )?;
         self.agent_store
             .set_remote_execution_active_worker_provider_run_id(agent_id, None)?;
         let agent = self.agent_store.get_agent(agent_id)?;

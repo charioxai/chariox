@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::PromptIdAllocator;
 use crate::session::{
     RuntimeProject, RuntimeProjectKind, RuntimeSession, SessionProjectSelection,
     WorkflowDefinition, WorkflowEndpointDefinition, WorkflowNodeDefinition, WorkflowNodeRun,
@@ -77,13 +78,59 @@ fn create_session_rejects_deprecated_metaagent_request() {
 
 #[test]
 fn prompt_id_allocator_advances_past_observed_prompt_ids() {
-    let service = SessionService::new(&test_config());
+    let allocator = PromptIdAllocator::default();
 
-    service.observe_prompt_id("prompt-41");
-    assert_eq!(service.reserve_prompt_id(), "prompt-42");
+    allocator.observe_prompt_id("prompt-41");
+    assert_eq!(allocator.next_prompt_id(), "prompt-42");
 
-    service.observe_prompt_id("prompt-7");
-    assert_eq!(service.reserve_prompt_id(), "prompt-43");
+    allocator.observe_prompt_id("prompt-7");
+    assert_eq!(allocator.next_prompt_id(), "prompt-43");
+}
+
+#[test]
+fn prompt_id_allocator_reserves_durable_blocks_without_history_scans() {
+    let path = std::env::temp_dir().join(format!(
+        "chariox-prompt-counter-{}-{}.json",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    let first = PromptIdAllocator::persistent(path.clone());
+    let first_number = first
+        .next_prompt_id()
+        .strip_prefix("prompt-")
+        .expect("prompt prefix")
+        .parse::<u64>()
+        .expect("numeric prompt id");
+
+    let concurrent = PromptIdAllocator::persistent(path.clone());
+    let concurrent_number = concurrent
+        .next_prompt_id()
+        .strip_prefix("prompt-")
+        .expect("prompt prefix")
+        .parse::<u64>()
+        .expect("numeric prompt id");
+    let first_followup = first
+        .next_prompt_id()
+        .strip_prefix("prompt-")
+        .expect("prompt prefix")
+        .parse::<u64>()
+        .expect("numeric prompt id");
+    assert!(concurrent_number > first_number);
+    assert_ne!(first_followup, concurrent_number);
+    drop(first);
+    drop(concurrent);
+
+    let restarted = PromptIdAllocator::persistent(path.clone());
+    let restarted_number = restarted
+        .next_prompt_id()
+        .strip_prefix("prompt-")
+        .expect("prompt prefix")
+        .parse::<u64>()
+        .expect("numeric prompt id");
+    assert!(restarted_number > first_number);
+
+    let _ = std::fs::remove_file(&path);
+    let _ = std::fs::remove_file(path.with_extension("lock"));
 }
 
 #[test]

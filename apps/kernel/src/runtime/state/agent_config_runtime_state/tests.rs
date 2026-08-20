@@ -78,6 +78,7 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
             &agent_id,
             crate::session::DEFAULT_LOCAL_USER_ID,
             Some("opencode".to_string()),
+            None,
             Some("model-next".to_string()),
             None,
         )
@@ -231,6 +232,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             lease_id: "lease-1".to_string(),
             home_agent_id: agent_id.clone(),
             provider: "dev-stub".to_string(),
+            account_profile: "default".to_string(),
             model: None,
             effort: None,
             execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
@@ -287,6 +289,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
                     &agent_id,
                     crate::session::DEFAULT_LOCAL_USER_ID,
                     Some("codex".to_string()),
+                    None,
                     Some("gpt-5.4".to_string()),
                     Some(Some("high".to_string())),
                 )
@@ -318,10 +321,12 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
         crate::transport::relay_peer::RelayPeerRequest::UpdateLeasedAgentProfile {
             leased_agent_id,
             provider,
+            account_profile,
             model,
             effort,
         } if leased_agent_id == "leased-agent-1"
             && provider == "codex"
+            && account_profile == "default"
             && model.as_deref() == Some("gpt-5.4")
             && effort.as_deref() == Some("high")
     ));
@@ -331,6 +336,7 @@ async fn remote_agent_config_update_uses_connected_relay_without_metadata_socket
             lease_id: "lease-1".to_string(),
             home_agent_id: agent_id.clone(),
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
             model: Some("gpt-5.4".to_string()),
             effort: Some("high".to_string()),
             execution_mode: Some(crate::provider::AgentExecutionMode::Plan),
@@ -388,6 +394,7 @@ async fn agent_profile_update_still_blocks_active_prompt_owner() {
             &agent_id,
             crate::session::DEFAULT_LOCAL_USER_ID,
             Some("opencode".to_string()),
+            None,
             Some("model-next".to_string()),
             None,
         )

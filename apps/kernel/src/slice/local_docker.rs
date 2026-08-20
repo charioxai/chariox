@@ -47,6 +47,13 @@ pub struct LocalDockerSliceOptions {
     pub screen_height: u32,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalDockerProviderAccount {
+    pub owner_path_component: String,
+    pub profile_id: String,
+    pub environment: std::collections::BTreeMap<String, String>,
+}
+
 const DOCKER_READY_ATTEMPTS: usize = 60;
 const DOCKER_READY_RETRY_DELAY_MS: u64 = 1_000;
 const SLICE_DOCKER_PROVISIONER_ENV: &str = "CHARIOX_SLICE_DOCKER_PROVISIONER";
@@ -90,6 +97,7 @@ pub fn run_local_docker_slice_action(
     action: LocalDockerSliceAction,
     relay: Option<LocalDockerSliceRelay>,
     provider: Option<&str>,
+    provider_account: Option<&LocalDockerProviderAccount>,
     options: &LocalDockerSliceOptions,
 ) -> Result<(), DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
@@ -123,6 +131,33 @@ pub fn run_local_docker_slice_action(
     configure_local_docker_slice_command(&mut command, record, relay, options)?;
     if let Some(provider) = provider {
         command.env("CHARIOX_SLICE_AUTH_PROVIDER", provider);
+    }
+    if let Some(account) = provider_account {
+        command
+            .env("CHARIOX_SLICE_ACCOUNT_OWNER", &account.owner_path_component)
+            .env("CHARIOX_SLICE_ACCOUNT_PROFILE", &account.profile_id);
+        if let Some(codex_home) = account.environment.get("CODEX_HOME") {
+            command.env(
+                "CHARIOX_SLICE_CODEX_AUTH",
+                Path::new(codex_home).join("auth.json"),
+            );
+        }
+        if let Some(data_home) = account.environment.get("XDG_DATA_HOME") {
+            command.env(
+                "CHARIOX_SLICE_OPENCODE_AUTH",
+                Path::new(data_home).join("opencode").join("auth.json"),
+            );
+        }
+        if let Some(claude_config_dir) = account.environment.get("CLAUDE_CONFIG_DIR") {
+            let root = Path::new(claude_config_dir);
+            command
+                .env("CHARIOX_SLICE_CLAUDE_SETTINGS", root.join("settings.json"))
+                .env("CHARIOX_SLICE_CLAUDE_STATS", root.join("stats-cache.json"))
+                .env(
+                    "CHARIOX_SLICE_CLAUDE_CREDENTIALS",
+                    root.join(".credentials.json"),
+                );
+        }
     }
 
     let log_path = local_docker_slice_action_log_path(&options.root, record, action);
@@ -188,6 +223,7 @@ pub fn run_local_docker_slice_action(
 pub fn start_local_docker_slice_provider_login(
     record: &SliceRecord,
     provider: &str,
+    provider_account: &LocalDockerProviderAccount,
     options: &LocalDockerSliceOptions,
 ) -> Result<SliceProviderLoginStart, DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
@@ -209,7 +245,15 @@ pub fn start_local_docker_slice_provider_login(
     let mut command = Command::new(&script);
     command
         .arg("start-provider-login")
-        .env("CHARIOX_SLICE_LOGIN_PROVIDER", provider);
+        .env("CHARIOX_SLICE_LOGIN_PROVIDER", provider)
+        .env(
+            "CHARIOX_SLICE_ACCOUNT_OWNER",
+            &provider_account.owner_path_component,
+        )
+        .env(
+            "CHARIOX_SLICE_ACCOUNT_PROFILE",
+            &provider_account.profile_id,
+        );
     configure_local_docker_slice_command(&mut command, record, None, options)?;
     let output = command
         .output()
@@ -255,6 +299,7 @@ pub fn start_local_docker_slice_provider_login(
 pub fn inspect_local_docker_slice_provider_auth(
     record: &SliceRecord,
     provider: &str,
+    provider_account: Option<&LocalDockerProviderAccount>,
 ) -> Result<Vec<SliceProviderAuthSummary>, DaemonError> {
     if record.backend != SliceBackendKind::LocalDocker {
         return Err(DaemonError::LocalTransport {
@@ -263,18 +308,39 @@ pub fn inspect_local_docker_slice_provider_auth(
         });
     }
     let container = local_docker_container_name(record);
+    let account_profile = provider_account
+        .map(|account| account.profile_id.as_str())
+        .unwrap_or("default");
+    let profile_base = provider_account.map(|account| {
+        format!(
+            "/home/slice/.chariox/daemon/provider-accounts/{}/{}/{}",
+            account.owner_path_component, provider, account.profile_id
+        )
+    });
+    let codex_path = profile_base
+        .as_ref()
+        .map(|base| format!("{base}/codex/auth.json"))
+        .unwrap_or_else(|| "/home/slice/.codex/auth.json".to_string());
+    let opencode_path = profile_base
+        .as_ref()
+        .map(|base| format!("{base}/data/opencode/auth.json"))
+        .unwrap_or_else(|| "/home/slice/.local/share/opencode/auth.json".to_string());
+    let claude_path = profile_base
+        .as_ref()
+        .map(|base| format!("{base}/claude/.credentials.json"))
+        .unwrap_or_else(|| "/home/slice/.claude/.credentials.json".to_string());
     let checks = match provider {
         "all" => vec![
-            ("codex", "/home/slice/.codex/auth.json"),
-            ("opencode", "/home/slice/.local/share/opencode/auth.json"),
-            ("claude", "/home/slice/.claude/.credentials.json"),
+            ("codex", codex_path.as_str()),
+            ("opencode", opencode_path.as_str()),
+            ("claude", claude_path.as_str()),
         ],
-        "codex" => vec![("codex", "/home/slice/.codex/auth.json")],
-        "opencode" => vec![("opencode", "/home/slice/.local/share/opencode/auth.json")],
-        "claude" => vec![("claude", "/home/slice/.claude/.credentials.json")],
+        "codex" => vec![("codex", codex_path.as_str())],
+        "opencode" => vec![("opencode", opencode_path.as_str())],
+        "claude" => vec![("claude", claude_path.as_str())],
         "github" => Vec::new(),
         value if value.starts_with("opencode:") => {
-            vec![("opencode", "/home/slice/.local/share/opencode/auth.json")]
+            vec![("opencode", opencode_path.as_str())]
         }
         _ => {
             return Err(DaemonError::LocalTransport {
@@ -298,6 +364,7 @@ pub fn inspect_local_docker_slice_provider_auth(
         if status.success() {
             summaries.push(SliceProviderAuthSummary {
                 provider: summary_provider.to_string(),
+                account_profile: account_profile.to_string(),
                 state: SliceProviderAuthState::Configured,
                 auth_type: None,
                 account_id: None,
@@ -305,7 +372,6 @@ pub fn inspect_local_docker_slice_provider_auth(
                 organization_id: None,
                 organization_name: None,
                 subscription_type: None,
-                alias: None,
                 source: "slice_provider_auth_file".to_string(),
             });
         }
@@ -336,6 +402,7 @@ pub fn inspect_local_docker_slice_provider_auth(
         if status.success() {
             summaries.push(SliceProviderAuthSummary {
                 provider: "github".to_string(),
+                account_profile: account_profile.to_string(),
                 state: SliceProviderAuthState::Configured,
                 auth_type: Some("oauth_token".to_string()),
                 account_id: None,
@@ -343,7 +410,6 @@ pub fn inspect_local_docker_slice_provider_auth(
                 organization_id: None,
                 organization_name: None,
                 subscription_type: None,
-                alias: None,
                 source: "slice_github_cli".to_string(),
             });
         }

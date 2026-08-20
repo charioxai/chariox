@@ -39,31 +39,20 @@ pub(super) fn scoped_provider_auth_summaries(
         .collect()
 }
 
-pub(super) fn merge_scoped_provider_auth(
+pub(super) fn merge_profile_scoped_provider_auth(
     existing: Vec<SliceProviderAuthSummary>,
     provider: &str,
+    account_profile: &str,
     imported: Vec<SliceProviderAuthSummary>,
 ) -> Vec<SliceProviderAuthSummary> {
-    let aliases = existing
-        .iter()
-        .filter(|summary| slice_auth_summary_matches_provider(&summary.provider, provider))
-        .filter_map(|summary| {
-            summary
-                .alias
-                .as_ref()
-                .map(|alias| (summary.provider.clone(), alias.clone()))
-        })
-        .collect::<std::collections::BTreeMap<_, _>>();
     let mut merged = existing
         .into_iter()
-        .filter(|summary| !slice_auth_summary_matches_provider(&summary.provider, provider))
+        .filter(|summary| {
+            !slice_auth_summary_matches_provider(&summary.provider, provider)
+                || summary.account_profile != account_profile
+        })
         .collect::<Vec<_>>();
-    merged.extend(imported.into_iter().map(|mut summary| {
-        if summary.alias.is_none() {
-            summary.alias = aliases.get(&summary.provider).cloned();
-        }
-        summary
-    }));
+    merged.extend(imported);
     merged
 }
 
@@ -118,18 +107,19 @@ mod tests {
     fn detected_slice_auth_adds_new_provider_without_losing_existing_metadata() {
         let existing = SliceProviderAuthSummary {
             provider: "claude".to_string(),
+            account_profile: "default".to_string(),
             state: SliceProviderAuthState::Authenticated,
             auth_type: Some("claude.ai".to_string()),
             account_id: Some("claude-account".to_string()),
-            email: None,
+            email: Some("work@example.com".to_string()),
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: Some("Work Claude".to_string()),
             source: "existing".to_string(),
         };
         let detected = SliceProviderAuthSummary {
             provider: "opencode".to_string(),
+            account_profile: "default".to_string(),
             state: SliceProviderAuthState::Configured,
             auth_type: None,
             account_id: None,
@@ -137,7 +127,6 @@ mod tests {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: None,
             source: "slice_provider_auth_file".to_string(),
         };
 
@@ -148,7 +137,7 @@ mod tests {
             .iter()
             .find(|summary| summary.provider == "claude")
             .unwrap();
-        assert_eq!(claude.alias.as_deref(), Some("Work Claude"));
+        assert_eq!(claude.email.as_deref(), Some("work@example.com"));
         assert!(merged.iter().any(|summary| summary.provider == "opencode"));
     }
 
@@ -156,6 +145,7 @@ mod tests {
     fn auth_file_presence_does_not_override_a_runtime_auth_failure() {
         let failed = SliceProviderAuthSummary {
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
             state: SliceProviderAuthState::NotConfigured,
             auth_type: None,
             account_id: None,
@@ -163,11 +153,11 @@ mod tests {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: Some("Work Codex".to_string()),
             source: "provider_auth_failure".to_string(),
         };
         let detected = SliceProviderAuthSummary {
             provider: "codex".to_string(),
+            account_profile: "default".to_string(),
             state: SliceProviderAuthState::Configured,
             auth_type: None,
             account_id: None,
@@ -175,7 +165,6 @@ mod tests {
             organization_id: None,
             organization_name: None,
             subscription_type: None,
-            alias: None,
             source: "slice_provider_auth_file".to_string(),
         };
 
@@ -183,6 +172,6 @@ mod tests {
 
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].state, SliceProviderAuthState::NotConfigured);
-        assert_eq!(merged[0].alias.as_deref(), Some("Work Codex"));
+        assert_eq!(merged[0].source, "provider_auth_failure");
     }
 }

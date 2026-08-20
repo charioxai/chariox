@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::WorkflowPublicationSnapshot;
+use crate::session::{WorkflowEventDeliveryReceipt, WorkflowPublicationSnapshot};
 use std::path::Path;
 
 mod event_publication;
@@ -7,6 +7,11 @@ mod publication;
 
 impl SessionService {
     pub fn new(config: &DaemonConfig) -> Self {
+        #[cfg(test)]
+        let prompt_id_allocator = PromptIdAllocator::default();
+        #[cfg(not(test))]
+        let prompt_id_allocator =
+            PromptIdAllocator::persistent(config.kernel_prompt_counter_path());
         Self {
             store: SessionStore::new(),
             projects: BTreeMap::new(),
@@ -14,7 +19,7 @@ impl SessionService {
             host_machine_id: config.host_machine_id.clone(),
             host_daemon_id: config.daemon_id.clone(),
             event_environment_id: config.event_delivery_environment_id.clone(),
-            prompt_id_allocator: PromptIdAllocator::default(),
+            prompt_id_allocator,
             next_workflow_number: 0,
             next_workflow_schema_number: 0,
             next_workflow_endpoint_number: 0,
@@ -109,7 +114,70 @@ impl SessionService {
             .list()
             .into_iter()
             .filter(|session| !self.is_ephemeral_session(session.id()))
+            .map(|session| session.durable_runtime_snapshot())
             .collect()
+    }
+
+    pub(crate) fn all_session_ids(&self) -> Vec<String> {
+        self.store.session_ids()
+    }
+
+    pub(crate) fn archive_terminal_workflow_runs(
+        &mut self,
+        session_id: &str,
+    ) -> Result<Vec<WorkflowRun>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.archive_terminal_workflow_runs())
+    }
+
+    pub(crate) fn restore_active_workflow_runs(
+        &mut self,
+        session_id: &str,
+        workflow_runs: Vec<WorkflowRun>,
+    ) -> Result<(), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.restore_active_workflow_runs(workflow_runs);
+        Ok(())
+    }
+
+    pub(crate) fn restore_workflow_hot_state(
+        &mut self,
+        session_id: &str,
+        state: DurableWorkflowHotState,
+    ) -> Result<(), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.restore_durable_workflow_hot_state(state);
+        Ok(())
+    }
+
+    pub(crate) fn restore_workflow_event_delivery_receipts(
+        &mut self,
+        session_id: &str,
+        receipts: Vec<WorkflowEventDeliveryReceipt>,
+    ) -> Result<(), DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        session.restore_workflow_event_delivery_receipts(receipts);
+        Ok(())
     }
 
     pub(crate) fn durable_projects(&self) -> Vec<RuntimeProject> {

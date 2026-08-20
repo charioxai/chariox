@@ -50,6 +50,24 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
             "local_socket_path": config.local_socket_path.display().to_string(),
         }),
     );
+    let bind_started = Instant::now();
+    let boot_listener = chariox_kernel::runtime_transport::KernelBootListener::bind(
+        &config.kernel_websocket_host,
+        config.kernel_websocket_port,
+    )?;
+    chariox_kernel::logging::info_with_fields(
+        "daemon.startup",
+        "kernel boot listener bound",
+        serde_json::json!({
+            "phase": "booting",
+            "bind_ms": bind_started.elapsed().as_millis(),
+            "process_elapsed_ms": process_started.elapsed().as_millis(),
+            "bind_host": config.kernel_websocket_host,
+            "bind_port": config.kernel_websocket_port,
+            "runtime_ready": false,
+            "event_ready": false,
+        }),
+    );
     let bootstrap_started = Instant::now();
     let app = DaemonApp::bootstrap(config)?;
     chariox_kernel::logging::info_with_fields(
@@ -62,5 +80,5 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
     );
 
     chariox_kernel::logging::info("daemon.main", app.startup_message());
-    app.run().await
+    app.run_on_listener(boot_listener.into_listener()?).await
 }

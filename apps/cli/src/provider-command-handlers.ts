@@ -1,6 +1,9 @@
 import type {
   ProviderAuthStatus,
+  ProviderAccountProfile,
   ProviderLoginStart,
+  ProviderLoginStatus,
+  ProviderLogoutOutcome,
   ProviderProcessInfo,
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
@@ -13,9 +16,21 @@ export type ProviderCommandHandlerDeps = {
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   applyProviderSelection?: (value: string) => Promise<void>
-  getProviderAuthStatus?: (provider: string) => Promise<ProviderAuthStatus>
-  startProviderLogin?: (provider: string) => Promise<ProviderLoginStart>
-  logoutProvider?: (provider: string) => Promise<{ provider: string }>
+  getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
+  startProviderLogin?: (provider: string, accountProfile?: string) => Promise<ProviderLoginStart>
+  getProviderLoginStatus?: (loginId: string) => Promise<ProviderLoginStatus>
+  sendProviderLoginInput?: (loginId: string, dataBase64: string) => Promise<{ login_id: string; byte_count: number }>
+  cancelProviderLogin?: (loginId: string) => Promise<ProviderLoginStatus>
+  readSecret?: (prompt: string) => Promise<string>
+  logoutProvider?: (provider: string, accountProfile?: string) => Promise<ProviderLogoutOutcome>
+  listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
+  createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
+  linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
+  renameProviderAccountProfile?: (provider: string, profile: string, label: string) => Promise<ProviderAccountProfile>
+  setDefaultProviderAccountProfile?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
+  refreshProviderAccountProfile?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
+  removeProviderAccountProfile?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
+  deleteProviderAccountProfileData?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
   listProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
   teardownProviderProcesses?: (provider?: string | null) => Promise<ProviderProcessInfo[]>
 }
@@ -26,26 +41,42 @@ export async function handleProviderSlashCommand(
 ): Promise<void> {
   const { value } = command
   if (!value) {
-    deps.flashFooter("usage: /provider <opencode|codex|claude-headless|claude-p|status|login|logout|reauth|processes>", "error")
+    deps.flashFooter("usage: /provider <opencode|codex|claude-headless|claude-p|status|login|login-status|login-input|login-cancel|logout|reauth|processes>", "error")
     return
   }
 
   const parts = value.split(/\s+/).filter(Boolean)
-  const [action, maybeProvider] = parts
+  const [action, maybeProvider, maybeProfile] = parts
+  if (action === "accounts") {
+    await handleProviderAccountsCommand(deps, parts.slice(1))
+    return
+  }
   if (action === "status") {
-    await showProviderStatus(deps, maybeProvider ?? deps.currentProviderId())
+    await showProviderStatus(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
     return
   }
   if (action === "login") {
-    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId())
+    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
+    return
+  }
+  if (action === "login-status") {
+    await showProviderLoginStatus(deps, maybeProvider)
+    return
+  }
+  if (action === "login-input") {
+    await sendProviderLoginInput(deps, maybeProvider)
+    return
+  }
+  if (action === "login-cancel") {
+    await cancelProviderLogin(deps, maybeProvider)
     return
   }
   if (action === "logout") {
-    await logoutProvider(deps, maybeProvider ?? deps.currentProviderId())
+    await logoutProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
     return
   }
   if (action === "reauth") {
-    await reauthProvider(deps, maybeProvider ?? deps.currentProviderId())
+    await reauthProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
     return
   }
   if (action === "processes") {
@@ -114,19 +145,19 @@ function formatBytes(bytes: number | null): string {
 async function showProviderStatus(
   deps: ProviderCommandHandlerDeps,
   provider: string,
+  accountProfile?: string,
 ): Promise<void> {
   if (!deps.getProviderAuthStatus) {
     deps.flashFooter("provider status is not available in this daemon", "error")
     return
   }
-  const status = await deps.getProviderAuthStatus(provider)
-  const details = status.account_profile
-    ? `${status.provider}: ${status.auth_state} as ${status.account_profile}`
-    : `${status.provider}: ${status.auth_state}`
+  const status = await deps.getProviderAuthStatus(provider, accountProfile)
+  const details = `${status.provider}/${status.account_profile}: ${status.auth_state}${status.identity_summary ? ` as ${status.identity_summary}` : ""}`
   deps.appendNotice(
     [
       details,
       status.detected_version ? `version ${status.detected_version}` : null,
+      status.plan ? `plan ${status.plan}` : null,
       status.login_hint ?? null,
     ].filter(Boolean).join(" • "),
   )
@@ -136,27 +167,74 @@ async function showProviderStatus(
 async function startProviderLogin(
   deps: ProviderCommandHandlerDeps,
   provider: string,
+  accountProfile?: string,
 ): Promise<void> {
   if (!deps.startProviderLogin) {
     deps.flashFooter("provider login is not available in this daemon", "error")
     return
   }
-  const login = await deps.startProviderLogin(provider)
+  const login = await deps.startProviderLogin(provider, accountProfile)
   const message = formatProviderLoginNotice(login, "login started")
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
 
+async function showProviderLoginStatus(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.getProviderLoginStatus) {
+    deps.flashFooter("usage: /provider login-status <login-id>", "error")
+    return
+  }
+  const login = await deps.getProviderLoginStatus(loginId)
+  const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
+  if (output) deps.appendNotice(output)
+  deps.flashFooter(`${login.provider}/${login.account_profile} login ${login.state}`, login.state === "failed" ? "error" : "info")
+}
+
+async function sendProviderLoginInput(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.sendProviderLoginInput) {
+    deps.flashFooter("usage: /provider login-input <login-id>", "error")
+    return
+  }
+  if (!deps.readSecret) {
+    deps.flashFooter("provider login input requires hidden input support", "error")
+    return
+  }
+  const value = await deps.readSecret("provider login input: ")
+  await deps.sendProviderLoginInput(loginId, Buffer.from(`${value}\r`, "utf8").toString("base64"))
+  deps.flashFooter(`input sent; run /provider login-status ${loginId}`, "info")
+}
+
+async function cancelProviderLogin(
+  deps: ProviderCommandHandlerDeps,
+  loginId?: string,
+): Promise<void> {
+  if (!loginId || !deps.cancelProviderLogin) {
+    deps.flashFooter("usage: /provider login-cancel <login-id>", "error")
+    return
+  }
+  const login = await deps.cancelProviderLogin(loginId)
+  deps.flashFooter(`${login.provider}/${login.account_profile} login cancelled`, "info")
+}
+
 async function logoutProvider(
   deps: ProviderCommandHandlerDeps,
   provider: string,
+  accountProfile?: string,
 ): Promise<void> {
   if (!deps.logoutProvider) {
     deps.flashFooter("provider logout is not available in this daemon", "error")
     return
   }
-  const loggedOut = await deps.logoutProvider(provider)
-  const message = `${loggedOut.provider} logged out`
+  const outcome = await deps.logoutProvider(provider, accountProfile)
+  const message = outcome.kind === "logged_out"
+    ? `${outcome.result.provider}/${outcome.result.account_profile} logged out`
+    : formatProviderLoginNotice(outcome.workflow, "logout started")
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
@@ -164,16 +242,75 @@ async function logoutProvider(
 async function reauthProvider(
   deps: ProviderCommandHandlerDeps,
   provider: string,
+  accountProfile?: string,
 ): Promise<void> {
   if (!deps.logoutProvider || !deps.startProviderLogin) {
     deps.flashFooter("provider reauth is not available in this daemon", "error")
     return
   }
-  await deps.logoutProvider(provider)
-  const login = await deps.startProviderLogin(provider)
+  const logout = await deps.logoutProvider(provider, accountProfile)
+  if (logout.kind === "interaction_required") {
+    const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth")
+    deps.appendNotice(message)
+    deps.flashFooter(message, "info")
+    return
+  }
+  const login = await deps.startProviderLogin(provider, accountProfile)
   const message = formatProviderLoginNotice(login, "reauth started")
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
+}
+
+async function handleProviderAccountsCommand(
+  deps: ProviderCommandHandlerDeps,
+  args: string[],
+): Promise<void> {
+  const [action = "list", provider, profile, ...rest] = args
+  if (action === "list") {
+    if (!deps.listProviderAccountProfiles) {
+      deps.flashFooter("provider account management is unavailable", "error")
+      return
+    }
+    const profiles = await deps.listProviderAccountProfiles(provider ?? null)
+    const lines = profiles.map((entry) => {
+      const usage = entry.usage.meters?.[0]
+      const usageText = usage?.used_percent != null
+        ? `${Math.round(usage.used_percent)}% used`
+        : usage?.remaining != null
+          ? `${usage.remaining}${usage.unit ? ` ${usage.unit}` : ""} remaining`
+          : entry.usage.availability
+      return `${entry.provider}/${entry.profile_id} "${entry.label}"${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.identity_summary ? ` · ${entry.identity_summary}` : ""}${entry.plan ? ` · ${entry.plan}` : ""} · ${usageText}`
+    })
+    deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
+    deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
+    return
+  }
+  if (!provider) {
+    deps.flashFooter("usage: /provider accounts <add|link|refresh|rename|default|remove|delete> <provider> ...", "error")
+    return
+  }
+  let result: ProviderAccountProfile
+  if (action === "add" && profile && deps.createProviderAccountProfile) {
+    result = await deps.createProviderAccountProfile(provider, [profile, ...rest].join(" "))
+  } else if (action === "link" && profile && rest.length >= 1 && deps.linkProviderAccountProfile) {
+    const path = rest.at(-1)!
+    result = await deps.linkProviderAccountProfile(provider, [profile, ...rest.slice(0, -1)].join(" "), path)
+  } else if (action === "refresh" && profile && deps.refreshProviderAccountProfile) {
+    result = await deps.refreshProviderAccountProfile(provider, profile)
+  } else if (action === "rename" && profile && rest.length > 0 && deps.renameProviderAccountProfile) {
+    result = await deps.renameProviderAccountProfile(provider, profile, rest.join(" "))
+  } else if (action === "default" && profile && deps.setDefaultProviderAccountProfile) {
+    result = await deps.setDefaultProviderAccountProfile(provider, profile)
+  } else if (action === "remove" && profile && deps.removeProviderAccountProfile) {
+    result = await deps.removeProviderAccountProfile(provider, profile)
+  } else if (action === "delete" && profile && rest[0] === profile && deps.deleteProviderAccountProfileData) {
+    result = await deps.deleteProviderAccountProfileData(provider, profile)
+  } else {
+    deps.flashFooter("invalid or unavailable Provider Accounts action; destructive delete requires repeating the profile ID", "error")
+    return
+  }
+  deps.appendNotice(`${action}: ${result.provider}/${result.profile_id} "${result.label}"`)
+  deps.flashFooter(`provider account ${action} complete`, "info")
 }
 
 function formatProviderLoginNotice(
@@ -182,6 +319,9 @@ function formatProviderLoginNotice(
 ): string {
   return [
     `${login.provider} ${action}`,
+    login.login_kind.startsWith("terminal") && login.login_id
+      ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
+      : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")

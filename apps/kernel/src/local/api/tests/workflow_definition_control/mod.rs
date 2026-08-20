@@ -97,6 +97,7 @@ fn create_publication_test_graph(
     };
     let agent = match harness
         .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
             session_id: session.id().to_string(),
             alias: Some(format!("agent-{label}")),
             provider: Some("dev-stub".to_string()),

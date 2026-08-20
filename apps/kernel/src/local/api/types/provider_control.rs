@@ -63,6 +63,8 @@ pub struct UpdateAgentProfileRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
@@ -123,7 +125,40 @@ pub struct UpdateProviderRunSelectionRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct GetProviderCatalogRequest;
+pub struct GetProviderCatalogRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+    /// Optional provider-profile overrides. Providers omitted here resolve to
+    /// the owner's registered default; values are stable registry profile IDs.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub account_profiles: BTreeMap<String, String>,
+    #[serde(default)]
+    pub execution_location: ProviderCatalogExecutionLocation,
+}
+
+impl Default for GetProviderCatalogRequest {
+    fn default() -> Self {
+        Self {
+            provider: None,
+            account_profiles: BTreeMap::new(),
+            execution_location: ProviderCatalogExecutionLocation::Local,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum ProviderCatalogExecutionLocation {
+    Local,
+    Worker { kernel_ref: String },
+    Slice { slice_ref: String },
+}
+
+impl Default for ProviderCatalogExecutionLocation {
+    fn default() -> Self {
+        Self::Local
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderCommandCatalogsRequest;
@@ -131,16 +166,141 @@ pub struct GetProviderCommandCatalogsRequest;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetProviderAuthStatusRequest {
     pub provider: String,
+    pub account_profile: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StartProviderLoginRequest {
     pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderLoginStatusRequest {
+    pub login_id: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SendProviderLoginInputRequest {
+    pub login_id: String,
+    pub data_base64: String,
+}
+
+impl std::fmt::Debug for SendProviderLoginInputRequest {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SendProviderLoginInputRequest")
+            .field("login_id", &self.login_id)
+            .field("data_base64", &"[REDACTED]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelProviderLoginRequest {
+    pub login_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderLoginProcessState {
+    Running,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProviderLoginStatus {
+    pub provider: String,
+    pub account_profile: String,
+    pub login_id: String,
+    pub state: ProviderLoginProcessState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interaction: Option<crate::session::RuntimeInteraction>,
+    /// Ephemeral PTY output. It is never written to durable state or logs.
+    pub terminal_output_base64: String,
+    pub started_at_ms: u64,
+    pub updated_at_ms: u64,
+}
+
+impl std::fmt::Debug for ProviderLoginStatus {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ProviderLoginStatus")
+            .field("provider", &self.provider)
+            .field("account_profile", &self.account_profile)
+            .field("login_id", &self.login_id)
+            .field("state", &self.state)
+            .field("interaction", &self.interaction)
+            .field("terminal_output_base64", &"[REDACTED]")
+            .field("started_at_ms", &self.started_at_ms)
+            .field("updated_at_ms", &self.updated_at_ms)
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogoutProviderRequest {
     pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListProviderAccountProfilesRequest {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetProviderAccountProfileRequest {
+    pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CreateProviderAccountProfileRequest {
+    pub provider: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LinkProviderAccountProfileRequest {
+    pub provider: String,
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RenameProviderAccountProfileRequest {
+    pub provider: String,
+    pub account_profile: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SetDefaultProviderAccountProfileRequest {
+    pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefreshProviderAccountProfileRequest {
+    pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoveProviderAccountProfileRequest {
+    pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeleteProviderAccountProfileDataRequest {
+    pub provider: String,
+    pub account_profile: String,
+    pub confirmation_profile_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -410,11 +410,17 @@ export function clearWorkflowPromptQueueRequest(
   }
 }
 
-export function listWorkflowRunsRequest(sessionId: string, workflowRef?: string | null) {
+export function listWorkflowRunsRequest(
+  sessionId: string,
+  workflowRef?: string | null,
+  page: { cursor?: string | null; limit?: number | null } = {},
+) {
   return {
     ListWorkflowRuns: {
       session_id: sessionId,
       workflow_ref: workflowRef ?? null,
+      ...(page.cursor ? { cursor: page.cursor } : {}),
+      ...(page.limit == null ? {} : { limit: page.limit }),
     },
   }
 }

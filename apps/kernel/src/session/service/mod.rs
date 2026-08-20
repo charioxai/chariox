@@ -1,8 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Arc,
-};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
@@ -14,12 +12,12 @@ use super::types::{
 };
 use super::{
     unix_epoch_ms, AgentPromptSchedule, AgentPromptScheduleDispatch, AgentPromptScheduleKind,
-    CollaborationLevel, CreateSessionRequest, PromptDetachEffect, PromptQueueItem, RuntimeProject,
-    RuntimeProjectKind, RuntimeProjectStatus, RuntimeSession, SessionConfigState, SessionInvite,
-    SessionMember, SessionProjectSelection, SessionStatus, SessionStore,
-    WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry, WorkflowDefinition,
-    WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent, WorkflowFailureKind,
-    WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
+    CollaborationLevel, CreateSessionRequest, DurableWorkflowHotState, PromptDetachEffect,
+    PromptQueueItem, RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, RuntimeSession,
+    SessionConfigState, SessionInvite, SessionMember, SessionProjectSelection, SessionStatus,
+    SessionStore, WorkflowCompletionSnapshot, WorkflowConsole, WorkflowConsoleEntry,
+    WorkflowDefinition, WorkflowEdgeDefinition, WorkflowEndpointDefinition, WorkflowFailureEvent,
+    WorkflowFailureKind, WorkflowHandoffPayload, WorkflowHandoffValidationPolicy, WorkflowMessage,
     WorkflowNodeDefinition, WorkflowNodeRun, WorkflowNodeRunStatus, WorkflowOutputPayload,
     WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowQueuedPrompt,
     WorkflowQueuedPromptSource, WorkflowQueuedPromptStatus, WorkflowRun, WorkflowRunStatus,
@@ -31,40 +29,175 @@ use super::{
 #[cfg(test)]
 use super::{PromptAttachment, PromptSubmissionOutcome};
 
-#[derive(Debug, Clone, Default)]
+const PROMPT_ID_RESERVATION_BLOCK: u64 = 4_096;
+
+#[derive(Debug, Clone)]
 pub struct PromptIdAllocator {
-    next_prompt_number: Arc<AtomicU64>,
+    inner: Arc<PromptIdAllocatorInner>,
+}
+
+#[derive(Debug)]
+struct PromptIdAllocatorInner {
+    state: Mutex<PromptIdAllocatorState>,
+    counter_path: Option<PathBuf>,
+}
+
+#[derive(Debug)]
+struct PromptIdAllocatorState {
+    last_issued: u64,
+    reserved_until: u64,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+struct DurablePromptIdCounter {
+    high_water_prompt_id: u64,
+}
+
+impl Default for PromptIdAllocator {
+    fn default() -> Self {
+        Self {
+            inner: Arc::new(PromptIdAllocatorInner {
+                state: Mutex::new(PromptIdAllocatorState {
+                    last_issued: 0,
+                    reserved_until: u64::MAX,
+                }),
+                counter_path: None,
+            }),
+        }
+    }
 }
 
 impl PromptIdAllocator {
+    pub(crate) fn persistent(counter_path: PathBuf) -> Self {
+        Self {
+            inner: Arc::new(PromptIdAllocatorInner {
+                state: Mutex::new(PromptIdAllocatorState {
+                    last_issued: 0,
+                    reserved_until: 0,
+                }),
+                counter_path: Some(counter_path),
+            }),
+        }
+    }
+
     pub(crate) fn next_prompt_id(&self) -> String {
-        let next = self.next_prompt_number.fetch_add(1, Ordering::SeqCst) + 1;
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("prompt id allocator lock poisoned");
+        if state.last_issued >= state.reserved_until {
+            if let Some(counter_path) = self.inner.counter_path.as_deref() {
+                match reserve_prompt_id_block(counter_path, state.last_issued) {
+                    Ok((first, reserved_until)) => {
+                        state.last_issued = first.saturating_sub(1);
+                        state.reserved_until = reserved_until;
+                    }
+                    Err(error) => {
+                        let fallback = super::unix_epoch_ms()
+                            .saturating_mul(1_000_000)
+                            .max(state.last_issued.saturating_add(1));
+                        crate::logging::warn_with_fields(
+                            "durable_state.prompt_id",
+                            "failed to reserve durable prompt id block; using process-local high-water fallback",
+                            serde_json::json!({
+                                "counter_path": counter_path.display().to_string(),
+                                "error": error.to_string(),
+                                "fallback_prompt_number": fallback,
+                            }),
+                        );
+                        state.last_issued = fallback.saturating_sub(1);
+                        state.reserved_until = u64::MAX;
+                    }
+                }
+            }
+        }
+        state.last_issued = state.last_issued.saturating_add(1);
+        let next = state.last_issued;
         format!("prompt-{next}")
     }
 
+    #[cfg(test)]
     pub(crate) fn observe_prompt_id(&self, prompt_id: &str) {
         if let Some(number) = prompt_id_number(prompt_id) {
             self.advance_to_at_least(number);
         }
     }
 
-    pub(crate) fn advance_to_at_least(&self, number: u64) {
-        let mut current = self.next_prompt_number.load(Ordering::SeqCst);
-        while current < number {
-            match self.next_prompt_number.compare_exchange(
-                current,
-                number,
-                Ordering::SeqCst,
-                Ordering::SeqCst,
-            ) {
-                Ok(_) => break,
-                Err(actual) => current = actual,
-            }
-        }
+    #[cfg(test)]
+    fn advance_to_at_least(&self, number: u64) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .expect("prompt id allocator lock poisoned");
+        state.last_issued = state.last_issued.max(number);
     }
 }
 
-pub(crate) fn prompt_id_number(prompt_id: &str) -> Option<u64> {
+fn reserve_prompt_id_block(path: &Path, minimum: u64) -> std::io::Result<(u64, u64)> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let lock_path = path.with_extension("lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(lock_path)?;
+    lock_file_exclusive(&lock_file)?;
+    let current = match std::fs::read(path) {
+        Ok(payload) => serde_json::from_slice::<DurablePromptIdCounter>(&payload)
+            .map(|counter| counter.high_water_prompt_id)
+            .map_err(std::io::Error::other)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error),
+    };
+    let baseline = current.max(minimum).max(super::unix_epoch_ms());
+    let reserved_until = baseline
+        .checked_add(PROMPT_ID_RESERVATION_BLOCK)
+        .ok_or_else(|| std::io::Error::other("prompt id reservation overflow"))?;
+    let payload = serde_json::to_vec(&DurablePromptIdCounter {
+        high_water_prompt_id: reserved_until,
+    })
+    .map_err(std::io::Error::other)?;
+    let temporary = path.with_extension(format!("json.tmp-{}", std::process::id()));
+    {
+        use std::io::Write;
+        let mut file = std::fs::File::create(&temporary)?;
+        file.write_all(&payload)?;
+        file.sync_all()?;
+    }
+    std::fs::rename(&temporary, path)?;
+    Ok((baseline.saturating_add(1), reserved_until))
+}
+
+#[cfg(unix)]
+fn lock_file_exclusive(file: &std::fs::File) -> std::io::Result<()> {
+    use std::os::fd::AsRawFd;
+
+    // `std::fs::File::lock` is not stable on the Rust 1.88 toolchain used by
+    // CI. The kernel already depends on libc, and flock is released when the
+    // file descriptor closes at the end of the reservation transaction.
+    let result = unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_file_exclusive(_file: &std::fs::File) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "durable prompt id allocation requires an exclusive file lock",
+    ))
+}
+
+#[cfg(test)]
+fn prompt_id_number(prompt_id: &str) -> Option<u64> {
     prompt_id.strip_prefix("prompt-")?.parse::<u64>().ok()
 }
 

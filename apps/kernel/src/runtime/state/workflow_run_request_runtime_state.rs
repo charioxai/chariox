@@ -191,11 +191,30 @@ impl KernelRuntimeState {
         pause: bool,
     ) -> Result<(crate::session::WorkflowRun, crate::session::RuntimeSession), DaemonError> {
         let owned = &self.owned;
+        let session = owned.session_store.get_session(session_id)?;
         let resolved_workflow_run = owned
             .session_store
             .read()
-            .resolve_workflow_run_ref(session_id, workflow_run_ref)?;
+            .resolve_workflow_run_ref(session_id, workflow_run_ref)
+            .ok()
+            .or(owned.durable_state_store.resolve_workflow_run(
+                session.host_daemon_id(),
+                session.id(),
+                workflow_run_ref,
+            )?)
+            .ok_or_else(|| DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_ref.to_string(),
+            })?;
         let workflow_run_id = resolved_workflow_run.id().to_string();
+        let expected_status = if pause {
+            crate::session::WorkflowRunStatus::Paused
+        } else {
+            crate::session::WorkflowRunStatus::Stopped
+        };
+        if resolved_workflow_run.status() == expected_status {
+            return Ok((resolved_workflow_run, owned.session_snapshot(session_id)?));
+        }
         let mut provider_run_ids = owned
             .agent_store
             .get_session_agents(session_id)
@@ -217,14 +236,7 @@ impl KernelRuntimeState {
         let _ = owned
             .prompt_state_owner
             .remove_queued_prompts_by_workflow_run(&session_before_interrupt, &workflow_run_id);
-        let expected_status = if pause {
-            crate::session::WorkflowRunStatus::Paused
-        } else {
-            crate::session::WorkflowRunStatus::Stopped
-        };
-        let workflow_run = if resolved_workflow_run.status() == expected_status {
-            resolved_workflow_run
-        } else if pause {
+        let workflow_run = if pause {
             owned
                 .session_store
                 .write()

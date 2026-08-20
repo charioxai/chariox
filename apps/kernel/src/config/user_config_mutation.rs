@@ -24,10 +24,6 @@ impl CharioxUserConfig {
             "providers.model" => {
                 self.providers.model = Some(non_empty_config_string("providers.model", value)?)
             }
-            "providers.account_profile" => {
-                self.providers.account_profile =
-                    Some(non_empty_config_string("providers.account_profile", value)?)
-            }
             "providers.effort" => {
                 self.providers.effort = Some(non_empty_config_string("providers.effort", value)?)
             }
@@ -190,6 +186,27 @@ impl CharioxUserConfig {
             "state.snapshot_interval_events" => {
                 self.state.snapshot_interval_events = Some(parse_config_u32(
                     "state.snapshot_interval_events",
+                    &value,
+                    true,
+                )?)
+            }
+            "state.snapshot_interval_bytes" => {
+                self.state.snapshot_interval_bytes = Some(parse_config_u32(
+                    "state.snapshot_interval_bytes",
+                    &value,
+                    true,
+                )?)
+            }
+            "state.snapshot_interval_seconds" => {
+                self.state.snapshot_interval_seconds = Some(parse_config_u32(
+                    "state.snapshot_interval_seconds",
+                    &value,
+                    true,
+                )?)
+            }
+            "state.snapshot_max_tail_bytes" => {
+                self.state.snapshot_max_tail_bytes = Some(parse_config_u32(
+                    "state.snapshot_max_tail_bytes",
                     &value,
                     true,
                 )?)
@@ -404,7 +421,6 @@ impl CharioxUserConfig {
         match normalized {
             "providers.default" => self.providers.default = None,
             "providers.model" => self.providers.model = None,
-            "providers.account_profile" => self.providers.account_profile = None,
             "providers.effort" => self.providers.effort = None,
             "ui.theme" => self.ui.theme = None,
             "ui.multi_agent_response_layout" => self.ui.multi_agent_response_layout = None,
@@ -477,6 +493,9 @@ impl CharioxUserConfig {
             }
             "state.path" => self.state.path = None,
             "state.snapshot_interval_events" => self.state.snapshot_interval_events = None,
+            "state.snapshot_interval_bytes" => self.state.snapshot_interval_bytes = None,
+            "state.snapshot_interval_seconds" => self.state.snapshot_interval_seconds = None,
+            "state.snapshot_max_tail_bytes" => self.state.snapshot_max_tail_bytes = None,
             "slices.root" => self.slices.root = None,
             "slices.linux.docker_image" => self.slices.linux.docker_image = None,
             "slices.linux.build_image" => self.slices.linux.build_image = None,

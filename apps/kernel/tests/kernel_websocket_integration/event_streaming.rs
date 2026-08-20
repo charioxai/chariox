@@ -156,6 +156,7 @@ async fn kernel_websocket_streams_workflow_run_updates() {
             session_id: session_id.clone(),
             alias: Some("node-a".to_string()),
             provider: Some("dev-stub".to_string()),
+            account_profile: None,
             model: None,
             effort: None,
             execution_mode: None,

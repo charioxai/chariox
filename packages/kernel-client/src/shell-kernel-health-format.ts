@@ -471,7 +471,7 @@ function appendRemoteRuntimeIssues(lines: string[], health: DaemonHealthProjecti
     const sliceRef = firstIssue?.slice_id
     const provider = firstIssue?.provider
     const providerAction = provider && sliceRef
-      ? `use /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      ? `use /slice auth login ${sliceRef} ${provider} <account-profile> or /slice auth import ${sliceRef} ${provider} <account-profile>`
       : provider
         ? `identify the affected slice, then use /slice auth login or /slice auth import for ${provider}`
         : "after provider discovery, use the matching /slice auth login or /slice auth import command"

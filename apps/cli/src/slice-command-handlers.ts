@@ -96,11 +96,7 @@ export async function handleSliceSlashCommand(
     await startSliceAuthLogin(deps, args)
     return
   }
-  if (subcommand === "auth" && args[0] === "alias") {
-    await setSliceAuthAlias(deps, args)
-    return
-  }
-  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> | /slice auth remove [slice-ref] <provider> | /slice auth login [slice-ref] <provider> | /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  deps.flashFooter("usage: /slice list | /slice create <name> [--headed|--headless] [--from-state <state-ref>] | /slice status [slice-ref] | /slice doctor [slice-ref] | /slice logs [slice-ref] [--tail <lines>] | /slice audit [slice-ref] [--limit <count>] | /slice state [slice-ref] | /slice save-state [slice-ref] --restart-agents|--shutdown | /slice backup [slice-ref] [--name <name>] | /slice reset-state [slice-ref] | /slice start [slice-ref] | /slice stop [slice-ref] | /slice delete <slice-ref> | /slice screen [slice-ref] | /slice auth import [slice-ref] <provider> <account-profile> | /slice auth remove [slice-ref] <provider> <account-profile> | /slice auth login [slice-ref] <provider> <account-profile>", "error")
 }
 
 function formatSliceLabel(slice: SliceRecord): string {
@@ -212,9 +208,12 @@ function sliceAuditNextAction(action: string, outcome: string, payload: Record<s
   }
   const sliceRef = String(label || payload.slice_id || "<slice>")
   const provider = typeof payload.provider === "string" && payload.provider ? payload.provider : null
+  const accountProfile = typeof payload.account_profile === "string" && payload.account_profile
+    ? payload.account_profile
+    : "<account-profile>"
   if (action.startsWith("auth.")) {
     return provider
-      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} or /slice auth import ${sliceRef} ${provider}`
+      ? `run /slice doctor ${sliceRef}; retry with /slice auth login ${sliceRef} ${provider} ${accountProfile} or /slice auth import ${sliceRef} ${provider} ${accountProfile}`
       : `run /slice doctor ${sliceRef}; inspect provider account state, then retry the matching /slice auth command`
   }
   if (["start", "stop", "delete", "state.save", "state.reset", "backup.create"].includes(action)) {
@@ -789,11 +788,11 @@ function sliceProviderNames(providers: readonly string[]): string[] {
 
 function formatSliceAuthRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
   return formatProviderRecoveryCommands(providers, (provider) =>
-    `/slice auth import ${formatSliceLabel(slice)} ${provider} or /slice auth login ${formatSliceLabel(slice)} ${provider}`)
+    `/slice auth import ${formatSliceLabel(slice)} ${provider} <account-profile> or /slice auth login ${formatSliceLabel(slice)} ${provider} <account-profile>`)
 }
 
 function formatSliceAuthLoginRecoveryCommands(slice: SliceRecord, providers: readonly string[]): string {
-  return formatProviderRecoveryCommands(providers, (provider) => `/slice auth login ${formatSliceLabel(slice)} ${provider}`)
+  return formatProviderRecoveryCommands(providers, (provider) => `/slice auth login ${formatSliceLabel(slice)} ${provider} <account-profile>`)
 }
 
 function formatProviderRecoveryCommands(providers: readonly string[], commandForProvider: (provider: string) => string): string {
@@ -901,13 +900,15 @@ async function importSliceAuth(
     deps.flashFooter("slice auth import is unavailable in this build", "error")
     return
   }
-  const provider = args.length >= 3 ? args[2] : args[1]
-  const sliceRef = args.length >= 3 ? args[1]! : await resolveFocusedSliceRef(deps)
-  if (!provider) {
-    deps.flashFooter("usage: /slice auth import [slice-ref] <provider>", "error")
+  const hasExplicitSlice = args.length >= 4
+  const sliceRef = hasExplicitSlice ? args[1]! : await resolveFocusedSliceRef(deps)
+  const provider = hasExplicitSlice ? args[2] : args[1]
+  const accountProfile = hasExplicitSlice ? args[3] : args[2]
+  if (!provider || !accountProfile) {
+    deps.flashFooter("usage: /slice auth import [slice-ref] <provider> <account-profile>", "error")
     return
   }
-  const result = await deps.importSliceProviderAuth(sliceRef, provider)
+  const result = await deps.importSliceProviderAuth(sliceRef, provider, accountProfile)
   deps.flashFooter(
     formatSliceProviderAuthActionResult("import", result.slice, result.provider, result.status),
     result.status === "imported" ? "info" : "error",
@@ -922,13 +923,15 @@ async function removeSliceAuth(
     deps.flashFooter("slice auth remove is unavailable in this build", "error")
     return
   }
-  const provider = args.length >= 3 ? args[2] : args[1]
-  const sliceRef = args.length >= 3 ? args[1]! : await resolveFocusedSliceRef(deps)
-  if (!provider) {
-    deps.flashFooter("usage: /slice auth remove [slice-ref] <provider>", "error")
+  const hasExplicitSlice = args.length >= 4
+  const sliceRef = hasExplicitSlice ? args[1]! : await resolveFocusedSliceRef(deps)
+  const provider = hasExplicitSlice ? args[2] : args[1]
+  const accountProfile = hasExplicitSlice ? args[3] : args[2]
+  if (!provider || !accountProfile) {
+    deps.flashFooter("usage: /slice auth remove [slice-ref] <provider> <account-profile>", "error")
     return
   }
-  const result = await deps.removeSliceProviderAuth(sliceRef, provider)
+  const result = await deps.removeSliceProviderAuth(sliceRef, provider, accountProfile)
   deps.flashFooter(
     formatSliceProviderAuthActionResult("remove", result.slice, result.provider, result.status),
     result.status === "removed" ? "info" : "error",
@@ -943,39 +946,15 @@ async function startSliceAuthLogin(
     deps.flashFooter("slice auth login is unavailable in this build", "error")
     return
   }
-  const provider = args.length >= 3 ? args[2] : args[1]
-  const sliceRef = args.length >= 3 ? args[1]! : await resolveFocusedSliceRef(deps)
-  if (!provider) {
-    deps.flashFooter("usage: /slice auth login [slice-ref] <provider>", "error")
-    return
-  }
-  const result = await deps.startSliceProviderLogin(sliceRef, provider)
-  deps.appendNotice(formatSliceProviderLogin(result.login))
-  deps.flashFooter(`slice auth login ${result.login.provider}: ${result.login.status}`, "info")
-}
-
-async function setSliceAuthAlias(
-  deps: SliceCommandHandlerDeps,
-  args: string[],
-): Promise<void> {
-  if (!deps.setSliceProviderAuthAlias) {
-    deps.flashFooter("slice auth alias is unavailable in this build", "error")
-    return
-  }
   const hasExplicitSlice = args.length >= 4
   const sliceRef = hasExplicitSlice ? args[1]! : await resolveFocusedSliceRef(deps)
   const provider = hasExplicitSlice ? args[2] : args[1]
-  const aliasValue = hasExplicitSlice ? args.slice(3).join(" ") : args.slice(2).join(" ")
-  if (!provider || !aliasValue) {
-    deps.flashFooter("usage: /slice auth alias [slice-ref] <provider> <alias|clear>", "error")
+  const accountProfile = hasExplicitSlice ? args[3] : args[2]
+  if (!provider || !accountProfile) {
+    deps.flashFooter("usage: /slice auth login [slice-ref] <provider> <account-profile>", "error")
     return
   }
-  const alias = aliasValue === "clear" ? null : aliasValue
-  const result = await deps.setSliceProviderAuthAlias(sliceRef, provider, alias)
-  deps.flashFooter(
-    result.alias
-      ? `slice auth alias ${result.provider}: ${result.alias}`
-      : `slice auth alias ${result.provider}: cleared`,
-    "info",
-  )
+  const result = await deps.startSliceProviderLogin(sliceRef, provider, accountProfile)
+  deps.appendNotice(formatSliceProviderLogin(result.login))
+  deps.flashFooter(`slice auth login ${result.login.provider}: ${result.login.status}`, "info")
 }

@@ -1,6 +1,6 @@
 import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
-import type { ProviderAccountSummary } from "@chariox/kernel-client"
+import type { ProviderAccountProfile, ProviderAccountSummary } from "@chariox/kernel-client"
 import type { ThemeName } from "./theme-registry.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
@@ -12,6 +12,8 @@ export type WaitingRoomFocus =
   | "project-entry"
   | "archived-projects"
   | "provider"
+  | "account"
+  | "provider-accounts"
   | "model"
   | "effort"
   | "workspace"
@@ -57,6 +59,7 @@ export type WaitingRoomState = {
   sliceSelectionId?: string
   sliceDisplayMode?: "headless" | "headed"
   providerId: BackendProviderId
+  accountProfileId?: string
   modelId: string
   effort: string
   executionMode?: "build" | "plan"
@@ -111,6 +114,7 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
+  providerAccounts?: ProviderAccountProfile[]
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"

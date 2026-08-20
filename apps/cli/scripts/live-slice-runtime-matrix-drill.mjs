@@ -35,7 +35,7 @@ const MATRIX = [
   }),
   scenario({
     id: "provider-auth",
-    description: "slice provider auth summaries, login, aliases, and removal",
+    description: "slice provider account summaries, login, import, and removal",
     script: sliceLifecycleDrill,
     classification: "slice-auth",
     runtimeSignals: ["slice-auth-state"],
@@ -43,7 +43,7 @@ const MATRIX = [
     providers: ["claude", "codex", "opencode"],
     exitCriteria: [
       "Codex, OpenCode, and Claude account summaries are extracted for a slice",
-      "provider auth alias, login, import, and removal flow through kernel requests",
+      "provider account login, profile-specific import, and removal flow through kernel requests",
     ],
   }),
   scenario({
@@ -78,7 +78,7 @@ const MATRIX = [
     runtimeSignals: ["client-projection-health", "runtime-projection-health", "slice-auth-state", "slice-runtime-state"],
     deployment: "local",
     exitCriteria: [
-      "slash-command status renders provider auth aliases from kernel state",
+      "slash-command status renders provider account profiles from kernel state",
       "waiting-room delete confirms and refreshes slice inventory through shared controllers",
     ],
   }),

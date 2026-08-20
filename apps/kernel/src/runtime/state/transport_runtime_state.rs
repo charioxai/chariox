@@ -7,13 +7,16 @@ const MIN_PROVIDER_PROCESS_GC_INTERVAL_MS: u64 = 250;
 impl KernelRuntimeState {
     pub(crate) fn waiting_room_auxiliary_projection(
         &self,
+        owner_user_id: &str,
         request: &crate::local::ListExternalProviderSessionsRequest,
     ) -> (
         crate::local::ExternalProviderSessionPage,
         crate::runtime::metaagent_event::MetaagentEventStore,
     ) {
         (
-            self.owned.external_provider_sessions.list(request),
+            self.owned
+                .external_provider_sessions
+                .list_for_owner(owner_user_id, request),
             self.owned.metaagent_events.clone(),
         )
     }
@@ -21,22 +24,21 @@ impl KernelRuntimeState {
     pub(crate) fn durable_snapshot_scheduler(
         &self,
     ) -> Option<crate::durable_snapshot::DurableSnapshotScheduler> {
-        let interval_events = self
-            .owned
-            .config_projection
-            .snapshot()
-            .user_config
-            .state
-            .snapshot_interval_events? as u64;
-        Some(crate::durable_snapshot::DurableSnapshotScheduler::new(
-            self.owned.config_projection.snapshot().daemon_id,
-            self.owned.durable_state_store.clone(),
-            self.owned.session_store.clone(),
-            self.owned.agent_store.clone(),
-            self.owned.slice_store.clone(),
-            self.owned.metaagent_events.clone(),
-            interval_events,
-        ))
+        let config = self.owned.config_projection.snapshot();
+        let policy = crate::durable_snapshot::DurableCheckpointPolicy::from_user_state_config(
+            &config.user_config.state,
+        )?;
+        Some(
+            crate::durable_snapshot::DurableSnapshotScheduler::new_with_policy(
+                config.daemon_id,
+                self.owned.durable_state_store.clone(),
+                self.owned.session_store.clone(),
+                self.owned.agent_store.clone(),
+                self.owned.slice_store.clone(),
+                self.owned.metaagent_events.clone(),
+                policy,
+            ),
+        )
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {

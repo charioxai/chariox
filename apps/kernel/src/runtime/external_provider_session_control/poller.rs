@@ -18,11 +18,17 @@ pub(super) async fn refresh_external_provider_session_index(
             })
         })
         .flatten();
-    let mut signature_read =
-        match read_external_provider_discovery_signature(cached_candidate_paths).await {
-            Some(signature) => signature,
-            None => return,
-        };
+    let profile_roots = runtime_state
+        .map(|runtime_state| registered_external_provider_profile_roots(runtime_state, None));
+    let mut signature_read = match read_external_provider_discovery_signature(
+        cached_candidate_paths,
+        profile_roots.clone(),
+    )
+    .await
+    {
+        Some(signature) => signature,
+        None => return,
+    };
     let mut signature_ms = signature_started.elapsed().as_millis();
     let cached_signature = cache.as_ref().and_then(|cache| cache.signature.as_ref());
     if !signature_read.full_scan
@@ -64,10 +70,11 @@ pub(super) async fn refresh_external_provider_session_index(
             return;
         }
         let full_signature_started = Instant::now();
-        signature_read = match read_external_provider_discovery_signature(None).await {
-            Some(signature) => signature,
-            None => return,
-        };
+        signature_read =
+            match read_external_provider_discovery_signature(None, profile_roots.clone()).await {
+                Some(signature) => signature,
+                None => return,
+            };
         signature_ms += full_signature_started.elapsed().as_millis();
     }
     let signature = signature_read.signature.clone();
@@ -123,11 +130,20 @@ pub(super) async fn refresh_external_provider_session_index(
     }
     let discovery_started = Instant::now();
     let discovery_providers = providers_to_refresh.clone();
+    let discovery_profile_roots = profile_roots.clone();
     let discovered = match tokio::task::spawn_blocking(move || {
         discovery_providers
             .iter()
             .flat_map(|provider| {
-                crate::app::discover_external_provider_sessions(Some(provider.as_str()))
+                discovery_profile_roots.as_ref().map_or_else(
+                    || crate::app::discover_external_provider_sessions(Some(provider.as_str())),
+                    |profiles| {
+                        crate::app::discover_external_provider_sessions_for_profiles(
+                            profiles,
+                            Some(provider.as_str()),
+                        )
+                    },
+                )
             })
             .collect::<Vec<_>>()
     })
@@ -201,11 +217,15 @@ pub(super) async fn refresh_external_provider_session_index(
 
 pub(super) async fn read_external_provider_discovery_signature(
     cached_candidate_paths: Option<Vec<(String, PathBuf)>>,
+    profile_roots: Option<Vec<crate::app::ExternalProviderSessionProfileRoot>>,
 ) -> Option<ExternalProviderSessionDiscoverySignatureRead> {
     let full_scan = cached_candidate_paths.is_none();
     match tokio::task::spawn_blocking(move || {
-        let candidate_paths = cached_candidate_paths.unwrap_or_else(|| {
-            crate::app::external_provider_session_discovery_candidate_paths(None)
+        let candidate_paths = cached_candidate_paths.unwrap_or_else(|| match profile_roots {
+            Some(profiles) => {
+                crate::app::external_provider_session_candidate_paths_for_profiles(&profiles, None)
+            }
+            None => crate::app::external_provider_session_discovery_candidate_paths(None),
         });
         let signature = crate::app::external_provider_session_discovery_signature_for_candidates(
             &candidate_paths,
@@ -249,17 +269,29 @@ pub(crate) async fn execute_external_provider_session_request(
     caller_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let store = external_provider_session_index_store(app, runtime_state).await;
+    let account_owner_user_id = runtime_state.map_or_else(
+        || crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+        |runtime_state| runtime_state.provider_account_authority_owner_user_id(caller_user_id),
+    );
     match request {
         LocalDaemonRequest::ListExternalProviderSessions(request) => {
             refresh_external_provider_session_index(app, runtime_state, None, true).await;
             mark_attached_external_provider_sessions_for_runtime(app, runtime_state, &store).await;
             Ok(LocalDaemonResponse::ExternalProviderSessionsListed {
-                page: store.list(&request),
+                page: store.list_for_owner(&account_owner_user_id, &request),
             })
         }
         LocalDaemonRequest::RefreshExternalProviderSessions(request) => {
             let provider = request.provider.clone();
-            let discovered = crate::app::discover_external_provider_sessions(provider.as_deref());
+            let discovered = runtime_state.map_or_else(
+                || crate::app::discover_external_provider_sessions(provider.as_deref()),
+                |runtime_state| {
+                    crate::app::discover_external_provider_sessions_for_profiles(
+                        &registered_external_provider_profile_roots(runtime_state, None),
+                        provider.as_deref(),
+                    )
+                },
+            );
             if let Some(provider) = provider.as_deref() {
                 store.replace_provider_sessions(provider, discovered);
             } else {
@@ -285,7 +317,7 @@ pub(crate) async fn execute_external_provider_session_request(
                 limit: None,
             };
             Ok(LocalDaemonResponse::ExternalProviderSessionsRefreshed {
-                page: store.list(&list_request),
+                page: store.list_for_owner(&account_owner_user_id, &list_request),
             })
         }
         LocalDaemonRequest::ImportExternalProviderSession(request) => {
@@ -295,6 +327,7 @@ pub(crate) async fn execute_external_provider_session_request(
                 &store,
                 request,
                 caller_user_id,
+                &account_owner_user_id,
             )
             .await
         }
@@ -305,6 +338,7 @@ pub(crate) async fn execute_external_provider_session_request(
                 &store,
                 request,
                 caller_user_id,
+                &account_owner_user_id,
             )
             .await
         }
@@ -369,18 +403,60 @@ pub(super) async fn refresh_attached_external_provider_histories_matching(
                     provider_filter,
                     session_filter,
                 ) && (!responsive_targets_only || target.needs_responsive_refresh)
-                    && (!changed_transcripts_only
-                        || crate::app::external_provider_session_transcript_needs_refresh(
+                    && (!changed_transcripts_only || {
+                        runtime_state.map_or_else(
+                    || {
+                        crate::app::external_provider_session_transcript_needs_refresh(
                             &target.provider,
                             &target.provider_session_id,
-                        ))
+                        )
+                    },
+                    |runtime_state| {
+                        let roots = registered_external_provider_profile_roots_for(
+                            runtime_state,
+                            &target.owner_user_id,
+                            &target.provider,
+                            &target.account_profile,
+                        );
+                        crate::app::external_provider_session_transcript_needs_refresh_for_profile(
+                            &target.provider,
+                            &target.provider_session_id,
+                            &roots,
+                        )
+                    },
+                )
+                    })
             })
             .collect::<Vec<_>>();
     for target in targets {
         let provider = target.provider.clone();
+        let account_profile = target.account_profile.clone();
+        let owner_user_id = target.owner_user_id.clone();
         let provider_session_id = target.provider_session_id.clone();
+        let roots = runtime_state.map(|runtime_state| {
+            registered_external_provider_profile_roots_for(
+                runtime_state,
+                &owner_user_id,
+                &provider,
+                &account_profile,
+            )
+        });
         let read = match tokio::task::spawn_blocking(move || {
-            crate::app::read_external_provider_observed_turns(&provider, &provider_session_id)
+            roots.map_or_else(
+                || {
+                    crate::app::read_external_provider_observed_turns(
+                        &provider,
+                        &provider_session_id,
+                    )
+                },
+                |roots| {
+                    crate::app::read_external_provider_observed_turns_for_profile(
+                        &provider,
+                        &provider_session_id,
+                        &roots,
+                    )
+                },
+            )
         })
         .await
         {
@@ -553,6 +629,7 @@ async fn import_external_provider_session_for_runtime(
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderSessionRequest,
     caller_user_id: &str,
+    account_owner_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if let Some(runtime_state) = runtime_state {
         return runtime_state
@@ -564,6 +641,7 @@ async fn import_external_provider_session_for_runtime(
                     store,
                     request,
                     caller_user_id,
+                    account_owner_user_id,
                 )
             })
             .await;
@@ -572,7 +650,14 @@ async fn import_external_provider_session_for_runtime(
         .try_lock()
         .expect("legacy external-provider tests should not hold the daemon app lock");
     mark_attached_external_provider_sessions(&app, None, store);
-    import_external_provider_session(&mut app, None, store, request, caller_user_id)
+    import_external_provider_session(
+        &mut app,
+        None,
+        store,
+        request,
+        caller_user_id,
+        account_owner_user_id,
+    )
 }
 
 async fn import_external_provider_agent_for_runtime(
@@ -581,6 +666,7 @@ async fn import_external_provider_agent_for_runtime(
     store: &crate::app::ExternalProviderSessionIndexStore,
     request: ImportExternalProviderAgentRequest,
     caller_user_id: &str,
+    account_owner_user_id: &str,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     if let Some(runtime_state) = runtime_state {
         return runtime_state
@@ -592,6 +678,7 @@ async fn import_external_provider_agent_for_runtime(
                     store,
                     request,
                     caller_user_id,
+                    account_owner_user_id,
                 )
             })
             .await;
@@ -600,5 +687,12 @@ async fn import_external_provider_agent_for_runtime(
         .try_lock()
         .expect("legacy external-provider tests should not hold the daemon app lock");
     mark_attached_external_provider_sessions(&app, None, store);
-    import_external_provider_agent(&mut app, None, store, request, caller_user_id)
+    import_external_provider_agent(
+        &mut app,
+        None,
+        store,
+        request,
+        caller_user_id,
+        account_owner_user_id,
+    )
 }

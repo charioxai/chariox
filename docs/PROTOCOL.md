@@ -523,6 +523,10 @@ Current slice-management surface:
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
+- Local daemon protocol v267 adds kernel-owned provider-account CRUD, profile-scoped auth/login/logout/status, provider-neutral usage meters, and account-aware catalog requests. Waiting-room projections expose safe profile metadata and materialization state, never profile paths or credential payloads.
+- `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
+- Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
+- Relay peer protocol v18 carries the selected encrypted provider-account materialization before leased-agent spawn. The relay routes the opaque packet only. The worker validates lease ownership, materializes a distinct profile root, and launches the existing adapter/native-TUI path with that profile environment.
 - Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, and `slice.backup.create` creates a separate backup plus manual swap instructions. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
 - `slice.create.from_saved_state` may reference an existing saved-state id/name. Local Docker restore uses the saved image tag instead of the configured base image and extracts the saved home archive into the fresh slice home volume before normal provisioning continues. Restore still allocates fresh ports, relay identity, and worker identity through the normal slice start path.
 
@@ -694,6 +698,18 @@ Workflow trigger and deployment direction:
 - Scalingo-hosted Chariox Cloud APIs own deployment records and control commands
   only. Runtime publication traffic should terminate at the dedicated
   publication ingress and route from there to the active backend.
+
+Workflow run history queries:
+
+- `ListWorkflowRuns` is a bounded keyset-paginated query. Clients MAY provide
+  `limit` and the opaque `cursor` returned by an earlier page.
+- `WorkflowRunsListed` returns the selected `workflow_runs` plus an optional
+  `next_cursor`. The absence of `next_cursor` means the history is exhausted.
+- the kernel merges bounded hot, durable-history, and in-progress legacy
+  migration pages. It MUST NOT replay or scan the complete lifetime run history
+  to serve one request.
+- legacy terminal runs remain readable until their normalized durable migration
+  transaction commits; a failed or interrupted migration MUST NOT hide them.
 
 Publication deployment record:
 

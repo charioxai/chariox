@@ -16,7 +16,7 @@ pub struct ProviderAssistantCompletion {
     pub completed_at_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct ProviderPromptSignalBatch {
     pub chunks: Vec<ProviderPromptChunk>,
     pub completions: Vec<ProviderAssistantCompletion>,
@@ -28,6 +28,7 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_variant: Option<String>,
     pub resolved_usage_tokens_total: Option<u64>,
     pub resolved_usage: Option<ProviderRunTokenUsage>,
+    pub account_usage: Option<crate::account_profile::ProviderAccountUsageSnapshot>,
     pub resolved_resume_state: Option<ProviderResumeState>,
 }
 

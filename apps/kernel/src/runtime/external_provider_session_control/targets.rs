@@ -82,12 +82,13 @@ pub(super) fn attached_external_observer_targets_from_inputs(
         let provider_run_is_active = latest_run.as_ref().is_some_and(provider_run_is_running);
         let provider_run_id = latest_run.as_ref().map(|run| run.id().to_string());
         if let Some(import) = agent.external_provider_import().cloned() {
-            let target = attached_external_observer_target_from_import(
+            let mut target = attached_external_observer_target_from_import(
                 session_id,
                 agent.id(),
                 provider_run_id.clone(),
                 import,
             );
+            target.owner_user_id = agent.owner_user_id().to_string();
             targets.insert(attached_observer_target_key(&target), target);
         }
         for target in attached_external_observer_targets_from_resume_state(
@@ -96,6 +97,7 @@ pub(super) fn attached_external_observer_targets_from_inputs(
             agent.id(),
             provider_run_id.clone(),
             agent.provider_resume_state(),
+            agent.account_profile().unwrap_or("default"),
             provider_run_is_active,
         ) {
             targets
@@ -238,6 +240,7 @@ pub(super) fn attached_external_provider_session_refs(
         push_resume_state_attachments(
             &mut attached,
             agent.provider_resume_state(),
+            agent.account_profile().unwrap_or("default"),
             agent.session_id(),
             agent.id(),
         );
@@ -297,6 +300,7 @@ pub(super) fn attached_external_provider_session_refs_from_inputs(
         push_resume_state_attachments(
             &mut attached,
             agent.provider_resume_state(),
+            agent.account_profile().unwrap_or("default"),
             session_id,
             agent.id(),
         );
@@ -344,7 +348,11 @@ pub(super) fn push_provider_run_attachment(
     };
     if let Some(provider_session_id) = run.provider_session_id() {
         if let Some(external_session_id) =
-            external_session_id_for_provider_session(run.adapter_key(), provider_session_id)
+            crate::provider::canonical_profile_external_provider_session_id(
+                run.adapter_key(),
+                run.account_profile(),
+                provider_session_id,
+            )
         {
             attached.insert(AttachedExternalProviderSessionRef {
                 external_session_id,
@@ -353,18 +361,29 @@ pub(super) fn push_provider_run_attachment(
             });
         }
     }
-    push_resume_state_attachments(attached, run.resume_state(), run.session_id(), agent_id);
+    push_resume_state_attachments(
+        attached,
+        run.resume_state(),
+        run.account_profile(),
+        run.session_id(),
+        agent_id,
+    );
 }
 
 pub(super) fn push_resume_state_attachments(
     attached: &mut BTreeSet<AttachedExternalProviderSessionRef>,
     resume_state: &ProviderResumeState,
+    account_profile: &str,
     session_id: &str,
     agent_id: &str,
 ) {
     for (provider, provider_session_id) in resume_state.external_provider_sessions() {
         if let Some(external_session_id) =
-            external_session_id_for_provider_session(provider, provider_session_id)
+            crate::provider::canonical_profile_external_provider_session_id(
+                provider,
+                account_profile,
+                provider_session_id,
+            )
         {
             attached.insert(AttachedExternalProviderSessionRef {
                 external_session_id,
@@ -384,11 +403,13 @@ pub(super) fn attached_external_observer_target_from_import(
     let session_id = session_id.into();
     let agent_id = agent_id.into();
     AttachedExternalObserverTarget {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         session_id,
         agent_id,
         provider_run_id,
         external_session_id: import.external_provider_session_id.clone(),
         provider: import.external_provider.clone(),
+        account_profile: import.account_profile.clone(),
         provider_session_id: import.external_provider_session_provider_id.clone(),
         observed_cursor: import.observed_cursor.clone(),
         cursor_source: AttachedExternalObserverCursorSource::Imported(import),
@@ -405,15 +426,17 @@ pub(super) fn attached_external_observer_targets_from_provider_run(
     };
     let mut targets = Vec::new();
     if let Some(provider_session_id) = run.provider_session_id() {
-        if let Some(target) = attached_external_observer_target_from_provider_session(
+        if let Some(mut target) = attached_external_observer_target_from_provider_session(
             cursor_store,
             run.session_id(),
             agent_id,
             Some(run.id().to_string()),
             run.adapter_key(),
+            run.account_profile(),
             provider_session_id,
             provider_run_is_running(run),
         ) {
+            target.owner_user_id = run.owner_user_id().to_string();
             targets.push(target);
         }
     }
@@ -423,6 +446,7 @@ pub(super) fn attached_external_observer_targets_from_provider_run(
         agent_id,
         Some(run.id().to_string()),
         run.resume_state(),
+        run.account_profile(),
         provider_run_is_running(run),
     ));
     targets
@@ -434,6 +458,7 @@ pub(super) fn attached_external_observer_targets_from_resume_state(
     agent_id: &str,
     provider_run_id: Option<String>,
     resume_state: &ProviderResumeState,
+    account_profile: &str,
     needs_responsive_refresh: bool,
 ) -> Vec<AttachedExternalObserverTarget> {
     resume_state
@@ -446,6 +471,7 @@ pub(super) fn attached_external_observer_targets_from_resume_state(
                 agent_id,
                 provider_run_id.clone(),
                 provider,
+                account_profile,
                 provider_session_id,
                 needs_responsive_refresh,
             )
@@ -459,23 +485,30 @@ pub(super) fn attached_external_observer_target_from_provider_session(
     agent_id: &str,
     provider_run_id: Option<String>,
     provider: &str,
+    account_profile: &str,
     provider_session_id: &str,
     needs_responsive_refresh: bool,
 ) -> Option<AttachedExternalObserverTarget> {
-    let external_session_id =
-        external_session_id_for_provider_session(provider, provider_session_id)?;
+    let external_session_id = crate::provider::canonical_profile_external_provider_session_id(
+        provider,
+        account_profile,
+        provider_session_id,
+    )?;
     let cursor_key = AttachedProviderTranscriptCursorKey::new(
         session_id,
         agent_id,
         provider,
+        account_profile,
         provider_session_id,
     );
     Some(AttachedExternalObserverTarget {
+        owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         session_id: session_id.to_string(),
         agent_id: agent_id.to_string(),
         provider_run_id,
         external_session_id,
         provider: provider.to_string(),
+        account_profile: account_profile.to_string(),
         provider_session_id: provider_session_id.to_string(),
         observed_cursor: cursor_store.get(&cursor_key),
         cursor_source: AttachedExternalObserverCursorSource::CharioxOwned(cursor_key),

@@ -255,7 +255,7 @@ export function createWaitingRoomActivationController(
         provider: launch.provider,
         model: launch.model,
         effort: launch.effort,
-        account_profile: deps.getAccountProfile() ?? null,
+        account_profile: launch.accountProfile ?? deps.getAccountProfile() ?? "default",
         execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
         permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
         workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",

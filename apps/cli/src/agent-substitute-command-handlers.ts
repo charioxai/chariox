@@ -34,6 +34,7 @@ export type AgentSubstituteCommandHandlerDeps = {
     model: string,
     variant: string,
     agentId: string,
+    accountProfile?: string,
   ) => Promise<RuntimeProviderRun>
   setProviderRunState: (run: RuntimeProviderRun | null) => void
   refreshSessionState: (sessionId: string) => Promise<RuntimeSession>
@@ -143,6 +144,7 @@ export async function handleAgentSubstituteCommand(
       profile.model,
       profile.variant ?? "",
       payload.agent.id,
+      payload.agent.account_profile ?? undefined,
     )
     deps.setProviderRunState(run)
     const refreshedSession = await deps.refreshSessionState(payload.session.id)
@@ -158,6 +160,7 @@ export async function handleAgentSubstituteCommand(
       payload.agent.model ?? deps.currentModelId(),
       payload.agent.effort ?? deps.currentVariantId(),
       payload.agent.id,
+      payload.agent.account_profile ?? undefined,
     )
     deps.setProviderRunState(run)
     const refreshedSession = await deps.refreshSessionState(payload.session.id)

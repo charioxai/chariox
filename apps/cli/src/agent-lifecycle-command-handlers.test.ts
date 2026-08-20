@@ -57,8 +57,8 @@ test("agent list summary renders aliases and pluralization", () => {
       agent_ids: ["agent-2"],
       provider_auth: [{
         provider: "codex",
+        account_profile: "work",
         state: "authenticated",
-        alias: "work",
         email: "work@example.com",
         source: "slice",
       }],
@@ -144,9 +144,9 @@ test("agent inspect summary renders placement, grants, manifest, and substitutes
     agent_ids: ["agent-remote", "agent-helper"],
     provider_auth: [{
       provider: "codex",
+      account_profile: "daily",
       state: "authenticated",
       email: "dev@example.com",
-      alias: "daily",
       source: "slice",
     }],
   })], {

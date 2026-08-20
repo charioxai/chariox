@@ -293,11 +293,11 @@ mod tests {
         );
         assert_eq!(dispatches.starting_provider_runs.len(), 1);
 
-        let durable_session = runtime
+        runtime
             .owned
             .durable_state_store
-            .load_events_by_kind("session.updated")
-            .expect("durable session events should load")
+            .load_events_by_kind("workflow.runtime.updated")
+            .expect("durable workflow events should load")
             .into_iter()
             .rev()
             .find(|event| {
@@ -308,16 +308,15 @@ mod tests {
                         .and_then(serde_json::Value::as_str)
                         == Some("workflow_provider_prompt_failed")
             })
-            .and_then(|event| event.payload.get("session").cloned())
-            .map(serde_json::from_value::<crate::session::RuntimeSession>)
-            .transpose()
-            .expect("durable workflow session should decode")
-            .expect("workflow provider failure should persist its session");
+            .expect("workflow provider failure should persist a bounded transition");
+        let durable_run = runtime
+            .owned
+            .durable_state_store
+            .resolve_workflow_run(session.host_daemon_id(), &session_id, &workflow_run_id)
+            .expect("durable workflow run should load")
+            .expect("durable workflow run should exist");
         assert_eq!(
-            durable_session
-                .workflow_run(&workflow_run_id)
-                .expect("durable workflow run should exist")
-                .status(),
+            durable_run.status(),
             crate::session::WorkflowRunStatus::Failed,
         );
     }

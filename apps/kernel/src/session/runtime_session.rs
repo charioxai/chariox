@@ -65,8 +65,22 @@ struct WorkflowPublicationState {
     workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     workflow_event_bindings: Vec<WorkflowEventBinding>,
-    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    // Delivery receipts are normalized in durable_event_delivery_receipts. Keep legacy
+    // deserialization for migration, but never duplicate the receipt cache into session payloads.
+    #[serde(default, skip_serializing)]
     workflow_event_delivery_receipts: BTreeMap<String, WorkflowEventDeliveryReceipt>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct DurableWorkflowHotState {
+    pub(crate) workflows: Vec<WorkflowDefinition>,
+    pub(crate) workflow_prompt_queues: Vec<WorkflowPromptQueueDefinition>,
+    pub(crate) workflow_queued_prompts: VecDeque<WorkflowQueuedPrompt>,
+    pub(crate) workflow_schedules: Vec<WorkflowScheduleDefinition>,
+    pub(crate) workflow_consoles: Vec<WorkflowConsole>,
+    pub(crate) workflow_publications: Vec<WorkflowPublicationDefinition>,
+    pub(crate) workflow_publication_snapshots: BTreeMap<String, WorkflowPublicationSnapshot>,
+    pub(crate) workflow_event_bindings: Vec<WorkflowEventBinding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -146,6 +160,40 @@ pub struct RuntimeSession {
 }
 
 impl RuntimeSession {
+    pub(crate) fn durable_workflow_hot_state(&self) -> DurableWorkflowHotState {
+        DurableWorkflowHotState {
+            workflows: self.workflows.clone(),
+            workflow_prompt_queues: self.workflow_prompt_queues.clone(),
+            workflow_queued_prompts: self.workflow_queued_prompts.clone(),
+            workflow_schedules: self.workflow_schedules.clone(),
+            workflow_consoles: self.workflow_consoles.clone(),
+            workflow_publications: self
+                .workflow_publication_state
+                .workflow_publications
+                .clone(),
+            workflow_publication_snapshots: self
+                .workflow_publication_state
+                .workflow_publication_snapshots
+                .clone(),
+            workflow_event_bindings: self
+                .workflow_publication_state
+                .workflow_event_bindings
+                .clone(),
+        }
+    }
+
+    pub(crate) fn restore_durable_workflow_hot_state(&mut self, state: DurableWorkflowHotState) {
+        self.workflows = state.workflows;
+        self.workflow_prompt_queues = state.workflow_prompt_queues;
+        self.workflow_queued_prompts = state.workflow_queued_prompts;
+        self.workflow_schedules = state.workflow_schedules;
+        self.workflow_consoles = state.workflow_consoles;
+        self.workflow_publication_state.workflow_publications = state.workflow_publications;
+        self.workflow_publication_state
+            .workflow_publication_snapshots = state.workflow_publication_snapshots;
+        self.workflow_publication_state.workflow_event_bindings = state.workflow_event_bindings;
+    }
+
     pub(crate) fn durable_prompt_private_states(&self) -> Vec<DurablePromptPrivateState> {
         self.prompt_runtime.durable_private_states(&self.id)
     }
