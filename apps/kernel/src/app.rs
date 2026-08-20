@@ -144,6 +144,9 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     legacy_workflow_history: LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
@@ -222,6 +225,20 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
+        let managed_context_transfer_root = config
+            .durable_state_path()
+            .parent()
+            .map(|root| root.join("managed-context-transfers"))
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "open managed context transfer store",
+                message: "durable state path has no parent directory".to_string(),
+            })?;
+        let managed_context_transfers =
+            crate::managed_context::transfer::ManagedContextTransferStore::open(
+                managed_context_transfer_root,
+            )?;
+        let managed_kernel_registration =
+            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state store opened",
@@ -259,6 +276,8 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            managed_context_transfers,
+            managed_kernel_registration,
             legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
@@ -374,6 +393,18 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn managed_context_transfer_store(
+        &self,
+    ) -> crate::managed_context::transfer::ManagedContextTransferStore {
+        self.managed_context_transfers.clone()
+    }
+
+    pub(crate) fn managed_kernel_registration(
+        &self,
+    ) -> Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration> {
+        self.managed_kernel_registration.clone()
     }
 
     pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {

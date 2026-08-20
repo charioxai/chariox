@@ -1105,6 +1105,59 @@ fn bundle_verification_rejects_oversized_header_lines() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[test]
+fn published_import_receipt_recovers_an_import_after_process_restart() {
+    let root = test_root("publication-recovery");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let exported = one_repo_export(&root, &repository, "publication-recovery")
+        .expect("export publication fixture");
+    let request = DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "project-publication-recovery".to_string(),
+        destination_root: root.join("managed/project"),
+    };
+    let receipt = import_development_context_with_publication(
+        request.clone(),
+        "ctx_publication_recovery".to_string(),
+    )
+    .expect("publish development context with receipt");
+
+    let recovered = recover_development_context_publication(&request, "ctx_publication_recovery")
+        .expect("recover published context")
+        .expect("published receipt");
+    assert_eq!(recovered, receipt);
+    assert_eq!(recovered.repositories.len(), 1);
+    assert_eq!(
+        git_text_test(
+            &recovered.repositories[0].destination_path,
+            &["rev-parse", "HEAD"]
+        ),
+        recovered.repositories[0].head_sha
+    );
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn deterministic_import_validation_errors_are_not_retryable() {
+    let error = import_development_context(DevelopmentContextImportRequest {
+        archive_path: PathBuf::from("/unused/invalid-context.tar.gz"),
+        expected_archive_sha256: "not-a-sha256".to_string(),
+        expected_project_id: "project-1".to_string(),
+        destination_root: PathBuf::from("/unused/destination"),
+    })
+    .expect_err("invalid digest should fail before filesystem access");
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+}
+
 fn one_repo_export(
     root: &Path,
     repository: &Path,
@@ -1235,4 +1288,40 @@ fn assert_no_import_temporaries(root: &Path) {
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .find(|name| name.starts_with(".tmp-chariox-context-import"));
     assert_eq!(temporary, None);
+}
+
+#[cfg(unix)]
+#[test]
+fn publication_cleanup_rejects_a_replaced_symlink_ancestor() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_root("cleanup-symlink-ancestor");
+    let bound_parent = root.join("bound-parent");
+    let moved_parent = root.join("moved-parent");
+    let outside_parent = root.join("outside-parent");
+    fs::create_dir_all(&bound_parent).expect("create bound parent");
+    fs::create_dir_all(&outside_parent).expect("create outside parent");
+    let canonical_parent = fs::canonicalize(&bound_parent).expect("canonical bound parent");
+    let destination_root = canonical_parent.join("destination");
+    let publication_id = "publication-1";
+    let outside_staging = outside_parent.join(format!(
+        ".tmp-chariox-context-import-{publication_id}.staging"
+    ));
+    fs::create_dir(&outside_staging).expect("create outside staging canary");
+    fs::rename(&bound_parent, &moved_parent).expect("move bound parent");
+    symlink(&outside_parent, &bound_parent).expect("replace parent with symlink");
+
+    let error = cleanup_development_context_publication_staging(&destination_root, publication_id)
+        .expect_err("changed ancestor binding must reject cleanup");
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(outside_staging.exists());
+    fs::remove_file(&bound_parent).expect("remove parent symlink");
+    fs::remove_dir_all(root).expect("remove test root");
 }

@@ -28,6 +28,13 @@ use state::{
 const MIN_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(1);
 const MAX_PREPARE_RETRY_DELAY: Duration = Duration::from_secs(60);
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ConfirmedManagedKernelRegistration {
+    pub environment_id: String,
+    pub machine_id: String,
+    pub kernel_id: String,
+}
+
 #[derive(Debug)]
 struct PreparedManagedKernel {
     release: VerifiedRelease,
@@ -71,6 +78,35 @@ pub fn run_from_env() -> Result<(), DaemonError> {
         thread::sleep(jittered(retry_delay));
         retry_delay = retry_delay.saturating_mul(2).min(MAX_PREPARE_RETRY_DELAY);
     }
+}
+
+pub(crate) fn confirmed_managed_kernel_registration_from_env(
+) -> Result<Option<ConfirmedManagedKernelRegistration>, DaemonError> {
+    let Some(chariox_home) = std::env::var_os("CHARIOX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+    else {
+        return Ok(None);
+    };
+    let receipt_path = std::env::var_os("CHARIOX_MANAGED_BOOTSTRAP_RECEIPT")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| chariox_home.join("managed").join("bootstrap-receipt.json"));
+    if !receipt_path.exists() {
+        return Ok(None);
+    }
+    let config = BootstrapConfig::from_env()?;
+    let Some(receipt) = BootstrapReceipt::read(&config.receipt_path)? else {
+        return Ok(None);
+    };
+    if receipt.status != BootstrapReceiptStatus::Confirmed {
+        return Ok(None);
+    }
+    Ok(Some(ConfirmedManagedKernelRegistration {
+        environment_id: receipt.environment_id,
+        machine_id: receipt.machine_id,
+        kernel_id: receipt.kernel_id,
+    }))
 }
 
 fn prepare_managed_kernel(

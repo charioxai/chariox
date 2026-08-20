@@ -54,6 +54,15 @@ impl CommandRouter {
     }
 
     #[cfg(test)]
+    pub(crate) fn with_managed_kernel_registration(
+        mut self,
+        registration: crate::managed_bootstrap::ConfirmedManagedKernelRegistration,
+    ) -> Self {
+        self.managed_kernel_registration = Some(registration);
+        self
+    }
+
+    #[cfg(test)]
     pub(crate) fn with_interactive_and_session_capacity(
         app: Arc<Mutex<DaemonApp>>,
         interactive_capacity: usize,
@@ -152,6 +161,10 @@ pub(super) struct RouterProjectionStores {
     pub(super) prompt_state_owner: PromptStateOwner,
     pub(super) prompt_id_allocator: PromptIdAllocator,
     pub(super) credential_enrollment_control: CredentialEnrollmentControl,
+    pub(super) managed_context_transfers:
+        crate::managed_context::transfer::ManagedContextTransferStore,
+    pub(super) managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
 }
 
 pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterProjectionStores {
@@ -191,6 +204,8 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         prompt_state_owner: app.prompt_state_owner(),
         prompt_id_allocator: app.prompt_id_allocator(),
         credential_enrollment_control: app.credential_enrollment_control(),
+        managed_context_transfers: app.managed_context_transfer_store(),
+        managed_kernel_registration: app.managed_kernel_registration(),
     }
 }
 
@@ -258,6 +273,8 @@ pub(super) fn compose_command_router(
         prompt_state_owner,
         prompt_id_allocator,
         credential_enrollment_control,
+        managed_context_transfers,
+        managed_kernel_registration,
     } = router_projection_stores(&app);
     let runtime_state = KernelRuntimeState::new_with_owned_state_and_lanes(
         Arc::clone(&app),
@@ -343,6 +360,8 @@ pub(super) fn compose_command_router(
         provider_run_projection,
         provider_process_projection,
         credential_enrollment_control,
+        managed_context_transfers,
+        managed_kernel_registration,
         active_turns,
         remote_relay_inventory_projection,
         config_projection,

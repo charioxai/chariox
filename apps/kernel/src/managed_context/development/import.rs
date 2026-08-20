@@ -1,12 +1,65 @@
 use super::*;
+
+const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 1;
+const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
+const MAX_PUBLICATION_RECEIPT_BYTES: u64 = 64 * 1024;
+
 pub fn import_development_context(
     request: DevelopmentContextImportRequest,
 ) -> Result<DevelopmentContextImportResult, DaemonError> {
-    import_development_context_with_budgets(
+    import_development_context_with_options(
         request,
         MAX_CHECKOUT_BYTES_PER_PROJECT,
         MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        None,
     )
+    .map(|(result, _)| result)
+}
+
+pub(crate) fn import_development_context_with_publication(
+    request: DevelopmentContextImportRequest,
+    publication_id: String,
+) -> Result<DevelopmentContextPublicationReceipt, DaemonError> {
+    validate_publication_id(&publication_id)?;
+    let (_, receipt) = import_development_context_with_options(
+        request,
+        MAX_CHECKOUT_BYTES_PER_PROJECT,
+        MAX_MATERIALIZED_ENTRIES_PER_PROJECT,
+        Some(publication_id),
+    )?;
+    receipt.ok_or_else(|| context_error("development context publication receipt is missing"))
+}
+
+pub(crate) fn recover_development_context_publication(
+    request: &DevelopmentContextImportRequest,
+    publication_id: &str,
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    validate_import_request(request)?;
+    validate_publication_id(publication_id)?;
+    let destination_metadata = match fs::symlink_metadata(&request.destination_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(context_io_error(
+                "inspect published development context",
+                error,
+            ))
+        }
+    };
+    if destination_metadata.file_type().is_symlink() || !destination_metadata.is_dir() {
+        return Err(context_error(
+            "published development context destination must be a real directory",
+        ));
+    }
+    let canonical_destination = fs::canonicalize(&request.destination_root).map_err(|error| {
+        context_io_error("resolve published development context destination", error)
+    })?;
+    let receipt = read_publication_receipt(&canonical_destination.join(PUBLICATION_RECEIPT_FILE))?
+        .ok_or_else(|| {
+            context_error("occupied development context destination has no publication receipt")
+        })?;
+    validate_publication_receipt(&receipt, request, publication_id, &canonical_destination)?;
+    Ok(Some(receipt))
 }
 
 pub(super) fn import_development_context_with_budgets(
@@ -14,6 +67,27 @@ pub(super) fn import_development_context_with_budgets(
     maximum_project_checkout_bytes: u64,
     maximum_project_materialized_entries: u64,
 ) -> Result<DevelopmentContextImportResult, DaemonError> {
+    import_development_context_with_options(
+        request,
+        maximum_project_checkout_bytes,
+        maximum_project_materialized_entries,
+        None,
+    )
+    .map(|(result, _)| result)
+}
+
+fn import_development_context_with_options(
+    request: DevelopmentContextImportRequest,
+    maximum_project_checkout_bytes: u64,
+    maximum_project_materialized_entries: u64,
+    publication_id: Option<String>,
+) -> Result<
+    (
+        DevelopmentContextImportResult,
+        Option<DevelopmentContextPublicationReceipt>,
+    ),
+    DaemonError,
+> {
     validate_import_request(&request)?;
     let destination_parent = request.destination_root.parent().ok_or_else(|| {
         context_error("development context destination must have a parent directory")
@@ -52,8 +126,12 @@ pub(super) fn import_development_context_with_budgets(
         )));
     }
 
-    let staging_root =
-        create_unique_private_directory(&canonical_parent, ".tmp-chariox-context-import")?;
+    let staging_root = match publication_id.as_deref() {
+        Some(publication_id) => {
+            create_publication_staging_directory(&canonical_parent, publication_id)?
+        }
+        None => create_unique_private_directory(&canonical_parent, ".tmp-chariox-context-import")?,
+    };
     let cleanup = ImportCleanup::new(staging_root.clone());
     let archive_snapshot = staging_root.join("archive.snapshot.tar.gz");
     let (archive_file, archive_size, archive_sha256) =
@@ -112,6 +190,32 @@ pub(super) fn import_development_context_with_budgets(
         .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
         .map(|repository| repository.repository_id.clone())
         .ok_or_else(|| context_error("imported context has no primary repository"))?;
+    let result = DevelopmentContextImportResult {
+        manifest,
+        destination_root: destination_root.clone(),
+        primary_repository_id,
+        repositories: imported,
+    };
+    let publication_receipt =
+        publication_id.map(|publication_id| DevelopmentContextPublicationReceipt {
+            schema_version: PUBLICATION_RECEIPT_SCHEMA_VERSION,
+            publication_id,
+            archive_sha256: request.expected_archive_sha256.to_ascii_lowercase(),
+            project_id: request.expected_project_id.clone(),
+            destination_root: destination_root.clone(),
+            primary_repository_id: result.primary_repository_id.clone(),
+            repositories: result.repositories.clone(),
+        });
+    if let Some(receipt) = &publication_receipt {
+        let bytes = serde_json::to_vec(receipt)
+            .map_err(|error| context_error(format!("serialize import receipt: {error}")))?;
+        if bytes.len() as u64 > MAX_PUBLICATION_RECEIPT_BYTES {
+            return Err(context_error(
+                "development context publication receipt exceeds its size limit",
+            ));
+        }
+        write_private_file(&project_root.join(PUBLICATION_RECEIPT_FILE), &bytes)?;
+    }
     fs::remove_dir_all(&artifacts_root)
         .map_err(|error| context_io_error("remove imported context artifacts", error))?;
     sync_directory(&project_root)?;
@@ -123,12 +227,7 @@ pub(super) fn import_development_context_with_budgets(
     }
     drop(cleanup);
 
-    Ok(DevelopmentContextImportResult {
-        manifest,
-        destination_root,
-        primary_repository_id,
-        repositories: imported,
-    })
+    Ok((result, publication_receipt))
 }
 
 pub(super) fn snapshot_and_hash_archive(
@@ -221,6 +320,200 @@ fn validate_import_request(request: &DevelopmentContextImportRequest) -> Result<
     {
         return Err(context_error(
             "expected development context archive digest must be SHA-256",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_publication_id(publication_id: &str) -> Result<(), DaemonError> {
+    if publication_id.is_empty()
+        || publication_id.len() > 128
+        || !publication_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(context_error(
+            "development context publication id is invalid",
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn cleanup_development_context_publication_staging(
+    destination_root: &Path,
+    publication_id: &str,
+) -> Result<(), DaemonError> {
+    validate_publication_id(publication_id)?;
+    let parent = destination_root.parent().ok_or_else(|| {
+        context_error("development context publication destination has no parent")
+    })?;
+    let canonical_parent = match fs::canonicalize(parent) {
+        Ok(parent) => parent,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(context_io_error(
+                "resolve publication import staging parent",
+                error,
+            ))
+        }
+    };
+    if canonical_parent != parent {
+        return Err(context_error(
+            "development context publication staging parent binding changed",
+        ));
+    }
+    remove_publication_staging_directory(&publication_staging_path(
+        &canonical_parent,
+        publication_id,
+    ))
+}
+
+fn create_publication_staging_directory(
+    canonical_parent: &Path,
+    publication_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    let staging = publication_staging_path(canonical_parent, publication_id);
+    remove_publication_staging_directory(&staging)?;
+    fs::create_dir(&staging)
+        .map_err(|error| context_io_error("create publication import staging", error))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&staging, fs::Permissions::from_mode(0o700))
+            .map_err(|error| context_io_error("secure publication import staging", error))?;
+    }
+    sync_directory(canonical_parent)?;
+    Ok(staging)
+}
+
+fn publication_staging_path(parent: &Path, publication_id: &str) -> PathBuf {
+    parent.join(format!(
+        ".tmp-chariox-context-import-{publication_id}.staging"
+    ))
+}
+
+fn remove_publication_staging_directory(path: &Path) -> Result<(), DaemonError> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(context_io_error(
+                "inspect publication import staging",
+                error,
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(context_error(
+            "publication import staging must be a real directory",
+        ));
+    }
+    fs::remove_dir_all(path)
+        .map_err(|error| context_io_error("remove publication import staging", error))?;
+    if let Some(parent) = path.parent() {
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+fn read_publication_receipt(
+    path: &Path,
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(context_io_error("open import publication receipt", error)),
+    };
+    let metadata = file
+        .metadata()
+        .map_err(|error| context_io_error("inspect import publication receipt", error))?;
+    if !metadata.is_file() || metadata.len() > MAX_PUBLICATION_RECEIPT_BYTES {
+        return Err(context_error(
+            "development context publication receipt must be a bounded regular file",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(MAX_PUBLICATION_RECEIPT_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| context_io_error("read import publication receipt", error))?;
+    if bytes.len() as u64 > MAX_PUBLICATION_RECEIPT_BYTES {
+        return Err(context_error(
+            "development context publication receipt exceeds its size limit",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|_| context_error("development context publication receipt is invalid"))
+}
+
+fn validate_publication_receipt(
+    receipt: &DevelopmentContextPublicationReceipt,
+    request: &DevelopmentContextImportRequest,
+    publication_id: &str,
+    canonical_destination: &Path,
+) -> Result<(), DaemonError> {
+    if receipt.schema_version != PUBLICATION_RECEIPT_SCHEMA_VERSION
+        || receipt.publication_id != publication_id
+        || receipt.archive_sha256 != request.expected_archive_sha256.to_ascii_lowercase()
+        || receipt.project_id != request.expected_project_id
+        || receipt.destination_root != canonical_destination
+        || receipt.repositories.is_empty()
+        || receipt.repositories.len() > MAX_REPOSITORIES
+    {
+        return Err(context_error(
+            "development context publication receipt does not match the import",
+        ));
+    }
+    let mut repository_ids = BTreeSet::new();
+    let mut target_directories = BTreeSet::new();
+    let mut primary_ids = Vec::new();
+    for repository in &receipt.repositories {
+        validate_publication_id(&repository.repository_id)?;
+        validate_git_oid(&repository.head_sha)?;
+        let target = Path::new(&repository.target_directory);
+        if repository.target_directory.is_empty()
+            || repository.target_directory.len() > 255
+            || !target
+                .components()
+                .all(|component| matches!(component, Component::Normal(_)))
+            || target.components().count() != 1
+            || !repository_ids.insert(repository.repository_id.clone())
+            || !target_directories.insert(repository.target_directory.clone())
+            || repository.destination_path
+                != canonical_destination.join(&repository.target_directory)
+        {
+            return Err(context_error(
+                "development context publication receipt has invalid repository mappings",
+            ));
+        }
+        let repository_metadata = fs::symlink_metadata(&repository.destination_path)
+            .map_err(|error| context_io_error("inspect published repository destination", error))?;
+        if repository_metadata.file_type().is_symlink() || !repository_metadata.is_dir() {
+            return Err(context_error(
+                "published repository destination must be a real directory",
+            ));
+        }
+        if git_text_isolated(&repository.destination_path, &["rev-parse", "HEAD"])?
+            != repository.head_sha
+        {
+            return Err(context_error(
+                "published repository head does not match its receipt",
+            ));
+        }
+        if repository.role == DevelopmentRepositoryRole::Primary {
+            primary_ids.push(repository.repository_id.as_str());
+        }
+    }
+    if primary_ids.as_slice() != [receipt.primary_repository_id.as_str()] {
+        return Err(context_error(
+            "development context publication receipt has invalid primary repository mapping",
         ));
     }
     Ok(())

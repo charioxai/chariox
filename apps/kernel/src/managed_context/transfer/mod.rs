@@ -1,0 +1,689 @@
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
+
+use serde::{Deserialize, Serialize};
+
+use crate::error::DaemonError;
+
+mod model;
+mod policy;
+mod storage;
+
+pub(crate) use model::{
+    ArmManagedContextTransfer, ArmedManagedContextTransfer, ManagedContextImportClaim,
+    ManagedContextTransferCaller, ManagedContextTransferPhase, ManagedContextTransferStatus,
+    ReadyManagedContextImport,
+};
+use policy::{
+    authorize_entry, current_time_ms, prune_expired, random_identifier, random_secret,
+    sha256_bytes, status, transfer_error, validate_arm_request, validate_persisted_state,
+    validate_sha256,
+};
+use storage::{
+    create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
+    read_private_state_file, remove_archive_if_present, sha256_file, transfer_io_error,
+    write_private_state_file,
+};
+
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 1;
+const MAX_ACTIVE_TRANSFERS: usize = 64;
+const MAX_TRANSFER_RECORDS: usize = 256;
+const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 512 * 1024;
+const MAX_IDENTIFIER_BYTES: usize = 4096;
+const MAX_DESTINATION_BYTES: usize = 16 * 1024;
+const MAX_TRANSFER_TTL_MS: u64 = 30 * 60 * 1_000;
+const MAX_IMPORT_RECOVERY_MS: u64 = 6 * 60 * 60 * 1_000;
+const COMPLETED_TRANSFER_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
+const MAX_IMPORT_RECEIPT_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedTransferState {
+    schema_version: u32,
+    entries: BTreeMap<String, PersistedTransfer>,
+}
+
+impl Default for PersistedTransferState {
+    fn default() -> Self {
+        Self {
+            schema_version: TRANSFER_STATE_SCHEMA_VERSION,
+            entries: BTreeMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedTransfer {
+    capability_sha256: String,
+    target_environment_id: String,
+    target_kernel_id: String,
+    target_key_thumbprint: String,
+    source_kernel_id: String,
+    source_key_thumbprint: String,
+    owner_user_id: String,
+    realm_id: String,
+    project_id: String,
+    archive_sha256: String,
+    archive_size_bytes: u64,
+    destination_root: PathBuf,
+    expires_at_ms: u64,
+    phase: ManagedContextTransferPhase,
+    accepted_bytes: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_receipt_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_receipt_json: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    completed_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    import_started_at_ms: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    failure_code: Option<String>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ManagedContextTransferStore {
+    root: PathBuf,
+    state: Arc<Mutex<PersistedTransferState>>,
+    active_imports: Arc<Mutex<HashSet<String>>>,
+}
+
+impl ManagedContextTransferStore {
+    pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
+        ensure_private_directory(&root)?;
+        let state_path = root.join("state.json");
+        let state = match read_private_state_file(&state_path)? {
+            Some(bytes) => {
+                serde_json::from_slice::<PersistedTransferState>(&bytes).map_err(|error| {
+                    transfer_error(format!("parse managed context transfer state: {error}"))
+                })?
+            }
+            None => PersistedTransferState::default(),
+        };
+        if state.schema_version != TRANSFER_STATE_SCHEMA_VERSION {
+            return Err(transfer_error(format!(
+                "unsupported managed context transfer state version {}",
+                state.schema_version
+            )));
+        }
+        validate_persisted_state(&state)?;
+        let store = Self {
+            root,
+            state: Arc::new(Mutex::new(state)),
+            active_imports: Arc::new(Mutex::new(HashSet::new())),
+        };
+        store.cleanup_failed_transfers()?;
+        store.prune_expired_transfers(current_time_ms())?;
+        store.cleanup_interrupted_import_staging()?;
+        store.cleanup_consumed_archives()?;
+        store.reconcile_archive_lengths()?;
+        Ok(store)
+    }
+
+    pub(crate) fn arm(
+        &self,
+        request: ArmManagedContextTransfer,
+        now_ms: u64,
+    ) -> Result<ArmedManagedContextTransfer, DaemonError> {
+        validate_arm_request(&request, now_ms)?;
+        ensure_private_directory(&request.destination_parent)?;
+        let canonical_destination_parent = fs::canonicalize(&request.destination_parent)
+            .map_err(|error| transfer_io_error("resolve managed context destination", error))?;
+        self.prune_expired_transfers(now_ms)?;
+        let mut state = self.lock_state();
+        if state
+            .entries
+            .values()
+            .filter(|entry| {
+                !matches!(
+                    entry.phase,
+                    ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
+                )
+            })
+            .count()
+            >= MAX_ACTIVE_TRANSFERS
+        {
+            return Err(transfer_error("managed context transfer capacity is full"));
+        }
+        if state.entries.len() >= MAX_TRANSFER_RECORDS {
+            return Err(transfer_error(
+                "managed context transfer record capacity is full",
+            ));
+        }
+        let transfer_id = random_identifier("ctx");
+        let capability = random_secret();
+        state.entries.insert(
+            transfer_id.clone(),
+            PersistedTransfer {
+                capability_sha256: sha256_bytes(capability.as_bytes()),
+                target_environment_id: request.target_environment_id,
+                target_kernel_id: request.target_kernel_id,
+                target_key_thumbprint: request.target_key_thumbprint,
+                source_kernel_id: request.source_kernel_id,
+                source_key_thumbprint: request.source_key_thumbprint,
+                owner_user_id: request.owner_user_id,
+                realm_id: request.realm_id,
+                project_id: request.project_id,
+                archive_sha256: request.archive_sha256.to_ascii_lowercase(),
+                archive_size_bytes: request.archive_size_bytes,
+                destination_root: canonical_destination_parent.join(&transfer_id),
+                expires_at_ms: request.expires_at_ms,
+                phase: ManagedContextTransferPhase::Armed,
+                accepted_bytes: 0,
+                import_receipt_sha256: None,
+                import_receipt_json: None,
+                completed_at_ms: None,
+                import_started_at_ms: None,
+                failure_code: None,
+            },
+        );
+        if let Err(error) = self.persist_locked(&state) {
+            state.entries.remove(&transfer_id);
+            return Err(error);
+        }
+        Ok(ArmedManagedContextTransfer {
+            transfer_id,
+            capability,
+            expires_at_ms: request.expires_at_ms,
+        })
+    }
+
+    pub(crate) fn begin(
+        &self,
+        transfer_id: &str,
+        capability: &str,
+        caller: &ManagedContextTransferCaller,
+        now_ms: u64,
+    ) -> Result<ManagedContextTransferStatus, DaemonError> {
+        let mut state = self.lock_state();
+        let (result, changed) = {
+            let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
+            let mut changed = false;
+            if entry.phase == ManagedContextTransferPhase::Armed {
+                let archive_path = self.archive_path(transfer_id);
+                create_or_validate_empty_archive(&archive_path)?;
+                entry.phase = ManagedContextTransferPhase::Receiving;
+                changed = true;
+            }
+            (status(transfer_id, entry), changed)
+        };
+        if changed {
+            if let Err(error) = self.persist_locked(&state) {
+                if let Some(entry) = state.entries.get_mut(transfer_id) {
+                    entry.phase = ManagedContextTransferPhase::Armed;
+                }
+                return Err(error);
+            }
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn upload_chunk(
+        &self,
+        transfer_id: &str,
+        capability: &str,
+        caller: &ManagedContextTransferCaller,
+        offset: u64,
+        bytes: &[u8],
+        chunk_sha256: &str,
+        now_ms: u64,
+    ) -> Result<ManagedContextTransferStatus, DaemonError> {
+        if bytes.is_empty() || bytes.len() > MAX_TRANSFER_CHUNK_BYTES {
+            return Err(transfer_error(format!(
+                "managed context chunk must contain between 1 and {MAX_TRANSFER_CHUNK_BYTES} bytes"
+            )));
+        }
+        validate_sha256(chunk_sha256, "chunk")?;
+        if sha256_bytes(bytes) != chunk_sha256.to_ascii_lowercase() {
+            return Err(transfer_error(
+                "managed context chunk digest does not match",
+            ));
+        }
+        let mut state = self.lock_state();
+        let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
+        if entry.phase != ManagedContextTransferPhase::Receiving {
+            return Err(transfer_error(
+                "managed context transfer is not receiving chunks",
+            ));
+        }
+        let end = offset.saturating_add(bytes.len() as u64);
+        if end > entry.archive_size_bytes {
+            return Err(transfer_error(
+                "managed context chunk exceeds the declared archive size",
+            ));
+        }
+        let archive_path = self.archive_path(transfer_id);
+        let mut archive = open_private_archive(&archive_path)?;
+        let length = archive
+            .metadata()
+            .map_err(|error| transfer_io_error("inspect managed context archive", error))?
+            .len();
+        if length != entry.accepted_bytes {
+            return Err(transfer_error(
+                "managed context archive length does not match its durable offset",
+            ));
+        }
+        if offset < entry.accepted_bytes {
+            if end > entry.accepted_bytes {
+                return Err(transfer_error(
+                    "managed context chunk overlaps the accepted offset",
+                ));
+            }
+            let mut existing = vec![0_u8; bytes.len()];
+            archive
+                .seek(SeekFrom::Start(offset))
+                .and_then(|_| archive.read_exact(&mut existing))
+                .map_err(|error| transfer_io_error("read accepted managed context chunk", error))?;
+            if existing != bytes {
+                return Err(transfer_error(
+                    "managed context chunk retry conflicts with accepted bytes",
+                ));
+            }
+            return Ok(status(transfer_id, entry));
+        }
+        if offset != entry.accepted_bytes {
+            return Err(transfer_error(format!(
+                "managed context chunk offset must equal {}",
+                entry.accepted_bytes
+            )));
+        }
+        archive
+            .seek(SeekFrom::End(0))
+            .and_then(|_| archive.write_all(bytes))
+            .and_then(|_| archive.sync_all())
+            .map_err(|error| transfer_io_error("append managed context chunk", error))?;
+        entry.accepted_bytes = end;
+        let result = status(transfer_id, entry);
+        if let Err(error) = self.persist_locked(&state) {
+            if let Err(reconciliation) = self.reconcile_uncertain_chunk_persist(
+                &mut state,
+                transfer_id,
+                offset,
+                end,
+                &archive,
+            ) {
+                return Err(reconciliation);
+            }
+            return Err(error);
+        }
+        Ok(result)
+    }
+
+    pub(crate) fn prepare_and_claim_import(
+        &self,
+        transfer_id: &str,
+        capability: &str,
+        caller: &ManagedContextTransferCaller,
+        now_ms: u64,
+    ) -> Result<ManagedContextImportClaim, DaemonError> {
+        let mut state = self.lock_state();
+        let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
+        if matches!(
+            entry.phase,
+            ManagedContextTransferPhase::Failed | ManagedContextTransferPhase::Consumed
+        ) {
+            return Ok(ManagedContextImportClaim::Terminal(status(
+                transfer_id,
+                entry,
+            )));
+        }
+        let mut active_imports = self.lock_active_imports();
+        if entry.phase == ManagedContextTransferPhase::Importing {
+            if active_imports.contains(transfer_id) {
+                return Ok(ManagedContextImportClaim::InProgress(status(
+                    transfer_id,
+                    entry,
+                )));
+            }
+            active_imports.insert(transfer_id.to_string());
+            return Ok(ManagedContextImportClaim::Claimed(ready_import(
+                &self.archive_path(transfer_id),
+                transfer_id,
+                entry,
+            )));
+        }
+        if !matches!(
+            entry.phase,
+            ManagedContextTransferPhase::Receiving | ManagedContextTransferPhase::ReadyToImport
+        ) {
+            return Err(transfer_error(
+                "managed context transfer is not ready to import",
+            ));
+        }
+        if entry.accepted_bytes != entry.archive_size_bytes {
+            return Err(transfer_error("managed context archive is incomplete"));
+        }
+        let archive_path = self.archive_path(transfer_id);
+        if sha256_file(&archive_path)? != entry.archive_sha256 {
+            return Err(transfer_error(
+                "managed context archive digest does not match",
+            ));
+        }
+        let prior_phase = entry.phase;
+        entry.phase = ManagedContextTransferPhase::Importing;
+        entry.import_started_at_ms = Some(now_ms);
+        active_imports.insert(transfer_id.to_string());
+        let ready = ready_import(&archive_path, transfer_id, entry);
+        if let Err(error) = self.persist_locked(&state) {
+            if let Some(entry) = state.entries.get_mut(transfer_id) {
+                entry.phase = prior_phase;
+                entry.import_started_at_ms = None;
+            }
+            active_imports.remove(transfer_id);
+            return Err(error);
+        }
+        Ok(ManagedContextImportClaim::Claimed(ready))
+    }
+
+    pub(crate) fn release_import(&self, transfer_id: &str) -> Result<(), DaemonError> {
+        self.lock_active_imports().remove(transfer_id);
+        Ok(())
+    }
+
+    pub(crate) fn retire_import(
+        &self,
+        transfer_id: &str,
+        failure_code: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        if failure_code.is_empty() || failure_code.len() > 128 {
+            return Err(transfer_error(
+                "managed context import failure code is invalid",
+            ));
+        }
+        let mut state = self.lock_state();
+        let destination_root = {
+            let entry = state
+                .entries
+                .get_mut(transfer_id)
+                .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
+            if entry.phase != ManagedContextTransferPhase::Importing {
+                return Err(transfer_error("managed context transfer is not importing"));
+            }
+            entry.phase = ManagedContextTransferPhase::Failed;
+            entry.failure_code = Some(failure_code.to_string());
+            entry.completed_at_ms = Some(now_ms);
+            entry.destination_root.clone()
+        };
+        let persist_result = self.persist_locked(&state);
+        self.lock_active_imports().remove(transfer_id);
+        if let Err(error) = persist_result {
+            if let Some(entry) = state.entries.get_mut(transfer_id) {
+                entry.phase = ManagedContextTransferPhase::Importing;
+                entry.failure_code = None;
+                entry.completed_at_ms = None;
+            }
+            return Err(error);
+        }
+        drop(state);
+        crate::managed_context::development::cleanup_development_context_publication_staging(
+            &destination_root,
+            transfer_id,
+        )?;
+        remove_archive_if_present(&self.archive_path(transfer_id))
+    }
+
+    pub(crate) fn commit_import(
+        &self,
+        transfer_id: &str,
+        import_receipt_json: &str,
+        now_ms: u64,
+    ) -> Result<(), DaemonError> {
+        if import_receipt_json.is_empty() || import_receipt_json.len() > MAX_IMPORT_RECEIPT_BYTES {
+            return Err(transfer_error(
+                "managed context import receipt size is invalid",
+            ));
+        }
+        serde_json::from_str::<serde_json::Value>(import_receipt_json)
+            .map_err(|_| transfer_error("managed context import receipt is invalid JSON"))?;
+        let receipt_sha256 = sha256_bytes(import_receipt_json.as_bytes());
+        let mut state = self.lock_state();
+        let entry = state
+            .entries
+            .get_mut(transfer_id)
+            .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
+        if entry.phase == ManagedContextTransferPhase::Consumed {
+            return if entry.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
+                && entry.import_receipt_json.as_deref() == Some(import_receipt_json)
+            {
+                drop(state);
+                remove_archive_if_present(&self.archive_path(transfer_id))
+            } else {
+                Err(transfer_error(
+                    "managed context import receipt conflicts with the consumed transfer",
+                ))
+            };
+        }
+        if entry.phase != ManagedContextTransferPhase::Importing {
+            return Err(transfer_error(
+                "managed context transfer is not ready to commit",
+            ));
+        }
+        entry.phase = ManagedContextTransferPhase::Consumed;
+        entry.import_receipt_sha256 = Some(receipt_sha256);
+        entry.import_receipt_json = Some(import_receipt_json.to_string());
+        entry.completed_at_ms = Some(now_ms);
+        if let Err(error) = self.persist_locked(&state) {
+            if let Some(entry) = state.entries.get_mut(transfer_id) {
+                entry.phase = ManagedContextTransferPhase::Importing;
+                entry.import_receipt_sha256 = None;
+                entry.import_receipt_json = None;
+                entry.completed_at_ms = None;
+            }
+            return Err(error);
+        }
+        self.lock_active_imports().remove(transfer_id);
+        drop(state);
+        remove_archive_if_present(&self.archive_path(transfer_id))
+    }
+
+    pub(crate) fn get_status(
+        &self,
+        transfer_id: &str,
+        capability: &str,
+        caller: &ManagedContextTransferCaller,
+        now_ms: u64,
+    ) -> Result<ManagedContextTransferStatus, DaemonError> {
+        let mut state = self.lock_state();
+        let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
+        Ok(status(transfer_id, entry))
+    }
+
+    fn archive_path(&self, transfer_id: &str) -> PathBuf {
+        self.root.join(format!("{transfer_id}.archive"))
+    }
+
+    fn persist_locked(&self, state: &PersistedTransferState) -> Result<(), DaemonError> {
+        let bytes = serde_json::to_vec(state).map_err(|error| {
+            transfer_error(format!("serialize managed context transfer state: {error}"))
+        })?;
+        write_private_state_file(&self.root.join("state.json"), &bytes)
+    }
+
+    fn reconcile_uncertain_chunk_persist(
+        &self,
+        state: &mut PersistedTransferState,
+        transfer_id: &str,
+        prior_offset: u64,
+        appended_offset: u64,
+        archive: &std::fs::File,
+    ) -> Result<(), DaemonError> {
+        let bytes = read_private_state_file(&self.root.join("state.json"))?
+            .ok_or_else(|| transfer_error("managed context transfer state disappeared"))?;
+        let durable = serde_json::from_slice::<PersistedTransferState>(&bytes)
+            .map_err(|error| transfer_error(format!("parse durable transfer state: {error}")))?;
+        if durable.schema_version != TRANSFER_STATE_SCHEMA_VERSION {
+            return Err(transfer_error(
+                "durable managed context transfer state version changed",
+            ));
+        }
+        validate_persisted_state(&durable)?;
+        let durable_offset = durable
+            .entries
+            .get(transfer_id)
+            .ok_or_else(|| transfer_error("durable managed context transfer disappeared"))?
+            .accepted_bytes;
+        match durable_offset {
+            offset if offset == appended_offset => {}
+            offset if offset == prior_offset => {
+                archive
+                    .set_len(prior_offset)
+                    .and_then(|_| archive.sync_all())
+                    .map_err(|error| {
+                        transfer_io_error("roll back uncommitted managed context chunk", error)
+                    })?;
+            }
+            _ => {
+                return Err(transfer_error(
+                    "durable managed context transfer offset is inconsistent",
+                ))
+            }
+        }
+        *state = durable;
+        Ok(())
+    }
+
+    fn reconcile_archive_lengths(&self) -> Result<(), DaemonError> {
+        let state = self.lock_state();
+        for (transfer_id, entry) in &state.entries {
+            if matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Armed
+                    | ManagedContextTransferPhase::Failed
+                    | ManagedContextTransferPhase::Consumed
+            ) {
+                continue;
+            }
+            let path = self.archive_path(transfer_id);
+            let file = open_private_archive(&path)?;
+            let length = file
+                .metadata()
+                .map_err(|error| transfer_io_error("inspect managed context archive", error))?
+                .len();
+            if length < entry.accepted_bytes {
+                return Err(transfer_error(format!(
+                    "managed context transfer `{transfer_id}` lost accepted bytes"
+                )));
+            }
+            if length > entry.accepted_bytes {
+                file.set_len(entry.accepted_bytes)
+                    .and_then(|_| file.sync_all())
+                    .map_err(|error| {
+                        transfer_io_error("reconcile managed context archive", error)
+                    })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_interrupted_import_staging(&self) -> Result<(), DaemonError> {
+        let state = self.lock_state();
+        for (transfer_id, entry) in &state.entries {
+            if entry.phase == ManagedContextTransferPhase::Importing {
+                crate::managed_context::development::cleanup_development_context_publication_staging(
+                    &entry.destination_root,
+                    transfer_id,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_consumed_archives(&self) -> Result<(), DaemonError> {
+        let state = self.lock_state();
+        for (transfer_id, entry) in &state.entries {
+            if entry.phase == ManagedContextTransferPhase::Consumed {
+                remove_archive_if_present(&self.archive_path(transfer_id))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cleanup_failed_transfers(&self) -> Result<(), DaemonError> {
+        let failed = {
+            let state = self.lock_state();
+            state
+                .entries
+                .iter()
+                .filter(|(_, entry)| entry.phase == ManagedContextTransferPhase::Failed)
+                .map(|(transfer_id, entry)| (transfer_id.clone(), entry.destination_root.clone()))
+                .collect::<Vec<_>>()
+        };
+        for (transfer_id, destination_root) in failed {
+            crate::managed_context::development::cleanup_development_context_publication_staging(
+                &destination_root,
+                &transfer_id,
+            )?;
+            remove_archive_if_present(&self.archive_path(&transfer_id))?;
+        }
+        Ok(())
+    }
+
+    fn prune_expired_transfers(&self, now_ms: u64) -> Result<(), DaemonError> {
+        let mut state = self.lock_state();
+        let state_before_prune = state.clone();
+        let active_imports = self.lock_active_imports();
+        let expired = prune_expired(&mut state, &active_imports, now_ms);
+        drop(active_imports);
+        if expired.is_empty() {
+            return Ok(());
+        }
+        for expired_id in expired {
+            if let Some(entry) = state_before_prune.entries.get(&expired_id) {
+                if matches!(
+                    entry.phase,
+                    ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
+                ) {
+                    if let Err(error) = crate::managed_context::development::cleanup_development_context_publication_staging(
+                        &entry.destination_root,
+                        &expired_id,
+                    ) {
+                        *state = state_before_prune;
+                        return Err(error);
+                    }
+                }
+            }
+            if let Err(error) = remove_archive_if_present(&self.archive_path(&expired_id)) {
+                *state = state_before_prune;
+                return Err(error);
+            }
+        }
+        if let Err(error) = self.persist_locked(&state) {
+            *state = state_before_prune;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn lock_state(&self) -> MutexGuard<'_, PersistedTransferState> {
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn lock_active_imports(&self) -> MutexGuard<'_, HashSet<String>> {
+        self.active_imports
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+
+fn ready_import(
+    archive_path: &std::path::Path,
+    transfer_id: &str,
+    entry: &PersistedTransfer,
+) -> ReadyManagedContextImport {
+    ReadyManagedContextImport {
+        transfer_id: transfer_id.to_string(),
+        archive_path: archive_path.to_path_buf(),
+        project_id: entry.project_id.clone(),
+        archive_sha256: entry.archive_sha256.clone(),
+        destination_root: entry.destination_root.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests;

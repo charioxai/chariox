@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
 use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity};
 use tokio::sync::RwLock;
 
@@ -14,7 +15,7 @@ use crate::transport::relay_peer::{
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
-use super::sender_identity::validate_optional_daemon_sender;
+use super::sender_identity::{require_bound_kernel_sender, validate_optional_daemon_sender};
 use super::{RelayClientState, RelayOutgoingSender};
 
 pub(super) async fn handle_daemon_peer_request(
@@ -71,6 +72,32 @@ pub(super) async fn handle_daemon_peer_request(
             daemon_private_key,
             daemon_id,
         )
+    };
+    let managed_context_identity = if managed_context_request(&request) {
+        let identity =
+            match require_bound_kernel_sender(caller_identity.as_ref(), &encrypted_request) {
+                Ok(identity) => identity.clone(),
+                Err(error) => {
+                    return encrypt_peer_response(
+                        &daemon_private_key,
+                        &requester_public_key,
+                        managed_context_failure_from_relay(&error),
+                    )
+                }
+            };
+        if stable_peer_daemon_id(from_daemon_id) != identity.subject {
+            return encrypt_peer_response(
+                &daemon_private_key,
+                &requester_public_key,
+                RelayPeerResponse::ManagedContextImportFailed {
+                    code: "unauthorized".to_string(),
+                    retryable: false,
+                },
+            );
+        }
+        Some(identity)
+    } else {
+        None
     };
     if !from_daemon_id.trim().is_empty() {
         state.write().await.remember_peer_public_key(
@@ -882,7 +909,163 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ArmManagedContextImport {
+            target_environment_id,
+            target_kernel_id,
+            target_key_thumbprint,
+            project_id,
+            archive_sha256,
+            archive_size_bytes,
+        } => {
+            let result = router
+                .relay_arm_managed_context_import(
+                    managed_context_identity
+                        .clone()
+                        .expect("managed context identity checked before dispatch"),
+                    target_environment_id,
+                    target_kernel_id,
+                    target_key_thumbprint,
+                    project_id,
+                    archive_sha256,
+                    archive_size_bytes,
+                )
+                .await;
+            match result {
+                Ok(response) => response,
+                Err(error) => managed_context_failure_response(&error),
+            }
+        }
+        RelayPeerRequest::BeginManagedContextImport {
+            transfer_id,
+            capability,
+        } => {
+            let result = router
+                .relay_begin_managed_context_import(
+                    managed_context_identity
+                        .clone()
+                        .expect("managed context identity checked before dispatch"),
+                    transfer_id,
+                    capability.into_inner(),
+                )
+                .await;
+            match result {
+                Ok(response) => response,
+                Err(error) => managed_context_failure_response(&error),
+            }
+        }
+        RelayPeerRequest::UploadManagedContextChunk {
+            transfer_id,
+            capability,
+            offset,
+            data_base64,
+            chunk_sha256,
+        } => {
+            const MAX_ENCODED_CHUNK_BYTES: usize =
+                ((crate::managed_context::transfer::MAX_TRANSFER_CHUNK_BYTES + 2) / 3) * 4;
+            let data_base64 = data_base64.into_inner();
+            let bytes = if data_base64.len() > MAX_ENCODED_CHUNK_BYTES {
+                None
+            } else {
+                match base64::engine::general_purpose::STANDARD.decode(data_base64) {
+                    Ok(bytes)
+                        if !bytes.is_empty()
+                            && bytes.len()
+                                <= crate::managed_context::transfer::MAX_TRANSFER_CHUNK_BYTES =>
+                    {
+                        Some(bytes)
+                    }
+                    _ => None,
+                }
+            };
+            let Some(bytes) = bytes else {
+                return encrypt_peer_response(
+                    &daemon_private_key,
+                    &requester_public_key,
+                    RelayPeerResponse::ManagedContextImportFailed {
+                        code: "invalid_request".to_string(),
+                        retryable: false,
+                    },
+                );
+            };
+            let result = router
+                .relay_upload_managed_context_chunk(
+                    managed_context_identity
+                        .clone()
+                        .expect("managed context identity checked before dispatch"),
+                    transfer_id,
+                    capability.into_inner(),
+                    offset,
+                    bytes,
+                    chunk_sha256,
+                )
+                .await;
+            match result {
+                Ok(response) => response,
+                Err(error) => managed_context_failure_response(&error),
+            }
+        }
+        RelayPeerRequest::FinalizeManagedContextImport {
+            transfer_id,
+            capability,
+        } => {
+            let result = router
+                .relay_finalize_managed_context_import(
+                    managed_context_identity
+                        .clone()
+                        .expect("managed context identity checked before dispatch"),
+                    transfer_id,
+                    capability.into_inner(),
+                )
+                .await;
+            match result {
+                Ok(response) => response,
+                Err(error) => managed_context_failure_response(&error),
+            }
+        }
+        RelayPeerRequest::GetManagedContextImportStatus {
+            transfer_id,
+            capability,
+        } => {
+            let result = router
+                .relay_get_managed_context_import_status(
+                    managed_context_identity
+                        .clone()
+                        .expect("managed context identity checked before dispatch"),
+                    transfer_id,
+                    capability.into_inner(),
+                )
+                .await;
+            match result {
+                Ok(response) => response,
+                Err(error) => managed_context_failure_response(&error),
+            }
+        }
     };
+    encrypt_peer_response(&daemon_private_key, &requester_public_key, response)
+}
+
+fn managed_context_failure_response(error: &crate::error::DaemonError) -> RelayPeerResponse {
+    let projected = map_relay_error(error);
+    RelayPeerResponse::ManagedContextImportFailed {
+        code: projected.code,
+        retryable: projected.retryable,
+    }
+}
+
+fn managed_context_failure_from_relay(
+    error: &chariox_relay::protocol::RelayError,
+) -> RelayPeerResponse {
+    RelayPeerResponse::ManagedContextImportFailed {
+        code: error.code.clone(),
+        retryable: error.retryable,
+    }
+}
+
+fn encrypt_peer_response(
+    daemon_private_key: &str,
+    requester_public_key: &str,
+    response: RelayPeerResponse,
+) -> RelayRequestOutcome {
     let plaintext = match serde_json::to_vec(&response) {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -922,14 +1105,38 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
 }
 
+fn managed_context_request(request: &RelayPeerRequest) -> bool {
+    matches!(
+        request,
+        RelayPeerRequest::ArmManagedContextImport { .. }
+            | RelayPeerRequest::BeginManagedContextImport { .. }
+            | RelayPeerRequest::UploadManagedContextChunk { .. }
+            | RelayPeerRequest::FinalizeManagedContextImport { .. }
+            | RelayPeerRequest::GetManagedContextImportStatus { .. }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    use base64::Engine;
     use chariox_relay::auth::RelaySubjectKind;
+    use sha2::{Digest, Sha256};
+    use std::fs;
+    use std::process::Command;
     use tokio::sync::Mutex;
 
+    use crate::config::PersistedCloudRelayProfile;
+    use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
+    use crate::managed_context::development::{
+        export_development_context, DevelopmentContextExportRequest, DevelopmentRepositoryRole,
+        DevelopmentRepositorySelection,
+    };
     use crate::runtime::terminal_pairings::public_key_thumbprint;
+    use crate::transport::relay_peer::{
+        RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextTransferPhase,
+    };
     use crate::{DaemonApp, DaemonConfig};
 
     fn scoped_kernel_identity(
@@ -985,5 +1192,331 @@ mod tests {
             assert!(!error.retryable);
             assert!(outcome.encrypted_response.is_none());
         }
+    }
+
+    #[tokio::test]
+    async fn managed_context_peer_request_requires_a_bound_kernel_identity() {
+        let app =
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("test daemon should bootstrap");
+        let target_public_key = app.config().relay_public_key.clone();
+        let app = Arc::new(Mutex::new(app));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let request = RelayPeerRequest::ArmManagedContextImport {
+            target_environment_id: "environment-1".to_string(),
+            target_kernel_id: "target-kernel-1".to_string(),
+            target_key_thumbprint: "a".repeat(64),
+            project_id: "project-1".to_string(),
+            archive_sha256: "b".repeat(64),
+            archive_size_bytes: 42,
+        };
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            &source_private_key,
+            &target_public_key,
+            &serde_json::to_vec(&request).expect("serialize managed context request"),
+        )
+        .expect("encrypt managed context request");
+
+        let outcome = handle_daemon_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            None,
+            encrypted_request,
+        )
+        .await;
+        assert!(outcome.error.is_none());
+        let encrypted_response = outcome
+            .encrypted_response
+            .expect("identity rejection should stay encrypted");
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(&source_private_key, &encrypted_response)
+                .expect("decrypt identity rejection");
+        let response: RelayPeerResponse =
+            serde_json::from_slice(&decrypted.plaintext).expect("decode identity rejection");
+        assert!(matches!(
+            response,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+    }
+
+    #[test]
+    fn managed_context_failure_projection_does_not_expose_internal_details() {
+        let error = crate::error::DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            operation: "import fixture",
+            message: "/private/workspace/path and git stderr canary".to_string(),
+            retryable: false,
+        };
+        let response = managed_context_failure_response(&error);
+        let serialized = serde_json::to_string(&response).expect("serialize failure response");
+        assert!(serialized.contains("invalid_managed_context"));
+        assert!(!serialized.contains("/private/workspace/path"));
+        assert!(!serialized.contains("git stderr canary"));
+    }
+
+    #[tokio::test]
+    async fn encrypted_managed_context_peer_transfer_imports_a_real_repository() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-peer-import-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let repository = root.join("source-repository");
+        fs::create_dir_all(&repository).expect("create source repository");
+        git(&repository, &["init", "-b", "main"]);
+        git(
+            &repository,
+            &["config", "user.email", "tests@chariox.local"],
+        );
+        git(&repository, &["config", "user.name", "Chariox Tests"]);
+        fs::write(repository.join("tracked.txt"), "managed context\n").expect("write source file");
+        git(&repository, &["add", "tracked.txt"]);
+        git(&repository, &["commit", "-m", "initial"]);
+        let archive_path = root.join("context.tar.gz");
+        let exported = export_development_context(DevelopmentContextExportRequest {
+            project_id: "project-managed-peer".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "workspace-primary".to_string(),
+                worktree_path: repository,
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: archive_path.clone(),
+        })
+        .expect("export managed peer context");
+
+        let mut config = DaemonConfig::for_tests();
+        config.session_history_root = root.join("sessions");
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        config.cloud_relay = Some(test_cloud_profile());
+        let target_kernel_id = config.daemon_id.clone();
+        let target_machine_id = config.host_machine_id.clone();
+        let target_public_key = config.relay_public_key.clone();
+        let target_key_thumbprint = public_key_thumbprint(&target_public_key);
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
+        ));
+        let router = Arc::new(
+            CommandRouter::with_interactive_capacity(app, 1).with_managed_kernel_registration(
+                ConfirmedManagedKernelRegistration {
+                    environment_id: "environment-managed-1".to_string(),
+                    machine_id: target_machine_id,
+                    kernel_id: target_kernel_id.clone(),
+                },
+            ),
+        );
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX);
+
+        let armed = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::ArmManagedContextImport {
+                target_environment_id: "environment-managed-1".to_string(),
+                target_kernel_id,
+                target_key_thumbprint,
+                project_id: "project-managed-peer".to_string(),
+                archive_sha256: exported.archive_sha256.clone(),
+                archive_size_bytes: exported.archive_size_bytes,
+            },
+        )
+        .await;
+        let (transfer_id, capability, max_chunk_bytes) = match armed {
+            RelayPeerResponse::ManagedContextImportArmed {
+                transfer_id,
+                capability,
+                max_chunk_bytes,
+                relay_peer_protocol_version,
+                ..
+            } => {
+                assert_eq!(relay_peer_protocol_version, RELAY_PEER_PROTOCOL_VERSION);
+                (transfer_id, capability.into_inner(), max_chunk_bytes)
+            }
+            response => panic!("unexpected arm response: {response:?}"),
+        };
+        send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::BeginManagedContextImport {
+                transfer_id: transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(capability.clone()),
+            },
+        )
+        .await;
+        let archive = fs::read(&archive_path).expect("read exported archive");
+        let mut offset = 0_u64;
+        for chunk in archive.chunks(max_chunk_bytes) {
+            send_managed_peer_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                &identity,
+                &source_private_key,
+                &target_public_key,
+                RelayPeerRequest::UploadManagedContextChunk {
+                    transfer_id: transfer_id.clone(),
+                    capability: RelayManagedContextCapability::new(capability.clone()),
+                    offset,
+                    data_base64: RelayManagedContextChunk::new(
+                        base64::engine::general_purpose::STANDARD.encode(chunk),
+                    ),
+                    chunk_sha256: format!("{:x}", Sha256::digest(chunk)),
+                },
+            )
+            .await;
+            offset += chunk.len() as u64;
+        }
+        let completed = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(capability.clone()),
+            },
+        )
+        .await;
+        let receipt = match completed {
+            RelayPeerResponse::ManagedContextImportStatus { status } => {
+                assert_eq!(status.phase, RelayManagedContextTransferPhase::Consumed);
+                assert_eq!(status.accepted_bytes, archive.len() as u64);
+                status.receipt.expect("completed import receipt")
+            }
+            response => panic!("unexpected finalize response: {response:?}"),
+        };
+        assert_eq!(receipt.transfer_id, transfer_id);
+        assert_eq!(receipt.project_id, "project-managed-peer");
+        assert_eq!(receipt.repositories.len(), 1);
+        assert_eq!(
+            fs::read_to_string(
+                std::path::Path::new(&receipt.repositories[0].destination_path).join("tracked.txt")
+            )
+            .expect("read imported repository file"),
+            "managed context\n"
+        );
+        let replayed = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id,
+                capability: RelayManagedContextCapability::new(capability),
+            },
+        )
+        .await;
+        assert!(matches!(
+            replayed,
+            RelayPeerResponse::ManagedContextImportStatus {
+                status: crate::transport::relay_peer::RelayManagedContextTransferStatus {
+                    phase: RelayManagedContextTransferPhase::Consumed,
+                    ..
+                }
+            }
+        ));
+        drop(router);
+        fs::remove_dir_all(root).expect("remove managed peer fixture");
+    }
+
+    async fn send_managed_peer_request(
+        router: &Arc<CommandRouter>,
+        state: &Arc<RwLock<RelayClientState>>,
+        outgoing_tx: &RelayOutgoingSender,
+        identity: &RelayCallerIdentity,
+        source_private_key: &str,
+        target_public_key: &str,
+        request: RelayPeerRequest,
+    ) -> RelayPeerResponse {
+        let encrypted_request = relay_crypto::encrypt_payload_for_peer(
+            source_private_key,
+            target_public_key,
+            &serde_json::to_vec(&request).expect("serialize peer request"),
+        )
+        .expect("encrypt peer request");
+        let outcome = handle_daemon_peer_request(
+            router,
+            state,
+            outgoing_tx,
+            &identity.subject,
+            Some(identity.clone()),
+            encrypted_request,
+        )
+        .await;
+        if let Some(error) = outcome.error {
+            panic!("managed peer request failed: {error:?}");
+        }
+        let encrypted_response = outcome
+            .encrypted_response
+            .expect("managed peer encrypted response");
+        let decrypted =
+            relay_crypto::decrypt_payload_for_private_key(source_private_key, &encrypted_response)
+                .expect("decrypt peer response");
+        serde_json::from_slice(&decrypted.plaintext).expect("decode peer response")
+    }
+
+    fn test_cloud_profile() -> PersistedCloudRelayProfile {
+        PersistedCloudRelayProfile {
+            api_url: "https://cloud.example.test".to_string(),
+            email: "user@example.test".to_string(),
+            account_id: "account-1".to_string(),
+            user_id: "user-1".to_string(),
+            account_slug: "account".to_string(),
+            realm_id: "realm-1".to_string(),
+            relay_url: "wss://relay.example.test".to_string(),
+            issuer_id: "issuer-1".to_string(),
+            client_id: None,
+            client_alias: None,
+            machine_id: Some("machine-test".to_string()),
+            machine_alias: Some("Managed test".to_string()),
+            machine_credential: Some("machine-credential".to_string()),
+            cloud_session_token: None,
+            cloud_session_expires_at_ms: None,
+            token_expires_at_ms: None,
+        }
+    }
+
+    fn git(path: &std::path::Path, args: &[&str]) {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .expect("run git");
+        assert!(
+            output.status.success(),
+            "git {} failed: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

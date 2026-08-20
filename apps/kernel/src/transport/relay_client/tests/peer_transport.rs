@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        18
+        19
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -46,6 +46,83 @@ fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted()
             contents_base64: "bmV2ZXItbG9nLXRoaXM=".to_string(),
         });
     assert!(!format!("{materialization:?}").contains("bmV2ZXItbG9nLXRoaXM"));
+}
+
+#[test]
+fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
+    use crate::transport::relay_peer::{
+        RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextImportReceipt,
+        RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
+        RelayManagedContextTransferStatus,
+    };
+
+    assert_eq!(
+        crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
+        19
+    );
+    let request = RelayPeerRequest::UploadManagedContextChunk {
+        transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+        capability: RelayManagedContextCapability::new("capability-canary".to_string()),
+        offset: 0,
+        data_base64: RelayManagedContextChunk::new("chunk-canary".to_string()),
+        chunk_sha256: "a".repeat(64),
+    };
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("capability-canary"));
+    assert!(!debug.contains("chunk-canary"));
+    let value = serde_json::to_value(&request).expect("managed context request should serialize");
+    assert_eq!(
+        value.pointer("/kind"),
+        Some(&serde_json::json!("upload_managed_context_chunk"))
+    );
+    assert_eq!(
+        value.pointer("/capability"),
+        Some(&serde_json::json!("capability-canary"))
+    );
+
+    let response = RelayPeerResponse::ManagedContextImportStatus {
+        status: RelayManagedContextTransferStatus {
+            transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+            phase: RelayManagedContextTransferPhase::Consumed,
+            accepted_bytes: 42,
+            archive_size_bytes: 42,
+            expires_at_ms: 1_000,
+            receipt: Some(RelayManagedContextImportReceipt {
+                transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
+                archive_sha256: "a".repeat(64),
+                project_id: "project-1".to_string(),
+                destination_root: "/managed/context".to_string(),
+                primary_repository_id: "repo-primary".to_string(),
+                repositories: vec![RelayManagedContextImportedRepository {
+                    repository_id: "repo-primary".to_string(),
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    target_directory: "primary".to_string(),
+                    destination_path: "/managed/context/primary".to_string(),
+                    head_sha: "b".repeat(40),
+                }],
+                receipt_sha256: "c".repeat(64),
+            }),
+        },
+    };
+    let value = serde_json::to_value(&response).expect("managed context response should serialize");
+    assert_eq!(
+        value.pointer("/status/phase"),
+        Some(&serde_json::json!("consumed"))
+    );
+    assert_eq!(
+        value.pointer("/status/receipt/repositories/0/role"),
+        Some(&serde_json::json!("primary"))
+    );
+    let failure = serde_json::to_value(RelayPeerResponse::ManagedContextImportFailed {
+        code: "invalid_managed_context".to_string(),
+        retryable: false,
+    })
+    .expect("managed context failure should serialize");
+    assert_eq!(
+        failure.pointer("/kind"),
+        Some(&serde_json::json!("managed_context_import_failed"))
+    );
+    assert_eq!(failure.pointer("/message"), None);
 }
 
 #[test]

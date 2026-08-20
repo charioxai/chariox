@@ -129,7 +129,8 @@ pub struct DevelopmentContextImportRequest {
     pub destination_root: PathBuf,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DevelopmentImportedRepository {
     pub repository_id: String,
     pub role: DevelopmentRepositoryRole,
@@ -141,6 +142,18 @@ pub struct DevelopmentImportedRepository {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevelopmentContextImportResult {
     pub manifest: DevelopmentContextManifest,
+    pub destination_root: PathBuf,
+    pub primary_repository_id: String,
+    pub repositories: Vec<DevelopmentImportedRepository>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct DevelopmentContextPublicationReceipt {
+    pub schema_version: u32,
+    pub publication_id: String,
+    pub archive_sha256: String,
+    pub project_id: String,
     pub destination_root: PathBuf,
     pub primary_repository_id: String,
     pub repositories: Vec<DevelopmentImportedRepository>,
@@ -186,6 +199,10 @@ use git::{
     verify_git_bundle_isolated, RepositoryMaterializationEstimate,
 };
 pub use import::import_development_context;
+pub(crate) use import::{
+    cleanup_development_context_publication_staging, import_development_context_with_publication,
+    recover_development_context_publication,
+};
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};
 use overlay::{export_overlay, validate_relative_path};
@@ -280,14 +297,21 @@ fn file_is_executable(_metadata: &fs::Metadata) -> bool {
 }
 
 fn context_error(message: impl Into<String>) -> DaemonError {
-    DaemonError::LocalTransport {
+    DaemonError::ManagedContext {
+        code: "invalid_managed_context",
         operation: "managed development context",
         message: message.into(),
+        retryable: false,
     }
 }
 
 fn context_io_error(operation: &'static str, error: io::Error) -> DaemonError {
-    context_error(format!("{operation}: {error}"))
+    DaemonError::ManagedContext {
+        code: "managed_context_unavailable",
+        operation,
+        message: error.to_string(),
+        retryable: true,
+    }
 }
 #[cfg(test)]
 mod tests;

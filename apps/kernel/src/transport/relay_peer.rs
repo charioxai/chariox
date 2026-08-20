@@ -9,9 +9,90 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 18 adds profile-specific provider-account materialization over the
-/// existing encrypted home-worker peer channel.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 18;
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RelayManagedContextCapability(String);
+
+impl RelayManagedContextCapability {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for RelayManagedContextCapability {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted managed-context capability]")
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RelayManagedContextChunk(String);
+
+impl RelayManagedContextChunk {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for RelayManagedContextChunk {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted managed-context chunk]")
+    }
+}
+
+/// Version 19 adds resumable one-time managed-context import over the existing
+/// encrypted kernel-to-kernel peer channel.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 19;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RelayManagedContextTransferPhase {
+    Armed,
+    Receiving,
+    ReadyToImport,
+    Importing,
+    Consumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportedRepository {
+    pub repository_id: String,
+    pub role: crate::managed_context::development::DevelopmentRepositoryRole,
+    pub target_directory: String,
+    pub destination_path: String,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextImportReceipt {
+    pub transfer_id: String,
+    pub archive_sha256: String,
+    pub project_id: String,
+    pub destination_root: String,
+    pub primary_repository_id: String,
+    pub repositories: Vec<RelayManagedContextImportedRepository>,
+    pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RelayManagedContextTransferStatus {
+    pub transfer_id: String,
+    pub phase: RelayManagedContextTransferPhase,
+    pub accepted_bytes: u64,
+    pub archive_size_bytes: u64,
+    pub expires_at_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receipt: Option<RelayManagedContextImportReceipt>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -446,6 +527,33 @@ pub enum RelayPeerRequest {
         context: RemoteMcpCheckContext,
         required_mcps: Vec<RequiredRemoteMcp>,
     },
+    ArmManagedContextImport {
+        target_environment_id: String,
+        target_kernel_id: String,
+        target_key_thumbprint: String,
+        project_id: String,
+        archive_sha256: String,
+        archive_size_bytes: u64,
+    },
+    BeginManagedContextImport {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
+    UploadManagedContextChunk {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+        offset: u64,
+        data_base64: RelayManagedContextChunk,
+        chunk_sha256: String,
+    },
+    FinalizeManagedContextImport {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
+    GetManagedContextImportStatus {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -579,6 +687,20 @@ pub enum RelayPeerResponse {
     },
     RemoteMcpAvailabilityChecked {
         results: Vec<RemoteMcpAvailability>,
+    },
+    ManagedContextImportArmed {
+        transfer_id: String,
+        capability: RelayManagedContextCapability,
+        expires_at_ms: u64,
+        max_chunk_bytes: usize,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedContextImportStatus {
+        status: RelayManagedContextTransferStatus,
+    },
+    ManagedContextImportFailed {
+        code: String,
+        retryable: bool,
     },
 }
 
