@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
@@ -18,6 +18,15 @@ const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OVERLAY_BYTES_PER_REPOSITORY: u64 = 256 * 1024 * 1024;
 const MAX_BUNDLE_BYTES_PER_REPOSITORY: u64 = 512 * 1024 * 1024;
 const MAX_PACKAGE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_DECOMPRESSED_ARCHIVE_BYTES: u64 =
+    MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES as u64 + 256 * 1024 * 1024;
+const MAX_ARCHIVE_PATH_BYTES: usize = 4096;
+const MAX_GIT_BUNDLE_HEADER_BYTES: usize = 1024 * 1024;
+const MAX_GIT_BUNDLE_HEADER_RECORDS: usize = 4096;
+const MAX_CHECKOUT_BYTES_PER_REPOSITORY: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_CHECKOUT_BYTES_PER_PROJECT: u64 = 4 * 1024 * 1024 * 1024;
+const MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY: u64 = 100_000;
+const MAX_MATERIALIZED_ENTRIES_PER_PROJECT: u64 = 250_000;
 const MAX_CONTEXT_IDENTIFIER_BYTES: usize = 4096;
 const MAX_TARGET_DIRECTORY_BASE_BYTES: usize = 200;
 const MAX_REPOSITORY_TREE_ENTRIES: usize = 500_000;
@@ -112,6 +121,31 @@ pub struct DevelopmentContextExportResult {
     pub source_repositories: Vec<DevelopmentSourceRepositoryMapping>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentContextImportRequest {
+    pub archive_path: PathBuf,
+    pub expected_archive_sha256: String,
+    pub expected_project_id: String,
+    pub destination_root: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentImportedRepository {
+    pub repository_id: String,
+    pub role: DevelopmentRepositoryRole,
+    pub target_directory: String,
+    pub destination_path: PathBuf,
+    pub head_sha: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DevelopmentContextImportResult {
+    pub manifest: DevelopmentContextManifest,
+    pub destination_root: PathBuf,
+    pub primary_repository_id: String,
+    pub repositories: Vec<DevelopmentImportedRepository>,
+}
+
 struct ManifestMemoryBudget {
     used_bytes: usize,
 }
@@ -135,6 +169,9 @@ impl ManifestMemoryBudget {
 mod archive;
 mod export;
 mod git;
+mod import;
+mod import_archive;
+mod import_materialize;
 mod overlay;
 
 use archive::write_archive;
@@ -142,10 +179,15 @@ pub use export::export_development_context;
 #[cfg(test)]
 use export::publish_archive_no_clobber;
 use git::{
-    create_git_bundle, ensure_worktree_root, git_blob_size, git_bytes, git_optional_text,
-    git_output, git_text, reject_lfs_attributes, reject_lfs_pointer,
-    reject_unsupported_repository_features, split_nul, stream_git_nul_records, verify_git_bundle,
+    charge_overlay_materialization, create_git_bundle, ensure_worktree_root, git_blob_size,
+    git_bytes, git_bytes_isolated, git_optional_text, git_output, git_output_isolated, git_text,
+    git_text_isolated, inspect_export_repository, inspect_import_repository, reject_lfs_attributes,
+    reject_lfs_pointer, split_nul, stream_git_nul_records, verify_git_bundle,
+    verify_git_bundle_isolated, RepositoryMaterializationEstimate,
 };
+pub use import::import_development_context;
+use import_archive::{extract_and_verify_archive, validate_git_oid};
+use import_materialize::{materialize_prepared_repository, prepare_repository};
 use overlay::{export_overlay, validate_relative_path};
 
 fn create_private_directory(path: &Path) -> Result<(), DaemonError> {

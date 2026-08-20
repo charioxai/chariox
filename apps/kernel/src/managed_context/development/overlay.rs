@@ -144,6 +144,7 @@ fn worktree_file_state(
     stored_objects: &mut BTreeSet<String>,
     overlay_size_bytes: &mut u64,
 ) -> Result<DevelopmentFileState, DaemonError> {
+    reject_symlink_ancestors(worktree, path)?;
     let absolute = worktree.join(path);
     let metadata = match fs::symlink_metadata(&absolute) {
         Ok(metadata) => metadata,
@@ -182,6 +183,29 @@ fn worktree_file_state(
         stored_objects,
         overlay_size_bytes,
     )
+}
+
+fn reject_symlink_ancestors(worktree: &Path, path: &str) -> Result<(), DaemonError> {
+    let mut current = worktree.to_path_buf();
+    let components = Path::new(path).components().collect::<Vec<_>>();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let Component::Normal(component) = component else {
+            return Err(context_error(format!("unsafe repository path `{path}`")));
+        };
+        current.push(component);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err(context_error(format!(
+                    "dirty path `{path}` has symlink ancestor `{}`; dirty paths through symlinks are not supported",
+                    current.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => break,
+            Err(error) => return Err(context_io_error("inspect dirty path ancestor", error)),
+        }
+    }
+    Ok(())
 }
 
 fn store_overlay_object(
@@ -229,7 +253,7 @@ fn validate_overlay_file_bytes(path: &str, bytes: &[u8]) -> Result<(), DaemonErr
     Ok(())
 }
 
-fn read_regular_file_without_following_symlinks(
+pub(super) fn read_regular_file_without_following_symlinks(
     path: &Path,
     display_path: &str,
     maximum_bytes: u64,
@@ -266,7 +290,17 @@ fn read_regular_file_without_following_symlinks(
 }
 
 pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
-    if path.is_empty() || path.contains('\0') || path.contains('\\') {
+    if path.is_empty()
+        || path.contains('\0')
+        || path.contains('\\')
+        || path.split('/').any(|component| {
+            component.is_empty()
+                || component.contains(':')
+                || component.ends_with([' ', '.'])
+                || component.chars().any(char::is_control)
+                || is_portable_git_admin_component(component)
+        })
+    {
         return Err(context_error(format!("unsafe repository path `{path}`")));
     }
     let candidate = Path::new(path);
@@ -280,8 +314,8 @@ pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
     Ok(())
 }
 
-fn context_force_excluded_path(path: &str) -> bool {
-    if path == ".git" || path.starts_with(".git/") {
+pub(super) fn context_force_excluded_path(path: &str) -> bool {
+    if path.split('/').any(is_portable_git_admin_component) {
         return true;
     }
     if path.split('/').any(|part| part.starts_with(".env")) {
@@ -313,6 +347,30 @@ fn context_force_excluded_path(path: &str) -> bool {
         ) || part.ends_with(".sock")
             || part.ends_with(".socket")
             || part.starts_with("operational-history")
+    })
+}
+
+fn is_portable_git_admin_component(component: &str) -> bool {
+    let folded = component
+        .trim_end_matches([' ', '.'])
+        .chars()
+        .filter(|character| {
+            !matches!(
+                *character,
+                '\u{200b}'..='\u{200f}'
+                    | '\u{202a}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}'
+                    | '\u{feff}'
+            )
+        })
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if folded == ".git" {
+        return true;
+    }
+    let short = folded.strip_prefix('.').unwrap_or(&folded);
+    short.strip_prefix("git~").is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_digit())
     })
 }
 

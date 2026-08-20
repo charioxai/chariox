@@ -489,6 +489,622 @@ fn concurrent_exports_reserve_distinct_staging_and_archive_paths() {
     fs::remove_dir_all(root).expect("remove test root");
 }
 
+#[test]
+fn imports_two_repositories_with_exact_index_and_worktree_states() {
+    let root = test_root("import-two-repositories");
+    let primary = root.join("source-primary");
+    let supporting = root.join("source-supporting");
+    init_repository(&primary, "modified.txt", "base\n");
+    fs::write(primary.join("deleted.txt"), "delete me\n").expect("write deleted fixture");
+    git(&primary, &["add", "deleted.txt"]);
+    git(&primary, &["commit", "-m", "add deleted fixture"]);
+    init_repository(&supporting, "supporting.txt", "support\n");
+    git(
+        &primary,
+        &[
+            "remote",
+            "add",
+            "origin",
+            "https://user:secret@example.com/org/primary.git",
+        ],
+    );
+    git(
+        &primary,
+        &["update-ref", "refs/remotes/origin/main", "HEAD"],
+    );
+    git(
+        &primary,
+        &["branch", "--set-upstream-to", "origin/main", "main"],
+    );
+    fs::write(primary.join("modified.txt"), "staged\n").expect("write staged state");
+    git(&primary, &["add", "modified.txt"]);
+    fs::write(primary.join("modified.txt"), "working\n").expect("write working state");
+    fs::remove_file(primary.join("deleted.txt")).expect("remove tracked fixture");
+    git(&primary, &["add", "deleted.txt"]);
+    fs::write(primary.join("untracked.txt"), "untracked\n").expect("write untracked state");
+
+    let archive_path = root.join("context.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "project-import".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "primary-workspace".to_string(),
+                worktree_path: primary,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "supporting-workspace".to_string(),
+                worktree_path: supporting,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: archive_path.clone(),
+    })
+    .expect("export import fixture");
+    let destination = root.join("managed/project-import");
+    let imported = import_development_context(DevelopmentContextImportRequest {
+        archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: "project-import".to_string(),
+        destination_root: destination.clone(),
+    })
+    .expect("import development context");
+
+    assert_eq!(
+        imported.destination_root,
+        fs::canonicalize(destination.parent().expect("destination parent"))
+            .expect("canonical destination parent")
+            .join("project-import")
+    );
+    assert_eq!(imported.repositories.len(), 2);
+    let primary_import = imported
+        .repositories
+        .iter()
+        .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+        .expect("primary import mapping");
+    assert_eq!(primary_import.repository_id, imported.primary_repository_id);
+    assert!(imported
+        .repositories
+        .iter()
+        .any(|repository| repository.role == DevelopmentRepositoryRole::Supporting));
+    assert_eq!(
+        fs::read_to_string(primary_import.destination_path.join("modified.txt"))
+            .expect("read imported working state"),
+        "working\n"
+    );
+    assert_eq!(
+        git_text_test(&primary_import.destination_path, &["show", ":modified.txt"]),
+        "staged"
+    );
+    assert_eq!(
+        fs::read_to_string(primary_import.destination_path.join("untracked.txt"))
+            .expect("read imported untracked file"),
+        "untracked\n"
+    );
+    assert!(!primary_import.destination_path.join("deleted.txt").exists());
+    assert_eq!(
+        git_text_test(
+            &primary_import.destination_path,
+            &["remote", "get-url", "origin"]
+        ),
+        "https://example.com/org/primary.git"
+    );
+    assert_eq!(
+        git_text_test(
+            &primary_import.destination_path,
+            &["config", "--local", "--get", "branch.main.remote"]
+        ),
+        "origin"
+    );
+    assert_eq!(
+        git_text_test(
+            &primary_import.destination_path,
+            &["config", "--local", "--get", "branch.main.merge"]
+        ),
+        "refs/heads/main"
+    );
+    assert!(!git_status_test(
+        &primary_import.destination_path,
+        &[
+            "show-ref",
+            "--verify",
+            "--quiet",
+            "refs/remotes/origin/main"
+        ]
+    ));
+    assert_eq!(
+        git_text_test(&primary_import.destination_path, &["rev-parse", "HEAD"]),
+        primary_import.head_sha
+    );
+    assert_no_import_temporaries(&root.join("managed"));
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn import_rejects_wrong_bindings_corruption_and_occupied_destinations_atomically() {
+    let root = test_root("import-rejections");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    fs::write(repository.join("dirty.txt"), "dirty\n").expect("write dirty file");
+    let exported = one_repo_export(&root, &repository, "import-source")
+        .expect("export import rejection fixture");
+
+    let wrong_project_destination = root.join("managed/wrong-project");
+    let wrong_project = import_development_context(DevelopmentContextImportRequest {
+        archive_path: exported.archive_path.clone(),
+        expected_archive_sha256: exported.archive_sha256.clone(),
+        expected_project_id: "different-project".to_string(),
+        destination_root: wrong_project_destination.clone(),
+    })
+    .expect_err("wrong project binding should fail");
+    assert!(wrong_project
+        .to_string()
+        .contains("project id does not match"));
+    assert!(!wrong_project_destination.exists());
+
+    let corrupt_archive = root.join("corrupt.tar.gz");
+    let mut corrupt_bytes = fs::read(&exported.archive_path).expect("read source archive");
+    let middle = corrupt_bytes.len() / 2;
+    corrupt_bytes[middle] ^= 0xff;
+    fs::write(&corrupt_archive, corrupt_bytes).expect("write corrupt archive");
+    let corrupt_destination = root.join("managed/corrupt");
+    let corrupt = import_development_context(DevelopmentContextImportRequest {
+        archive_path: corrupt_archive.clone(),
+        expected_archive_sha256: sha256_file(&corrupt_archive).expect("hash corrupt archive"),
+        expected_project_id: exported.manifest.project_id.clone(),
+        destination_root: corrupt_destination.clone(),
+    })
+    .expect_err("corrupt archive should fail before publication");
+    assert!(
+        corrupt.to_string().contains("archive")
+            || corrupt.to_string().contains("artifact")
+            || corrupt.to_string().contains("manifest")
+    );
+    assert!(!corrupt_destination.exists());
+
+    let occupied = root.join("managed/occupied");
+    fs::create_dir_all(&occupied).expect("create occupied destination");
+    fs::write(occupied.join("owner.txt"), "not the importer\n").expect("write occupied marker");
+    let occupied_error = import_development_context(DevelopmentContextImportRequest {
+        archive_path: exported.archive_path,
+        expected_archive_sha256: exported.archive_sha256,
+        expected_project_id: exported.manifest.project_id,
+        destination_root: occupied.clone(),
+    })
+    .expect_err("occupied destination should not be replaced");
+    assert!(occupied_error.to_string().contains("already exists"));
+    assert_eq!(
+        fs::read_to_string(occupied.join("owner.txt")).expect("read occupied marker"),
+        "not the importer\n"
+    );
+    assert_no_import_temporaries(&root.join("managed"));
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn supporting_repository_failure_publishes_no_partial_project() {
+    let root = test_root("import-supporting-failure");
+    let primary = root.join("primary");
+    let supporting = root.join("supporting");
+    init_repository(&primary, "primary.txt", "primary\n");
+    init_repository(&supporting, "supporting.txt", "supporting\n");
+    let source_archive = root.join("source.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "project-supporting-failure".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "primary".to_string(),
+                worktree_path: primary,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "supporting".to_string(),
+                worktree_path: supporting,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: source_archive,
+    })
+    .expect("export two-repository fixture");
+    let unpacked = root.join("unpacked-corrupt-supporting");
+    unpack_archive(&exported.archive_path, &unpacked);
+    fs::remove_file(unpacked.join("manifest.json")).expect("remove extracted manifest");
+    let mut broken_manifest = exported.manifest;
+    let supporting_manifest = broken_manifest
+        .repositories
+        .iter_mut()
+        .find(|repository| repository.role == DevelopmentRepositoryRole::Supporting)
+        .expect("supporting manifest");
+    let supporting_bundle = unpacked.join(&supporting_manifest.bundle_path);
+    fs::write(&supporting_bundle, "not a Git bundle\n").expect("corrupt supporting bundle");
+    supporting_manifest.bundle_size_bytes = fs::metadata(&supporting_bundle)
+        .expect("supporting bundle metadata")
+        .len();
+    supporting_manifest.bundle_sha256 =
+        sha256_file(&supporting_bundle).expect("hash corrupt supporting bundle");
+    let broken_archive = root.join("broken-supporting.tar.gz");
+    let broken_file = private_create_new(&broken_archive).expect("reserve broken archive");
+    write_archive(&broken_archive, broken_file, &unpacked, &broken_manifest)
+        .expect("package internally consistent broken archive");
+
+    let destination = root.join("managed/broken-supporting");
+    let error = import_development_context(DevelopmentContextImportRequest {
+        archive_path: broken_archive.clone(),
+        expected_archive_sha256: sha256_file(&broken_archive).expect("hash broken archive"),
+        expected_project_id: broken_manifest.project_id,
+        destination_root: destination.clone(),
+    })
+    .expect_err("invalid supporting bundle should abort the whole import");
+    assert!(
+        error.to_string().contains("bundle") || error.to_string().contains("clone"),
+        "unexpected import error: {error}"
+    );
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
+    let root = test_root("import-unsafe-manifest");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let exported = one_repo_export(&root, &repository, "unsafe-import-source")
+        .expect("export unsafe import fixture");
+    let unpacked = root.join("unpacked-unsafe-manifest");
+    unpack_archive(&exported.archive_path, &unpacked);
+    fs::remove_file(unpacked.join("manifest.json")).expect("remove extracted manifest");
+    let mut unsafe_manifest = exported.manifest.clone();
+    unsafe_manifest.repositories[0].target_directory = "../escape".to_string();
+    let unsafe_archive = root.join("unsafe-manifest.tar.gz");
+    let unsafe_file = private_create_new(&unsafe_archive).expect("reserve unsafe archive");
+    write_archive(&unsafe_archive, unsafe_file, &unpacked, &unsafe_manifest)
+        .expect("package unsafe manifest fixture");
+    let unsafe_destination = root.join("managed/unsafe-manifest");
+    let unsafe_error = import_development_context(DevelopmentContextImportRequest {
+        archive_path: unsafe_archive.clone(),
+        expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
+        expected_project_id: unsafe_manifest.project_id,
+        destination_root: unsafe_destination.clone(),
+    })
+    .expect_err("unsafe target directory should fail before extraction");
+    assert!(unsafe_error
+        .to_string()
+        .contains("target directory is invalid"));
+    assert!(!unsafe_destination.exists());
+
+    #[cfg(unix)]
+    {
+        let archive_symlink = root.join("archive-symlink.tar.gz");
+        std::os::unix::fs::symlink(&exported.archive_path, &archive_symlink)
+            .expect("create archive symlink");
+        let symlink_destination = root.join("managed/archive-symlink");
+        let symlink_error = import_development_context(DevelopmentContextImportRequest {
+            archive_path: archive_symlink,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: exported.manifest.project_id,
+            destination_root: symlink_destination.clone(),
+        })
+        .expect_err("archive symlink should fail closed");
+        assert!(symlink_error.to_string().contains("cannot be a symlink"));
+        assert!(!symlink_destination.exists());
+    }
+    assert_no_import_temporaries(&root.join("managed"));
+
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn import_rejects_git_administrative_overlay_paths() {
+    let root = test_root("import-git-admin-overlay");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    fs::write(repository.join("dirty.txt"), "malicious\n").expect("write dirty fixture");
+    let exported =
+        one_repo_export(&root, &repository, "git-admin-overlay").expect("export overlay fixture");
+    let unpacked = root.join("unpacked");
+    unpack_archive(&exported.archive_path, &unpacked);
+    fs::remove_file(unpacked.join("manifest.json")).expect("remove extracted manifest");
+    for (index, alias) in [
+        ".GIT/config",
+        ".git./config",
+        "git~1/config",
+        ".\u{200c}git/config",
+        "git~1:$INDEX_ALLOCATION/config",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut manifest = exported.manifest.clone();
+        manifest.repositories[0].overlay[0].path = alias.to_string();
+        let archive = root.join(format!("malicious-git-admin-overlay-{index}.tar.gz"));
+        let file = private_create_new(&archive).expect("reserve malicious archive");
+        write_archive(&archive, file, &unpacked, &manifest).expect("package malicious archive");
+        let destination = root.join(format!("managed/git-admin-overlay-{index}"));
+        let error = import_development_context(DevelopmentContextImportRequest {
+            archive_path: archive.clone(),
+            expected_archive_sha256: sha256_file(&archive).expect("hash malicious archive"),
+            expected_project_id: manifest.project_id,
+            destination_root: destination.clone(),
+        })
+        .expect_err("Git administrative overlay must fail closed");
+        assert!(
+            error.to_string().contains("unsafe repository path"),
+            "unexpected alias rejection for {alias}: {error}"
+        );
+        assert!(!destination.exists());
+    }
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn export_fails_on_nonportable_git_admin_aliases() {
+    let root = test_root("export-git-admin-alias");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    fs::create_dir(repository.join("git~1")).expect("create NTFS alias fixture");
+    fs::write(repository.join("git~1/config"), "must not be omitted\n")
+        .expect("write NTFS alias fixture");
+    let error = one_repo_export(&root, &repository, "git-admin-alias")
+        .expect_err("nonportable dirty Git alias must fail export");
+    assert!(error.to_string().contains("unsafe repository path"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn export_rejects_checkout_expanding_attributes() {
+    let root = test_root("checkout-attributes");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "$Id$\n");
+    fs::write(
+        repository.join(".gitattributes"),
+        "tracked.txt ident working-tree-encoding=UTF-32\n",
+    )
+    .expect("write transforming attributes");
+    git(&repository, &["add", ".gitattributes"]);
+    git(&repository, &["commit", "-m", "add checkout transforms"]);
+    let error = one_repo_export(&root, &repository, "checkout-attributes")
+        .expect_err("checkout transforms must fail export");
+    assert!(error
+        .to_string()
+        .contains("checkout-transforming attribute"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn archive_snapshot_is_immutable_after_source_changes() {
+    let root = test_root("archive-snapshot");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let exported =
+        one_repo_export(&root, &repository, "snapshot-source").expect("export snapshot fixture");
+    let original = fs::read(&exported.archive_path).expect("read source archive");
+    let snapshot_path = root.join("private-snapshot.tar.gz");
+    let (snapshot, size, digest) =
+        super::import::snapshot_and_hash_archive(&exported.archive_path, &snapshot_path)
+            .expect("snapshot archive");
+    fs::write(&exported.archive_path, vec![0_u8; original.len()])
+        .expect("mutate source archive in place");
+    assert_eq!(size, original.len() as u64);
+    assert_eq!(digest, sha256_bytes(&original));
+    assert_eq!(fs::read(&snapshot_path).expect("read snapshot"), original);
+    let artifacts = root.join("artifacts");
+    create_private_directory(&artifacts).expect("create artifacts root");
+    let manifest = extract_and_verify_archive(snapshot, &exported.manifest.project_id, &artifacts)
+        .expect("parse immutable snapshot");
+    assert_eq!(manifest, exported.manifest);
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn import_rejects_pax_extension_bomb_before_body_allocation() {
+    let root = test_root("pax-bomb");
+    let archive = root.join("pax-bomb.tar.gz");
+    let file = private_create_new(&archive).expect("reserve PAX archive");
+    let mut encoder = GzBuilder::new()
+        .mtime(0)
+        .write(file, Compression::default());
+    let header = raw_tar_header("pax", b'x', 32 * 1024 * 1024);
+    encoder.write_all(&header).expect("write PAX header");
+    let zeros = [0_u8; 64 * 1024];
+    for _ in 0..512 {
+        encoder
+            .write_all(&zeros)
+            .expect("write compressible PAX body");
+    }
+    encoder.finish().expect("finish PAX archive");
+    let destination = root.join("managed/pax-bomb");
+    let error = import_development_context(DevelopmentContextImportRequest {
+        archive_path: archive.clone(),
+        expected_archive_sha256: sha256_file(&archive).expect("hash PAX archive"),
+        expected_project_id: "pax-bomb".to_string(),
+        destination_root: destination.clone(),
+    })
+    .expect_err("PAX extension metadata must fail closed");
+    assert!(error.to_string().contains("unsupported tar extension"));
+    assert!(!destination.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn materialization_rejects_large_current_tree_before_checkout() {
+    let root = test_root("checkout-budget");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    fs::write(repository.join("compressible.bin"), vec![0_u8; 1024 * 1024])
+        .expect("write compressible blob");
+    git(&repository, &["add", "compressible.bin"]);
+    git(&repository, &["commit", "-m", "large compressed blob"]);
+    let exported =
+        one_repo_export(&root, &repository, "checkout-budget").expect("export large tree");
+    let unpacked = root.join("unpacked");
+    unpack_archive(&exported.archive_path, &unpacked);
+    let destination = root.join("materialized");
+    let error = prepare_repository(
+        &exported.manifest.repositories[0],
+        &unpacked,
+        &destination,
+        512 * 1024,
+        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+    )
+    .expect_err("checkout budget must reject the current tree");
+    assert!(error.to_string().contains("checkout budget"));
+    assert!(!destination.join("compressible.bin").exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn multi_repository_entry_budget_rejects_before_any_checkout() {
+    let root = test_root("project-entry-budget");
+    let primary = root.join("primary");
+    let supporting = root.join("supporting");
+    init_repository(&primary, "primary.txt", "");
+    init_repository(&supporting, "supporting.txt", "");
+    let archive = root.join("project-entry-budget.tar.gz");
+    let exported = export_development_context(DevelopmentContextExportRequest {
+        project_id: "project-entry-budget".to_string(),
+        repositories: vec![
+            DevelopmentRepositorySelection {
+                workspace_id: "primary".to_string(),
+                worktree_path: primary,
+                role: DevelopmentRepositoryRole::Primary,
+            },
+            DevelopmentRepositorySelection {
+                workspace_id: "supporting".to_string(),
+                worktree_path: supporting,
+                role: DevelopmentRepositoryRole::Supporting,
+            },
+        ],
+        archive_path: archive.clone(),
+    })
+    .expect("export entry-budget fixture");
+    let destination = root.join("managed/project-entry-budget");
+    let error = super::import::import_development_context_with_budgets(
+        DevelopmentContextImportRequest {
+            archive_path: archive,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: exported.manifest.project_id,
+            destination_root: destination.clone(),
+        },
+        MAX_CHECKOUT_BYTES_PER_PROJECT,
+        3,
+    )
+    .expect_err("project-wide entry budget must reject two repositories");
+    assert!(error.to_string().contains("entry materialization budget"));
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn overlay_entries_count_toward_prepare_budget() {
+    let root = test_root("overlay-entry-budget");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    fs::create_dir(repository.join("nested")).expect("create nested overlay directory");
+    fs::write(repository.join("nested/dirty.txt"), "dirty\n").expect("write untracked overlay");
+    let exported = one_repo_export(&root, &repository, "overlay-entry-budget")
+        .expect("export overlay budget fixture");
+    let destination = root.join("managed/overlay-entry-budget");
+    let error = super::import::import_development_context_with_budgets(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: exported.manifest.project_id,
+            destination_root: destination.clone(),
+        },
+        MAX_CHECKOUT_BYTES_PER_PROJECT,
+        3,
+    )
+    .expect_err("nested overlay must count toward the prepare budget");
+    assert!(error.to_string().contains("repository overlay"));
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn empty_repository_root_cannot_exceed_zero_remaining_budget() {
+    let root = test_root("empty-root-budget");
+    let repository = root.join("repository");
+    fs::create_dir(&repository).expect("create empty repository");
+    git(&repository, &["init", "-b", "main"]);
+    git(
+        &repository,
+        &["config", "user.email", "tests@chariox.local"],
+    );
+    git(&repository, &["config", "user.name", "Chariox Tests"]);
+    git(&repository, &["commit", "--allow-empty", "-m", "empty"]);
+    let exported =
+        one_repo_export(&root, &repository, "empty-root-budget").expect("export empty repository");
+    let destination = root.join("managed/empty-root-budget");
+    let error = super::import::import_development_context_with_budgets(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: exported.manifest.project_id,
+            destination_root: destination.clone(),
+        },
+        0,
+        0,
+    )
+    .expect_err("repository root must count against zero remaining budget");
+    assert!(error.to_string().contains("repository root"));
+    assert!(!destination.exists());
+    assert_no_import_temporaries(&root.join("managed"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn isolated_git_commands_remove_hostile_repository_environment() {
+    let root = test_root("isolated-git-environment");
+    let repository = root.join("repository");
+    let decoy = root.join("decoy");
+    init_repository(&repository, "tracked.txt", "base\n");
+    init_repository(&decoy, "decoy.txt", "decoy\n");
+    let mut command = Command::new("git");
+    command
+        .args(["rev-parse", "--show-toplevel"])
+        .current_dir(&repository)
+        .env("GIT_DIR", decoy.join(".git"))
+        .env("GIT_WORK_TREE", &decoy);
+    super::git::configure_isolated_git_environment(&mut command);
+    let output = command.output().expect("run isolated Git command");
+    assert!(output.status.success());
+    assert_eq!(
+        PathBuf::from(
+            String::from_utf8(output.stdout)
+                .expect("Git path UTF-8")
+                .trim()
+        ),
+        fs::canonicalize(&repository).expect("canonical repository")
+    );
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
+fn bundle_verification_rejects_oversized_header_lines() {
+    let root = test_root("bundle-header-cap");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let bundle = root.join("oversized.bundle");
+    let mut bytes = b"# v2 git bundle\n".to_vec();
+    bytes.extend(std::iter::repeat(b'a').take(MAX_GIT_BUNDLE_HEADER_BYTES + 1));
+    fs::write(&bundle, bytes).expect("write oversized bundle header");
+    let error = verify_git_bundle(
+        &repository,
+        &bundle,
+        &git_text_test(&repository, &["rev-parse", "HEAD"]),
+    )
+    .expect_err("oversized bundle header must fail closed");
+    assert!(error.to_string().contains("bundle header exceeds"));
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
 fn one_repo_export(
     root: &Path,
     repository: &Path,
@@ -521,6 +1137,23 @@ fn unpack_archive(archive: &Path, destination: &Path) {
     tar::Archive::new(GzDecoder::new(file))
         .unpack(destination)
         .expect("unpack archive");
+}
+
+fn raw_tar_header(path: &str, entry_type: u8, size: u64) -> [u8; 512] {
+    let mut header = [0_u8; 512];
+    header[..path.len()].copy_from_slice(path.as_bytes());
+    header[100..108].copy_from_slice(b"0000600\0");
+    header[108..116].copy_from_slice(b"0000000\0");
+    header[116..124].copy_from_slice(b"0000000\0");
+    header[124..136].copy_from_slice(format!("{size:011o}\0").as_bytes());
+    header[136..148].copy_from_slice(b"00000000000\0");
+    header[148..156].fill(b' ');
+    header[156] = entry_type;
+    header[257..263].copy_from_slice(b"ustar\0");
+    header[263..265].copy_from_slice(b"00");
+    let checksum = header.iter().map(|byte| *byte as u64).sum::<u64>();
+    header[148..156].copy_from_slice(format!("{checksum:06o}\0 ").as_bytes());
+    header
 }
 
 fn init_repository(path: &Path, file: &str, contents: &str) {
@@ -564,6 +1197,15 @@ fn git_text_test(path: &Path, args: &[&str]) -> String {
         .to_string()
 }
 
+fn git_status_test(path: &Path, args: &[&str]) -> bool {
+    Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .status()
+        .expect("run git status command")
+        .success()
+}
+
 fn test_root(label: &str) -> PathBuf {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -583,5 +1225,14 @@ fn assert_no_export_temporaries(root: &Path) {
         .filter_map(Result::ok)
         .map(|entry| entry.file_name().to_string_lossy().to_string())
         .find(|name| name.starts_with(".tmp-chariox-managed-context"));
+    assert_eq!(temporary, None);
+}
+
+fn assert_no_import_temporaries(root: &Path) {
+    let temporary = fs::read_dir(root)
+        .expect("read import parent")
+        .filter_map(Result::ok)
+        .map(|entry| entry.file_name().to_string_lossy().to_string())
+        .find(|name| name.starts_with(".tmp-chariox-context-import"));
     assert_eq!(temporary, None);
 }

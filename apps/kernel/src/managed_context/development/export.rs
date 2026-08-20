@@ -61,10 +61,12 @@ pub fn export_development_context(
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();
     let mut uncompressed_artifact_bytes = 0_u64;
+    let mut checkout_bytes = 0_u64;
+    let mut materialized_entries = 0_u64;
     let mut manifest_budget = ManifestMemoryBudget::new();
     manifest_budget.consume(request.project_id.len().saturating_add(256))?;
     for (selection, canonical_worktree) in selected_sources {
-        let exported = export_repository(
+        let (exported, estimate) = export_repository(
             selection,
             &canonical_worktree,
             &staging_root,
@@ -72,6 +74,15 @@ pub fn export_development_context(
             &mut target_directories,
             &mut manifest_budget,
         )?;
+        checkout_bytes = checkout_bytes.saturating_add(estimate.checkout_bytes);
+        materialized_entries = materialized_entries.saturating_add(estimate.materialized_entries);
+        if checkout_bytes > MAX_CHECKOUT_BYTES_PER_PROJECT
+            || materialized_entries > MAX_MATERIALIZED_ENTRIES_PER_PROJECT
+        {
+            return Err(context_error(format!(
+                "development context materialization exceeds the project budget of {MAX_CHECKOUT_BYTES_PER_PROJECT} bytes or {MAX_MATERIALIZED_ENTRIES_PER_PROJECT} entries"
+            )));
+        }
         source_repositories.push(DevelopmentSourceRepositoryMapping {
             source_workspace_id: selection.workspace_id.clone(),
             repository_id: exported.repository_id.clone(),
@@ -223,14 +234,25 @@ fn export_repository(
     repository_ids: &mut BTreeSet<String>,
     target_directories: &mut BTreeSet<String>,
     manifest_budget: &mut ManifestMemoryBudget,
-) -> Result<DevelopmentRepositoryManifest, DaemonError> {
+) -> Result<
+    (
+        DevelopmentRepositoryManifest,
+        RepositoryMaterializationEstimate,
+    ),
+    DaemonError,
+> {
     ensure_worktree_root(worktree)?;
     let source_before = repository_source_state(worktree)?;
-    reject_unsupported_repository_features(worktree)?;
+    let source_estimate = inspect_export_repository(worktree)?;
     let head_sha = source_before.head_sha.clone();
     let branch = source_before.branch.clone();
-    let upstream = source_before.upstream.clone();
     let origin_url = source_before.origin_url.clone();
+    let upstream = source_before.upstream.clone().filter(|upstream| {
+        origin_url.is_some()
+            && upstream
+                .strip_prefix("origin/")
+                .is_some_and(|branch| !branch.is_empty())
+    });
     let logical_name = repository_logical_name(worktree, origin_url.as_deref());
     let repository_id = unique_repository_id(
         origin_url.as_deref(),
@@ -262,6 +284,12 @@ fn export_repository(
     let bundle_sha256 = sha256_file(&bundle_path)?;
     let (overlay, overlay_size_bytes) =
         export_overlay(worktree, &repository_id, staging_root, manifest_budget)?;
+    let source_estimate = charge_overlay_materialization(
+        source_estimate,
+        &overlay,
+        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
+        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+    )?;
     let verification_root = repository_root.join("snapshot-verification");
     create_private_directory(&verification_root)?;
     let mut verification_budget = ManifestMemoryBudget::new();
@@ -273,11 +301,17 @@ fn export_repository(
     )?;
     fs::remove_dir_all(&verification_root)
         .map_err(|error| context_io_error("remove snapshot verification", error))?;
-    reject_unsupported_repository_features(worktree)?;
+    let verified_estimate = charge_overlay_materialization(
+        inspect_export_repository(worktree)?,
+        &verified_overlay,
+        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
+        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+    )?;
     let source_after = repository_source_state(worktree)?;
     if source_before != source_after
         || overlay != verified_overlay
         || overlay_size_bytes != verified_overlay_size_bytes
+        || source_estimate != verified_estimate
     {
         return Err(context_error(format!(
             "source repository `{}` changed while exporting; retry the development context export",
@@ -285,21 +319,24 @@ fn export_repository(
         )));
     }
 
-    Ok(DevelopmentRepositoryManifest {
-        repository_id: repository_id.clone(),
-        logical_name,
-        role: selection.role,
-        target_directory,
-        head_sha,
-        branch,
-        upstream,
-        origin_url,
-        bundle_path: format!("repositories/{repository_id}/repository.bundle"),
-        bundle_sha256,
-        bundle_size_bytes,
-        overlay,
-        overlay_size_bytes,
-    })
+    Ok((
+        DevelopmentRepositoryManifest {
+            repository_id: repository_id.clone(),
+            logical_name,
+            role: selection.role,
+            target_directory,
+            head_sha,
+            branch,
+            upstream,
+            origin_url,
+            bundle_path: format!("repositories/{repository_id}/repository.bundle"),
+            bundle_sha256,
+            bundle_size_bytes,
+            overlay,
+            overlay_size_bytes,
+        },
+        source_estimate,
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -412,7 +449,7 @@ fn sanitize_directory_name(value: &str) -> String {
     }
 }
 
-fn sanitize_origin_url(value: &str) -> Option<String> {
+pub(super) fn sanitize_origin_url(value: &str) -> Option<String> {
     let value = value.trim();
     if value.is_empty()
         || value.starts_with('/')

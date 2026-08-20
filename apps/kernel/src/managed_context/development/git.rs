@@ -21,28 +21,152 @@ pub(super) fn ensure_worktree_root(worktree: &Path) -> Result<(), DaemonError> {
     Ok(())
 }
 
-pub(super) fn reject_unsupported_repository_features(worktree: &Path) -> Result<(), DaemonError> {
-    if git_text(worktree, &["rev-parse", "--is-shallow-repository"])? == "true" {
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(super) struct RepositoryMaterializationEstimate {
+    pub checkout_bytes: u64,
+    pub materialized_entries: u64,
+}
+
+pub(super) fn charge_overlay_materialization(
+    mut estimate: RepositoryMaterializationEstimate,
+    overlay: &[DevelopmentOverlayEntry],
+    maximum_checkout_bytes: u64,
+    maximum_materialized_entries: u64,
+) -> Result<RepositoryMaterializationEstimate, DaemonError> {
+    for entry in overlay {
+        if let DevelopmentFileState::File { size_bytes, .. } = &entry.index {
+            charge_materialized_state(&mut estimate, *size_bytes, 3);
+        }
+        if let DevelopmentFileState::File { size_bytes, .. } = &entry.worktree {
+            let entries = 1_u64
+                .saturating_add(entry.path.bytes().filter(|byte| *byte == b'/').count() as u64);
+            charge_materialized_state(&mut estimate, *size_bytes, entries);
+        }
+        validate_materialization_estimate(
+            estimate,
+            maximum_checkout_bytes,
+            maximum_materialized_entries,
+            "repository overlay",
+        )?;
+    }
+    Ok(estimate)
+}
+
+fn charge_materialized_state(
+    estimate: &mut RepositoryMaterializationEstimate,
+    content_bytes: u64,
+    entries: u64,
+) {
+    estimate.checkout_bytes = estimate
+        .checkout_bytes
+        .saturating_add(content_bytes)
+        .saturating_add(entries.saturating_mul(4096));
+    estimate.materialized_entries = estimate.materialized_entries.saturating_add(entries);
+}
+
+fn validate_materialization_estimate(
+    estimate: RepositoryMaterializationEstimate,
+    maximum_checkout_bytes: u64,
+    maximum_materialized_entries: u64,
+    label: &str,
+) -> Result<(), DaemonError> {
+    if estimate.checkout_bytes > maximum_checkout_bytes {
+        return Err(context_error(format!(
+            "{label} exceeds the {maximum_checkout_bytes}-byte checkout budget"
+        )));
+    }
+    if estimate.materialized_entries > maximum_materialized_entries {
+        return Err(context_error(format!(
+            "{label} exceeds the {maximum_materialized_entries}-entry materialization budget"
+        )));
+    }
+    Ok(())
+}
+
+pub(super) fn inspect_export_repository(
+    worktree: &Path,
+) -> Result<RepositoryMaterializationEstimate, DaemonError> {
+    inspect_repository_features(
+        worktree,
+        false,
+        MAX_CHECKOUT_BYTES_PER_REPOSITORY,
+        MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY,
+    )
+}
+
+pub(super) fn inspect_import_repository(
+    worktree: &Path,
+    maximum_checkout_bytes: u64,
+    maximum_materialized_entries: u64,
+) -> Result<RepositoryMaterializationEstimate, DaemonError> {
+    inspect_repository_features(
+        worktree,
+        true,
+        maximum_checkout_bytes.min(MAX_CHECKOUT_BYTES_PER_REPOSITORY),
+        maximum_materialized_entries.min(MAX_MATERIALIZED_ENTRIES_PER_REPOSITORY),
+    )
+}
+
+fn inspect_repository_features(
+    worktree: &Path,
+    isolated: bool,
+    maximum_checkout_bytes: u64,
+    maximum_materialized_entries: u64,
+) -> Result<RepositoryMaterializationEstimate, DaemonError> {
+    if git_text_with_environment(
+        worktree,
+        &["rev-parse", "--is-shallow-repository"],
+        isolated,
+    )? == "true"
+    {
         return Err(context_error(format!(
             "repository `{}` is shallow; shallow repositories are not supported in development context version 1",
             worktree.display()
         )));
     }
-    stream_git_nul_records(
+    let mut checkout_bytes = 4096_u64;
+    let mut materialized_entries = 1_u64;
+    validate_materialization_estimate(
+        RepositoryMaterializationEstimate {
+            checkout_bytes,
+            materialized_entries,
+        },
+        maximum_checkout_bytes,
+        maximum_materialized_entries,
+        "repository root",
+    )?;
+    stream_git_nul_records_with_environment(
         worktree,
-        &["ls-tree", "-r", "-z", "HEAD"],
+        &["ls-tree", "-r", "-l", "-z", "HEAD"],
         MAX_REPOSITORY_TREE_ENTRIES,
+        isolated,
         |record| {
             let Some((metadata, path)) = record.split_once('\t') else {
                 return Err(context_error("Git tree returned a malformed entry"));
             };
             let fields = metadata.split_whitespace().collect::<Vec<_>>();
-            if fields.len() != 3 {
+            if fields.len() != 4 {
                 return Err(context_error("Git tree returned malformed metadata"));
             }
             let mode = fields[0];
             let object_id = fields[2];
+            let size = if fields[3] == "-" {
+                0
+            } else {
+                fields[3]
+                    .parse::<u64>()
+                    .map_err(|_| context_error("Git tree returned an invalid blob size"))?
+            };
             validate_relative_path(path)?;
+            materialized_entries = materialized_entries
+                .saturating_add(1)
+                .saturating_add(path.bytes().filter(|byte| *byte == b'/').count() as u64);
+            if materialized_entries > maximum_materialized_entries {
+                return Err(context_error(format!(
+                    "repository `{}` current tree exceeds the {maximum_materialized_entries}-entry materialization budget",
+                    worktree.display()
+                )));
+            }
             match mode {
                 "160000" => {
                     return Err(context_error(format!(
@@ -50,23 +174,44 @@ pub(super) fn reject_unsupported_repository_features(worktree: &Path) -> Result<
                         worktree.display()
                     )));
                 }
-                "120000" => validate_committed_symlink(worktree, path, object_id)?,
+                "120000" => validate_committed_symlink(worktree, path, object_id, isolated)?,
                 _ => {}
             }
+            let materialized_size = if mode == "100644" || mode == "100755" {
+                size.saturating_mul(2)
+            } else {
+                size
+            };
+            let allocation_bytes = 4096_u64.saturating_mul(
+                1_u64.saturating_add(path.bytes().filter(|byte| *byte == b'/').count() as u64),
+            );
+            checkout_bytes = checkout_bytes
+                .saturating_add(materialized_size)
+                .saturating_add(allocation_bytes);
+            if checkout_bytes > maximum_checkout_bytes {
+                return Err(context_error(format!(
+                    "repository `{}` current tree exceeds the {maximum_checkout_bytes}-byte checkout budget",
+                    worktree.display()
+                )));
+            }
             if path == ".gitattributes" || path.ends_with("/.gitattributes") {
-                let size = git_blob_size(worktree, object_id)?;
                 if size > MAX_CONTEXT_IGNORE_BYTES {
                     return Err(context_error(format!(
                         "repository attributes `{path}` are {size} bytes; maximum is {MAX_CONTEXT_IGNORE_BYTES}"
                     )));
                 }
-                let contents = git_bytes(worktree, &["cat-file", "blob", object_id])?;
+                let contents = git_bytes_with_environment(
+                    worktree,
+                    &["cat-file", "blob", object_id],
+                    isolated,
+                )?;
                 reject_lfs_attributes(path, &contents)?;
+                reject_checkout_transform_attributes(path, &contents)?;
             }
             Ok(())
         },
     )?;
-    let lfs = git_output_allow_status(
+    let lfs = git_output_allow_status_with_environment(
         worktree,
         &[
             "grep",
@@ -78,12 +223,38 @@ pub(super) fn reject_unsupported_repository_features(worktree: &Path) -> Result<
             ".",
         ],
         &[0, 1],
+        isolated,
     )?;
     if lfs.status.code() == Some(0) {
         return Err(context_error(format!(
             "repository `{}` contains Git LFS pointers; Git LFS is not supported in development context version 1",
             worktree.display()
         )));
+    }
+    Ok(RepositoryMaterializationEstimate {
+        checkout_bytes,
+        materialized_entries,
+    })
+}
+
+fn reject_checkout_transform_attributes(path: &str, bytes: &[u8]) -> Result<(), DaemonError> {
+    for line in String::from_utf8_lossy(bytes).lines() {
+        let line = line.trim_start();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        for attribute in line.split_whitespace().skip(1) {
+            let attribute = attribute.trim_start_matches(['-', '!']);
+            if attribute == "ident"
+                || attribute.starts_with("ident=")
+                || attribute == "working-tree-encoding"
+                || attribute.starts_with("working-tree-encoding=")
+            {
+                return Err(context_error(format!(
+                    "repository attributes `{path}` enable checkout-transforming attribute `{attribute}`; ident and working-tree-encoding are not supported in development context version 1"
+                )));
+            }
+        }
     }
     Ok(())
 }
@@ -92,14 +263,15 @@ fn validate_committed_symlink(
     worktree: &Path,
     path: &str,
     object_id: &str,
+    isolated: bool,
 ) -> Result<(), DaemonError> {
-    let size = git_blob_size(worktree, object_id)?;
+    let size = git_blob_size_with_environment(worktree, object_id, isolated)?;
     if size > MAX_GIT_NUL_RECORD_BYTES as u64 {
         return Err(context_error(format!(
             "committed symlink `{path}` target exceeds {MAX_GIT_NUL_RECORD_BYTES} bytes"
         )));
     }
-    let target = git_bytes(worktree, &["cat-file", "blob", object_id])?;
+    let target = git_bytes_with_environment(worktree, &["cat-file", "blob", object_id], isolated)?;
     let target = String::from_utf8(target)
         .map_err(|_| context_error(format!("committed symlink `{path}` has a non-UTF-8 target")))?;
     if !symlink_target_stays_within_repository(path, target.trim()) {
@@ -228,18 +400,36 @@ pub(super) fn verify_git_bundle(
     bundle: &Path,
     expected_head: &str,
 ) -> Result<(), DaemonError> {
+    verify_git_bundle_with_environment(worktree, bundle, expected_head, false)
+}
+
+pub(super) fn verify_git_bundle_isolated(
+    worktree: &Path,
+    bundle: &Path,
+    expected_head: &str,
+) -> Result<(), DaemonError> {
+    verify_git_bundle_with_environment(worktree, bundle, expected_head, true)
+}
+
+fn verify_git_bundle_with_environment(
+    worktree: &Path,
+    bundle: &Path,
+    expected_head: &str,
+    isolated: bool,
+) -> Result<(), DaemonError> {
     let file = File::open(bundle).map_err(|error| context_io_error("open Git bundle", error))?;
-    let mut lines = BufReader::new(file).lines();
-    let signature = lines
-        .next()
-        .transpose()
-        .map_err(|error| context_io_error("read Git bundle header", error))?
-        .unwrap_or_default();
+    let mut reader = BufReader::new(file);
+    let mut header_bytes = 0_usize;
+    let mut header_records = 0_usize;
+    let signature =
+        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+            .unwrap_or_default();
     if !signature.starts_with("# v") || !signature.ends_with(" git bundle") {
         return Err(context_error("Git bundle has an invalid signature"));
     }
-    for line in lines {
-        let line = line.map_err(|error| context_io_error("read Git bundle header", error))?;
+    while let Some(line) =
+        read_bounded_bundle_header_line(&mut reader, &mut header_bytes, &mut header_records)?
+    {
         if line.is_empty() {
             break;
         }
@@ -252,18 +442,34 @@ pub(super) fn verify_git_bundle(
     let bundle_text = bundle
         .to_str()
         .ok_or_else(|| context_error("Git bundle path is not valid UTF-8"))?;
-    let heads = git_text(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?;
+    let heads = if isolated {
+        git_text_isolated(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+    } else {
+        git_text(worktree, &["bundle", "list-heads", bundle_text, "HEAD"])?
+    };
     if heads.split_whitespace().next() != Some(expected_head) {
         return Err(context_error(
             "Git bundle HEAD does not match the captured repository HEAD",
         ));
     }
-    git_output(worktree, &["bundle", "verify", bundle_text])?;
+    if isolated {
+        git_output_isolated(worktree, &["bundle", "verify", bundle_text])?;
+    } else {
+        git_output(worktree, &["bundle", "verify", bundle_text])?;
+    }
     Ok(())
 }
 
 pub(super) fn git_blob_size(worktree: &Path, object_id: &str) -> Result<u64, DaemonError> {
-    git_text(worktree, &["cat-file", "-s", object_id])?
+    git_blob_size_with_environment(worktree, object_id, false)
+}
+
+fn git_blob_size_with_environment(
+    worktree: &Path,
+    object_id: &str,
+    isolated: bool,
+) -> Result<u64, DaemonError> {
+    git_text_with_environment(worktree, &["cat-file", "-s", object_id], isolated)?
         .parse::<u64>()
         .map_err(|_| context_error("Git returned an invalid blob size"))
 }
@@ -292,7 +498,15 @@ impl Drop for BundleCleanup {
 }
 
 pub(super) fn git_text(worktree: &Path, args: &[&str]) -> Result<String, DaemonError> {
-    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES)?;
+    git_text_with_environment(worktree, args, false)
+}
+
+fn git_text_with_environment(
+    worktree: &Path,
+    args: &[&str],
+    isolated: bool,
+) -> Result<String, DaemonError> {
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES, isolated)?;
     let output = require_git_success(output, "run Git text command")?;
     String::from_utf8(output.stdout)
         .map(|value| value.trim().to_string())
@@ -303,7 +517,7 @@ pub(super) fn git_optional_text(
     worktree: &Path,
     args: &[&str],
 ) -> Result<Option<String>, DaemonError> {
-    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES)?;
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES, false)?;
     let output = require_allowed_git_status(output, &[0, 1, 2, 128])?;
     if !output.status.success() {
         return Ok(None);
@@ -316,20 +530,47 @@ pub(super) fn git_optional_text(
 }
 
 pub(super) fn git_bytes(worktree: &Path, args: &[&str]) -> Result<Vec<u8>, DaemonError> {
-    Ok(git_output(worktree, args)?.stdout)
+    git_bytes_with_environment(worktree, args, false)
+}
+
+fn git_bytes_with_environment(
+    worktree: &Path,
+    args: &[&str],
+    isolated: bool,
+) -> Result<Vec<u8>, DaemonError> {
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_COMMAND_OUTPUT_BYTES, isolated)?;
+    Ok(require_git_success(output, "run Git bytes command")?.stdout)
 }
 
 pub(super) fn git_output(worktree: &Path, args: &[&str]) -> Result<Output, DaemonError> {
-    let output = run_git_output_bounded(worktree, args, MAX_GIT_COMMAND_OUTPUT_BYTES)?;
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_COMMAND_OUTPUT_BYTES, false)?;
     require_git_success(output, "run Git command")
 }
 
-pub(super) fn git_output_allow_status(
+pub(super) fn git_text_isolated(worktree: &Path, args: &[&str]) -> Result<String, DaemonError> {
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES, true)?;
+    let output = require_git_success(output, "run isolated Git text command")?;
+    String::from_utf8(output.stdout)
+        .map(|value| value.trim().to_string())
+        .map_err(|_| context_error(format!("git {} returned non-UTF-8 output", args.join(" "))))
+}
+
+pub(super) fn git_output_isolated(worktree: &Path, args: &[&str]) -> Result<Output, DaemonError> {
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_COMMAND_OUTPUT_BYTES, true)?;
+    require_git_success(output, "run isolated Git command")
+}
+
+pub(super) fn git_bytes_isolated(worktree: &Path, args: &[&str]) -> Result<Vec<u8>, DaemonError> {
+    Ok(git_output_isolated(worktree, args)?.stdout)
+}
+
+fn git_output_allow_status_with_environment(
     worktree: &Path,
     args: &[&str],
     allowed: &[i32],
+    isolated: bool,
 ) -> Result<Output, DaemonError> {
-    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES)?;
+    let output = run_git_output_bounded(worktree, args, MAX_GIT_TEXT_BYTES, isolated)?;
     require_allowed_git_status(output, allowed)
 }
 
@@ -349,10 +590,14 @@ fn run_git_output_bounded(
     worktree: &Path,
     args: &[&str],
     maximum_stdout_bytes: usize,
+    isolated: bool,
 ) -> Result<Output, DaemonError> {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(worktree)
+    let mut command = Command::new("git");
+    command.args(args).current_dir(worktree);
+    if isolated {
+        configure_isolated_git_environment(&mut command);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -402,6 +647,33 @@ fn run_git_output_bounded(
     })
 }
 
+pub(super) fn configure_isolated_git_environment(command: &mut Command) {
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env(
+            "GIT_CONFIG_GLOBAL",
+            if cfg!(windows) { "NUL" } else { "/dev/null" },
+        )
+        .env("GIT_ATTR_NOSYSTEM", "1")
+        .env("GIT_TERMINAL_PROMPT", "0");
+    for name in [
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_INDEX_FILE",
+        "GIT_WORK_TREE",
+        "GIT_DIR",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_SSH_COMMAND",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+        "GIT_TEMPLATE_DIR",
+    ] {
+        command.env_remove(name);
+    }
+}
+
 fn read_capped_and_drain(mut reader: impl Read) -> Vec<u8> {
     let mut retained = Vec::new();
     let mut buffer = [0_u8; 16 * 1024];
@@ -422,14 +694,30 @@ pub(super) fn stream_git_nul_records<F>(
     worktree: &Path,
     args: &[&str],
     maximum_records: usize,
+    on_record: F,
+) -> Result<(), DaemonError>
+where
+    F: FnMut(String) -> Result<(), DaemonError>,
+{
+    stream_git_nul_records_with_environment(worktree, args, maximum_records, false, on_record)
+}
+
+fn stream_git_nul_records_with_environment<F>(
+    worktree: &Path,
+    args: &[&str],
+    maximum_records: usize,
+    isolated: bool,
     mut on_record: F,
 ) -> Result<(), DaemonError>
 where
     F: FnMut(String) -> Result<(), DaemonError>,
 {
-    let mut child = Command::new("git")
-        .args(args)
-        .current_dir(worktree)
+    let mut command = Command::new("git");
+    command.args(args).current_dir(worktree);
+    if isolated {
+        configure_isolated_git_environment(&mut command);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -504,6 +792,53 @@ where
         )));
     }
     Ok(())
+}
+
+fn read_bounded_bundle_header_line(
+    reader: &mut impl BufRead,
+    total_bytes: &mut usize,
+    records: &mut usize,
+) -> Result<Option<String>, DaemonError> {
+    let mut line = Vec::new();
+    loop {
+        let available = reader
+            .fill_buf()
+            .map_err(|error| context_io_error("read Git bundle header", error))?;
+        if available.is_empty() {
+            if line.is_empty() {
+                return Ok(None);
+            }
+            return Err(context_error("Git bundle header has an unterminated line"));
+        }
+        let take = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |index| index + 1);
+        *total_bytes = total_bytes.saturating_add(take);
+        if *total_bytes > MAX_GIT_BUNDLE_HEADER_BYTES {
+            return Err(context_error(format!(
+                "Git bundle header exceeds {MAX_GIT_BUNDLE_HEADER_BYTES} bytes"
+            )));
+        }
+        line.extend_from_slice(&available[..take]);
+        let found_newline = line.last() == Some(&b'\n');
+        reader.consume(take);
+        if found_newline {
+            *records = records.saturating_add(1);
+            if *records > MAX_GIT_BUNDLE_HEADER_RECORDS {
+                return Err(context_error(format!(
+                    "Git bundle header exceeds {MAX_GIT_BUNDLE_HEADER_RECORDS} records"
+                )));
+            }
+            line.pop();
+            if line.last() == Some(&b'\r') {
+                line.pop();
+            }
+            return String::from_utf8(line)
+                .map(Some)
+                .map_err(|_| context_error("Git bundle header is not valid UTF-8"));
+        }
+    }
 }
 
 fn require_git_success(output: Output, operation: &'static str) -> Result<Output, DaemonError> {
