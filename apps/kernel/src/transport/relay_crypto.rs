@@ -18,6 +18,7 @@ const RELAY_INFO: &[u8] = b"chariox-relay-v1";
 const BOUND_INFO_PREFIX: &[u8] = b"chariox-bound-v1\0";
 const NONCE_LEN: usize = 12;
 const TAG_LEN: usize = 16;
+const MAX_ENCODED_PUBLIC_KEY_BYTES: usize = 256;
 const PEER_CRYPTO_CONTEXT_CACHE_LIMIT: usize = 256;
 
 static PEER_CRYPTO_CONTEXTS: OnceLock<Mutex<HashMap<[u8; 32], Arc<PeerCryptoContext>>>> =
@@ -149,6 +150,53 @@ pub(crate) fn decrypt_payload_for_private_key_bound(
         plaintext,
         sender_public_key: payload.sender_public_key.clone(),
     })
+}
+
+pub(crate) fn validate_encrypted_payload_shape(
+    payload: &EncryptedRelayPayload,
+    maximum_ciphertext_bytes: usize,
+) -> Result<(), DaemonError> {
+    if payload.sender_public_key.len() > MAX_ENCODED_PUBLIC_KEY_BYTES {
+        return Err(relay_crypto_error(
+            "validate encrypted relay payload",
+            "sender public key exceeds its size limit",
+        ));
+    }
+    decode_public_key(&payload.sender_public_key)?;
+    if payload.nonce.len() > maximum_base64_length(NONCE_LEN) {
+        return Err(relay_crypto_error(
+            "validate encrypted relay payload",
+            "nonce encoding exceeds its size limit",
+        ));
+    }
+    let nonce = decode_bytes(&payload.nonce, "decode relay nonce")?;
+    if nonce.len() != NONCE_LEN {
+        return Err(relay_crypto_error(
+            "validate encrypted relay payload",
+            "nonce must be 12 bytes",
+        ));
+    }
+    if payload.ciphertext.len() > maximum_base64_length(maximum_ciphertext_bytes) {
+        return Err(relay_crypto_error(
+            "validate encrypted relay payload",
+            "ciphertext encoding exceeds its size limit",
+        ));
+    }
+    let ciphertext = decode_bytes(&payload.ciphertext, "decode relay ciphertext")?;
+    if ciphertext.len() < TAG_LEN || ciphertext.len() > maximum_ciphertext_bytes {
+        return Err(relay_crypto_error(
+            "validate encrypted relay payload",
+            "ciphertext size is invalid",
+        ));
+    }
+    Ok(())
+}
+
+fn maximum_base64_length(decoded_bytes: usize) -> usize {
+    decoded_bytes
+        .saturating_add(2)
+        .saturating_div(3)
+        .saturating_mul(4)
 }
 
 fn peer_crypto_context(
@@ -285,6 +333,27 @@ mod tests {
         let decrypted = decrypt_payload_for_private_key(&receiver_private, &payload)
             .expect("payload should decrypt");
         assert_eq!(decrypted.plaintext, b"hello relay");
+    }
+
+    #[test]
+    fn encrypted_payload_shape_is_bounded_and_validates_key_nonce_and_tag() {
+        let sender_private = generate_private_key_base64();
+        let receiver_private = generate_private_key_base64();
+        let receiver_public = public_key_from_private_key_base64(&receiver_private)
+            .expect("receiver public key should derive");
+        let payload = encrypt_payload_for_peer(&sender_private, &receiver_public, b"shape")
+            .expect("payload should encrypt");
+        validate_encrypted_payload_shape(&payload, 64).expect("payload shape should validate");
+
+        let mut malformed = payload.clone();
+        malformed.sender_public_key = "not-base64".to_string();
+        assert!(validate_encrypted_payload_shape(&malformed, 64).is_err());
+        let mut malformed = payload.clone();
+        malformed.nonce = base64::engine::general_purpose::STANDARD.encode([0_u8; 11]);
+        assert!(validate_encrypted_payload_shape(&malformed, 64).is_err());
+        let mut malformed = payload;
+        malformed.ciphertext = base64::engine::general_purpose::STANDARD.encode([0_u8; 15]);
+        assert!(validate_encrypted_payload_shape(&malformed, 64).is_err());
     }
 
     #[test]

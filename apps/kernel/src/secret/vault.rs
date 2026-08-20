@@ -27,6 +27,10 @@ const DEFAULT_ARGON2_PARALLELISM: u32 = 1;
 const KEY_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
+const AUTH_TAG_LEN: usize = 16;
+const MAX_VAULT_KDF_MEMORY_KIB: u32 = 256 * 1024;
+const MAX_VAULT_KDF_ITERATIONS: u32 = 10;
+const MAX_VAULT_KDF_PARALLELISM: u32 = 16;
 const TRANSFERRED_VAULT_SCHEMA_VERSION: u32 = 1;
 const TRANSFERRED_VAULT_KEY_PURPOSE: &[u8] = b"managed-context-vault-key-v1";
 const STORED_VAULT_KEY_PURPOSE: &[u8] = b"managed-context-vault-key-at-rest-v1";
@@ -471,6 +475,90 @@ pub fn install_transferred_vault_snapshot(
     remember_transferred_vault_key(path, key)
 }
 
+pub fn validate_transferred_vault_snapshot_for_export(
+    snapshot: &TransferredVaultSnapshot,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+) -> Result<(), DaemonError> {
+    if snapshot.schema_version != TRANSFERRED_VAULT_SCHEMA_VERSION {
+        return Err(secret_error(format!(
+            "unsupported transferred Vault snapshot version {}",
+            snapshot.schema_version
+        )));
+    }
+    validate_transfer_binding(&snapshot.context_id, "context id")?;
+    validate_transfer_binding(&snapshot.source_kernel_id, "source kernel id")?;
+    validate_transfer_binding(&snapshot.target_kernel_id, "target kernel id")?;
+    validate_transfer_binding(&expected_source.context_id, "expected context id")?;
+    validate_transfer_binding(
+        &expected_source.source_kernel_id,
+        "expected source kernel id",
+    )?;
+    validate_sha256(
+        &expected_source.source_key_thumbprint,
+        "expected source key thumbprint",
+    )?;
+    validate_sha256(target_key_thumbprint, "expected target key thumbprint")?;
+    if snapshot.context_id != expected_source.context_id
+        || snapshot.source_kernel_id != expected_source.source_kernel_id
+        || snapshot.source_key_thumbprint != expected_source.source_key_thumbprint
+    {
+        return Err(secret_error(
+            "transferred Vault source or context binding does not match".to_string(),
+        ));
+    }
+    if snapshot.target_kernel_id != target_kernel_id {
+        return Err(secret_error(
+            "transferred Vault target kernel does not match".to_string(),
+        ));
+    }
+    if snapshot.target_key_thumbprint != target_key_thumbprint {
+        return Err(secret_error(
+            "transferred Vault target key does not match".to_string(),
+        ));
+    }
+    validate_sha256(&snapshot.source_key_thumbprint, "source key thumbprint")?;
+    validate_sha256(&snapshot.target_key_thumbprint, "target key thumbprint")?;
+    validate_sha256(&snapshot.vault_sha256, "Vault digest")?;
+    relay_crypto::validate_encrypted_payload_shape(
+        &snapshot.sealed_unlock_key,
+        MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES
+            .saturating_mul(3)
+            .saturating_div(4) as usize,
+    )?;
+    let sealed_bytes = serde_json::to_vec(&snapshot.sealed_unlock_key).map_err(|error| {
+        secret_error(format!(
+            "failed to validate transferred Vault key envelope: {error}"
+        ))
+    })?;
+    if sealed_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES {
+        return Err(secret_error(
+            "transferred Vault key envelope exceeds its size limit".to_string(),
+        ));
+    }
+    if public_key_thumbprint(&snapshot.sealed_unlock_key.sender_public_key)
+        != snapshot.source_key_thumbprint
+    {
+        return Err(secret_error(
+            "transferred Vault source key does not match its sealed key".to_string(),
+        ));
+    }
+    if snapshot.vault_size_bytes == 0 || snapshot.vault_size_bytes > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "transferred Vault size is invalid".to_string(),
+        ));
+    }
+    let vault_bytes = decode_transferred_vault_bytes(snapshot)?;
+    let vault_file =
+        serde_json::from_slice::<EncryptedVaultFile>(&vault_bytes).map_err(|error| {
+            secret_error(format!(
+                "failed to parse transferred Chariox Vault file: {error}"
+            ))
+        })?;
+    validate_vault_file(&vault_file)
+}
+
 pub fn restore_transferred_vault_unlock(
     path: impl AsRef<Path>,
     target_kernel_id: &str,
@@ -680,6 +768,41 @@ fn validate_vault_file(file: &EncryptedVaultFile) -> Result<(), DaemonError> {
             file.kdf.algorithm
         )));
     }
+    base64_decode_fixed::<SALT_LEN>(&file.kdf.salt, "salt")?;
+    base64_decode_fixed::<NONCE_LEN>(&file.nonce, "nonce")?;
+    if file.kdf.memory_kib == 0
+        || file.kdf.memory_kib > MAX_VAULT_KDF_MEMORY_KIB
+        || file.kdf.iterations == 0
+        || file.kdf.iterations > MAX_VAULT_KDF_ITERATIONS
+        || file.kdf.parallelism == 0
+        || file.kdf.parallelism > MAX_VAULT_KDF_PARALLELISM
+    {
+        return Err(secret_error(
+            "Chariox Vault KDF parameters exceed their safe profile".to_string(),
+        ));
+    }
+    Params::new(
+        file.kdf.memory_kib,
+        file.kdf.iterations,
+        file.kdf.parallelism,
+        Some(KEY_LEN),
+    )
+    .map_err(|error| secret_error(format!("invalid Chariox Vault KDF params: {error}")))?;
+    let maximum_encoded_ciphertext = MAX_TRANSFERRED_VAULT_BYTES
+        .saturating_add(2)
+        .saturating_div(3)
+        .saturating_mul(4);
+    if file.ciphertext.len() as u64 > maximum_encoded_ciphertext {
+        return Err(secret_error(
+            "Chariox Vault ciphertext encoding exceeds its size limit".to_string(),
+        ));
+    }
+    let ciphertext = base64_decode(&file.ciphertext, "ciphertext")?;
+    if ciphertext.len() < AUTH_TAG_LEN || ciphertext.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "Chariox Vault ciphertext size is invalid".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -709,61 +832,21 @@ fn validate_transferred_vault_snapshot(
     target_kernel_id: &str,
     target_private_key: &str,
 ) -> Result<(), DaemonError> {
-    if snapshot.schema_version != TRANSFERRED_VAULT_SCHEMA_VERSION {
-        return Err(secret_error(format!(
-            "unsupported transferred Vault snapshot version {}",
-            snapshot.schema_version
-        )));
-    }
-    validate_transfer_binding(&snapshot.context_id, "context id")?;
-    validate_transfer_binding(&snapshot.source_kernel_id, "source kernel id")?;
-    validate_transfer_binding(&snapshot.target_kernel_id, "target kernel id")?;
-    if let Some(expected_source) = expected_source {
-        validate_transfer_binding(&expected_source.context_id, "expected context id")?;
-        validate_transfer_binding(
-            &expected_source.source_kernel_id,
-            "expected source kernel id",
-        )?;
-        validate_sha256(
-            &expected_source.source_key_thumbprint,
-            "expected source key thumbprint",
-        )?;
-        if snapshot.context_id != expected_source.context_id
-            || snapshot.source_kernel_id != expected_source.source_kernel_id
-            || snapshot.source_key_thumbprint != expected_source.source_key_thumbprint
-        {
-            return Err(secret_error(
-                "transferred Vault source or context binding does not match".to_string(),
-            ));
-        }
-    }
-    if snapshot.target_kernel_id != target_kernel_id {
-        return Err(secret_error(
-            "transferred Vault target kernel does not match".to_string(),
-        ));
-    }
-    validate_sha256(&snapshot.source_key_thumbprint, "source key thumbprint")?;
-    validate_sha256(&snapshot.target_key_thumbprint, "target key thumbprint")?;
-    validate_sha256(&snapshot.vault_sha256, "Vault digest")?;
     let target_public_key = relay_crypto::public_key_from_private_key_base64(target_private_key)?;
-    if public_key_thumbprint(&target_public_key) != snapshot.target_key_thumbprint {
-        return Err(secret_error(
-            "transferred Vault target key does not match".to_string(),
-        ));
-    }
-    if public_key_thumbprint(&snapshot.sealed_unlock_key.sender_public_key)
-        != snapshot.source_key_thumbprint
-    {
-        return Err(secret_error(
-            "transferred Vault source key does not match its sealed key".to_string(),
-        ));
-    }
-    if snapshot.vault_size_bytes == 0 || snapshot.vault_size_bytes > MAX_TRANSFERRED_VAULT_BYTES {
-        return Err(secret_error(
-            "transferred Vault size is invalid".to_string(),
-        ));
-    }
-    Ok(())
+    let target_key_thumbprint = public_key_thumbprint(&target_public_key);
+    let source = expected_source
+        .cloned()
+        .unwrap_or(TransferredVaultSourceBinding {
+            context_id: snapshot.context_id.clone(),
+            source_kernel_id: snapshot.source_kernel_id.clone(),
+            source_key_thumbprint: snapshot.source_key_thumbprint.clone(),
+        });
+    validate_transferred_vault_snapshot_for_export(
+        snapshot,
+        &source,
+        target_kernel_id,
+        &target_key_thumbprint,
+    )
 }
 
 fn validate_transfer_envelope(
@@ -1245,6 +1328,7 @@ fn secret_error(message: String) -> DaemonError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EncryptedVaultFile {
     version: u32,
     kdf: VaultKdfConfig,
@@ -1254,6 +1338,7 @@ struct EncryptedVaultFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VaultKdfConfig {
     algorithm: String,
     salt: String,
@@ -1608,6 +1693,33 @@ mod tests {
             &target_public,
         )
         .expect("vault should export");
+
+        let mut unknown_field = snapshot.clone();
+        let mut vault_json = serde_json::from_slice::<serde_json::Value>(
+            &decode_transferred_vault_bytes(&unknown_field)
+                .expect("transferred Vault bytes should decode"),
+        )
+        .expect("transferred Vault should be JSON");
+        vault_json
+            .as_object_mut()
+            .expect("transferred Vault should be an object")
+            .insert(
+                "plaintext_secret".to_string(),
+                serde_json::Value::String("unknown-field-canary".to_string()),
+            );
+        let unknown_bytes = serde_json::to_vec(&vault_json).expect("unknown Vault should encode");
+        unknown_field.vault_size_bytes = unknown_bytes.len() as u64;
+        unknown_field.vault_sha256 = sha256_hex(&unknown_bytes);
+        unknown_field.vault_file_base64 =
+            base64::engine::general_purpose::STANDARD.encode(&unknown_bytes);
+        let unknown_error = validate_transferred_vault_snapshot_for_export(
+            &unknown_field,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &snapshot.target_key_thumbprint,
+        )
+        .expect_err("unknown plaintext Vault field should reject");
+        assert!(!format!("{unknown_error:?}").contains("unknown-field-canary"));
 
         let mut tampered = snapshot.clone();
         tampered.context_id = "context-two".to_string();

@@ -290,25 +290,7 @@ pub(super) fn read_regular_file_without_following_symlinks(
 }
 
 pub(super) fn validate_relative_path(path: &str) -> Result<(), DaemonError> {
-    if path.is_empty()
-        || path.contains('\0')
-        || path.contains('\\')
-        || path.split('/').any(|component| {
-            component.is_empty()
-                || component.contains(':')
-                || component.ends_with([' ', '.'])
-                || component.chars().any(char::is_control)
-                || is_portable_git_admin_component(component)
-        })
-    {
-        return Err(context_error(format!("unsafe repository path `{path}`")));
-    }
-    let candidate = Path::new(path);
-    if candidate.is_absolute()
-        || candidate
-            .components()
-            .any(|component| !matches!(component, Component::Normal(_)))
-    {
+    if !crate::managed_context::portable_path::is_portable_relative_path(path) {
         return Err(context_error(format!("unsafe repository path `{path}`")));
     }
     Ok(())

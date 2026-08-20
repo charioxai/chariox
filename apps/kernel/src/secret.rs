@@ -24,8 +24,8 @@ pub use vault::{
     export_transferred_vault_snapshot, extend_chariox_encrypted_vault,
     install_transferred_vault_snapshot, is_chariox_vault_locked_error,
     lock_chariox_encrypted_vault, restore_transferred_vault_unlock, unlock_chariox_encrypted_vault,
-    CharioxVaultUnlockStatus, CredentialVaultStore, TransferredVaultSnapshot,
-    TransferredVaultSourceBinding, VaultUnlockLease,
+    validate_transferred_vault_snapshot_for_export, CharioxVaultUnlockStatus, CredentialVaultStore,
+    TransferredVaultSnapshot, TransferredVaultSourceBinding, VaultUnlockLease,
 };
 
 type HmacSha256 = Hmac<Sha256>;
