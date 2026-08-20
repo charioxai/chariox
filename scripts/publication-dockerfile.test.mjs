@@ -53,6 +53,17 @@ test("publication Rust build consumes the workspace lock and every kernel path d
   const kernelPathDependencies = [...kernelCargo.matchAll(/^\s*[\w-]+\s*=\s*\{[^\n}]*path\s*=\s*"([^"]+)"/gm)]
     .map((match) => match[1])
   assert.deepEqual(kernelPathDependencies.sort(), ["../../packages/event-protocol", "../relay"])
+  assert.match(
+    rustStage,
+    /test "\$\(target\/release\/chariox-kernel --print-local-daemon-protocol-version\)"/,
+    "the build must execute the kernel from Cargo's workspace target directory",
+  )
+  assert.match(
+    dockerfile,
+    /COPY --from=rust-builder \/opt\/chariox\/target\/release\/chariox-kernel \/usr\/local\/bin\/chariox-kernel/,
+    "the runtime image must copy the kernel from Cargo's workspace target directory",
+  )
+  assert.doesNotMatch(dockerfile, /apps\/kernel\/target\/release\/chariox-kernel/)
 })
 
 test("publication images pin every base image by immutable digest", () => {

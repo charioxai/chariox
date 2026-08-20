@@ -45,7 +45,7 @@ COPY examples/workflow-code examples/workflow-code
 COPY packages/aegs-sdk packages/aegs-sdk
 COPY packages/event-protocol packages/event-protocol
 RUN cargo build --locked --manifest-path apps/kernel/Cargo.toml --release --bin chariox-kernel \
-  && test "$(apps/kernel/target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
+  && test "$(target/release/chariox-kernel --print-local-daemon-protocol-version)" = "${CHARIOX_LOCAL_DAEMON_PROTOCOL_VERSION}"
 
 FROM node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436
 LABEL org.opencontainers.image.title="Chariox workflow publication"
@@ -88,7 +88,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY --from=js-builder /opt/chariox/node_modules ./node_modules
 COPY --from=js-builder /opt/chariox/packages ./packages
 COPY --from=js-builder /opt/chariox/apps/server ./apps/server
-COPY --from=rust-builder /opt/chariox/apps/kernel/target/release/chariox-kernel /usr/local/bin/chariox-kernel
+COPY --from=rust-builder /opt/chariox/target/release/chariox-kernel /usr/local/bin/chariox-kernel
 COPY docker/publication/entrypoint.sh /usr/local/bin/chariox-publication-container
 COPY docker/publication/wait-for-tcp.mjs /usr/local/bin/chariox-wait-for-tcp.mjs
 RUN chmod +x /usr/local/bin/chariox-publication-container /usr/local/bin/chariox-wait-for-tcp.mjs \
