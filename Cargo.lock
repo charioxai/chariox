@@ -375,6 +375,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "croner",
+ "ed25519-dalek",
  "flate2",
  "futures-util",
  "hkdf",

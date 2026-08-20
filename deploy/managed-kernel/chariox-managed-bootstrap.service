@@ -1,0 +1,40 @@
+[Unit]
+Description=Chariox managed independent kernel supervisor
+After=network-online.target cloud-final.service
+Wants=network-online.target
+ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=chariox
+Group=chariox
+Environment=CHARIOX_HOME=/var/lib/chariox/home
+Environment=HOME=/var/lib/chariox/home
+Environment=CHARIOX_MANAGED_BOOTSTRAP_PATH=/var/lib/chariox/managed-bootstrap.json
+Environment=CHARIOX_MANAGED_RELEASE_MANIFEST=/usr/lib/chariox/release-manifest.json
+Environment=CHARIOX_MANAGED_RELEASE_SIGNATURE=/usr/lib/chariox/release-manifest.sig
+Environment=CHARIOX_MANAGED_RELEASE_PUBLIC_KEY=/usr/lib/chariox/release-public-key
+Environment=CHARIOX_MANAGED_KERNEL_BINARY=/usr/local/bin/chariox-kernel
+ExecStart=/usr/local/bin/chariox-managed-bootstrap
+Restart=always
+RestartSec=2s
+RestartSteps=8
+RestartMaxDelaySec=5min
+KillMode=control-group
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+StateDirectory=chariox
+StateDirectoryMode=0700
+ReadWritePaths=/var/lib/chariox
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
