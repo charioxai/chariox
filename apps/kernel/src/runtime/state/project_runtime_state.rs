@@ -35,6 +35,22 @@ impl KernelRuntimeState {
         Ok(project)
     }
 
+    pub(crate) async fn update_project_workspaces(
+        &self,
+        project_id: &str,
+        workspace_ids: Vec<String>,
+        caller_user_id: &str,
+    ) -> Result<crate::session::RuntimeProject, DaemonError> {
+        let project = self.owned.session_store.update_project_workspaces(
+            project_id,
+            workspace_ids,
+            caller_user_id,
+        )?;
+        self.append_project_durable_event("project.updated", &project)?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(project)
+    }
+
     pub(crate) async fn archive_project(
         &self,
         project_id: &str,

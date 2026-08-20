@@ -1580,6 +1580,178 @@ fn project_names_are_unique_for_an_owner_across_workspaces() {
 }
 
 #[test]
+fn legacy_project_workspace_is_normalized_when_restored() {
+    let project = RuntimeProject::new(
+        "legacy-project",
+        DEFAULT_LOCAL_USER_ID,
+        "/workspace/legacy",
+        "Legacy",
+        RuntimeProjectKind::Named,
+    );
+    let mut value = serde_json::to_value(project).expect("project should serialize");
+    value
+        .as_object_mut()
+        .expect("project should serialize as an object")
+        .remove("workspace_ids");
+    let legacy: RuntimeProject =
+        serde_json::from_value(value).expect("legacy project should deserialize");
+
+    assert_eq!(legacy.workspace_ids(), &["/workspace/legacy"]);
+
+    let mut service = SessionService::new(&test_config());
+    service.restore_projects(vec![legacy]);
+    let restored = service
+        .get_project("legacy-project")
+        .expect("restored project should exist");
+    assert_eq!(
+        serde_json::to_value(restored)
+            .expect("restored project should serialize")
+            .get("workspace_ids"),
+        Some(&serde_json::json!(["/workspace/legacy"]))
+    );
+}
+
+#[test]
+fn project_supporting_workspace_can_be_selected_as_session_primary() {
+    let mut service = SessionService::new(&test_config());
+    let first = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/primary", "worktree-primary")
+                .with_project_selection(SessionProjectSelection::New),
+        )
+        .expect("named project session should be created");
+    let project = service
+        .update_project_workspaces(
+            first.project_id(),
+            vec![
+                "/workspace/primary".to_string(),
+                "/workspace/supporting".to_string(),
+            ],
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("supporting Workspace should be added");
+    assert_eq!(
+        project.workspace_ids(),
+        &["/workspace/primary", "/workspace/supporting"]
+    );
+
+    let supporting = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/supporting", "worktree-supporting")
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: first.project_id().to_string(),
+                }),
+        )
+        .expect("supporting Workspace should be eligible as the session primary");
+
+    assert_eq!(supporting.project_id(), first.project_id());
+    assert_eq!(supporting.workspace_id(), "/workspace/supporting");
+    assert_eq!(supporting.worktree_id(), "worktree-supporting");
+}
+
+#[test]
+fn project_workspace_updates_validate_membership_and_preserve_order() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(
+            CreateSessionRequest::new("/workspace/primary", "worktree-primary")
+                .with_project_selection(SessionProjectSelection::New),
+        )
+        .expect("named project session should be created");
+
+    let updated = service
+        .update_project_workspaces(
+            session.project_id(),
+            vec![
+                "/workspace/supporting".to_string(),
+                "/workspace/primary".to_string(),
+            ],
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("Workspace order should update");
+    assert_eq!(
+        updated.workspace_ids(),
+        &["/workspace/supporting", "/workspace/primary"]
+    );
+    assert_eq!(updated.workspace_id(), "/workspace/supporting");
+
+    let duplicate = service
+        .update_project_workspaces(
+            session.project_id(),
+            vec![
+                "/workspace/primary".to_string(),
+                "/workspace/primary".to_string(),
+            ],
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect_err("duplicate Workspaces should be rejected");
+    assert!(duplicate.to_string().contains("is duplicated"));
+
+    let empty = service
+        .update_project_workspaces(session.project_id(), Vec::new(), DEFAULT_LOCAL_USER_ID)
+        .expect_err("empty Projects should be rejected");
+    assert!(empty.to_string().contains("between 1 and 32 Workspaces"));
+
+    let too_many = service
+        .update_project_workspaces(
+            session.project_id(),
+            (0..33).map(|index| format!("/workspace/{index}")).collect(),
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect_err("oversized Projects should be rejected");
+    assert!(too_many.to_string().contains("between 1 and 32 Workspaces"));
+
+    let reduced = service
+        .update_project_workspaces(
+            session.project_id(),
+            vec!["/workspace/supporting".to_string()],
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect("Project defaults should be reducible independently of historical sessions");
+    assert_eq!(reduced.workspace_ids(), &["/workspace/supporting"]);
+    assert_eq!(
+        service
+            .get_session(session.id())
+            .expect("existing session should remain")
+            .workspace_id(),
+        "/workspace/primary"
+    );
+}
+
+#[test]
+fn default_project_workspace_membership_is_immutable() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new(
+            "/workspace/default",
+            "worktree-default",
+        ))
+        .expect("default project session should be created");
+
+    let error = service
+        .update_project_workspaces(
+            session.project_id(),
+            vec![
+                "/workspace/default".to_string(),
+                "/workspace/supporting".to_string(),
+            ],
+            DEFAULT_LOCAL_USER_ID,
+        )
+        .expect_err("automatic default Projects must retain their Workspace identity");
+
+    assert!(error
+        .to_string()
+        .contains("has immutable Workspace membership"));
+    assert_eq!(
+        service
+            .get_project(session.project_id())
+            .expect("default project should remain")
+            .workspace_ids(),
+        &["/workspace/default"]
+    );
+}
+
+#[test]
 fn default_project_workspace_migration_merges_a_linked_worktree_project() {
     let mut service = SessionService::new(&test_config());
     let main = service

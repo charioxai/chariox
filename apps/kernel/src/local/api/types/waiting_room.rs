@@ -112,6 +112,8 @@ pub struct WaitingRoomPublicProjectSummary {
     pub id: String,
     pub owner_user_id: String,
     pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_ids: Vec<String>,
     pub name: String,
     pub kind: crate::session::RuntimeProjectKind,
     pub status: crate::session::RuntimeProjectStatus,

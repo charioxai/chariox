@@ -1013,6 +1013,7 @@ fn waiting_room_public_project_summaries(
                 id: project.id().to_string(),
                 owner_user_id: project.owner_user_id().to_string(),
                 workspace_id: project.workspace_id().to_string(),
+                workspace_ids: project.workspace_ids().to_vec(),
                 name: project.name().to_string(),
                 kind: project.kind(),
                 status: project.status(),

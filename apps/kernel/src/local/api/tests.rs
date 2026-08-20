@@ -59,7 +59,7 @@ use super::{
     SpawnAgentsRequest, SpawnAgentsRequestItem, StoreTransferredFileCapabilityRequest,
     SubmitPromptRequest, SubmitPromptsRequest, SubmitPromptsRequestItem, TerminalType,
     UpdateAgentConfigRequest, UpdateAgentProfileRequest, UpdateAgentSubstitutesRequest,
-    UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
+    UpdateProjectWorkspacesRequest, UpdateProviderRunSelectionRequest, UpdateSessionConfigRequest,
     UpdateWorkflowCanvasLayoutRequest, UpdateWorkflowNodeInstructionsRequest,
     UpdateWorkflowPromptQueueRequest, WorkflowDesignNode, WorkflowDesignOp, WorkflowDesignPoint,
     WorkflowPublicationSnapshot, WorkflowPublicationSourceSessionSnapshot, WorkspaceFileContent,

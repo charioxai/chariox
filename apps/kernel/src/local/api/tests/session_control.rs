@@ -155,6 +155,56 @@ fn project_requests_enforce_owner_and_named_numbering() {
 }
 
 #[test]
+fn project_workspace_membership_updates_through_the_local_api() {
+    let harness = LocalRouterTestHarness::new();
+    let first = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-primary", "worktree-primary")
+                .with_project_selection(SessionProjectSelection::New),
+        ))
+        .expect("named project session should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+
+    let project = match harness
+        .dispatch(LocalDaemonRequest::UpdateProjectWorkspaces(
+            UpdateProjectWorkspacesRequest {
+                project_id: first.project_id().to_string(),
+                workspace_ids: vec![
+                    "workspace-primary".to_string(),
+                    "workspace-supporting".to_string(),
+                ],
+            },
+        ))
+        .expect("project Workspaces should update")
+    {
+        LocalDaemonResponse::ProjectWorkspacesUpdated { project } => project,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(
+        project.workspace_ids(),
+        &["workspace-primary", "workspace-supporting"]
+    );
+
+    let supporting = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-supporting", "worktree-supporting")
+                .with_project_selection(SessionProjectSelection::Existing {
+                    project_id: first.project_id().to_string(),
+                }),
+        ))
+        .expect("supporting Workspace should create a session in the Project")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    assert_eq!(supporting.workspace_id(), "workspace-supporting");
+    assert_eq!(supporting.project_id(), first.project_id());
+}
+
+#[test]
 fn archived_default_project_rejects_default_session_creation_until_restored() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

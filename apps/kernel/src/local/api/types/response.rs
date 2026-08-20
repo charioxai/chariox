@@ -27,6 +27,7 @@ pub enum LocalDaemonResponse {
     ProviderRunsLaunchAccepted { provider_runs: Vec<ProviderRunBatchLaunchResult>, failures: Vec<BatchOperationFailure>, },
     ProjectsListed { projects: Vec<RuntimeProject>, },
     ProjectRenamed { project: RuntimeProject, },
+    ProjectWorkspacesUpdated { project: RuntimeProject, },
     ProjectArchived { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectDeleted { project: RuntimeProject, sessions: Vec<RuntimeSession>, },
     ProjectRestored { project: RuntimeProject, sessions: Vec<RuntimeSession>, },

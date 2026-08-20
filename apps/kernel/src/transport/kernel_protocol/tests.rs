@@ -605,6 +605,7 @@ fn project_summary(id: &str, name: &str) -> crate::local::WaitingRoomPublicProje
         id: id.to_string(),
         owner_user_id: crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
         workspace_id: "workspace-1".to_string(),
+        workspace_ids: vec!["workspace-1".to_string()],
         name: name.to_string(),
         kind: crate::session::RuntimeProjectKind::Named,
         status: crate::session::RuntimeProjectStatus::Active,
