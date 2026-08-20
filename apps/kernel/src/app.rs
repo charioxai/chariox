@@ -115,7 +115,8 @@ pub(crate) use provider_first_output_watchdog::{
     PROVIDER_OUTPUT_TIMEOUT_MS,
 };
 pub(crate) use provider_launch_failure_retry::{
-    ProviderLaunchFailureRetry, ProviderLaunchFailureRetryStore,
+    ProviderLaunchFailureRetry, ProviderLaunchFailureRetryScheduleOutcome,
+    ProviderLaunchFailureRetryStore,
 };
 pub(crate) use provider_launch_policy::{
     apply_metaagent_launch_policy, failed_provider_resume_state_replacement,

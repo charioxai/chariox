@@ -25,9 +25,19 @@ impl KernelRuntimeState {
     }
 
     pub(super) async fn retry_due_provider_launch_failures(&self, now_ms: u64) {
-        for retry in self.owned.provider_launch_failure_retries.take_due(now_ms) {
-            let provider_run_id = retry.started.run.id().to_string();
+        for provider_run_id in self
+            .owned
+            .provider_launch_failure_retries
+            .due_provider_run_ids(now_ms)
+        {
             let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
+            let Some(retry) = self
+                .owned
+                .provider_launch_failure_retries
+                .take_due_for(&provider_run_id, now_ms)
+            else {
+                continue;
+            };
             let started = retry.started.clone();
             let error = retry.error();
             self.settle_provider_launch_failure_in_lane(&started, &error, Some(retry))
@@ -105,19 +115,58 @@ impl KernelRuntimeState {
                         }),
                     );
                     if crate::durable_state::is_retryable_durable_write_error(&clear_error) {
-                        let scheduled = if let Some(retry) = retry {
+                        let retry_attempt = retry.as_ref().map(|retry| retry.attempt());
+                        let outcome = if let Some(retry) = retry {
                             owned
                                 .provider_launch_failure_retries
                                 .reschedule(retry, crate::session::unix_epoch_ms())
                         } else {
-                            owned.provider_launch_failure_retries.schedule_initial(
+                            if owned.provider_launch_failure_retries.schedule_initial(
                                 started,
                                 error,
                                 crate::session::unix_epoch_ms(),
-                            )
+                            ) {
+                                crate::app::ProviderLaunchFailureRetryScheduleOutcome::Scheduled
+                            } else {
+                                crate::app::ProviderLaunchFailureRetryScheduleOutcome::AlreadyScheduled
+                            }
                         };
-                        if scheduled {
-                            owned.runtime_projection_changes.record_change();
+                        match outcome {
+                            crate::app::ProviderLaunchFailureRetryScheduleOutcome::Scheduled => {
+                                owned.runtime_projection_changes.record_change();
+                            }
+                            crate::app::ProviderLaunchFailureRetryScheduleOutcome::AlreadyScheduled => {}
+                            crate::app::ProviderLaunchFailureRetryScheduleOutcome::Exhausted => {
+                                let diagnostic = format!(
+                                    "Provider launch `{}` cleanup exhausted {} durable-write attempts; operator intervention is required",
+                                    started.run.id(),
+                                    retry_attempt.unwrap_or_default(),
+                                );
+                                crate::logging::error_with_fields(
+                                    "durable_state.recovery",
+                                    "provider launch failure cleanup retry budget exhausted",
+                                    serde_json::json!({
+                                        "provider_run_id": started.run.id(),
+                                        "session_id": started.run.session_id(),
+                                        "attempts": retry_attempt,
+                                    }),
+                                );
+                                let recipients = owned
+                                    .attachment_store
+                                    .list_session_attachment_ids(started.run.session_id());
+                                owned.record_notice(
+                                    started.run.session_id(),
+                                    Some(started.run.id()),
+                                    recipients,
+                                    diagnostic.clone(),
+                                );
+                                if let Ok(run) = owned
+                                    .provider_store
+                                    .record_terminal_diagnostic(started.run.id(), diagnostic)
+                                {
+                                    owned.provider_run_projection.update(run);
+                                }
+                            }
                         }
                     }
                     return;
