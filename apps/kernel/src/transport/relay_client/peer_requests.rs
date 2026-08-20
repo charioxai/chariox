@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use chariox_relay::protocol::EncryptedRelayPayload;
+use chariox_relay::protocol::{EncryptedRelayPayload, RelayCallerIdentity};
 use tokio::sync::RwLock;
 
 use crate::runtime::router::CommandRouter;
@@ -14,6 +14,7 @@ use crate::transport::relay_peer::{
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
+use super::sender_identity::validate_optional_daemon_sender;
 use super::{RelayClientState, RelayOutgoingSender};
 
 pub(super) async fn handle_daemon_peer_request(
@@ -21,8 +22,17 @@ pub(super) async fn handle_daemon_peer_request(
     state: &Arc<RwLock<RelayClientState>>,
     outgoing_tx: &RelayOutgoingSender,
     from_daemon_id: &str,
+    caller_identity: Option<RelayCallerIdentity>,
     encrypted_request: EncryptedRelayPayload,
 ) -> RelayRequestOutcome {
+    if let Err(error) =
+        validate_optional_daemon_sender(caller_identity.as_ref(), &encrypted_request)
+    {
+        return RelayRequestOutcome {
+            encrypted_response: None,
+            error: Some(error),
+        };
+    }
     let (request, requester_public_key, daemon_private_key, daemon_id) = {
         let daemon_private_key = router.relay_private_key();
         let daemon_id = router.relay_daemon_id();
@@ -910,4 +920,70 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
     from_daemon_id
         .split_once(":peer-tmp:daemon-peer-tmp-")
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use chariox_relay::auth::RelaySubjectKind;
+    use tokio::sync::Mutex;
+
+    use crate::runtime::terminal_pairings::public_key_thumbprint;
+    use crate::{DaemonApp, DaemonConfig};
+
+    fn scoped_kernel_identity(
+        public_key_thumbprint: Option<String>,
+        expires_at_ms: u64,
+    ) -> RelayCallerIdentity {
+        RelayCallerIdentity {
+            realm_id: "realm-1".to_string(),
+            subject: "source-kernel-1".to_string(),
+            subject_kind: RelaySubjectKind::Kernel,
+            expires_at_ms,
+            token_id: Some("token-1".to_string()),
+            user_id: Some("user-1".to_string()),
+            public_key_thumbprint,
+        }
+    }
+
+    #[tokio::test]
+    async fn peer_handler_rejects_invalid_scoped_kernel_identity_before_decryption() {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("test daemon should bootstrap"),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let malformed_request = EncryptedRelayPayload {
+            sender_public_key: "request-sender-public-key".to_string(),
+            nonce: "not-valid-base64".to_string(),
+            ciphertext: "not-valid-base64".to_string(),
+        };
+        let identities = [
+            scoped_kernel_identity(
+                Some(public_key_thumbprint("different-public-key")),
+                u64::MAX,
+            ),
+            scoped_kernel_identity(None, 1),
+        ];
+
+        for identity in identities {
+            let outcome = handle_daemon_peer_request(
+                &router,
+                &state,
+                &outgoing_tx,
+                "source-kernel-1",
+                Some(identity),
+                malformed_request.clone(),
+            )
+            .await;
+            let error = outcome
+                .error
+                .expect("invalid scoped identity should be rejected");
+            assert_eq!(error.code, "unauthorized");
+            assert!(!error.retryable);
+            assert!(outcome.encrypted_response.is_none());
+        }
+    }
 }

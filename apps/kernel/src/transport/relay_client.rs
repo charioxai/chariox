@@ -47,6 +47,7 @@ mod peer_events;
 mod peer_requests;
 mod remote_inventory;
 mod request_errors;
+mod sender_identity;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
