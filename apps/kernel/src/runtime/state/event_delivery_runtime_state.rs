@@ -203,15 +203,15 @@ impl KernelRuntimeState {
                 ),
             });
         }
-        if let Some(receipt) = self
-            .owned
-            .session_store
-            .read()
-            .get_session(&session_id)?
-            .workflow_event_delivery_receipts()
-            .get(&delivery.delivery_id)
-            .cloned()
-        {
+        let existing_receipt = {
+            let sessions = self.owned.session_store.read();
+            sessions
+                .get_session(&session_id)?
+                .workflow_event_delivery_receipts()
+                .get(&delivery.delivery_id)
+                .cloned()
+        };
+        if let Some(receipt) = existing_receipt {
             return Ok(AcceptedWorkflowEventDelivery {
                 delivery_id: delivery.delivery_id,
                 queued_prompt_id: receipt.queued_prompt_id,

@@ -620,6 +620,32 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         2,
         "a second publication may intentionally fan out the same event interest"
     );
+    let accepted_receipt = tested
+        .workflow_event_delivery_receipts()
+        .values()
+        .next()
+        .expect("test delivery receipt should remain available");
+    let duplicate = harness
+        .runtime_state()
+        .accept_workflow_event_delivery(chariox_event_protocol::EventDeliveryEnvelope {
+            delivery_id: accepted_receipt.delivery_id.clone(),
+            binding_id: binding.id.clone(),
+            event_type: binding.event_type.clone(),
+            event_type_version: binding.event_type_version,
+            occurrence_id: accepted_receipt.occurrence_id.clone(),
+            occurred_at: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+            prompt: "Replay the already accepted test event.".to_string(),
+            artifacts: Vec::new(),
+            metadata: serde_json::json!({"test": true, "duplicate": true}),
+            reply_context: None,
+            expires_at_ms: u64::MAX,
+        })
+        .expect("a duplicate delivery should return its durable receipt without blocking");
+    assert!(duplicate.duplicate);
+    assert_eq!(
+        duplicate.queued_prompt_id,
+        accepted_receipt.queued_prompt_id
+    );
 
     let active_route_count = || match harness
         .dispatch(LocalDaemonRequest::GetEventDeliveryStatus(
