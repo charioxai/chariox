@@ -1,7 +1,9 @@
 use super::*;
 
-#[tokio::test]
-async fn completed_publication_output_releases_workflow_workspace_claim() {
+async fn assert_completed_publication_output_settlement(
+    adapter_key: &str,
+    waits_for_provider_completion: bool,
+) {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -14,7 +16,7 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "dev-stub",
+                adapter_key,
                 "codex",
                 "default",
                 "gpt-test",
@@ -150,8 +152,45 @@ async fn completed_publication_output_releases_workflow_workspace_claim() {
         durable_run.status(),
         crate::session::WorkflowRunStatus::Completed
     );
-    assert!(
-        !runtime.owned.prompt_workspace_claims.contains(&claim_id),
-        "fast publication completion must release the workflow workspace claim"
-    );
+    if waits_for_provider_completion {
+        let hot_session = runtime
+            .owned
+            .session_store
+            .read()
+            .get_session(session.id())
+            .expect("hot session should remain available");
+        assert_eq!(
+            hot_session
+                .workflow_run(workflow_run.id())
+                .expect("terminal workflow run must remain hot until its provider prompt settles")
+                .status(),
+            crate::session::WorkflowRunStatus::Completed,
+        );
+        assert!(
+            hot_session
+                .durable_runtime_snapshot()
+                .workflow_run(workflow_run.id())
+                .is_some(),
+            "a crash before provider-prompt settlement must retain the referenced terminal run",
+        );
+        assert!(
+            runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "the provider-completion path retains the claim until prompt settlement",
+        );
+    } else {
+        assert!(
+            !runtime.owned.prompt_workspace_claims.contains(&claim_id),
+            "fast publication completion must release the workflow workspace claim",
+        );
+    }
+}
+
+#[tokio::test]
+async fn completed_publication_output_releases_workflow_workspace_claim() {
+    assert_completed_publication_output_settlement("dev-stub", false).await;
+}
+
+#[tokio::test]
+async fn completed_publication_output_retains_terminal_run_until_provider_settlement() {
+    assert_completed_publication_output_settlement("codex", true).await;
 }
