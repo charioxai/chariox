@@ -1,4 +1,3 @@
-use crate::agent::AgentInstance;
 use crate::app::DaemonApp;
 use crate::error::DaemonError;
 use crate::provider::{
@@ -211,16 +210,40 @@ impl DaemonApp {
         {
             self.update_provider_run_projection(run);
         }
-        if let Some(agent) = self.clear_failed_provider_resume_state(started, error) {
-            let _ = self.durable_state_store().append_event(
-                "agent.runtime_profile_updated",
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                    "provider_run_id": started.run.id(),
-                    "reason": "failed_provider_resume_state_cleared",
-                }),
-            );
+        match self.clear_failed_provider_resume_state(started, error) {
+            Ok(true) => {
+                self.provider_launch_failure_retries.clear(started.run.id());
+            }
+            Ok(false) => {
+                crate::logging::warn_with_fields(
+                    "daemon.app",
+                    "provider launch failure was superseded by a newer durable resume",
+                    serde_json::json!({
+                        "provider_run_id": started.run.id(),
+                        "session_id": started.run.session_id(),
+                    }),
+                );
+                self.provider_launch_failure_retries.clear(started.run.id());
+            }
+            Err(clear_error) => {
+                crate::logging::error_with_fields(
+                    "durable_state.recovery",
+                    "failed to durably clear invalid provider resume",
+                    serde_json::json!({
+                        "provider_run_id": started.run.id(),
+                        "session_id": started.run.session_id(),
+                        "error": clear_error.to_string(),
+                    }),
+                );
+                if crate::durable_state::is_retryable_durable_write_error(&clear_error) {
+                    self.provider_launch_failure_retries.schedule_initial(
+                        started,
+                        error,
+                        crate::session::unix_epoch_ms(),
+                    );
+                }
+                return;
+            }
         }
         if let Some(agent_id) = started.run.agent_instance_id() {
             if let Ok(Some(active_prompt)) =
@@ -273,34 +296,34 @@ impl DaemonApp {
         &mut self,
         started: &StartedProviderLaunch,
         error: &DaemonError,
-    ) -> Option<AgentInstance> {
-        let replacement_resume_state =
-            failed_provider_resume_state_replacement(&started.run, error)?;
-        let agent_id = started.run.agent_instance_id()?;
+    ) -> Result<bool, DaemonError> {
+        if failed_provider_resume_state_replacement(&started.run, error).is_none() {
+            return Ok(true);
+        }
+        let Some(agent_id) = started.run.agent_instance_id() else {
+            return Ok(true);
+        };
         let provider = started.run.adapter_key();
-        let stale_provider_session_id = started
+        let Some(stale_provider_session_id) = started
             .run
             .resume_state()
-            .provider_session_id(provider)?
-            .to_string();
-        let current = self.agents.get_agent(agent_id).ok()?;
-        if current
-            .provider_resume_state()
             .provider_session_id(provider)
-            != Some(stale_provider_session_id.as_str())
-        {
-            return None;
+            .map(str::to_string)
+        else {
+            return Ok(true);
+        };
+        match self.agents.clear_provider_resume_state_durably_if_matches(
+            &self.durable_state,
+            agent_id,
+            provider,
+            &stale_provider_session_id,
+            started.run.id(),
+            "failed_provider_resume_state_cleared",
+        )? {
+            crate::agent::ProviderResumeClearOutcome::Cleared(_agent) => {}
+            crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
+            crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
         }
-        let agent = self
-            .agents
-            .set_agent_runtime_profile(
-                agent_id,
-                started.run.provider(),
-                Some(started.run.model().to_string()),
-                started.run.variant().map(str::to_string),
-                replacement_resume_state,
-            )
-            .ok()?;
         self.record_notice(
             started.run.session_id(),
             Some(started.run.id()),
@@ -313,7 +336,7 @@ impl DaemonApp {
                     )
                 }),
         );
-        Some(agent)
+        Ok(true)
     }
 
     fn finish_provider_launch_success(
@@ -342,21 +365,16 @@ impl DaemonApp {
         );
         let _ = self.providers.record_run_activity(run.id());
         if let Some(agent_id) = run.agent_instance_id() {
-            let agent = self.agents.set_agent_runtime_profile_with_account_profile(
+            self.agents.set_agent_runtime_profile_durably(
+                &self.durable_state,
                 agent_id,
                 run.provider(),
                 Some(run.model().to_string()),
                 run.variant().map(str::to_string),
                 Some(run.account_profile().to_string()),
                 run.resume_state().clone(),
-            )?;
-            self.durable_state_store().append_event(
-                "agent.runtime_profile_updated",
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                    "provider_run_id": run.id(),
-                }),
+                Some(run.id()),
+                None,
             )?;
             let _ = self.advance_next_queued_prompt(run.session_id(), agent_id)?;
             crate::app::KernelSessionReadService::new(self).session_snapshot(run.session_id())?;
@@ -426,54 +444,50 @@ impl DaemonApp {
         workflow_tools_enabled: bool,
     ) -> Result<RuntimeProviderRun, DaemonError> {
         request = self.prepare_app_provider_launch_request(request, "launch provider run")?;
-        let mut run = self.providers.launch_run_detached(request)?;
-        if workflow_tools_enabled {
-            run = self.providers.enable_workflow_tools(run.id())?;
-        }
-        self.update_provider_run_projection(run.clone());
-        if run.endpoint_mode() == AgentEndpointMode::Managed {
-            if let Err(error) = self.pty.spawn_for_run(&run) {
-                let started = StartedProviderLaunch {
-                    run: run.clone(),
-                    previous_active_run_id: None,
-                };
-                self.fail_provider_launch(&started, &error);
-                return Err(error);
+        let initial_run = self.providers.launch_run_detached(request)?;
+        let run_id = initial_run.id().to_string();
+        let launch_result = (|| {
+            let mut run = initial_run.clone();
+            if workflow_tools_enabled {
+                run = self.providers.enable_workflow_tools(run.id())?;
             }
-            ProviderProcessTracker::new(self).register_managed_run(&run)?;
-        }
-        if let Err(error) = self.providers.initialize_runtime(&run) {
+            self.update_provider_run_projection(run.clone());
+            if run.endpoint_mode() == AgentEndpointMode::Managed {
+                self.pty.spawn_for_run(&run)?;
+                ProviderProcessTracker::new(self).register_managed_run(&run)?;
+            }
+            self.providers.initialize_runtime(&run)?;
+            let run = self.providers.get_run(run.id())?;
+            self.sessions
+                .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
+            let _ = self.providers.record_run_activity(run.id());
+            if let Some(agent_id) = run.agent_instance_id() {
+                self.agents.set_agent_runtime_profile_durably(
+                    &self.durable_state,
+                    agent_id,
+                    run.provider(),
+                    Some(run.model().to_string()),
+                    run.variant().map(str::to_string),
+                    Some(run.account_profile().to_string()),
+                    run.resume_state().clone(),
+                    Some(run.id()),
+                    None,
+                )?;
+            }
+            self.update_provider_run_projection(run.clone());
+            Ok(run)
+        })();
+        if let Err(error) = &launch_result {
             let started = StartedProviderLaunch {
-                run: run.clone(),
+                run: self
+                    .providers
+                    .get_run(&run_id)
+                    .unwrap_or_else(|_| initial_run.clone()),
                 previous_active_run_id: None,
             };
-            self.fail_provider_launch(&started, &error);
-            return Err(error);
+            self.fail_provider_launch(&started, error);
         }
-        let run = self.providers.get_run(run.id())?;
-        self.sessions
-            .set_active_provider_run(run.session_id(), Some(run.id().to_string()))?;
-        let _ = self.providers.record_run_activity(run.id());
-        if let Some(agent_id) = run.agent_instance_id() {
-            let agent = self.agents.set_agent_runtime_profile_with_account_profile(
-                agent_id,
-                run.provider(),
-                Some(run.model().to_string()),
-                run.variant().map(str::to_string),
-                Some(run.account_profile().to_string()),
-                run.resume_state().clone(),
-            )?;
-            self.durable_state_store().append_event(
-                "agent.runtime_profile_updated",
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                    "provider_run_id": run.id(),
-                }),
-            )?;
-        }
-        self.update_provider_run_projection(run.clone());
-        Ok(run)
+        launch_result
     }
 }
 

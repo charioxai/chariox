@@ -25,6 +25,42 @@ pub struct DurableKernelStateStore {
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
 const DURABLE_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
+const DURABLE_SETTLEMENT_RETRY_BASE_MS: u64 = 100;
+const DURABLE_SETTLEMENT_RETRY_MAX_MS: u64 = 5_000;
+
+pub(crate) fn durable_settlement_retry_delay_ms(attempt: u32) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(6);
+    DURABLE_SETTLEMENT_RETRY_BASE_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(DURABLE_SETTLEMENT_RETRY_MAX_MS)
+}
+
+pub(crate) fn is_retryable_durable_write_error(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "durable_state.lock_writer"
+                | "durable_state.enqueue_write"
+                | "durable_state.await_write"
+                | "durable_state.commit_write",
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
+mod settlement_retry_tests {
+    use super::durable_settlement_retry_delay_ms;
+
+    #[test]
+    fn durable_settlement_retry_delay_backs_off_and_caps() {
+        assert_eq!(durable_settlement_retry_delay_ms(1), 100);
+        assert_eq!(durable_settlement_retry_delay_ms(2), 200);
+        assert_eq!(durable_settlement_retry_delay_ms(3), 400);
+        assert_eq!(durable_settlement_retry_delay_ms(7), 5_000);
+        assert_eq!(durable_settlement_retry_delay_ms(u32::MAX), 5_000);
+    }
+}
 
 #[derive(Debug)]
 struct DurableStateWriter {

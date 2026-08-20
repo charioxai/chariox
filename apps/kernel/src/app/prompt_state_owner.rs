@@ -170,6 +170,12 @@ impl DaemonApp {
         provider_session_id: Option<String>,
     ) -> Result<PromptQueueItem, DaemonError> {
         let session = self.sessions.get_session(session_id)?;
+        let previous = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
         let prompt = self.prompt_state_owner.mark_active_prompt_delivery(
             &session,
             agent_id,
@@ -178,7 +184,20 @@ impl DaemonApp {
             provider_run_id,
             provider_session_id,
         )?;
-        self.mirror_prompt_owner_agent_state(session_id, agent_id)?;
+        if let Err(error) = self.mirror_prompt_owner_agent_state(session_id, agent_id) {
+            let _ = self
+                .prompt_state_owner
+                .replace_active_prompt_if_matches(&session, agent_id, &prompt, previous);
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.sessions.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            return Err(error);
+        }
         Ok(prompt)
     }
 

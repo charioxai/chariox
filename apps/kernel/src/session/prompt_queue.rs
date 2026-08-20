@@ -116,6 +116,8 @@ pub(crate) struct DurablePromptPrivateState {
     pub(crate) delivery_provider_run_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) delivery_provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false_bool")]
+    pub(crate) delivery_failure_pending: bool,
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     pub(crate) recovery_generation: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -133,6 +135,7 @@ struct PromptPrivateMetadata {
     delivery_phase: Option<DurablePromptDeliveryPhase>,
     delivery_provider_run_id: Option<String>,
     delivery_provider_session_id: Option<String>,
+    delivery_failure_pending: bool,
     recovery_generation: u32,
     recovery_operation_id: Option<String>,
     recovery_phase: Option<DurablePromptDeliveryPhase>,
@@ -140,6 +143,10 @@ struct PromptPrivateMetadata {
 
 fn is_zero_u32(value: &u32) -> bool {
     *value == 0
+}
+
+fn is_false_bool(value: &bool) -> bool {
+    !*value
 }
 
 impl DurablePromptPrivateState {
@@ -154,6 +161,7 @@ impl DurablePromptPrivateState {
             delivery_phase: metadata.delivery_phase,
             delivery_provider_run_id: metadata.delivery_provider_run_id.clone(),
             delivery_provider_session_id: metadata.delivery_provider_session_id.clone(),
+            delivery_failure_pending: metadata.delivery_failure_pending,
             recovery_generation: metadata.recovery_generation,
             recovery_operation_id: metadata.recovery_operation_id.clone(),
             recovery_phase: metadata.recovery_phase,
@@ -466,6 +474,18 @@ impl PromptQueueItem {
             .and_then(|metadata| metadata.delivery_provider_session_id.as_deref())
     }
 
+    pub(crate) fn durable_delivery_failure_pending(&self) -> bool {
+        self.private_metadata
+            .as_ref()
+            .is_some_and(|metadata| metadata.delivery_failure_pending)
+    }
+
+    pub(crate) fn set_durable_delivery_failure_pending(&mut self, pending: bool) {
+        self.private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
+            .delivery_failure_pending = pending;
+    }
+
     pub(crate) fn set_durable_delivery(
         &mut self,
         phase: DurablePromptDeliveryPhase,
@@ -478,6 +498,9 @@ impl PromptQueueItem {
         metadata.delivery_phase = Some(phase);
         metadata.delivery_provider_run_id = provider_run_id;
         metadata.delivery_provider_session_id = provider_session_id;
+        if phase == DurablePromptDeliveryPhase::Delivered {
+            metadata.delivery_failure_pending = false;
+        }
     }
 
     pub(crate) fn durable_recovery_operation_id(&self) -> Option<&str> {
@@ -530,6 +553,7 @@ impl PromptQueueItem {
         if private.hidden_system_context.is_empty()
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
+            && !private.delivery_failure_pending
             && private.recovery_operation_id.is_none()
         {
             self.private_metadata = None;
@@ -543,6 +567,7 @@ impl PromptQueueItem {
             delivery_phase: private.delivery_phase,
             delivery_provider_run_id: private.delivery_provider_run_id.clone(),
             delivery_provider_session_id: private.delivery_provider_session_id.clone(),
+            delivery_failure_pending: private.delivery_failure_pending,
             recovery_generation: private.recovery_generation,
             recovery_operation_id: private.recovery_operation_id.clone(),
             recovery_phase: private.recovery_phase,

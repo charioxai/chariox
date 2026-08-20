@@ -20,47 +20,108 @@ impl KernelRuntimeState {
         started: &crate::app::StartedProviderLaunch,
         error: &DaemonError,
     ) {
-        let mut durable_agent_update = None;
+        self.settle_provider_launch_failure_in_lane(started, error, None)
+            .await;
+    }
+
+    pub(super) async fn retry_due_provider_launch_failures(&self, now_ms: u64) {
+        for retry in self.owned.provider_launch_failure_retries.take_due(now_ms) {
+            let provider_run_id = retry.started.run.id().to_string();
+            let _permit = self.provider_runtime_lanes.acquire(&provider_run_id).await;
+            let started = retry.started.clone();
+            let error = retry.error();
+            self.settle_provider_launch_failure_in_lane(&started, &error, Some(retry))
+                .await;
+        }
+    }
+
+    async fn settle_provider_launch_failure_in_lane(
+        &self,
+        started: &crate::app::StartedProviderLaunch,
+        error: &DaemonError,
+        retry: Option<crate::app::ProviderLaunchFailureRetry>,
+    ) {
         let mut advance_workflow_queue = false;
         {
             let owned = &self.owned;
-            crate::logging::error_with_fields(
-                "daemon.app",
-                "provider runtime initialization failed",
-                serde_json::json!({
-                    "provider_run_id": started.run.id(),
-                    "session_id": started.run.session_id(),
-                    "error": error.to_string(),
-                }),
-            );
-            let recipients = owned
-                .attachment_store
-                .list_session_attachment_ids(started.run.session_id());
-            owned.record_notice(
-                started.run.session_id(),
-                Some(started.run.id()),
-                recipients,
-                format!(
-                    "Provider launch `{}` failed before it became ready: {}",
-                    started.run.id(),
-                    error
-                ),
-            );
             let diagnostic = format!(
                 "Provider launch `{}` failed before it became ready: {}",
                 started.run.id(),
                 error
             );
-            if let Ok(run) = owned
-                .provider_store
-                .record_terminal_diagnostic(started.run.id(), diagnostic.clone())
-            {
-                owned.provider_run_projection.update(run);
+            if retry.is_none() {
+                crate::logging::error_with_fields(
+                    "daemon.app",
+                    "provider runtime initialization failed",
+                    serde_json::json!({
+                        "provider_run_id": started.run.id(),
+                        "session_id": started.run.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+                let recipients = owned
+                    .attachment_store
+                    .list_session_attachment_ids(started.run.session_id());
+                owned.record_notice(
+                    started.run.session_id(),
+                    Some(started.run.id()),
+                    recipients,
+                    diagnostic.clone(),
+                );
+                if let Ok(run) = owned
+                    .provider_store
+                    .record_terminal_diagnostic(started.run.id(), diagnostic.clone())
+                {
+                    owned.provider_run_projection.update(run);
+                }
             }
-            if let Some(agent) =
-                clear_failed_provider_resume_state_for_runtime(owned, started, error)
-            {
-                durable_agent_update = Some(agent);
+            match clear_failed_provider_resume_state_for_runtime(owned, started, error) {
+                Ok(true) => {
+                    owned
+                        .provider_launch_failure_retries
+                        .clear(started.run.id());
+                }
+                Ok(false) => {
+                    crate::logging::warn_with_fields(
+                        "durable_state.recovery",
+                        "provider launch failure was superseded by a newer durable resume",
+                        serde_json::json!({
+                            "provider_run_id": started.run.id(),
+                            "session_id": started.run.session_id(),
+                        }),
+                    );
+                    owned
+                        .provider_launch_failure_retries
+                        .clear(started.run.id());
+                }
+                Err(clear_error) => {
+                    crate::logging::error_with_fields(
+                        "durable_state.recovery",
+                        "failed to durably clear invalid provider resume",
+                        serde_json::json!({
+                            "provider_run_id": started.run.id(),
+                            "session_id": started.run.session_id(),
+                            "error": clear_error.to_string(),
+                        }),
+                    );
+                    if crate::durable_state::is_retryable_durable_write_error(&clear_error) {
+                        let scheduled = if let Some(retry) = retry {
+                            owned
+                                .provider_launch_failure_retries
+                                .reschedule(retry, crate::session::unix_epoch_ms())
+                        } else {
+                            owned.provider_launch_failure_retries.schedule_initial(
+                                started,
+                                error,
+                                crate::session::unix_epoch_ms(),
+                            )
+                        };
+                        if scheduled {
+                            owned.runtime_projection_changes.record_change();
+                        }
+                    }
+                    return;
+                }
             }
             let durable_active_prompt = started.run.agent_instance_id().and_then(|agent_id| {
                 let session = owned
@@ -200,23 +261,6 @@ impl KernelRuntimeState {
             }
             let _ = owned.session_snapshot(started.run.session_id());
         }
-        if let Some(agent) = durable_agent_update.as_ref() {
-            if let Err(error) = self
-                .append_agent_durable_event("agent.runtime_profile_updated", agent, None)
-                .await
-            {
-                crate::logging::warn_with_fields(
-                    "daemon.provider",
-                    "failed to persist cleared Codex resume state",
-                    serde_json::json!({
-                        "session_id": started.run.session_id(),
-                        "agent_id": agent.id(),
-                        "provider_run_id": started.run.id(),
-                        "error": error.to_string(),
-                    }),
-                );
-            }
-        }
         if let (Some(agent_id), Some(reason)) = (
             started.run.agent_instance_id(),
             crate::provider::classify_provider_substitutable_failure_text(
@@ -251,34 +295,36 @@ fn clear_failed_provider_resume_state_for_runtime(
     owned: &KernelRuntimeOwnedState,
     started: &crate::app::StartedProviderLaunch,
     error: &DaemonError,
-) -> Option<crate::agent::AgentInstance> {
-    let replacement_resume_state =
-        crate::app::failed_provider_resume_state_replacement(&started.run, error)?;
-    let agent_id = started.run.agent_instance_id()?;
+) -> Result<bool, DaemonError> {
+    if crate::app::failed_provider_resume_state_replacement(&started.run, error).is_none() {
+        return Ok(true);
+    }
+    let Some(agent_id) = started.run.agent_instance_id() else {
+        return Ok(true);
+    };
     let provider = started.run.adapter_key();
-    let stale_provider_session_id = started
+    let Some(stale_provider_session_id) = started
         .run
         .resume_state()
-        .provider_session_id(provider)?
-        .to_string();
-    let current = owned.agent_store.get_agent(agent_id).ok()?;
-    if current
-        .provider_resume_state()
         .provider_session_id(provider)
-        != Some(stale_provider_session_id.as_str())
-    {
-        return None;
-    }
-    let agent = owned
+        .map(str::to_string)
+    else {
+        return Ok(true);
+    };
+    match owned
         .agent_store
-        .set_agent_runtime_profile(
+        .clear_provider_resume_state_durably_if_matches(
+            &owned.durable_state_store,
             agent_id,
-            started.run.provider(),
-            Some(started.run.model().to_string()),
-            started.run.variant().map(str::to_string),
-            replacement_resume_state,
-        )
-        .ok()?;
+            provider,
+            &stale_provider_session_id,
+            started.run.id(),
+            "failed_provider_resume_state_cleared",
+        )? {
+        crate::agent::ProviderResumeClearOutcome::Cleared(_agent) => {}
+        crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
+        crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
+    }
     owned.record_notice(
         started.run.session_id(),
         Some(started.run.id()),
@@ -292,5 +338,5 @@ fn clear_failed_provider_resume_state_for_runtime(
                 )
             }),
     );
-    Some(agent)
+    Ok(true)
 }

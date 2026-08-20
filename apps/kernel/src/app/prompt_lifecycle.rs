@@ -412,26 +412,33 @@ impl DaemonApp {
                 return Err(error);
             }
         };
-        let run = self
-            .providers
-            .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;
-        let agent = self.agents.set_agent_runtime_profile_with_account_profile(
+        let session = self.sessions.get_session(&session_id)?;
+        let Some(_settlement_claim) = self
+            .prompt_state_owner
+            .try_claim_active_prompt_delivery_settlement(
+                &session,
+                &agent_id,
+                &prompt_id,
+                &provider_run_id,
+            )
+        else {
+            return Ok(());
+        };
+        let run = self.providers.get_run(&provider_run_id)?;
+        self.agents.set_agent_runtime_profile_durably(
+            &self.durable_state,
             &agent_id,
             run.provider(),
             Some(run.model().to_string()),
             run.variant().map(str::to_string),
             Some(run.account_profile().to_string()),
-            run.resume_state().clone(),
+            acknowledgement.resume_state.clone(),
+            Some(run.id()),
+            Some("prompt_delivery_acknowledged"),
         )?;
-        self.durable_state_store().append_event(
-            "agent.runtime_profile_updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-                "provider_run_id": run.id(),
-                "reason": "prompt_delivery_acknowledged",
-            }),
-        )?;
+        let run = self
+            .providers
+            .apply_prompt_submit_acknowledgement(&provider_run_id, &acknowledgement)?;
         self.update_provider_run_projection(run.clone());
         self.mark_active_prompt_delivery(
             &session_id,
@@ -584,13 +591,46 @@ impl DaemonApp {
             .providers
             .drain_finished_structured_prompt_submit_jobs();
         for finished in finished_jobs {
-            let _ = self.finish_kernel_prompt_dispatch(
+            let settlement_retry_attempt = finished.settlement_retry_attempt;
+            let retry_acknowledgement = finished.result.as_ref().ok().cloned();
+            let retry_session_id = finished.session_id.clone();
+            let retry_provider_run_id = finished.provider_run_id.clone();
+            let retry_agent_id = finished.agent_id.clone();
+            let retry_prompt_id = finished.prompt_id.clone();
+            if let Err(error) = self.finish_kernel_prompt_dispatch(
                 finished.session_id,
                 finished.provider_run_id,
                 finished.agent_id,
                 finished.prompt_id,
                 finished.result,
-            );
+            ) {
+                crate::logging::warn_with_fields(
+                    "daemon.prompt_delivery",
+                    "failed to settle structured prompt completion",
+                    serde_json::json!({
+                        "session_id": &retry_session_id,
+                        "agent_id": &retry_agent_id,
+                        "prompt_id": &retry_prompt_id,
+                        "provider_run_id": &retry_provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                );
+                if crate::durable_state::is_retryable_durable_write_error(&error) {
+                    if let Some(acknowledgement) = retry_acknowledgement {
+                        self.providers
+                            .schedule_finished_structured_prompt_submit_retry(
+                                crate::provider::FinishedProviderPromptSubmitJob {
+                                    session_id: retry_session_id,
+                                    provider_run_id: retry_provider_run_id,
+                                    agent_id: retry_agent_id,
+                                    prompt_id: retry_prompt_id,
+                                    result: Ok(acknowledgement),
+                                    settlement_retry_attempt,
+                                },
+                            );
+                    }
+                }
+            }
         }
         let finished_jobs = self.providers.drain_finished_structured_prompt_abort_jobs();
         for finished in finished_jobs {

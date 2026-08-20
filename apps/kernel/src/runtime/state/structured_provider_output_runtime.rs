@@ -46,6 +46,7 @@ impl KernelRuntimeState {
             .provider_store
             .drain_finished_structured_output_poll_jobs()
         {
+            let settlement_retry_attempt = finished.settlement_retry_attempt;
             let finished_run_id = finished.provider_run_id.clone();
             let polled_prompt_id = owned
                 .structured_output_records
@@ -186,8 +187,41 @@ impl KernelRuntimeState {
                     .attachment_store
                     .list_session_attachment_ids(&run_session_id)
             };
+            let retry_poll_result = poll_result.clone();
+            let poll_result = match self.prepare_owned_structured_output_batch(
+                &run_session_id,
+                &finished_run_id,
+                poll_result,
+            ) {
+                Ok(poll_result) => poll_result,
+                Err(error) if crate::durable_state::is_retryable_durable_write_error(&error) => {
+                    owned
+                        .structured_output_records
+                        .mark_poll_enqueued(&finished_run_id, polled_prompt_id.clone());
+                    owned
+                        .provider_store
+                        .schedule_finished_structured_output_poll_retry(
+                            crate::provider::FinishedProviderOutputPollJob {
+                                provider_run_id: finished_run_id.clone(),
+                                result: Ok(Some(retry_poll_result)),
+                                settlement_retry_attempt,
+                            },
+                        );
+                    crate::logging::warn_with_fields(
+                        "durable_state.recovery",
+                        "deferred structured output resume persistence after durable write failure",
+                        serde_json::json!({
+                            "provider_run_id": &finished_run_id,
+                            "settlement_retry_attempt": settlement_retry_attempt.saturating_add(1),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let applied = self
-                .apply_owned_structured_output_batch(
+                .apply_prepared_owned_structured_output_batch(
                     &run_session_id,
                     &finished_run_id,
                     recipients,
@@ -268,8 +302,25 @@ impl KernelRuntimeState {
         session_id: &str,
         provider_run_id: &str,
         recipient_attachment_ids: Vec<String>,
-        mut poll_result: crate::provider::ProviderPromptSignalBatch,
+        poll_result: crate::provider::ProviderPromptSignalBatch,
     ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let poll_result =
+            self.prepare_owned_structured_output_batch(session_id, provider_run_id, poll_result)?;
+        self.apply_prepared_owned_structured_output_batch(
+            session_id,
+            provider_run_id,
+            recipient_attachment_ids,
+            poll_result,
+        )
+        .await
+    }
+
+    fn prepare_owned_structured_output_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        mut poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<crate::provider::ProviderPromptSignalBatch, DaemonError> {
         let owned = &self.owned;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let session = owned.session_store.get_session(session_id)?;
@@ -302,25 +353,41 @@ impl KernelRuntimeState {
                 }),
             );
         }
+        let projected_provider_run = owned
+            .provider_store
+            .preview_structured_output_metadata(provider_run_id, &poll_result)?;
+        if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
+            if let Some(agent_id) = projected_provider_run.agent_instance_id() {
+                owned.agent_store.set_agent_runtime_profile_durably(
+                    &owned.durable_state_store,
+                    agent_id,
+                    projected_provider_run.provider(),
+                    Some(projected_provider_run.model().to_string()),
+                    projected_provider_run.variant().map(str::to_string),
+                    Some(projected_provider_run.account_profile().to_string()),
+                    resume_state.clone(),
+                    Some(projected_provider_run.id()),
+                    None,
+                )?;
+                let _ = owned.session_snapshot(projected_provider_run.session_id())?;
+            }
+        }
+        Ok(poll_result)
+    }
+
+    async fn apply_prepared_owned_structured_output_batch(
+        &self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        mut poll_result: crate::provider::ProviderPromptSignalBatch,
+    ) -> Result<Vec<crate::terminal::TerminalOutputRecord>, DaemonError> {
+        let owned = &self.owned;
         owned
             .provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = owned.ensure_provider_run_in_session(session_id, provider_run_id)?;
         let agent_id = provider_run.agent_instance_id().map(str::to_string);
-        if let Some(resume_state) = poll_result.resolved_resume_state.as_ref() {
-            if let Some(agent_id) = provider_run.agent_instance_id() {
-                let agent = owned.agent_store.set_agent_runtime_profile(
-                    agent_id,
-                    provider_run.provider(),
-                    Some(provider_run.model().to_string()),
-                    provider_run.variant().map(str::to_string),
-                    resume_state.clone(),
-                )?;
-                let _ = owned.session_snapshot(provider_run.session_id())?;
-                self.append_agent_durable_event("agent.runtime_profile_updated", &agent, None)
-                    .await?;
-            }
-        }
         if let Some(agent_id) = provider_run.agent_instance_id() {
             owned.external_provider_sessions.mark_provider_run_attached(
                 provider_run.adapter_key(),

@@ -272,6 +272,25 @@ impl ProviderRunActorMailbox {
         drain_finished_submits(&self.finished_submits)
     }
 
+    pub(crate) fn schedule_finished_submit_retry(
+        &self,
+        mut finished: FinishedProviderPromptSubmitJob,
+    ) {
+        finished.settlement_retry_attempt = finished.settlement_retry_attempt.saturating_add(1);
+        let delay = std::time::Duration::from_millis(
+            crate::durable_state::durable_settlement_retry_delay_ms(
+                finished.settlement_retry_attempt,
+            ),
+        );
+        let provider_run_id = finished.provider_run_id.clone();
+        let finished_submits = std::sync::Arc::clone(&self.finished_submits);
+        let completion_signal = self.completion_signal.clone();
+        schedule_provider_settlement_retry(delay, move || {
+            push_finished_submit(&finished_submits, finished);
+            completion_signal.record_completion(&provider_run_id);
+        });
+    }
+
     pub(crate) fn drain_finished_aborts(&self) -> Vec<FinishedProviderPromptAbortJob> {
         drain_finished_aborts(&self.finished_aborts)
     }
@@ -291,6 +310,25 @@ impl ProviderRunActorMailbox {
         let provider_run_id = finished.provider_run_id.clone();
         push_finished_submit(&self.finished_submits, finished);
         self.completion_signal.record_completion(&provider_run_id);
+    }
+
+    pub(crate) fn schedule_finished_output_poll_retry(
+        &self,
+        mut finished: FinishedProviderOutputPollJob,
+    ) {
+        finished.settlement_retry_attempt = finished.settlement_retry_attempt.saturating_add(1);
+        let delay = std::time::Duration::from_millis(
+            crate::durable_state::durable_settlement_retry_delay_ms(
+                finished.settlement_retry_attempt,
+            ),
+        );
+        let provider_run_id = finished.provider_run_id.clone();
+        let finished_output_polls = std::sync::Arc::clone(&self.finished_output_polls);
+        let completion_signal = self.completion_signal.clone();
+        schedule_provider_settlement_retry(delay, move || {
+            push_finished_output_poll(&finished_output_polls, finished);
+            completion_signal.record_completion(&provider_run_id);
+        });
     }
 
     #[cfg(test)]
@@ -330,6 +368,23 @@ impl ProviderRunActorMailbox {
             output_poll_delays: Arc::clone(&self.output_poll_delays),
             blocking_executor_permits: Arc::clone(&self.blocking_executor_permits),
         }
+    }
+}
+
+fn schedule_provider_settlement_retry(
+    delay: std::time::Duration,
+    retry: impl FnOnce() + Send + 'static,
+) {
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            tokio::time::sleep(delay).await;
+            retry();
+        });
+    } else {
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            retry();
+        });
     }
 }
 
@@ -428,6 +483,7 @@ mod tests {
         mailbox.push_finished_output_poll_for_test(FinishedProviderOutputPollJob {
             provider_run_id: "run-1".to_string(),
             result: Ok(None),
+            settlement_retry_attempt: 0,
         });
 
         tokio::time::timeout(

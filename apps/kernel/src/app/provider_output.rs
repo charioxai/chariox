@@ -525,6 +525,7 @@ impl<'a> ProviderOutputPumpContext<'a> {
             .provider_store
             .drain_finished_structured_output_poll_jobs()
         {
+            let settlement_retry_attempt = finished.settlement_retry_attempt;
             let provider_run_id = finished.provider_run_id.clone();
             let polled_prompt_id = self
                 .pending_structured_output_records
@@ -637,7 +638,38 @@ impl<'a> ProviderOutputPumpContext<'a> {
                 } else {
                     now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS)
                 };
-            let records = self.apply_structured_output_batch(
+            let retry_poll_result = poll_result.clone();
+            let poll_result = match self.prepare_structured_output_batch(
+                &session_id,
+                &provider_run_id,
+                poll_result,
+            ) {
+                Ok(poll_result) => poll_result,
+                Err(error) if crate::durable_state::is_retryable_durable_write_error(&error) => {
+                    self.pending_structured_output_records
+                        .mark_poll_enqueued(&provider_run_id, polled_prompt_id.clone());
+                    self.provider_store
+                        .schedule_finished_structured_output_poll_retry(
+                            crate::provider::FinishedProviderOutputPollJob {
+                                provider_run_id: provider_run_id.clone(),
+                                result: Ok(Some(retry_poll_result)),
+                                settlement_retry_attempt,
+                            },
+                        );
+                    crate::logging::warn_with_fields(
+                        "durable_state.recovery",
+                        "deferred app structured output resume persistence after durable write failure",
+                        serde_json::json!({
+                            "provider_run_id": &provider_run_id,
+                            "settlement_retry_attempt": settlement_retry_attempt.saturating_add(1),
+                            "error": error.to_string(),
+                        }),
+                    );
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            let records = self.apply_prepared_structured_output_batch(
                 &session_id,
                 &provider_run_id,
                 recipient_attachment_ids,
@@ -655,23 +687,35 @@ impl<'a> ProviderOutputPumpContext<'a> {
         Ok(requested_records)
     }
 
-    fn apply_structured_output_batch(
+    fn prepare_structured_output_batch(
         &mut self,
         session_id: &str,
         provider_run_id: &str,
-        recipient_attachment_ids: Vec<String>,
         poll_result: ProviderPromptSignalBatch,
-    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
+    ) -> Result<ProviderPromptSignalBatch, DaemonError> {
         self.trace_structured_poll_batch(
             session_id,
             provider_run_id,
             "structured_poll_batch_received",
             &poll_result,
         );
+        let projected_provider_run = self
+            .provider_store
+            .preview_structured_output_metadata(provider_run_id, &poll_result)?;
+        self.persist_resolved_resume_state(&projected_provider_run, &poll_result)?;
+        Ok(poll_result)
+    }
+
+    fn apply_prepared_structured_output_batch(
+        &mut self,
+        session_id: &str,
+        provider_run_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        poll_result: ProviderPromptSignalBatch,
+    ) -> Result<Vec<TerminalOutputRecord>, DaemonError> {
         self.provider_store
             .apply_structured_output_metadata(provider_run_id, &poll_result)?;
         let provider_run = self.ensure_provider_run_in_session(session_id, provider_run_id)?;
-        self.persist_resolved_resume_state(&provider_run, &poll_result)?;
         self.mark_resolved_external_provider_session_attached(&provider_run);
         self.app
             .update_provider_run_projection(provider_run.clone());
@@ -815,20 +859,17 @@ impl<'a> ProviderOutputPumpContext<'a> {
         let Some(agent_id) = provider_run.agent_instance_id() else {
             return Ok(());
         };
-        let agent = self.app.agents.set_agent_runtime_profile(
+        let durable_state_store = self.app.durable_state_store();
+        self.app.agents.set_agent_runtime_profile_durably(
+            &durable_state_store,
             agent_id,
             provider_run.provider(),
             Some(provider_run.model().to_string()),
             provider_run.variant().map(str::to_string),
+            None,
             resume_state.clone(),
-        )?;
-        self.app.durable_state_store().append_event(
-            "agent.runtime_profile_updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-                "provider_run_id": provider_run.id(),
-            }),
+            Some(provider_run.id()),
+            None,
         )?;
         let _ = crate::app::KernelSessionReadService::new(self.app)
             .session_snapshot(provider_run.session_id())?;

@@ -733,6 +733,141 @@ fn app_side_structured_pump_defers_empty_poll_reenqueue() {
 }
 
 #[test]
+fn app_side_structured_resume_retries_without_advancing_run_ahead_of_storage() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let initial_resume = crate::provider::ProviderResumeState::from_opencode_session_id(
+        "opencode-session-output-s1",
+    );
+    app.providers_mut()
+        .apply_structured_output_metadata(
+            &provider_run_id,
+            &crate::provider::ProviderPromptSignalBatch {
+                resolved_resume_state: Some(initial_resume.clone()),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .expect("initial provider resume should apply");
+    let run = app
+        .providers()
+        .get_run(&provider_run_id)
+        .expect("provider run should remain available");
+    let agent_id = run
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let durable_state_store = app.durable_state_store();
+    app.agents
+        .set_agent_runtime_profile_durably(
+            &durable_state_store,
+            &agent_id,
+            run.provider(),
+            Some(run.model().to_string()),
+            run.variant().map(str::to_string),
+            None,
+            initial_resume,
+            Some(run.id()),
+            None,
+        )
+        .expect("initial agent resume should persist");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "persist the app-side output resume",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+        .expect("prompt should start");
+    let prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("prompt state should load")
+        .expect("prompt should be active")
+        .id()
+        .to_string();
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        &prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run_id.clone()),
+        Some("opencode-session-output-s1".to_string()),
+    )
+    .expect("prompt delivery should persist");
+    app.prompt_owner_mark_active_prompt_running(&session_id, &agent_id)
+        .expect("acknowledged prompt should be running");
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt_id));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                resolved_resume_state: Some(
+                    crate::provider::ProviderResumeState::from_opencode_session_id(
+                        "opencode-session-output-s2",
+                    ),
+                ),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let connection = rusqlite::Connection::open(app.durable_state_store().path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_app_output_resume_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'agent.runtime_profile_updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected app output resume persistence failure');
+             END;",
+        )
+        .expect("output resume failure trigger should install");
+
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+    assert_eq!(
+        app.agents
+            .get_agent(&agent_id)
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s1"),
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should remain available")
+            .resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s1"),
+        "the process-local run must not advance beyond the durable agent profile",
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_app_output_resume_append;")
+        .expect("output resume failure trigger should be removed");
+    std::thread::sleep(std::time::Duration::from_millis(225));
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+    assert_eq!(
+        app.agents
+            .get_agent(&agent_id)
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s2"),
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should remain available")
+            .resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s2"),
+        "the exact drained batch must be retried after storage recovers",
+    );
+}
+
+#[test]
 fn provider_dispatch_marks_new_workflow_prompt_before_draining_stale_completion() {
     let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
     let agent_id = app

@@ -17,7 +17,7 @@ use crate::agent::AgentServiceStore;
 use crate::app::{
     ActiveTurnStore, AttachedProviderTranscriptCursorStore, DaemonApp,
     ExternalProviderSessionIndexStore, PromptActivityStore, PromptWorkspaceClaimStore,
-    ProviderProcessTrackingStore, WorkflowDesignEventStore,
+    ProviderLaunchFailureRetryStore, ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -64,6 +64,7 @@ struct KernelRuntimeOwnedState {
     provider_store: ProviderProcessServiceStore,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     provider_process_tracking: ProviderProcessTrackingStore,
+    provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
@@ -397,13 +398,19 @@ impl KernelRuntimeState {
             crate::runtime::metaagent_trace::MetaagentTraceSubscriptionStore,
         workspace_coordinator: crate::runtime::workspace_coordinator::WorkspaceCoordinator,
     ) -> Self {
-        let (completed_git_turn_snapshots, provider_process_projection, relay_state) = {
+        let (
+            completed_git_turn_snapshots,
+            provider_process_projection,
+            provider_launch_failure_retries,
+            relay_state,
+        ) = {
             let started = Instant::now();
             loop {
                 if let Ok(app) = app.try_lock() {
                     break (
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
+                        app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
                     );
                 }
@@ -441,6 +448,7 @@ impl KernelRuntimeState {
                 provider_store,
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 provider_process_tracking,
+                provider_launch_failure_retries,
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
