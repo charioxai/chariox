@@ -147,7 +147,11 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
     )
     .expect("kernel child should start before relay-ready confirmation");
     assert!(prepared.confirmation.is_none());
-    assert!(fixture.kernel_started_marker.exists());
+    assert_eq!(
+        fs::read_to_string(&fixture.kernel_started_marker).expect("kernel launch record"),
+        "exchanged\nconfirmed\n",
+        "the relay-presence child must be replaced by a kernel that loads the confirmed receipt"
+    );
     assert!(!fixture.config.envelope_path.exists());
     assert_eq!(
         BootstrapReceipt::read(&fixture.config.receipt_path)
@@ -383,8 +387,7 @@ impl Fixture {
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
-        let kernel_fixture =
-            b"#!/bin/sh\ntouch \"$CHARIOX_HOME/managed/kernel-started\"\nsleep 1\n";
+        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\nsleep 1\n";
         fs::write(&kernel_binary, kernel_fixture).expect("write kernel fixture");
         #[cfg(unix)]
         {

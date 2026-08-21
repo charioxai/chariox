@@ -73,6 +73,8 @@ pub(super) fn run_kernel_once(
     let mut child = spawn_kernel(config, release)?;
     if confirmation.is_some() {
         await_relay_ready_confirmation(config, &mut child, confirmation, cloud)?;
+        terminate_child(&mut child)?;
+        child = spawn_kernel(config, release)?;
     }
     let status = child
         .wait()
@@ -148,7 +150,7 @@ fn await_relay_ready_confirmation(
             }
         }
         if started_at.elapsed() >= MAX_CONFIRMATION_WAIT {
-            terminate_child(child);
+            terminate_child(child)?;
             return Err(supervisor_error(
                 "managed kernel did not establish relay presence before the confirmation deadline",
             ));
@@ -158,9 +160,34 @@ fn await_relay_ready_confirmation(
     }
 }
 
-fn terminate_child(child: &mut Child) {
-    let _ = child.kill();
-    let _ = child.wait();
+fn terminate_child(child: &mut Child) -> Result<(), DaemonError> {
+    if child
+        .try_wait()
+        .map_err(|error| supervisor_error(&format!("inspect managed kernel before stop: {error}")))?
+        .is_some()
+    {
+        return Ok(());
+    }
+    if let Err(kill_error) = child.kill() {
+        if child
+            .try_wait()
+            .map_err(|error| {
+                supervisor_error(&format!(
+                    "inspect managed kernel after stop failure ({kill_error}): {error}"
+                ))
+            })?
+            .is_some()
+        {
+            return Ok(());
+        }
+        return Err(supervisor_error(&format!(
+            "stop managed kernel before operational restart: {kill_error}"
+        )));
+    }
+    child
+        .wait()
+        .map_err(|error| supervisor_error(&format!("reap stopped managed kernel: {error}")))?;
+    Ok(())
 }
 
 fn supervisor_error(message: &str) -> DaemonError {
