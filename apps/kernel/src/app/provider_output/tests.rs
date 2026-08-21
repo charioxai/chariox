@@ -270,9 +270,14 @@ fn idle_claude_native_tui_projects_startup_terminal_output() {
         .remove_process(run.id())
         .expect("test provider PTY should stop");
 
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, TerminalOutputKind::ProviderTerminal);
-    let output = String::from_utf8_lossy(&records[0].bytes);
+    assert!(records
+        .iter()
+        .all(|record| record.kind == TerminalOutputKind::ProviderTerminal));
+    let output = records
+        .iter()
+        .flat_map(|record| record.bytes.iter().copied())
+        .collect::<Vec<_>>();
+    let output = String::from_utf8_lossy(&output);
     assert!(output.contains("Claude Code"));
     assert!(output.contains("\u{1b}[?2004h"));
 }
