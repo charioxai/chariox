@@ -182,7 +182,7 @@ test("publication deployment contract rejects missing and obsolete egress polici
   }, contract), /network policy fields are invalid/)
 })
 
-test("publication deployment contract binds allowed providers to packaged requirements", () => {
+test("publication deployment contract allows cross-provider recovery only within packaged requirements", () => {
   const contract = fixture()
   contract.provider_requirements = [
     { slot_id: "provider:codex", provider: "codex" },

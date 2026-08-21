@@ -73,6 +73,10 @@ pub(super) fn workflow_publication_deployment_contract_json(
 fn deployment_configuration(
     snapshot: &crate::local::WorkflowPublicationSnapshot,
 ) -> Vec<serde_json::Value> {
+    // The deployment operator owns the runtime provider credentials and may
+    // recover an unavailable captured provider by rebinding an agent to any
+    // provider already declared by this immutable package. Consumers still
+    // reject providers outside the packaged requirements.
     let allowed_providers = snapshot
         .agents
         .iter()

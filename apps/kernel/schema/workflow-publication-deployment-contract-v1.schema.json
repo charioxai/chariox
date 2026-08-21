@@ -253,6 +253,7 @@
         "agent_id": { "$ref": "#/definitions/non_empty_string" },
         "node_ids": { "$ref": "#/definitions/string_array" },
         "allowed_providers": {
+          "description": "Providers declared by this immutable package that its deployment operator may bind to this agent, including deliberate cross-provider recovery from an unavailable captured provider.",
           "type": "array",
           "minItems": 1,
           "uniqueItems": true,
