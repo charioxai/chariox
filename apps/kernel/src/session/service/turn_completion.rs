@@ -55,6 +55,18 @@ impl SessionService {
             workflow_run_id,
             workflow_node_run_id,
         )?;
+        if context.workflow_run.completed_by_node_run_id() == Some(workflow_node_run_id)
+            && context.workflow_run.final_output_valid() == Some(true)
+        {
+            return Ok(WorkflowCompletionUpdate {
+                workflow_run: context.workflow_run,
+                dispatches: Vec::new(),
+                validation_warnings: Vec::new(),
+                handoff_validation_failure: None,
+                missing_output_failure: None,
+                run_output_validation_failure: None,
+            });
+        }
         let (emitted_messages, validation_warnings, handoff_validation_error) = match self
             .build_workflow_completion_messages(session_id, &context, completion.as_ref())
         {

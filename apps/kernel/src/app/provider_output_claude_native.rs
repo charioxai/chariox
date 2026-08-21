@@ -366,6 +366,17 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 {
                     let context =
                         self.claude_native_prompt_context(session_id, &agent_id, prompt)?;
+                    crate::provider::ensure_claude_native_hidden_context_fits(
+                        provider_run_id,
+                        &context,
+                    )?;
+                    fs::write(context_file, &context).map_err(|error| {
+                        DaemonError::ProviderProtocol {
+                            provider_run_id: provider_run_id.to_string(),
+                            operation: "claude_hidden_context_write",
+                            message: error.to_string(),
+                        }
+                    })?;
                     write_claude_hook_context_response(context_file, request_id, &context);
                 }
                 let Some(runtime_attachment_id) = runtime_attachment_id.as_deref() else {
@@ -1309,7 +1320,15 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 crate::prompt_assembly::strip_prompt_manifest_entries(prompt.hidden_system_context);
             join_claude_context([scheduled_hidden, native_hidden, attachment_context])
         };
-        let _ = fs::write(context_file, hidden_context);
+        crate::provider::ensure_claude_native_hidden_context_fits(
+            provider_run_id,
+            &hidden_context,
+        )?;
+        fs::write(context_file, hidden_context).map_err(|error| DaemonError::ProviderProtocol {
+            provider_run_id: provider_run_id.to_string(),
+            operation: "claude_hidden_context_write",
+            message: error.to_string(),
+        })?;
         let visible = join_claude_context([native_attachment_suffix, visible]);
         if !visible.is_empty() {
             let input = if provider_run.provider() == "claude-headless" {

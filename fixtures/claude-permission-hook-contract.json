@@ -7,8 +7,7 @@
       "tool_name": "Bash",
       "tool_input": { "command": "true" }
     },
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Allowed by the agent's yolo permission mode."
+    "behavior": "allow"
   },
   {
     "name": "Chariox MCP runtime tool",
@@ -18,8 +17,7 @@
       "tool_name": "mcp__chariox__workflow_status",
       "tool_input": {}
     },
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Allowed Chariox runtime tool."
+    "behavior": "allow"
   },
   {
     "name": "Chariox dotted runtime tool",
@@ -29,7 +27,6 @@
       "tool_name": "chariox.workflow_status",
       "tool_input": {}
     },
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Allowed Chariox runtime tool."
+    "behavior": "allow"
   }
 ]

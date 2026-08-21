@@ -11,6 +11,29 @@ use super::mcp_config::{
     create_claude_runtime_files_root, materialize_request_claude_mcp_config, ClaudeRuntimeFilesRoot,
 };
 
+pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 4;
+pub(crate) const CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES: usize = 6_000;
+pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
+    CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES;
+
+pub(crate) fn ensure_claude_native_hidden_context_fits(
+    provider_run_id: &str,
+    hidden_context: &str,
+) -> Result<(), DaemonError> {
+    if hidden_context.len() <= CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES {
+        return Ok(());
+    }
+    Err(DaemonError::ProviderProtocol {
+        provider_run_id: provider_run_id.to_string(),
+        operation: "claude_hidden_context_size",
+        message: format!(
+            "hidden context is {} bytes; Claude native delivery supports at most {} bytes",
+            hidden_context.len(),
+            CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
+        ),
+    })
+}
+
 pub(super) struct ClaudeNativeTuiFiles {
     root: ClaudeRuntimeFilesRoot,
     pub(super) events_file: PathBuf,
@@ -77,13 +100,29 @@ pub(super) fn prepare_claude_native_tui_files(
         &context_file,
         &context_response_dir,
         &permission_response_dir,
+        None,
     );
+    let prompt_hooks = (0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS)
+        .map(|chunk_index| {
+            serde_json::json!({
+                "type": "command",
+                "command": claude_native_hook_command(
+                    &hook_handler_file,
+                    &events_file,
+                    &context_file,
+                    &context_response_dir,
+                    &permission_response_dir,
+                    Some(chunk_index),
+                )
+            })
+        })
+        .collect::<Vec<_>>();
     let settings = serde_json::json!({
         "skipDangerousModePermissionPrompt": request.permission_level.unwrap_or_default()
             == AgentPermissionLevel::Yolo,
         "hooks": {
             "SessionStart": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
+            "UserPromptSubmit": [{ "hooks": prompt_hooks }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
@@ -116,17 +155,22 @@ fn claude_native_hook_command(
     context_file: &Path,
     context_response_dir: &Path,
     permission_response_dir: &Path,
+    context_chunk_index: Option<usize>,
 ) -> String {
     let quoted = |path: &Path| {
         serde_json::to_string(&path.display().to_string())
             .expect("serializing a filesystem path should not fail")
     };
+    let context_chunk = context_chunk_index
+        .map(|index| format!(" CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK={index}"))
+        .unwrap_or_default();
     format!(
-        "CHARIOX_CLAUDE_NATIVE_EVENTS={} CHARIOX_CLAUDE_NATIVE_CONTEXT={} CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES={} CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES={} node {}",
+        "CHARIOX_CLAUDE_NATIVE_EVENTS={} CHARIOX_CLAUDE_NATIVE_CONTEXT={} CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES={} CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES={}{} node {}",
         quoted(events_file),
         quoted(context_file),
         quoted(context_response_dir),
         quoted(permission_response_dir),
+        context_chunk,
         quoted(hook_handler_file),
     )
 }
@@ -173,31 +217,56 @@ try {
   input = { hook_event_name: "parse_error", raw, error: String(error) }
 }
 const eventName = input.hook_event_name ?? "unknown"
-if (eventName === "SessionStart") {
+const parsedContextChunkIndex = Number.parseInt(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK ?? "", 10)
+const contextChunkIndex = Number.isInteger(parsedContextChunkIndex) && parsedContextChunkIndex >= 0
+  ? parsedContextChunkIndex
+  : null
+const contextOnlyHook = contextChunkIndex !== null && contextChunkIndex > 0
+if (!contextOnlyHook && eventName === "SessionStart") {
   try { unlinkSync(join(dirname(process.argv[1]), "mcp-config.json")) } catch {}
 }
 const hookContextRequestId = eventName === "UserPromptSubmit" || eventName === "PreToolUse" || eventName === "PermissionRequest"
   ? `${Date.now()}-${process.pid}-${Math.random().toString(36).slice(2)}`
   : null
-appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
-  at: new Date().toISOString(),
-  hook_event_name: eventName,
-  hook_context_request_id: hookContextRequestId,
-  prompt: input.prompt ?? null,
-  transcript_path: input.transcript_path ?? null,
-  permission_mode: input.permission_mode ?? null,
-  tool_name: input.tool_name ?? null,
-  tool_input: input.tool_input ?? null,
-  tool_response: input.tool_response ?? null,
-  error: input.error ?? null,
-}) + "\n")
+if (!contextOnlyHook) {
+  appendFileSync(process.env.CHARIOX_CLAUDE_NATIVE_EVENTS, JSON.stringify({
+    at: new Date().toISOString(),
+    hook_event_name: eventName,
+    hook_context_request_id: hookContextRequestId,
+    prompt: input.prompt ?? null,
+    transcript_path: input.transcript_path ?? null,
+    permission_mode: input.permission_mode ?? null,
+    tool_name: input.tool_name ?? null,
+    tool_input: input.tool_input ?? null,
+    tool_response: input.tool_response ?? null,
+    error: input.error ?? null,
+  }) + "\n")
+}
+
+function utf8ContextChunk(value, chunkIndex, maximumBytes = 6000) {
+  const chunks = []
+  let chunk = ""
+  let chunkBytes = 0
+  for (const scalar of value) {
+    const scalarBytes = Buffer.byteLength(scalar, "utf8")
+    if (chunk && chunkBytes + scalarBytes > maximumBytes) {
+      chunks.push(chunk)
+      chunk = ""
+      chunkBytes = 0
+    }
+    chunk += scalar
+    chunkBytes += scalarBytes
+  }
+  if (chunk) chunks.push(chunk)
+  return chunks[chunkIndex] ?? ""
+}
 
 if (eventName === "UserPromptSubmit") {
   let additionalContext = ""
   try {
     additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
   } catch {}
-  if (!additionalContext && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
+  if (!additionalContext && contextChunkIndex === 0 && hookContextRequestId && process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES) {
     const responseFile = join(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES, `${hookContextRequestId}.txt`)
     const deadline = Date.now() + 5000
     while (Date.now() < deadline) {
@@ -209,6 +278,17 @@ if (eventName === "UserPromptSubmit") {
       await sleep(50)
     }
   }
+  if (!additionalContext && contextOnlyHook) {
+    const deadline = Date.now() + 5000
+    while (Date.now() < deadline) {
+      try {
+        additionalContext = readFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, "utf8")
+      } catch {}
+      if (additionalContext) break
+      await sleep(50)
+    }
+  }
+  additionalContext = utf8ContextChunk(additionalContext, contextChunkIndex ?? 0)
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: "UserPromptSubmit",
@@ -224,10 +304,9 @@ if (eventName === "UserPromptSubmit") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",
-          permissionDecision: "allow",
-          permissionDecisionReason: isCharioxRuntimeTool
-            ? "Allowed Chariox runtime tool."
-            : "Allowed by the agent's yolo permission mode."
+          decision: {
+            behavior: "allow"
+          }
         }
       }))
     }
@@ -248,12 +327,14 @@ if (eventName === "UserPromptSubmit") {
         try {
           const decision = JSON.parse(readFileSync(responseFile, "utf8"))
           try { unlinkSync(responseFile) } catch {}
-          if (decision?.permissionDecision) {
+          if (decision?.behavior) {
             process.stdout.write(JSON.stringify({
               hookSpecificOutput: {
                 hookEventName: eventName,
-                permissionDecision: decision.permissionDecision,
-                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
+                decision: {
+                  behavior: decision.behavior,
+                  ...(decision.behavior === "deny" ? { message: decision.message ?? "Denied through Chariox." } : {})
+                }
               }
             }))
           }
@@ -338,8 +419,12 @@ mod tests {
     };
 
     use super::{
-        claude_native_hook_handler, claude_native_tui_args, prepare_claude_native_tui_files,
+        claude_native_hook_handler, claude_native_tui_args,
+        ensure_claude_native_hidden_context_fits, prepare_claude_native_tui_files,
+        CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES, CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
+        CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES,
     };
+    use crate::error::DaemonError;
 
     #[test]
     fn hook_auto_allows_bypass_and_chariox_runtime_permission_requests() {
@@ -347,8 +432,8 @@ mod tests {
 
         assert!(handler
             .contains("isCharioxRuntimeTool || input.permission_mode === \"bypassPermissions\""));
-        assert!(handler.contains("permissionDecision: \"allow\""));
-        assert!(handler.contains("Allowed by the agent's yolo permission mode."));
+        assert!(handler.contains("behavior: \"allow\""));
+        assert!(!handler.contains("permissionDecision"));
         assert!(handler.contains("toolName.startsWith(\"mcp__chariox__\")"));
         assert!(handler.contains("toolName.startsWith(\"chariox.\")"));
         assert!(handler.contains("process.exit(0)"));
@@ -440,18 +525,161 @@ mod tests {
                 contract_case["name"]
             );
             assert_eq!(
-                response["hookSpecificOutput"]["permissionDecision"],
-                contract_case["permissionDecision"],
-                "{}",
-                contract_case["name"]
-            );
-            assert_eq!(
-                response["hookSpecificOutput"]["permissionDecisionReason"],
-                contract_case["permissionDecisionReason"],
+                response["hookSpecificOutput"]["decision"]["behavior"], contract_case["behavior"],
                 "{}",
                 contract_case["name"]
             );
         }
+    }
+
+    #[test]
+    fn user_prompt_hooks_deliver_large_hidden_context_without_persisted_output_fallback() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-large-context",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let context = format!("{}🦀END", "reviewer-instruction\n".repeat(750));
+        fs::write(&native.context_file, &context).expect("hidden context should write");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let mut reconstructed = String::new();
+        let mut context_chunks = Vec::new();
+
+        for chunk_index in 0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS {
+            let mut child = Command::new("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                    &native.context_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK",
+                    chunk_index.to_string(),
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hook handler should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(
+                    br#"{"hook_event_name":"UserPromptSubmit","prompt":"review exact head"}"#,
+                )
+                .expect("hook input should write");
+            let output = child.wait_with_output().expect("hook should finish");
+            assert!(
+                output.status.success(),
+                "hook failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+            let chunk = response["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .expect("context chunk should be present");
+            assert!(chunk.len() <= CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES);
+            reconstructed.push_str(chunk);
+            context_chunks.push(chunk.to_string());
+        }
+
+        assert_eq!(reconstructed, context);
+        assert_eq!(
+            fs::read_to_string(&native.events_file)
+                .expect("hook events should read")
+                .lines()
+                .count(),
+            1,
+            "context-only hooks must not duplicate prompt acknowledgements"
+        );
+        let settings: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(native.settings_file).unwrap()).unwrap();
+        let hooks = settings["hooks"]["UserPromptSubmit"][0]["hooks"]
+            .as_array()
+            .expect("prompt hooks should be an array");
+        assert_eq!(hooks.len(), CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS);
+        for (index, hook) in hooks.iter().enumerate() {
+            assert!(hook["command"]
+                .as_str()
+                .is_some_and(|command| command
+                    .contains(&format!("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK={index}"))));
+        }
+
+        fs::write(&native.context_file, "").expect("context should clear");
+        let mut waiting_child = Command::new("node")
+            .arg(&hook_handler)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                &native.context_response_dir,
+            )
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                &native.permission_response_dir,
+            )
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("context-only hook should start");
+        waiting_child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(br#"{"hook_event_name":"UserPromptSubmit","prompt":"review exact head"}"#)
+            .expect("hook input should write");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        fs::write(&native.context_file, &context).expect("dynamic context should publish");
+        let waiting_output = waiting_child
+            .wait_with_output()
+            .expect("context-only hook should finish");
+        assert!(waiting_output.status.success());
+        let waiting_response: serde_json::Value = serde_json::from_slice(&waiting_output.stdout)
+            .expect("context-only hook response should be JSON");
+        assert_eq!(
+            waiting_response["hookSpecificOutput"]["additionalContext"].as_str(),
+            Some(context_chunks[1].as_str())
+        );
+    }
+
+    #[test]
+    fn oversized_hidden_context_fails_before_claude_receives_a_partial_instruction_set() {
+        let exact = "x".repeat(CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES);
+        ensure_claude_native_hidden_context_fits("run-exact", &exact)
+            .expect("the exact transport ceiling should be accepted");
+
+        let oversized = format!("{exact}x");
+        let error = ensure_claude_native_hidden_context_fits("run-oversized", &oversized)
+            .expect_err("oversized hidden context must fail closed");
+        assert!(matches!(
+            error,
+            DaemonError::ProviderProtocol {
+                provider_run_id,
+                operation: "claude_hidden_context_size",
+                ..
+            } if provider_run_id == "run-oversized"
+        ));
     }
 
     #[test]

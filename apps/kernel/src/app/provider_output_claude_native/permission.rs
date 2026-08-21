@@ -279,8 +279,8 @@ pub(super) fn write_claude_permission_response(
     let dir = root.join("permission-responses");
     let _ = fs::create_dir_all(&dir);
     let payload = serde_json::json!({
-        "permissionDecision": if allowed { "allow" } else { "deny" },
-        "permissionDecisionReason": reason,
+        "behavior": if allowed { "allow" } else { "deny" },
+        "message": reason,
     });
     let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
 }
