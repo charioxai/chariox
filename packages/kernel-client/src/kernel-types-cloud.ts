@@ -310,6 +310,12 @@ export type ProviderAccountSummary = {
   alias?: string | null
 }
 
+export type WaitingRoomGitCredentialSummary = {
+  credentialId: string
+  hostname: string
+  label: string
+}
+
 export type WaitingRoomInventorySnapshot = {
   inventory_version: string
   structural_version: string
@@ -328,6 +334,7 @@ export type WaitingRoomInventorySnapshot = {
     worktree_label?: string | null
   } | null
   provider_accounts?: import("./kernel-types-provider.js").ProviderAccountProfile[]
+  git_credentials?: WaitingRoomGitCredentialSummary[]
 }
 
 export type WaitingRoomPublicSnapshot = WaitingRoomInventorySnapshot & {

@@ -1772,6 +1772,8 @@ fn managed_package_receipt(
         kernel_context: crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
         provider_accounts:
             crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
+        git_credentials:
+            crate::managed_context::package::ManagedContextImportedGitCredentials::None,
     })
     .expect("serialize managed context package receipt")
 }
@@ -1838,6 +1840,8 @@ fn large_managed_package_receipt(
                 crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
             provider_accounts:
                 crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
+            git_credentials:
+                crate::managed_context::package::ManagedContextImportedGitCredentials::None,
         },
     )
     .expect("serialize large managed context package receipt");

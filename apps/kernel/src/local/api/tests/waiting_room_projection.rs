@@ -93,7 +93,7 @@ fn waiting_room_public_snapshot_omits_private_runtime_session_payload() {
             other => panic!("unexpected response: {other:?}"),
         };
 
-        assert_eq!(snapshot.schema_version, 12);
+        assert_eq!(snapshot.schema_version, 13);
         assert!(snapshot.generated_at_ms > 0);
         let session = snapshot
             .sessions

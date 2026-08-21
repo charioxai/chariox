@@ -189,17 +189,23 @@ test("both Claude execution modes transfer the canonical Claude account", () => 
   }
 })
 
-test("unsupported Git transfer choice fails before provisioning", () => {
+test("GitHub credential selection is source-bound and serialized", () => {
   const state: WaitingRoomState = {
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
     managedComputeClass: "agent-small",
     managedRegion: "hel1",
+    managedContextSourceTargetId: "source-target-1",
     managedGitCredentialSource: "selected",
   }
+  assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
+  assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()).gitCredentials, {
+    kind: "selected",
+    credentialIds: ["github"],
+  })
   assert.equal(
-    managedEnvironmentDraftBlockReason(state, remote()),
-    "Git credential transfer is not available yet; choose None.",
+    managedEnvironmentDraftBlockReason(state, { ...remote(), gitCredentials: [] }),
+    "The connected source kernel has no transferable GitHub credential.",
   )
 })
 
@@ -424,6 +430,11 @@ function remote(): WaitingRoomRemoteState {
         availability: "unavailable",
         source: "test",
       },
+    }],
+    gitCredentials: [{
+      credentialId: "github",
+      hostname: "github.com",
+      label: "GitHub",
     }],
   }
 }

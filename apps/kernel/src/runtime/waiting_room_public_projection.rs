@@ -488,7 +488,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         &terminals,
     )?;
     Ok(WaitingRoomPublicSnapshot {
-        schema_version: 12,
+        schema_version: 13,
         inventory_version,
         structural_version,
         activity_revision,
@@ -504,6 +504,7 @@ fn build_waiting_room_public_snapshot_from_summaries(
         terminals,
         launch_target,
         provider_accounts: Vec::new(),
+        git_credentials: Vec::new(),
     })
 }
 
@@ -2072,7 +2073,7 @@ mod tests {
         )
         .expect("snapshot builds");
 
-        assert_eq!(snapshot.schema_version, 12);
+        assert_eq!(snapshot.schema_version, 13);
         assert_eq!(snapshot.generated_at_ms, 42);
         assert_eq!(snapshot.sessions.len(), 1);
         assert!(snapshot.external_provider_sessions.is_empty());

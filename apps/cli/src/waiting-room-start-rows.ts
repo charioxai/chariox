@@ -112,7 +112,7 @@ export function waitingRoomStartRows(
         startRow(
           "managed-git-credentials",
           "Git credentials source",
-          state.managedGitCredentialSource === "none" ? "None" : "Selected credentials",
+          state.managedGitCredentialSource === "none" ? "None" : "GitHub",
           state,
           options.titleWidth,
         ),

@@ -7,6 +7,7 @@ import type {
   WaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot,
   ProviderAccountProfile,
+  WaitingRoomGitCredentialSummary,
 } from "./cli-types.js"
 import type { LocalIpcClient } from "./ipc.js"
 import { getWaitingRoomPublicSnapshotRequest } from "./ipc-requests.js"
@@ -45,6 +46,7 @@ export type WaitingRoomInventory = {
   externalProviderSessionsHasMore?: boolean
   externalProviderSessionsNextCursor?: string | null
   providerAccounts?: ProviderAccountProfile[]
+  gitCredentials?: WaitingRoomGitCredentialSummary[]
   managedEnvironmentCatalog?: ManagedEnvironmentCatalog
 }
 
@@ -94,6 +96,7 @@ export async function getWaitingRoomInventory(client: LocalIpcClient): Promise<W
     externalProviderSessionsHasMore: externalProviderSessions.hasMore,
     externalProviderSessionsNextCursor: externalProviderSessions.nextCursor,
     providerAccounts: payload.provider_accounts ?? [],
+    gitCredentials: payload.git_credentials ?? [],
     ...(managedEnvironmentCatalog ? { managedEnvironmentCatalog } : {}),
   }
 }

@@ -265,6 +265,7 @@ export function managedEnvironmentDraftBlockReason(
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
     || state.managedProviderAccountSource === "selected_account"
+    || state.managedGitCredentialSource === "selected"
   const source = remote.managedContextSources
     ?.find((candidate) => candidate.sourceTargetId === state.managedContextSourceTargetId)
   if (sourceRequired) {
@@ -289,8 +290,9 @@ export function managedEnvironmentDraftBlockReason(
     )
     if (!account) return "Choose an available provider account before transferring it."
   }
-  if ((state.managedGitCredentialSource ?? "none") !== "none") {
-    return "Git credential transfer is not available yet; choose None."
+  if ((state.managedGitCredentialSource ?? "none") === "selected"
+    && !remote.gitCredentials?.some((credential) => credential.credentialId === "github")) {
+    return "The connected source kernel has no transferable GitHub credential."
   }
   return null
 }
@@ -304,6 +306,7 @@ export function managedEnvironmentContextPlanInput(
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
     || state.managedProviderAccountSource === "selected_account"
+    || state.managedGitCredentialSource === "selected"
   const project = selectedManagedProject(state, remote)
   const primaryWorkspaceId = remote.workspaceId ?? ""
   const workspaceIds = project
@@ -334,7 +337,9 @@ export function managedEnvironmentContextPlanInput(
           }],
         }
       : { kind: "none" },
-    gitCredentials: { kind: "none" },
+    gitCredentials: state.managedGitCredentialSource === "selected"
+      ? { kind: "selected", credentialIds: ["github"] }
+      : { kind: "none" },
   }
 }
 

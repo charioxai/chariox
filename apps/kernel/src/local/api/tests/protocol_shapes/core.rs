@@ -1,8 +1,56 @@
 use super::*;
+use crate::local::{RelayStatus, WaitingRoomGitCredentialSummary, WaitingRoomInventorySnapshot};
+
+#[test]
+fn local_daemon_protocol_waiting_room_git_credentials_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
+
+    let response = LocalDaemonResponse::WaitingRoomInventory {
+        snapshot: WaitingRoomInventorySnapshot {
+            inventory_version: "inventory-1".to_string(),
+            structural_version: "structural-1".to_string(),
+            activity_revision: "activity-1".to_string(),
+            sessions: Vec::new(),
+            projects: Vec::new(),
+            external_provider_sessions: Vec::new(),
+            external_provider_sessions_has_more: false,
+            external_provider_sessions_next_cursor: None,
+            relay_status: RelayStatus {
+                configured: true,
+                connected: true,
+                relay_url: Some("wss://relay.example.test".to_string()),
+                relay_token_configured: true,
+                daemon_id: "kernel-1".to_string(),
+                daemon_alias: Some("Source kernel".to_string()),
+                machine_id: "machine-1".to_string(),
+                machine_alias: Some("Source machine".to_string()),
+            },
+            remote_machines: Vec::new(),
+            remote_kernels: Vec::new(),
+            terminals: Vec::new(),
+            launch_target: None,
+            provider_accounts: Vec::new(),
+            git_credentials: vec![WaitingRoomGitCredentialSummary {
+                credential_id: "github".to_string(),
+                hostname: "github.com".to_string(),
+                label: "GitHub".to_string(),
+            }],
+        },
+    };
+    let snapshot = serde_json::to_value(response).expect("Waiting Room inventory should encode");
+    assert_eq!(
+        snapshot.pointer("/WaitingRoomInventory/snapshot/git_credentials/0"),
+        Some(&serde_json::json!({
+            "credentialId": "github",
+            "hostname": "github.com",
+            "label": "GitHub"
+        }))
+    );
+}
 
 #[test]
 fn local_daemon_protocol_workflow_run_pagination_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let request = LocalDaemonRequest::ListWorkflowRuns(ListWorkflowRunsRequest {
         session_id: "session-1".to_string(),
@@ -39,7 +87,7 @@ fn local_daemon_protocol_workflow_run_pagination_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_project_management_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let create = LocalDaemonRequest::CreateSession(
         crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
@@ -173,7 +221,7 @@ fn local_daemon_protocol_project_management_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let create = LocalDaemonRequest::CreateAgentPromptSchedule(
         crate::local::CreateAgentPromptScheduleRequest {
@@ -245,7 +293,7 @@ fn local_daemon_protocol_agent_prompt_schedule_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
     let mut session = crate::session::RuntimeSession::new(
         "session-1",
         None,
@@ -274,7 +322,7 @@ fn local_daemon_protocol_queued_metaagent_task_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let request = LocalDaemonRequest::PauseWorkflowRun(PauseWorkflowRunRequest {
         session_id: "session-1".to_string(),
@@ -324,7 +372,7 @@ fn local_daemon_protocol_pause_workflow_run_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let request = LocalDaemonRequest::ResizeTerminal(crate::local::ResizeTerminalRequest {
         session_id: "session-1".to_string(),
@@ -363,7 +411,7 @@ fn local_daemon_protocol_provider_targeted_terminal_resize_shape_is_versioned() 
 
 #[test]
 fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let request = LocalDaemonRequest::GetTerminalCommandCatalog(GetTerminalCommandCatalogRequest);
     assert_eq!(
@@ -440,7 +488,7 @@ fn local_daemon_protocol_terminal_command_catalog_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let summary = crate::local::WaitingRoomSessionActivitySummary {
         agent_count: 4,
@@ -476,7 +524,7 @@ fn local_daemon_protocol_waiting_room_activity_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let snapshot = crate::runtime::projection::TransportHealthSnapshot {
         active_connections: 1,
@@ -524,7 +572,7 @@ fn local_daemon_protocol_transport_health_relay_reconnect_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let active_cancel_request =
         LocalDaemonRequest::CancelActivePrompt(crate::local::CancelActivePromptRequest {
@@ -680,7 +728,7 @@ fn local_daemon_protocol_queued_prompt_controls_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let launch_request = LocalDaemonRequest::LaunchProviderRuns(LaunchProviderRunsRequest {
         max_concurrency: Some(8),
@@ -764,7 +812,7 @@ fn local_daemon_protocol_batch_launch_and_prompt_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let request = LocalDaemonRequest::MoveAgentToLocal(MoveAgentToLocalRequest {
         session_id: "session-1".to_string(),
@@ -808,7 +856,7 @@ fn local_daemon_protocol_move_agent_to_local_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_remote_agent_binding_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 277);
 
     let mut agent = crate::agent::AgentInstance::new(
         "agent-remote",

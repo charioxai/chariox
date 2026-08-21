@@ -9,10 +9,10 @@ use crate::managed_context::cloud_completion::{
 };
 use crate::managed_context::package::{
     apply_managed_context_package, rollback_managed_context_package_application,
-    rollback_persisted_managed_context_publication, ManagedContextImportedKernelContext,
-    ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
-    ManagedContextPackageImportReceipt, ManagedContextPackageImportRequest,
-    ManagedContextProviderAccountImportTarget,
+    rollback_persisted_managed_context_publication, ManagedContextGitCredentialImportTarget,
+    ManagedContextImportedKernelContext, ManagedContextPackageApplicationRequest,
+    ManagedContextPackageBinding, ManagedContextPackageImportReceipt,
+    ManagedContextPackageImportRequest, ManagedContextProviderAccountImportTarget,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
@@ -194,6 +194,27 @@ impl CommandRouter {
                 &caller.owner_user_id,
             ),
         };
+        let git_credential_target = if matches!(
+            completion_plan.git_credentials,
+            crate::managed_context::package::ManagedContextGitCredentialSelection::None
+        ) {
+            None
+        } else {
+            let git_credential_home = std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(std::path::PathBuf::from)
+                .ok_or_else(|| {
+                    managed_context_authorization_error(
+                        "target kernel HOME is unavailable for Git credential transfer",
+                    )
+                })?;
+            Some(ManagedContextGitCredentialImportTarget {
+                command_context:
+                    crate::managed_context::scm::GitCredentialCommandContext::managed_target(
+                        git_credential_home,
+                    )?,
+            })
+        };
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -242,11 +263,13 @@ impl CommandRouter {
             };
             let rollback_private_key = target_private_key.clone();
             let rollback_provider_account_target = provider_account_target.clone();
+            let rollback_git_credential_target = git_credential_target.clone();
             if let Err(rollback_error) = run_import_blocking(move || {
                 rollback_persisted_managed_context_publication(
                     rollback_request,
                     &rollback_private_key,
                     Some(&rollback_provider_account_target),
+                    rollback_git_credential_target.as_ref(),
                 )
             })
             .await
@@ -263,6 +286,7 @@ impl CommandRouter {
         }
         let rollback_private_key = target_private_key.clone();
         let import_provider_account_target = provider_account_target.clone();
+        let import_git_credential_target = git_credential_target.clone();
         let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
@@ -279,6 +303,7 @@ impl CommandRouter {
                 development_destination_root: ready.destination_root,
                 target_private_key,
                 provider_account_target: Some(import_provider_account_target),
+                git_credential_target: import_git_credential_target,
             })
         })
         .await;
@@ -341,11 +366,13 @@ impl CommandRouter {
             } else {
                 let rollback_receipt = receipt.clone();
                 let rollback_provider_account_target = provider_account_target.clone();
+                let rollback_git_credential_target = git_credential_target.clone();
                 if let Err(rollback_error) = run_import_blocking(move || {
                     rollback_managed_context_package_application(
                         &rollback_receipt,
                         &rollback_private_key,
                         Some(&rollback_provider_account_target),
+                        rollback_git_credential_target.as_ref(),
                     )
                 })
                 .await

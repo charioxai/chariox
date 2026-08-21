@@ -72,6 +72,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         },
         kernel_context: ManagedContextPackageKernel::Empty,
         provider_accounts: ManagedContextPackageProviderAccounts::None,
+        git_credentials: ManagedContextPackageGitCredentials::None,
         package_path: root.join("context.chariox"),
     })
     .expect("compose explicit Empty package");
@@ -83,6 +84,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         development_destination_root: root.join("managed/project"),
         target_private_key: "unused-for-explicit-empty".to_string(),
         provider_account_target: None,
+        git_credential_target: None,
     })
     .expect("apply explicit Empty package");
     assert!(matches!(
@@ -134,6 +136,44 @@ fn provider_account_package_reader_recovers_a_retained_schema_two_package() {
     let exported =
         export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
             .expect("export current package");
+    let legacy_export = rewrite_package_schema(exported, 2, true, true);
+    let extracted = extract_managed_context_package(fixture.import_request(&legacy_export))
+        .expect("extract retained schema-two package");
+    assert!(matches!(
+        extracted.provider_accounts,
+        ManagedContextPackageProviderAccounts::None
+    ));
+    assert!(matches!(
+        extracted.git_credentials,
+        ManagedContextPackageGitCredentials::None
+    ));
+    drop(extracted);
+    fixture.cleanup();
+}
+
+#[test]
+fn git_credential_package_reader_recovers_a_retained_schema_three_package() {
+    let fixture = PackageFixture::new("schema-three");
+    let exported =
+        export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
+            .expect("export current package");
+    let legacy_export = rewrite_package_schema(exported, 3, false, true);
+    let extracted = extract_managed_context_package(fixture.import_request(&legacy_export))
+        .expect("extract retained schema-three package");
+    assert!(matches!(
+        extracted.git_credentials,
+        ManagedContextPackageGitCredentials::None
+    ));
+    drop(extracted);
+    fixture.cleanup();
+}
+
+fn rewrite_package_schema(
+    exported: ManagedContextPackageExportResult,
+    schema_version: u32,
+    remove_provider_accounts: bool,
+    remove_git_credentials: bool,
+) -> ManagedContextPackageExportResult {
     let current = fs::read(&exported.package_path).expect("read current package");
     let manifest_start = PACKAGE_MAGIC.len() + 4;
     let manifest_length = u32::from_be_bytes(
@@ -144,11 +184,24 @@ fn provider_account_package_reader_recovers_a_retained_schema_two_package() {
     let manifest_end = manifest_start + manifest_length;
     let mut manifest: serde_json::Value =
         serde_json::from_slice(&current[manifest_start..manifest_end]).expect("parse manifest");
-    manifest["schemaVersion"] = serde_json::json!(LEGACY_PACKAGE_SCHEMA_VERSION);
-    manifest
-        .as_object_mut()
-        .expect("manifest object")
-        .remove("providerAccounts");
+    manifest["schemaVersion"] = serde_json::json!(schema_version);
+    let manifest_object = manifest.as_object_mut().expect("manifest object");
+    if remove_provider_accounts {
+        manifest_object.remove("providerAccounts");
+    }
+    if remove_git_credentials {
+        manifest_object.remove("gitCredentials");
+    }
+    let plan_object = manifest_object
+        .get_mut("plan")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("plan object");
+    if remove_provider_accounts {
+        plan_object.remove("providerAccounts");
+    }
+    if remove_git_credentials {
+        plan_object.remove("gitCredentials");
+    }
     let legacy_manifest = serde_json::to_vec(&manifest).expect("serialize legacy manifest");
     let mut legacy = Vec::with_capacity(current.len());
     legacy.extend_from_slice(PACKAGE_MAGIC);
@@ -156,19 +209,11 @@ fn provider_account_package_reader_recovers_a_retained_schema_two_package() {
     legacy.extend_from_slice(&legacy_manifest);
     legacy.extend_from_slice(&current[manifest_end..]);
     fs::write(&exported.package_path, &legacy).expect("write retained legacy package");
-    let legacy_export = ManagedContextPackageExportResult {
+    ManagedContextPackageExportResult {
         package_sha256: sha256_bytes(&legacy),
         package_size_bytes: legacy.len() as u64,
         ..exported
-    };
-    let extracted = extract_managed_context_package(fixture.import_request(&legacy_export))
-        .expect("extract retained schema-two package");
-    assert!(matches!(
-        extracted.provider_accounts,
-        ManagedContextPackageProviderAccounts::None
-    ));
-    drop(extracted);
-    fixture.cleanup();
+    }
 }
 
 #[test]
@@ -191,6 +236,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
         provider_account_target: None,
+        git_credential_target: None,
     })
     .expect("apply no-development package");
     assert!(matches!(
@@ -305,6 +351,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
         provider_account_target: Some(provider_target.clone()),
+        git_credential_target: None,
     };
     assert!(!format!("{:?}", request()).contains("provider-package-secret"));
     let receipt = apply_managed_context_package(request()).expect("apply provider account package");
@@ -335,6 +382,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         &receipt,
         "unused-for-empty-context",
         Some(&provider_target),
+        None,
     )
     .expect("roll back provider account package");
     let restored_environment = target_registry
@@ -349,6 +397,7 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         &receipt,
         "unused-for-empty-context",
         Some(&provider_target),
+        None,
     )
     .expect("repeat provider-account rollback");
     fixture.cleanup();
@@ -390,6 +439,122 @@ fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
         }
     ));
     assert!(!package_path.exists());
+    fixture.cleanup();
+}
+
+#[cfg(unix)]
+#[test]
+fn github_credential_package_replays_and_rolls_back_through_official_cli() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = PackageFixture::new("github-credential");
+    let bin = fixture.root.join("fake-bin");
+    let source_home = fixture.root.join("source-git-home");
+    let target_home = fixture.root.join("target-git-home");
+    fs::create_dir_all(&bin).expect("create fake command directory");
+    fs::create_dir_all(&source_home).expect("create source Git home");
+    fs::create_dir_all(&target_home).expect("create target Git home");
+    fs::write(source_home.join("token"), "github-package-secret\n")
+        .expect("write source GitHub token");
+    let gh = bin.join("gh");
+    fs::write(
+        &gh,
+        r#"#!/bin/sh
+set -eu
+case "$1 $2" in
+  "auth token") test -f "$HOME/token" && /bin/cat "$HOME/token" ;;
+  "auth login")
+    /bin/cat > "$HOME/token"
+    /bin/mkdir -p "$GH_CONFIG_DIR"
+    /usr/bin/printf 'github.com:\n  user: test\n' > "$GH_CONFIG_DIR/hosts.yml"
+    ;;
+  "auth setup-git") /usr/bin/touch "$HOME/git-helper" ;;
+  "auth logout")
+    /bin/rm -f "$HOME/token" "$GH_CONFIG_DIR/hosts.yml"
+    ;;
+  *) exit 2 ;;
+esac
+"#,
+    )
+    .expect("write fake gh");
+    fs::set_permissions(&gh, fs::Permissions::from_mode(0o700)).expect("make fake gh executable");
+    let git = bin.join("git");
+    fs::write(
+        &git,
+        r#"#!/bin/sh
+set -eu
+case "$1 $2 $3" in
+  "config --global --get-regexp") test -f "$HOME/git-helper" ;;
+  "config --global --remove-section") /bin/rm -f "$HOME/git-helper" ;;
+  *) exit 2 ;;
+esac
+"#,
+    )
+    .expect("write fake git");
+    fs::set_permissions(&git, fs::Permissions::from_mode(0o700)).expect("make fake git executable");
+    let path = bin.into_os_string();
+    let source_context = crate::managed_context::scm::GitCredentialCommandContext::for_tests(
+        source_home,
+        path.clone(),
+    );
+    let target_context = crate::managed_context::scm::GitCredentialCommandContext::for_tests(
+        target_home.clone(),
+        path,
+    );
+    let selection = ManagedContextGitCredentialSelection::Selected {
+        credential_ids: vec![crate::managed_context::scm::GITHUB_CREDENTIAL_ID.to_string()],
+    };
+    let materializations =
+        crate::managed_context::scm::export_selected_git_credentials(&selection, &source_context)
+            .expect("export selected GitHub credential");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.plan.development = ManagedContextDevelopmentSelection::Empty;
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.plan.git_credentials = selection;
+    export.git_credentials = ManagedContextPackageGitCredentials::Selected { materializations };
+    assert!(!format!("{export:?}").contains("github-package-secret"));
+    let exported = export_managed_context_package(export).expect("export Git credential package");
+    assert!(exported.git_credentials_sha256.is_some());
+    let target = ManagedContextGitCredentialImportTarget {
+        command_context: target_context,
+    };
+    let request = || ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_github_credential".to_string(),
+        package_path: exported.package_path.clone(),
+        expected_package_sha256: exported.package_sha256.clone(),
+        expected_binding: ManagedContextPackageBinding {
+            plan: exported.plan.clone(),
+            ..fixture.binding.clone()
+        },
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: "unused-for-empty-context".to_string(),
+        provider_account_target: None,
+        git_credential_target: Some(target.clone()),
+    };
+    let receipt = apply_managed_context_package(request()).expect("apply Git credential package");
+    let ManagedContextImportedGitCredentials::Selected { credentials } = &receipt.git_credentials
+    else {
+        panic!("selected Git credential became None")
+    };
+    assert_eq!(credentials.len(), 1);
+    assert_eq!(
+        fs::read_to_string(target_home.join("token")).expect("read imported GitHub token"),
+        "github-package-secret\n"
+    );
+    assert_eq!(
+        apply_managed_context_package(request())
+            .expect("replay Git credential package")
+            .git_credentials,
+        receipt.git_credentials
+    );
+    rollback_managed_context_package_application(
+        &receipt,
+        "unused-for-empty-context",
+        None,
+        Some(&target),
+    )
+    .expect("roll back Git credential package");
+    assert!(!target_home.join("token").exists());
     fixture.cleanup();
 }
 
@@ -511,6 +676,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
         development_destination_root: destination.clone(),
         target_private_key: "unused-before-preflight".to_string(),
         provider_account_target: None,
+        git_credential_target: None,
     };
     let error = apply_managed_context_package(request)
         .expect_err("oversized durable receipt must fail before publication");
@@ -690,6 +856,7 @@ impl PackageFixture {
             },
             kernel_context,
             provider_accounts: ManagedContextPackageProviderAccounts::None,
+            git_credentials: ManagedContextPackageGitCredentials::None,
             package_path: self.root.join("context.chariox"),
         }
     }

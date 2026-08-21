@@ -22,9 +22,9 @@ use crate::managed_context::package::{
     export_managed_context_package, ManagedContextDevelopmentSelection,
     ManagedContextGitCredentialSelection, ManagedContextKernelSelection,
     ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
-    ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
-    ManagedContextProviderAccountSelection, MAX_MANAGED_CONTEXT_PACKAGE_BYTES,
-    MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
+    ManagedContextPackageGitCredentials, ManagedContextPackageKernel,
+    ManagedContextPackageProviderAccounts, ManagedContextProviderAccountSelection,
+    MAX_MANAGED_CONTEXT_PACKAGE_BYTES, MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
 };
 use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
@@ -490,15 +490,6 @@ fn prepare_managed_context_package(
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
-    if !matches!(
-        plan.git_credentials,
-        ManagedContextGitCredentialSelection::None
-    ) {
-        return Err(outbound_service_error(
-            "selected Git credentials are not transferable yet",
-            false,
-        ));
-    }
     let artifact_parent = store.artifact_parent(config)?;
     create_private_directory(&artifact_parent)?;
     let artifact_guard = store
@@ -613,6 +604,18 @@ fn prepare_managed_context_package(
             ManagedContextPackageProviderAccounts::Selected { materializations }
         }
     };
+    let git_credentials = match &plan.git_credentials {
+        ManagedContextGitCredentialSelection::None => ManagedContextPackageGitCredentials::None,
+        selection @ ManagedContextGitCredentialSelection::Selected { .. } => {
+            let command_context =
+                crate::managed_context::scm::GitCredentialCommandContext::source_from_process()?;
+            let materializations = crate::managed_context::scm::export_selected_git_credentials(
+                selection,
+                &command_context,
+            )?;
+            ManagedContextPackageGitCredentials::Selected { materializations }
+        }
+    };
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     let kernel_context = match plan.kernel_context {
         ManagedContextKernelSelection::Empty => ManagedContextPackageKernel::Empty,
@@ -653,6 +656,7 @@ fn prepare_managed_context_package(
         development,
         kernel_context,
         provider_accounts,
+        git_credentials,
         package_path: artifact_root.join("managed-context.pkg"),
     })?;
     if let Some(path) = development_archive_path {
@@ -673,6 +677,7 @@ fn prepare_managed_context_package(
         development_archive_sha256: package.development_archive_sha256.clone(),
         kernel_context_snapshot_sha256: package.kernel_context_snapshot_sha256.clone(),
         provider_accounts_sha256: package.provider_accounts_sha256.clone(),
+        git_credentials_sha256: package.git_credentials_sha256.clone(),
         capability: capability.clone(),
     };
     let state_bytes = serde_json::to_vec(&persisted).map_err(|error| {
@@ -744,6 +749,8 @@ struct PersistedOutboundArtifact {
     kernel_context_snapshot_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider_accounts_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    git_credentials_sha256: Option<String>,
     capability: crate::transport::relay_peer::RelayManagedContextCapability,
 }
 
@@ -1093,6 +1100,7 @@ fn restore_prepared_artifact(
             development_archive_sha256: persisted.development_archive_sha256,
             kernel_context_snapshot_sha256: persisted.kernel_context_snapshot_sha256,
             provider_accounts_sha256: persisted.provider_accounts_sha256,
+            git_credentials_sha256: persisted.git_credentials_sha256,
         },
         capability: persisted.capability,
         artifact_root,
@@ -1478,6 +1486,7 @@ mod tests {
             development_archive_sha256: None,
             kernel_context_snapshot_sha256: None,
             provider_accounts_sha256: None,
+            git_credentials_sha256: None,
             capability: crate::transport::relay_peer::RelayManagedContextCapability::new(
                 "restart-capability-canary".to_string(),
             ),
@@ -1841,6 +1850,7 @@ mod tests {
             development_archive_sha256: Some("d".repeat(64)),
             kernel_context_snapshot_sha256: Some("e".repeat(64)),
             provider_accounts_sha256: None,
+            git_credentials_sha256: None,
             capability: capability.clone(),
         };
         crate::config::write_private_file(

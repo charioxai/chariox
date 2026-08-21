@@ -144,6 +144,7 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
+  gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
   managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
   managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
   managedEnvironments?: readonly ManagedEnvironmentSummary[]

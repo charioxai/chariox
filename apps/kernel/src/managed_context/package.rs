@@ -15,6 +15,12 @@ use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
 };
+use super::scm::{
+    materialize_git_credentials, receipt_for_materialization, rollback_git_credentials,
+    validate_materializations as validate_git_credential_materializations,
+    validate_selection as validate_git_credential_selection, GitCredentialCommandContext,
+    GitCredentialMaterialization, ManagedContextGitCredentialReceipt,
+};
 use crate::account_profile::{
     provider_account_materialization_sha256, ManagedContextProviderAccountReceipt,
     ProviderAccountMaterialization, ProviderAccountProfileRegistry,
@@ -22,8 +28,8 @@ use crate::account_profile::{
 use crate::error::DaemonError;
 use crate::secret::TransferredVaultSourceBinding;
 
-const PACKAGE_SCHEMA_VERSION: u32 = 3;
-const LEGACY_PACKAGE_SCHEMA_VERSION: u32 = 2;
+const PACKAGE_SCHEMA_VERSION: u32 = 4;
+const LEGACY_PACKAGE_SCHEMA_VERSIONS: [u32; 2] = [2, 3];
 const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
 const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
@@ -32,10 +38,12 @@ const KERNEL_CONTEXT_WRAPPER_BYTES: u64 = 64 * 1024;
 const MAX_KERNEL_CONTEXT_BYTES: u64 =
     super::kernel::MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES as u64 + KERNEL_CONTEXT_WRAPPER_BYTES;
 pub(crate) const MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES: u64 = 24 * 1024 * 1024;
+pub(crate) const MAX_GIT_CREDENTIAL_COMPONENT_BYTES: u64 = 1024 * 1024;
 const PACKAGE_OVERHEAD_BYTES: u64 = MAX_MANIFEST_BYTES as u64 + 64;
 pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 = MAX_DEVELOPMENT_BYTES
     + MAX_KERNEL_CONTEXT_BYTES
     + MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
+    + MAX_GIT_CREDENTIAL_COMPONENT_BYTES
     + PACKAGE_OVERHEAD_BYTES;
 
 #[derive(Clone, PartialEq)]
@@ -61,6 +69,14 @@ pub enum ManagedContextPackageProviderAccounts {
     },
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum ManagedContextPackageGitCredentials {
+    None,
+    Selected {
+        materializations: Vec<GitCredentialMaterialization>,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextPlanBinding {
@@ -68,7 +84,9 @@ pub struct ManagedContextPlanBinding {
     pub plan_digest: String,
     pub kernel_context: ManagedContextKernelSelection,
     pub development: ManagedContextDevelopmentSelection,
+    #[serde(default)]
     pub provider_accounts: ManagedContextProviderAccountSelection,
+    #[serde(default)]
     pub git_credentials: ManagedContextGitCredentialSelection,
 }
 
@@ -98,6 +116,12 @@ pub enum ManagedContextProviderAccountSelection {
     },
 }
 
+impl Default for ManagedContextProviderAccountSelection {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ManagedContextProviderAccount {
@@ -110,6 +134,12 @@ pub struct ManagedContextProviderAccount {
 pub enum ManagedContextGitCredentialSelection {
     None,
     Selected { credential_ids: Vec<String> },
+}
+
+impl Default for ManagedContextGitCredentialSelection {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 impl std::fmt::Debug for ManagedContextPackageKernel {
@@ -134,6 +164,7 @@ pub struct ManagedContextPackageExportRequest {
     pub development: ManagedContextPackageDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
+    pub git_credentials: ManagedContextPackageGitCredentials,
     pub package_path: PathBuf,
 }
 
@@ -146,6 +177,7 @@ pub struct ManagedContextPackageExportResult {
     pub development_archive_sha256: Option<String>,
     pub kernel_context_snapshot_sha256: Option<String>,
     pub provider_accounts_sha256: Option<String>,
+    pub git_credentials_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,12 +206,18 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub development_destination_root: PathBuf,
     pub target_private_key: String,
     pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
+    pub git_credential_target: Option<ManagedContextGitCredentialImportTarget>,
 }
 
 #[derive(Clone)]
 pub(crate) struct ManagedContextProviderAccountImportTarget {
     pub registry: ProviderAccountProfileRegistry,
     pub owner_user_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedContextGitCredentialImportTarget {
+    pub command_context: GitCredentialCommandContext,
 }
 
 impl std::fmt::Debug for ManagedContextProviderAccountImportTarget {
@@ -205,6 +243,7 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
             )
             .field("target_private_key", &"[REDACTED]")
             .field("provider_account_target", &self.provider_account_target)
+            .field("git_credential_target", &self.git_credential_target)
             .finish()
     }
 }
@@ -220,6 +259,8 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub kernel_context: ManagedContextImportedKernelContext,
     #[serde(default)]
     pub provider_accounts: ManagedContextImportedProviderAccounts,
+    #[serde(default)]
+    pub git_credentials: ManagedContextImportedGitCredentials,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -232,6 +273,21 @@ pub(crate) enum ManagedContextImportedProviderAccounts {
 }
 
 impl Default for ManagedContextImportedProviderAccounts {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManagedContextImportedGitCredentials {
+    None,
+    Selected {
+        credentials: Vec<ManagedContextGitCredentialReceipt>,
+    },
+}
+
+impl Default for ManagedContextImportedGitCredentials {
     fn default() -> Self {
         Self::None
     }
@@ -259,6 +315,7 @@ pub(crate) struct ExtractedManagedContextPackage {
     pub development: ExtractedManagedContextDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
+    pub git_credentials: ManagedContextPackageGitCredentials,
     cleanup: PackageExtractionCleanup,
 }
 
@@ -291,6 +348,8 @@ struct ManagedContextPackageManifest {
     kernel_context: KernelContextComponentManifest,
     #[serde(default)]
     provider_accounts: ProviderAccountComponentManifest,
+    #[serde(default)]
+    git_credentials: GitCredentialComponentManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -323,6 +382,23 @@ enum ProviderAccountComponentManifest {
 }
 
 impl Default for ProviderAccountComponentManifest {
+    fn default() -> Self {
+        Self::None
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum GitCredentialComponentManifest {
+    None,
+    Selected {
+        size_bytes: u64,
+        sha256: String,
+        credential_count: usize,
+    },
+}
+
+impl Default for GitCredentialComponentManifest {
     fn default() -> Self {
         Self::None
     }
@@ -456,6 +532,42 @@ pub fn export_managed_context_package(
                 )
             }
         };
+    let (git_credential_bytes, git_credential_manifest, git_credentials_sha256) =
+        match request.git_credentials {
+            ManagedContextPackageGitCredentials::None => {
+                if !matches!(
+                    binding.plan.git_credentials,
+                    ManagedContextGitCredentialSelection::None
+                ) {
+                    return Err(package_error(
+                        "managed context package omits the selected Git credentials",
+                    ));
+                }
+                (None, GitCredentialComponentManifest::None, None)
+            }
+            ManagedContextPackageGitCredentials::Selected { materializations } => {
+                validate_git_credential_materializations(
+                    &binding.plan.git_credentials,
+                    &materializations,
+                )?;
+                let bytes = serialize_bounded_json(
+                    &materializations,
+                    MAX_GIT_CREDENTIAL_COMPONENT_BYTES as usize,
+                )?;
+                let size_bytes = bytes.len() as u64;
+                let sha256 = sha256_bytes(&bytes);
+                let credential_count = materializations.len();
+                (
+                    Some(bytes),
+                    GitCredentialComponentManifest::Selected {
+                        size_bytes,
+                        sha256: sha256.clone(),
+                        credential_count,
+                    },
+                    Some(sha256),
+                )
+            }
+        };
     let manifest = ManagedContextPackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,
         plan: binding.plan,
@@ -467,6 +579,7 @@ pub fn export_managed_context_package(
         development: development_manifest,
         kernel_context: kernel_manifest,
         provider_accounts: provider_account_manifest,
+        git_credentials: git_credential_manifest,
     };
     let manifest_bytes = serialize_bounded_json(&manifest, MAX_MANIFEST_BYTES)?;
 
@@ -518,6 +631,9 @@ pub fn export_managed_context_package(
     if let Some(bytes) = provider_account_bytes.as_deref() {
         writer.write_all(bytes).map_err(package_write_error)?;
     }
+    if let Some(bytes) = git_credential_bytes.as_deref() {
+        writer.write_all(bytes).map_err(package_write_error)?;
+    }
     writer
         .write_all(PACKAGE_TRAILER)
         .map_err(package_write_error)?;
@@ -538,6 +654,7 @@ pub fn export_managed_context_package(
         development_archive_sha256: development_sha256,
         kernel_context_snapshot_sha256: kernel_snapshot_sha256,
         provider_accounts_sha256,
+        git_credentials_sha256,
     })
 }
 
@@ -551,6 +668,20 @@ pub(crate) fn apply_managed_context_package(
     })?;
     preflight_import_receipt_capacity(&request, &extracted)?;
     let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
+    let git_credentials = match import_git_credentials(&request, &extracted.git_credentials) {
+        Ok(credentials) => credentials,
+        Err(error) => {
+            if let Err(rollback_error) = rollback_imported_provider_accounts(
+                request.provider_account_target.as_ref(),
+                &provider_accounts,
+            ) {
+                return Err(package_unavailable(format!(
+                    "{error}; roll back provider accounts: {rollback_error}"
+                )));
+            }
+            return Err(error);
+        }
+    };
     let imported_components = (|| {
         let development = match (
             &extracted.development,
@@ -625,12 +756,17 @@ pub(crate) fn apply_managed_context_package(
     let (development, kernel_context) = match imported_components {
         Ok(imported) => imported,
         Err(error) => {
-            if let Err(rollback_error) = rollback_imported_provider_accounts(
+            let git_rollback = rollback_imported_git_credentials(
+                request.git_credential_target.as_ref(),
+                &git_credentials,
+            );
+            let provider_rollback = rollback_imported_provider_accounts(
                 request.provider_account_target.as_ref(),
                 &provider_accounts,
-            ) {
+            );
+            if let Err(rollback_error) = git_rollback.and(provider_rollback) {
                 return Err(package_unavailable(format!(
-                    "{error}; roll back provider accounts: {rollback_error}"
+                    "{error}; roll back imported credentials: {rollback_error}"
                 )));
             }
             return Err(error);
@@ -644,6 +780,7 @@ pub(crate) fn apply_managed_context_package(
         development,
         kernel_context,
         provider_accounts,
+        git_credentials,
     })
 }
 
@@ -725,25 +862,100 @@ fn rollback_imported_provider_accounts(
     Ok(())
 }
 
+fn import_git_credentials(
+    request: &ManagedContextPackageApplicationRequest,
+    git_credentials: &ManagedContextPackageGitCredentials,
+) -> Result<ManagedContextImportedGitCredentials, DaemonError> {
+    match (
+        git_credentials,
+        &request.expected_binding.plan.git_credentials,
+    ) {
+        (ManagedContextPackageGitCredentials::None, ManagedContextGitCredentialSelection::None) => {
+            Ok(ManagedContextImportedGitCredentials::None)
+        }
+        (
+            ManagedContextPackageGitCredentials::Selected { materializations },
+            selection @ ManagedContextGitCredentialSelection::Selected { .. },
+        ) => {
+            let target = request.git_credential_target.as_ref().ok_or_else(|| {
+                package_error("managed context Git credential target is unavailable")
+            })?;
+            let credentials = materialize_git_credentials(
+                &target.command_context,
+                &request.expected_binding.plan.context_id,
+                &request.expected_package_sha256,
+                selection,
+                materializations,
+            )?;
+            Ok(ManagedContextImportedGitCredentials::Selected { credentials })
+        }
+        _ => Err(package_error(
+            "managed context Git credential component does not match the launch plan",
+        )),
+    }
+}
+
+fn rollback_imported_git_credentials(
+    target: Option<&ManagedContextGitCredentialImportTarget>,
+    git_credentials: &ManagedContextImportedGitCredentials,
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedGitCredentials::Selected { credentials } = git_credentials else {
+        return Ok(());
+    };
+    let target = target.ok_or_else(|| {
+        package_error("managed context Git credential rollback target is unavailable")
+    })?;
+    rollback_git_credentials(&target.command_context, credentials)
+}
+
 pub(crate) fn rollback_managed_context_package_application(
     receipt: &ManagedContextPackageImportReceipt,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
+    git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
 ) -> Result<(), DaemonError> {
-    rollback_imported_provider_accounts(provider_account_target, &receipt.provider_accounts)?;
+    let mut failures = Vec::new();
+    if let Err(error) =
+        rollback_imported_git_credentials(git_credential_target, &receipt.git_credentials)
+    {
+        failures.push(error);
+    }
+    if let Err(error) =
+        rollback_imported_provider_accounts(provider_account_target, &receipt.provider_accounts)
+    {
+        failures.push(error);
+    }
     if let ManagedContextImportedKernelContext::FromKernel { receipt } = &receipt.kernel_context {
-        let (_, vault_path) = configured_managed_kernel_context_paths()?;
-        cleanup_kernel_context_import(receipt, &vault_path, target_private_key)?;
+        match configured_managed_kernel_context_paths() {
+            Ok((_, vault_path)) => {
+                if let Err(error) =
+                    cleanup_kernel_context_import(receipt, &vault_path, target_private_key)
+                {
+                    failures.push(error);
+                }
+            }
+            Err(error) => failures.push(error),
+        }
     }
     if let ManagedContextImportedDevelopment::FromSource { receipt, .. } = &receipt.development {
-        super::development::cleanup_development_context_publication_staging(
+        if let Err(error) = super::development::cleanup_development_context_publication_staging(
             &receipt.destination_root,
             &receipt.publication_id,
-        )?;
-        super::development::cleanup_development_context_publication(
+        ) {
+            failures.push(error);
+        }
+        if let Err(error) = super::development::cleanup_development_context_publication(
             &receipt.destination_root,
             &receipt.publication_id,
-        )?;
+        ) {
+            failures.push(error);
+        }
+    }
+    if let Some(first) = failures.first() {
+        return Err(package_unavailable(format!(
+            "{} managed-context rollback(s) failed; first failure: {first}",
+            failures.len()
+        )));
     }
     Ok(())
 }
@@ -752,6 +964,7 @@ pub(crate) fn rollback_persisted_managed_context_publication(
     request: ManagedContextPackageImportRequest,
     target_private_key: &str,
     provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
+    git_credential_target: Option<&ManagedContextGitCredentialImportTarget>,
 ) -> Result<(), DaemonError> {
     let context_id = request.expected_binding.plan.context_id.clone();
     let package_sha256 = request.expected_package_sha256.clone();
@@ -776,25 +989,57 @@ pub(crate) fn rollback_persisted_managed_context_publication(
             ManagedContextImportedProviderAccounts::Selected { accounts }
         }
     };
-    rollback_imported_provider_accounts(provider_account_target, &provider_accounts)?;
+    let git_credentials = match &extracted.git_credentials {
+        ManagedContextPackageGitCredentials::None => ManagedContextImportedGitCredentials::None,
+        ManagedContextPackageGitCredentials::Selected { materializations } => {
+            let credentials = materializations
+                .iter()
+                .map(|materialization| {
+                    receipt_for_materialization(&context_id, &package_sha256, materialization)
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?;
+            ManagedContextImportedGitCredentials::Selected { credentials }
+        }
+    };
+    let mut failures = Vec::new();
+    if let Err(error) = rollback_imported_git_credentials(git_credential_target, &git_credentials) {
+        failures.push(error);
+    }
+    if let Err(error) =
+        rollback_imported_provider_accounts(provider_account_target, &provider_accounts)
+    {
+        failures.push(error);
+    }
     if let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context {
-        let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
-        cleanup_kernel_context_import(
-            &KernelContextImportReceipt {
-                schema_version: 1,
-                context_id: snapshot.payload.context_id.clone(),
-                source_kernel_id: snapshot.payload.source_kernel_id.clone(),
-                source_key_thumbprint: snapshot.payload.source_key_thumbprint.clone(),
-                target_kernel_id: snapshot.payload.target_kernel_id.clone(),
-                target_key_thumbprint: snapshot.payload.target_key_thumbprint.clone(),
-                snapshot_sha256: snapshot.snapshot_sha256.clone(),
-                capability_root,
-                extension_count: snapshot.payload.extensions.len(),
-                dependency_count: snapshot.payload.dependencies.len(),
-            },
-            &vault_path,
-            target_private_key,
-        )?;
+        match configured_managed_kernel_context_paths() {
+            Ok((capability_root, vault_path)) => {
+                if let Err(error) = cleanup_kernel_context_import(
+                    &KernelContextImportReceipt {
+                        schema_version: 1,
+                        context_id: snapshot.payload.context_id.clone(),
+                        source_kernel_id: snapshot.payload.source_kernel_id.clone(),
+                        source_key_thumbprint: snapshot.payload.source_key_thumbprint.clone(),
+                        target_kernel_id: snapshot.payload.target_kernel_id.clone(),
+                        target_key_thumbprint: snapshot.payload.target_key_thumbprint.clone(),
+                        snapshot_sha256: snapshot.snapshot_sha256.clone(),
+                        capability_root,
+                        extension_count: snapshot.payload.extensions.len(),
+                        dependency_count: snapshot.payload.dependencies.len(),
+                    },
+                    &vault_path,
+                    target_private_key,
+                ) {
+                    failures.push(error);
+                }
+            }
+            Err(error) => failures.push(error),
+        }
+    }
+    if let Some(first) = failures.first() {
+        return Err(package_unavailable(format!(
+            "{} recovered managed-context rollback(s) failed; first failure: {first}",
+            failures.len()
+        )));
     }
     Ok(())
 }
@@ -882,6 +1127,23 @@ fn preflight_import_receipt_capacity(
             }
         }
     };
+    let git_credentials = match &extracted.git_credentials {
+        ManagedContextPackageGitCredentials::None => ManagedContextImportedGitCredentials::None,
+        ManagedContextPackageGitCredentials::Selected { materializations } => {
+            ManagedContextImportedGitCredentials::Selected {
+                credentials: materializations
+                    .iter()
+                    .map(|materialization| {
+                        receipt_for_materialization(
+                            &request.expected_binding.plan.context_id,
+                            &request.expected_package_sha256,
+                            materialization,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, DaemonError>>()?,
+            }
+        }
+    };
     let receipt = ManagedContextPackageImportReceipt {
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id.clone(),
@@ -890,6 +1152,7 @@ fn preflight_import_receipt_capacity(
         development,
         kernel_context,
         provider_accounts,
+        git_credentials,
     };
     let placeholder_outer_bytes = serde_json::to_vec(&receipt)
         .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
@@ -1040,6 +1303,43 @@ pub(crate) fn extract_managed_context_package(
             ManagedContextPackageProviderAccounts::Selected { materializations }
         }
     };
+    let git_credentials = match &manifest.git_credentials {
+        GitCredentialComponentManifest::None => ManagedContextPackageGitCredentials::None,
+        GitCredentialComponentManifest::Selected {
+            size_bytes,
+            sha256,
+            credential_count,
+        } => {
+            let path = component_root.join("git-credentials.json");
+            let file = create_private_file(&path)?;
+            let actual_sha256 = copy_component_to_file(
+                &mut reader,
+                file,
+                *size_bytes,
+                MAX_GIT_CREDENTIAL_COMPONENT_BYTES,
+            )?;
+            if &actual_sha256 != sha256 {
+                return Err(package_error(
+                    "managed context Git credential component digest does not match",
+                ));
+            }
+            let file = open_regular_file_no_follow(&path)?;
+            let materializations = serde_json::from_reader::<_, Vec<GitCredentialMaterialization>>(
+                file,
+            )
+            .map_err(|_| package_error("managed context Git credential component is invalid"))?;
+            if materializations.len() != *credential_count {
+                return Err(package_error(
+                    "managed context Git credential count does not match its manifest",
+                ));
+            }
+            validate_git_credential_materializations(
+                &request.expected_binding.plan.git_credentials,
+                &materializations,
+            )?;
+            ManagedContextPackageGitCredentials::Selected { materializations }
+        }
+    };
     let mut trailer = [0_u8; 16];
     reader
         .read_exact(&mut trailer)
@@ -1064,6 +1364,7 @@ pub(crate) fn extract_managed_context_package(
         development,
         kernel_context,
         provider_accounts,
+        git_credentials,
         cleanup,
     })
 }
@@ -1076,13 +1377,12 @@ fn validate_manifest(
     manifest: &ManagedContextPackageManifest,
     expected: &ManagedContextPackageBinding,
 ) -> Result<(), DaemonError> {
-    if !matches!(
-        manifest.schema_version,
-        LEGACY_PACKAGE_SCHEMA_VERSION | PACKAGE_SCHEMA_VERSION
-    ) {
+    if manifest.schema_version != PACKAGE_SCHEMA_VERSION
+        && !LEGACY_PACKAGE_SCHEMA_VERSIONS.contains(&manifest.schema_version)
+    {
         return Err(package_error("unsupported managed context package version"));
     }
-    if manifest.schema_version == LEGACY_PACKAGE_SCHEMA_VERSION
+    if manifest.schema_version == 2
         && (!matches!(
             &manifest.provider_accounts,
             ProviderAccountComponentManifest::None
@@ -1093,6 +1393,19 @@ fn validate_manifest(
     {
         return Err(package_error(
             "legacy managed context packages cannot carry provider accounts",
+        ));
+    }
+    if manifest.schema_version < PACKAGE_SCHEMA_VERSION
+        && (!matches!(
+            &manifest.git_credentials,
+            GitCredentialComponentManifest::None
+        ) || !matches!(
+            &manifest.plan.git_credentials,
+            ManagedContextGitCredentialSelection::None
+        ))
+    {
+        return Err(package_error(
+            "legacy managed context packages cannot carry Git credentials",
         ));
     }
     let actual = ManagedContextPackageBinding {
@@ -1179,6 +1492,32 @@ fn validate_manifest(
         }
         _ => Err(package_error(
             "managed context provider-account component does not match the launch plan",
+        )),
+    }?;
+    match (&manifest.git_credentials, &manifest.plan.git_credentials) {
+        (GitCredentialComponentManifest::None, ManagedContextGitCredentialSelection::None) => {
+            Ok(())
+        }
+        (
+            GitCredentialComponentManifest::Selected {
+                size_bytes,
+                sha256,
+                credential_count,
+            },
+            ManagedContextGitCredentialSelection::Selected { credential_ids },
+        ) => {
+            if *size_bytes == 0
+                || *size_bytes > MAX_GIT_CREDENTIAL_COMPONENT_BYTES
+                || *credential_count != credential_ids.len()
+            {
+                return Err(package_error(
+                    "managed context Git credential component size or count is invalid",
+                ));
+            }
+            validate_sha256(sha256, "Git credential component digest")
+        }
+        _ => Err(package_error(
+            "managed context Git credential component does not match the launch plan",
         )),
     }
 }
@@ -1307,15 +1646,7 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
 }
 
 fn validate_supported_package_plan(plan: &ManagedContextPlanBinding) -> Result<(), DaemonError> {
-    if !matches!(
-        plan.git_credentials,
-        ManagedContextGitCredentialSelection::None
-    ) {
-        return Err(package_error(
-            "this managed-context package version does not yet carry Git credentials",
-        ));
-    }
-    Ok(())
+    validate_git_credential_selection(&plan.git_credentials)
 }
 
 fn validate_provider_account_materializations(
