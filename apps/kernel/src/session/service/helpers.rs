@@ -478,11 +478,7 @@ impl SessionService {
     }
 
     pub(super) fn next_workflow_run_id(&mut self) -> String {
-        self.next_workflow_run_number = self.next_workflow_run_number.wrapping_add(1);
-        format!(
-            "{:032x}",
-            rand::random::<u128>() ^ u128::from(self.next_workflow_run_number).rotate_left(3)
-        )
+        format!("{:032x}", rand::random::<u128>())
     }
 
     pub(super) fn next_workflow_node_run_id(&mut self) -> String {

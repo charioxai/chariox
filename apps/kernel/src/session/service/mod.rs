@@ -298,7 +298,6 @@ pub struct SessionService {
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,
     next_workflow_edge_number: u64,
-    next_workflow_run_number: u64,
     next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,
