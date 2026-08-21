@@ -22,8 +22,9 @@ use crate::managed_context::package::{
     export_managed_context_package, ManagedContextDevelopmentSelection,
     ManagedContextGitCredentialSelection, ManagedContextKernelSelection,
     ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
-    ManagedContextPackageKernel, ManagedContextProviderAccountSelection,
-    MAX_MANAGED_CONTEXT_PACKAGE_BYTES,
+    ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
+    ManagedContextProviderAccountSelection, MAX_MANAGED_CONTEXT_PACKAGE_BYTES,
+    MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
 };
 use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
@@ -269,6 +270,7 @@ pub(crate) fn start_managed_context_outbound_operation(
     config: DaemonConfig,
     relay_state: Arc<RwLock<RelayClientState>>,
     store: ManagedContextOutboundOperationStore,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     ticket: ManagedContextTransferTicket,
 ) -> Result<ManagedContextOutboundOperationStatus, DaemonError> {
     validate_ticket(&config, &ticket)?;
@@ -314,9 +316,15 @@ pub(crate) fn start_managed_context_outbound_operation(
         let task_context_id = context_id.clone();
         let task_config = config.clone();
         let task_ticket = authoritative_ticket.clone();
+        let task_provider_account_profiles = provider_account_profiles.clone();
         let package_store = task_store.clone();
         let package = tokio::task::spawn_blocking(move || {
-            prepare_managed_context_package(&task_config, &package_store, &task_ticket)
+            prepare_managed_context_package(
+                &task_config,
+                &package_store,
+                &task_provider_account_profiles,
+                &task_ticket,
+            )
         })
         .await
         .map_err(|error| {
@@ -478,18 +486,16 @@ fn retire_matching_artifact_after_terminal_preflight(
 fn prepare_managed_context_package(
     config: &DaemonConfig,
     store: &ManagedContextOutboundOperationStore,
+    provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<PreparedOutboundArtifact, DaemonError> {
     let plan = ticket.context_plan.package_binding();
     if !matches!(
-        plan.provider_accounts,
-        ManagedContextProviderAccountSelection::None
-    ) || !matches!(
         plan.git_credentials,
         ManagedContextGitCredentialSelection::None
     ) {
         return Err(outbound_service_error(
-            "selected provider accounts and Git credentials are not transferable yet",
+            "selected Git credentials are not transferable yet",
             false,
         ));
     }
@@ -563,6 +569,50 @@ fn prepare_managed_context_package(
             }
         }
     };
+    let provider_accounts = match &plan.provider_accounts {
+        ManagedContextProviderAccountSelection::None => ManagedContextPackageProviderAccounts::None,
+        ManagedContextProviderAccountSelection::Selected { accounts } => {
+            let cloud_user_id = config
+                .cloud_relay
+                .as_ref()
+                .map(|profile| profile.user_id.as_str())
+                .ok_or_else(|| {
+                    outbound_service_error(
+                        "source kernel has no Cloud owner for provider-account transfer",
+                        false,
+                    )
+                })?;
+            let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
+                config,
+                cloud_user_id,
+            );
+            let mut materializations = Vec::with_capacity(accounts.len());
+            let mut serialized_component_bytes = 2u64;
+            for account in accounts {
+                let materialization = provider_account_profiles
+                    .export_managed_context_materialization(
+                        &owner_user_id,
+                        &account.provider,
+                        &account.account_profile,
+                    )
+                    .map_err(|_| {
+                        outbound_service_error(
+                            format!(
+                                "selected {} provider account `{}` has no transferable credentials",
+                                account.provider, account.account_profile
+                            ),
+                            false,
+                        )
+                    })?;
+                append_bounded_provider_account_materialization(
+                    &mut materializations,
+                    &mut serialized_component_bytes,
+                    materialization,
+                )?;
+            }
+            ManagedContextPackageProviderAccounts::Selected { materializations }
+        }
+    };
     let source_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     let kernel_context = match plan.kernel_context {
         ManagedContextKernelSelection::Empty => ManagedContextPackageKernel::Empty,
@@ -602,6 +652,7 @@ fn prepare_managed_context_package(
         target_key_thumbprint: ticket.target.key_thumbprint.clone(),
         development,
         kernel_context,
+        provider_accounts,
         package_path: artifact_root.join("managed-context.pkg"),
     })?;
     if let Some(path) = development_archive_path {
@@ -621,6 +672,7 @@ fn prepare_managed_context_package(
         package_size_bytes: package.package_size_bytes,
         development_archive_sha256: package.development_archive_sha256.clone(),
         kernel_context_snapshot_sha256: package.kernel_context_snapshot_sha256.clone(),
+        provider_accounts_sha256: package.provider_accounts_sha256.clone(),
         capability: capability.clone(),
     };
     let state_bytes = serde_json::to_vec(&persisted).map_err(|error| {
@@ -646,6 +698,35 @@ fn prepare_managed_context_package(
     })
 }
 
+fn append_bounded_provider_account_materialization(
+    materializations: &mut Vec<crate::account_profile::ProviderAccountMaterialization>,
+    serialized_component_bytes: &mut u64,
+    materialization: crate::account_profile::ProviderAccountMaterialization,
+) -> Result<(), DaemonError> {
+    let item_bytes = serde_json::to_vec(&materialization)
+        .map_err(|error| outbound_service_error(error.to_string(), false))?
+        .len() as u64;
+    let separator_bytes = u64::from(!materializations.is_empty());
+    let next_bytes = serialized_component_bytes
+        .checked_add(separator_bytes)
+        .and_then(|bytes| bytes.checked_add(item_bytes))
+        .ok_or_else(|| {
+            outbound_service_error(
+                "selected provider accounts exceed the managed-context component limit",
+                false,
+            )
+        })?;
+    if next_bytes > MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES {
+        return Err(outbound_service_error(
+            "selected provider accounts exceed the managed-context component limit",
+            false,
+        ));
+    }
+    *serialized_component_bytes = next_bytes;
+    materializations.push(materialization);
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct PersistedOutboundArtifact {
@@ -661,6 +742,8 @@ struct PersistedOutboundArtifact {
     development_archive_sha256: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kernel_context_snapshot_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    provider_accounts_sha256: Option<String>,
     capability: crate::transport::relay_peer::RelayManagedContextCapability,
 }
 
@@ -1009,6 +1092,7 @@ fn restore_prepared_artifact(
             package_size_bytes: persisted.package_size_bytes,
             development_archive_sha256: persisted.development_archive_sha256,
             kernel_context_snapshot_sha256: persisted.kernel_context_snapshot_sha256,
+            provider_accounts_sha256: persisted.provider_accounts_sha256,
         },
         capability: persisted.capability,
         artifact_root,
@@ -1331,8 +1415,51 @@ fn outbound_service_io_error(operation: &'static str, error: std::io::Error) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_profile::{
+        ProviderAccountMaterialization, ProviderAccountMaterializationFile,
+        ProviderAccountProfileOrigin, ProviderAccountReplicaMetadata,
+    };
     use crate::config::PersistedCloudRelayProfile;
     use crate::transport::relay_crypto;
+
+    #[test]
+    fn provider_account_component_budget_rejects_before_retaining_the_next_account() {
+        fn materialization(profile_id: &str) -> ProviderAccountMaterialization {
+            ProviderAccountMaterialization {
+                profile: ProviderAccountReplicaMetadata {
+                    owner_user_id: "owner-a".to_string(),
+                    provider: "codex".to_string(),
+                    profile_id: profile_id.to_string(),
+                    label: profile_id.to_string(),
+                    origin: ProviderAccountProfileOrigin::CharioxCreated,
+                    is_default: false,
+                },
+                files: vec![ProviderAccountMaterializationFile {
+                    relative_path: "auth.json".to_string(),
+                    contents_base64: "A"
+                        .repeat(MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES as usize / 2 + 1_024),
+                }],
+                generated_at_ms: 1,
+            }
+        }
+
+        let mut materializations = Vec::new();
+        let mut serialized_bytes = 2;
+        append_bounded_provider_account_materialization(
+            &mut materializations,
+            &mut serialized_bytes,
+            materialization("first"),
+        )
+        .expect("first provider account fits");
+        assert_eq!(materializations.len(), 1);
+        append_bounded_provider_account_materialization(
+            &mut materializations,
+            &mut serialized_bytes,
+            materialization("second"),
+        )
+        .expect_err("second provider account exceeds aggregate limit");
+        assert_eq!(materializations.len(), 1);
+    }
 
     fn persisted_test_artifact(
         ticket: &ManagedContextTransferTicket,
@@ -1350,6 +1477,7 @@ mod tests {
             package_size_bytes,
             development_archive_sha256: None,
             kernel_context_snapshot_sha256: None,
+            provider_accounts_sha256: None,
             capability: crate::transport::relay_peer::RelayManagedContextCapability::new(
                 "restart-capability-canary".to_string(),
             ),
@@ -1712,6 +1840,7 @@ mod tests {
             package_size_bytes: 7,
             development_archive_sha256: Some("d".repeat(64)),
             kernel_context_snapshot_sha256: Some("e".repeat(64)),
+            provider_accounts_sha256: None,
             capability: capability.clone(),
         };
         crate::config::write_private_file(
@@ -1948,9 +2077,18 @@ mod tests {
             .expect("active operations")
             .insert("context-expired".to_string());
 
-        let error = prepare_managed_context_package(&DaemonConfig::for_tests(), &store, &ticket)
-            .err()
-            .expect("expired retry must fail");
+        let provider_accounts = crate::account_profile::ProviderAccountProfileRegistry::open(
+            parent.with_extension("accounts.json"),
+        )
+        .expect("account registry");
+        let error = prepare_managed_context_package(
+            &DaemonConfig::for_tests(),
+            &store,
+            &provider_accounts,
+            &ticket,
+        )
+        .err()
+        .expect("expired retry must fail");
         assert!(!error_is_retryable(&error));
         assert!(root.join("retired").is_file());
         assert!(!root.join("managed-context.pkg").exists());
@@ -1987,9 +2125,18 @@ mod tests {
         assert_eq!(inventory.artifact_count, 0);
 
         let overflow = persisted_test_ticket("context-overflow");
-        let error = prepare_managed_context_package(&DaemonConfig::for_tests(), &store, &overflow)
-            .err()
-            .expect("root quota must reject another export");
+        let provider_accounts = crate::account_profile::ProviderAccountProfileRegistry::open(
+            parent.with_extension("accounts.json"),
+        )
+        .expect("account registry");
+        let error = prepare_managed_context_package(
+            &DaemonConfig::for_tests(),
+            &store,
+            &provider_accounts,
+            &overflow,
+        )
+        .err()
+        .expect("root quota must reject another export");
         assert!(!error_is_retryable(&error));
         assert!(!parent.join("context-overflow").exists());
         remove_artifact_root(&parent).expect("cleanup");

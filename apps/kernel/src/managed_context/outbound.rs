@@ -731,6 +731,7 @@ mod tests {
                 package_size_bytes: size as u64,
                 development_archive_sha256: None,
                 kernel_context_snapshot_sha256: None,
+                provider_accounts_sha256: None,
             },
         }
     }

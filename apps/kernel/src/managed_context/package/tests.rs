@@ -71,6 +71,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
             archive_sha256: development.archive_sha256,
         },
         kernel_context: ManagedContextPackageKernel::Empty,
+        provider_accounts: ManagedContextPackageProviderAccounts::None,
         package_path: root.join("context.chariox"),
     })
     .expect("compose explicit Empty package");
@@ -81,6 +82,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         expected_binding: binding,
         development_destination_root: root.join("managed/project"),
         target_private_key: "unused-for-explicit-empty".to_string(),
+        provider_account_target: None,
     })
     .expect("apply explicit Empty package");
     assert!(matches!(
@@ -127,6 +129,49 @@ fn empty_package_round_trips_as_explicit_empty_context() {
 }
 
 #[test]
+fn provider_account_package_reader_recovers_a_retained_schema_two_package() {
+    let fixture = PackageFixture::new("schema-two");
+    let exported =
+        export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
+            .expect("export current package");
+    let current = fs::read(&exported.package_path).expect("read current package");
+    let manifest_start = PACKAGE_MAGIC.len() + 4;
+    let manifest_length = u32::from_be_bytes(
+        current[PACKAGE_MAGIC.len()..manifest_start]
+            .try_into()
+            .expect("manifest length"),
+    ) as usize;
+    let manifest_end = manifest_start + manifest_length;
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&current[manifest_start..manifest_end]).expect("parse manifest");
+    manifest["schemaVersion"] = serde_json::json!(LEGACY_PACKAGE_SCHEMA_VERSION);
+    manifest
+        .as_object_mut()
+        .expect("manifest object")
+        .remove("providerAccounts");
+    let legacy_manifest = serde_json::to_vec(&manifest).expect("serialize legacy manifest");
+    let mut legacy = Vec::with_capacity(current.len());
+    legacy.extend_from_slice(PACKAGE_MAGIC);
+    legacy.extend_from_slice(&(legacy_manifest.len() as u32).to_be_bytes());
+    legacy.extend_from_slice(&legacy_manifest);
+    legacy.extend_from_slice(&current[manifest_end..]);
+    fs::write(&exported.package_path, &legacy).expect("write retained legacy package");
+    let legacy_export = ManagedContextPackageExportResult {
+        package_sha256: sha256_bytes(&legacy),
+        package_size_bytes: legacy.len() as u64,
+        ..exported
+    };
+    let extracted = extract_managed_context_package(fixture.import_request(&legacy_export))
+        .expect("extract retained schema-two package");
+    assert!(matches!(
+        extracted.provider_accounts,
+        ManagedContextPackageProviderAccounts::None
+    ));
+    drop(extracted);
+    fixture.cleanup();
+}
+
+#[test]
 fn package_applies_without_a_development_component_when_the_plan_selects_empty() {
     let fixture = PackageFixture::new("no-development");
     let mut request = fixture.export_request(ManagedContextPackageKernel::Empty);
@@ -145,6 +190,7 @@ fn package_applies_without_a_development_component_when_the_plan_selects_empty()
         expected_binding: binding,
         development_destination_root: fixture.root.join("unused-development"),
         target_private_key: "unused-for-empty-context".to_string(),
+        provider_account_target: None,
     })
     .expect("apply no-development package");
     assert!(matches!(
@@ -193,6 +239,222 @@ fn package_manifest_carries_a_near_cloud_limit_plan() {
         ManagedContextPackageKernel::Empty
     ));
     drop(extracted);
+    fixture.cleanup();
+}
+
+#[test]
+fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back() {
+    let fixture = PackageFixture::new("provider-account");
+    let source_registry =
+        ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+            .expect("open source account registry");
+    let source_profile = source_registry
+        .create_managed("owner-a", "codex", "Source default")
+        .expect("create source account");
+    source_registry
+        .set_default("owner-a", "codex", &source_profile.profile_id)
+        .expect("select source default");
+    let source_environment = source_registry
+        .resolve_environment("owner-a", "codex", "default")
+        .expect("resolve source account");
+    fs::write(
+        Path::new(&source_environment["CODEX_HOME"]).join("auth.json"),
+        br#"{"token":"provider-package-secret"}"#,
+    )
+    .expect("write source provider credential");
+    let materialization = source_registry
+        .export_managed_context_materialization("owner-a", "codex", "default")
+        .expect("export source provider account");
+    assert!(!format!("{materialization:?}").contains("provider-package-secret"));
+
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.plan.development = ManagedContextDevelopmentSelection::Empty;
+    export.development = ManagedContextPackageDevelopment::Empty;
+    export.plan.provider_accounts = ManagedContextProviderAccountSelection::Selected {
+        accounts: vec![ManagedContextProviderAccount {
+            provider: "codex".to_string(),
+            account_profile: "default".to_string(),
+        }],
+    };
+    export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
+        materializations: vec![materialization],
+    };
+    assert!(!format!("{export:?}").contains("provider-package-secret"));
+    let exported = export_managed_context_package(export).expect("export provider account package");
+    assert!(exported.provider_accounts_sha256.is_some());
+
+    let target_registry =
+        ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+            .expect("open target account registry");
+    let target_home = fixture.root.join("target-home");
+    target_registry
+        .migrate_effective_defaults("owner-a", &target_home)
+        .expect("create target defaults");
+    let provider_target = ManagedContextProviderAccountImportTarget {
+        registry: target_registry.clone(),
+        owner_user_id: "owner-a".to_string(),
+    };
+    let request = || ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_provider_account".to_string(),
+        package_path: exported.package_path.clone(),
+        expected_package_sha256: exported.package_sha256.clone(),
+        expected_binding: ManagedContextPackageBinding {
+            plan: exported.plan.clone(),
+            ..fixture.binding.clone()
+        },
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: "unused-for-empty-context".to_string(),
+        provider_account_target: Some(provider_target.clone()),
+    };
+    assert!(!format!("{:?}", request()).contains("provider-package-secret"));
+    let receipt = apply_managed_context_package(request()).expect("apply provider account package");
+    let ManagedContextImportedProviderAccounts::Selected { accounts } = &receipt.provider_accounts
+    else {
+        panic!("selected provider account became None")
+    };
+    assert_eq!(accounts.len(), 1);
+    let imported_environment = target_registry
+        .resolve_environment("owner-a", "codex", "default")
+        .expect("resolve imported target account");
+    let imported_auth = Path::new(&imported_environment["CODEX_HOME"]).join("auth.json");
+    assert_eq!(
+        fs::read_to_string(&imported_auth).expect("read imported provider credential"),
+        r#"{"token":"provider-package-secret"}"#
+    );
+
+    fs::write(&imported_auth, br#"{"token":"rotated-on-target"}"#)
+        .expect("rotate target credential");
+    let replay = apply_managed_context_package(request()).expect("replay provider account package");
+    assert_eq!(replay.provider_accounts, receipt.provider_accounts);
+    assert_eq!(
+        fs::read_to_string(&imported_auth).expect("read rotated target credential"),
+        r#"{"token":"rotated-on-target"}"#
+    );
+
+    rollback_managed_context_package_application(
+        &receipt,
+        "unused-for-empty-context",
+        Some(&provider_target),
+    )
+    .expect("roll back provider account package");
+    let restored_environment = target_registry
+        .resolve_environment("owner-a", "codex", "default")
+        .expect("resolve restored target default");
+    assert_eq!(
+        Path::new(&restored_environment["CODEX_HOME"]),
+        target_home.join(".codex")
+    );
+    assert!(!imported_auth.exists());
+    rollback_managed_context_package_application(
+        &receipt,
+        "unused-for-empty-context",
+        Some(&provider_target),
+    )
+    .expect("repeat provider-account rollback");
+    fixture.cleanup();
+}
+
+#[test]
+fn provider_account_package_rejects_payload_not_selected_by_the_plan() {
+    let fixture = PackageFixture::new("provider-account-binding");
+    let source_registry =
+        ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+            .expect("open source account registry");
+    let source_profile = source_registry
+        .create_managed("owner-a", "codex", "Work")
+        .expect("create source account");
+    let source_environment = source_registry
+        .resolve_environment("owner-a", "codex", &source_profile.profile_id)
+        .expect("resolve source account");
+    fs::write(
+        Path::new(&source_environment["CODEX_HOME"]).join("auth.json"),
+        br#"{"token":"must-not-package"}"#,
+    )
+    .expect("write source provider credential");
+    let materialization = source_registry
+        .export_managed_context_materialization("owner-a", "codex", &source_profile.profile_id)
+        .expect("export source provider account");
+    let mut export = fixture.export_request(ManagedContextPackageKernel::Empty);
+    export.provider_accounts = ManagedContextPackageProviderAccounts::Selected {
+        materializations: vec![materialization],
+    };
+    let package_path = export.package_path.clone();
+    let error = export_managed_context_package(export)
+        .expect_err("unselected provider payload must be rejected");
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(!package_path.exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn provider_account_rollback_attempts_every_import_after_one_failure() {
+    let fixture = PackageFixture::new("provider-account-rollback-all");
+    let source = ProviderAccountProfileRegistry::open(fixture.root.join("source/registry.json"))
+        .expect("open source account registry");
+    let mut materializations = Vec::new();
+    for (provider, environment_key, relative_path) in [
+        ("codex", "CODEX_HOME", "auth.json"),
+        ("opencode", "XDG_DATA_HOME", "opencode/auth.json"),
+    ] {
+        let profile = source
+            .create_managed("owner-a", provider, provider)
+            .expect("create source provider account");
+        let environment = source
+            .resolve_environment("owner-a", provider, &profile.profile_id)
+            .expect("resolve source provider account");
+        let credential = Path::new(&environment[environment_key]).join(relative_path);
+        fs::create_dir_all(credential.parent().expect("credential parent"))
+            .expect("create credential parent");
+        fs::write(&credential, br#"{"token":"secret"}"#).expect("write provider credential");
+        materializations.push(
+            source
+                .export_managed_context_materialization("owner-a", provider, &profile.profile_id)
+                .expect("export provider credential"),
+        );
+    }
+
+    let target = ProviderAccountProfileRegistry::open(fixture.root.join("target/registry.json"))
+        .expect("open target account registry");
+    let receipts = materializations
+        .iter()
+        .map(|materialization| {
+            target
+                .materialize_managed_context_replica(
+                    "owner-a",
+                    "context-rollback-all",
+                    &"a".repeat(64),
+                    materialization,
+                )
+                .expect("materialize target provider account")
+        })
+        .collect::<Vec<_>>();
+    let mut conflicting_receipt = receipts[1].clone();
+    conflicting_receipt.materialization_sha256 = "b".repeat(64);
+    let imported = ManagedContextImportedProviderAccounts::Selected {
+        accounts: vec![receipts[0].clone(), conflicting_receipt],
+    };
+    let target_binding = ManagedContextProviderAccountImportTarget {
+        registry: target.clone(),
+        owner_user_id: "owner-a".to_string(),
+    };
+    rollback_imported_provider_accounts(Some(&target_binding), &imported)
+        .expect_err("one conflicting receipt must report rollback failure");
+    assert!(target
+        .get("owner-a", "codex", &receipts[0].profile_id)
+        .is_err());
+    assert!(target
+        .get("owner-a", "opencode", &receipts[1].profile_id)
+        .is_ok());
+    target
+        .rollback_managed_context_replica("owner-a", &receipts[1])
+        .expect("clean remaining provider account");
     fixture.cleanup();
 }
 
@@ -248,6 +510,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
         expected_binding: binding,
         development_destination_root: destination.clone(),
         target_private_key: "unused-before-preflight".to_string(),
+        provider_account_target: None,
     };
     let error = apply_managed_context_package(request)
         .expect_err("oversized durable receipt must fail before publication");
@@ -426,6 +689,7 @@ impl PackageFixture {
                 archive_sha256: sha256_bytes(&self.development_bytes),
             },
             kernel_context,
+            provider_accounts: ManagedContextPackageProviderAccounts::None,
             package_path: self.root.join("context.chariox"),
         }
     }

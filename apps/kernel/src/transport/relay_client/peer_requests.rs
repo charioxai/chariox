@@ -1147,7 +1147,7 @@ mod tests {
         apply_managed_context_package, export_managed_context_package,
         ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
         ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
-        ManagedContextPackageKernel,
+        ManagedContextPackageKernel, ManagedContextPackageProviderAccounts,
     };
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
@@ -1452,6 +1452,7 @@ mod tests {
                 archive_sha256: exported.archive_sha256.clone(),
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(kernel_context),
+            provider_accounts: ManagedContextPackageProviderAccounts::None,
             package_path: root.join("context.chariox"),
         })
         .expect("compose managed context package");
@@ -1741,6 +1742,7 @@ mod tests {
                 payload: terminal_payload,
                 snapshot_sha256: terminal_snapshot_sha256,
             }),
+            provider_accounts: ManagedContextPackageProviderAccounts::None,
             package_path: root.join("terminal-context.chariox"),
         })
         .expect("compose terminal managed context package");
@@ -2014,6 +2016,7 @@ mod tests {
                 payload: recovery_payload,
                 snapshot_sha256: recovery_snapshot_sha256,
             }),
+            provider_accounts: ManagedContextPackageProviderAccounts::None,
             package_path: root.join("recovery-context.chariox"),
         })
         .expect("compose recovery managed context package");
@@ -2131,6 +2134,7 @@ mod tests {
             },
             development_destination_root: recovery_ready.destination_root,
             target_private_key,
+            provider_account_target: None,
         })
         .expect("publish recovery context before simulated crash");
         recovery_store

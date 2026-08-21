@@ -15,10 +15,15 @@ use super::kernel::{
     cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
 };
+use crate::account_profile::{
+    provider_account_materialization_sha256, ManagedContextProviderAccountReceipt,
+    ProviderAccountMaterialization, ProviderAccountProfileRegistry,
+};
 use crate::error::DaemonError;
 use crate::secret::TransferredVaultSourceBinding;
 
-const PACKAGE_SCHEMA_VERSION: u32 = 2;
+const PACKAGE_SCHEMA_VERSION: u32 = 3;
+const LEGACY_PACKAGE_SCHEMA_VERSION: u32 = 2;
 const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
 const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
@@ -26,9 +31,12 @@ const MAX_MANIFEST_BYTES: usize = MAX_PLAN_BINDING_BYTES + 24 * 1024;
 const KERNEL_CONTEXT_WRAPPER_BYTES: u64 = 64 * 1024;
 const MAX_KERNEL_CONTEXT_BYTES: u64 =
     super::kernel::MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES as u64 + KERNEL_CONTEXT_WRAPPER_BYTES;
+pub(crate) const MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES: u64 = 24 * 1024 * 1024;
 const PACKAGE_OVERHEAD_BYTES: u64 = MAX_MANIFEST_BYTES as u64 + 64;
-pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 =
-    MAX_DEVELOPMENT_BYTES + MAX_KERNEL_CONTEXT_BYTES + PACKAGE_OVERHEAD_BYTES;
+pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 = MAX_DEVELOPMENT_BYTES
+    + MAX_KERNEL_CONTEXT_BYTES
+    + MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
+    + PACKAGE_OVERHEAD_BYTES;
 
 #[derive(Clone, PartialEq)]
 pub enum ManagedContextPackageKernel {
@@ -42,6 +50,14 @@ pub enum ManagedContextPackageDevelopment {
     FromSource {
         archive_path: PathBuf,
         archive_sha256: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ManagedContextPackageProviderAccounts {
+    None,
+    Selected {
+        materializations: Vec<ProviderAccountMaterialization>,
     },
 }
 
@@ -117,6 +133,7 @@ pub struct ManagedContextPackageExportRequest {
     pub target_key_thumbprint: String,
     pub development: ManagedContextPackageDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
+    pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub package_path: PathBuf,
 }
 
@@ -128,6 +145,7 @@ pub struct ManagedContextPackageExportResult {
     pub package_size_bytes: u64,
     pub development_archive_sha256: Option<String>,
     pub kernel_context_snapshot_sha256: Option<String>,
+    pub provider_accounts_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -147,7 +165,7 @@ pub(crate) struct ManagedContextPackageImportRequest {
     pub expected_binding: ManagedContextPackageBinding,
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub(crate) struct ManagedContextPackageApplicationRequest {
     pub transfer_id: String,
     pub package_path: PathBuf,
@@ -155,6 +173,22 @@ pub(crate) struct ManagedContextPackageApplicationRequest {
     pub expected_binding: ManagedContextPackageBinding,
     pub development_destination_root: PathBuf,
     pub target_private_key: String,
+    pub provider_account_target: Option<ManagedContextProviderAccountImportTarget>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ManagedContextProviderAccountImportTarget {
+    pub registry: ProviderAccountProfileRegistry,
+    pub owner_user_id: String,
+}
+
+impl std::fmt::Debug for ManagedContextProviderAccountImportTarget {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ManagedContextProviderAccountImportTarget")
+            .field("owner_user_id", &self.owner_user_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
@@ -170,6 +204,7 @@ impl std::fmt::Debug for ManagedContextPackageApplicationRequest {
                 &self.development_destination_root,
             )
             .field("target_private_key", &"[REDACTED]")
+            .field("provider_account_target", &self.provider_account_target)
             .finish()
     }
 }
@@ -183,6 +218,23 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub plan_digest: String,
     pub development: ManagedContextImportedDevelopment,
     pub kernel_context: ManagedContextImportedKernelContext,
+    #[serde(default)]
+    pub provider_accounts: ManagedContextImportedProviderAccounts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManagedContextImportedProviderAccounts {
+    None,
+    Selected {
+        accounts: Vec<ManagedContextProviderAccountReceipt>,
+    },
+}
+
+impl Default for ManagedContextImportedProviderAccounts {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +258,7 @@ pub(crate) enum ManagedContextImportedDevelopment {
 pub(crate) struct ExtractedManagedContextPackage {
     pub development: ExtractedManagedContextDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
+    pub provider_accounts: ManagedContextPackageProviderAccounts,
     cleanup: PackageExtractionCleanup,
 }
 
@@ -236,6 +289,8 @@ struct ManagedContextPackageManifest {
     target_key_thumbprint: String,
     development: DevelopmentContextComponentManifest,
     kernel_context: KernelContextComponentManifest,
+    #[serde(default)]
+    provider_accounts: ProviderAccountComponentManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -254,6 +309,23 @@ enum KernelContextComponentManifest {
         sha256: String,
         snapshot_sha256: String,
     },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum ProviderAccountComponentManifest {
+    None,
+    Selected {
+        size_bytes: u64,
+        sha256: String,
+        account_count: usize,
+    },
+}
+
+impl Default for ProviderAccountComponentManifest {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 pub fn export_managed_context_package(
@@ -351,6 +423,39 @@ pub fn export_managed_context_package(
             (Some(bytes), manifest, Some(snapshot_sha256))
         }
     };
+    let (provider_account_bytes, provider_account_manifest, provider_accounts_sha256) =
+        match request.provider_accounts {
+            ManagedContextPackageProviderAccounts::None => {
+                if !matches!(
+                    binding.plan.provider_accounts,
+                    ManagedContextProviderAccountSelection::None
+                ) {
+                    return Err(package_error(
+                        "managed context package omits the selected provider accounts",
+                    ));
+                }
+                (None, ProviderAccountComponentManifest::None, None)
+            }
+            ManagedContextPackageProviderAccounts::Selected { materializations } => {
+                validate_provider_account_materializations(&binding.plan, &materializations)?;
+                let bytes = serialize_bounded_json(
+                    &materializations,
+                    MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES as usize,
+                )?;
+                let size_bytes = bytes.len() as u64;
+                let sha256 = sha256_bytes(&bytes);
+                let account_count = materializations.len();
+                (
+                    Some(bytes),
+                    ProviderAccountComponentManifest::Selected {
+                        size_bytes,
+                        sha256: sha256.clone(),
+                        account_count,
+                    },
+                    Some(sha256),
+                )
+            }
+        };
     let manifest = ManagedContextPackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,
         plan: binding.plan,
@@ -361,6 +466,7 @@ pub fn export_managed_context_package(
         target_key_thumbprint: binding.target_key_thumbprint,
         development: development_manifest,
         kernel_context: kernel_manifest,
+        provider_accounts: provider_account_manifest,
     };
     let manifest_bytes = serialize_bounded_json(&manifest, MAX_MANIFEST_BYTES)?;
 
@@ -409,6 +515,9 @@ pub fn export_managed_context_package(
     if let Some(bytes) = kernel_bytes.as_deref() {
         writer.write_all(bytes).map_err(package_write_error)?;
     }
+    if let Some(bytes) = provider_account_bytes.as_deref() {
+        writer.write_all(bytes).map_err(package_write_error)?;
+    }
     writer
         .write_all(PACKAGE_TRAILER)
         .map_err(package_write_error)?;
@@ -428,6 +537,7 @@ pub fn export_managed_context_package(
         package_size_bytes,
         development_archive_sha256: development_sha256,
         kernel_context_snapshot_sha256: kernel_snapshot_sha256,
+        provider_accounts_sha256,
     })
 }
 
@@ -440,68 +550,90 @@ pub(crate) fn apply_managed_context_package(
         expected_binding: request.expected_binding.clone(),
     })?;
     preflight_import_receipt_capacity(&request, &extracted)?;
-    let development = match (
-        &extracted.development,
-        &request.expected_binding.plan.development,
-    ) {
-        (ExtractedManagedContextDevelopment::Empty, ManagedContextDevelopmentSelection::Empty) => {
-            ManagedContextImportedDevelopment::Empty
-        }
-        (
-            ExtractedManagedContextDevelopment::FromSource {
-                archive_path,
-                archive_sha256,
-            },
-            ManagedContextDevelopmentSelection::SourceProject {
-                project_id,
-                repositories,
-            },
-        ) => {
-            let development_request = DevelopmentContextImportRequest {
-                archive_path: archive_path.clone(),
-                expected_archive_sha256: archive_sha256.clone(),
-                expected_project_id: project_id.clone(),
-                expected_source_repositories: Some(repositories.clone()),
-                destination_root: request.development_destination_root,
-            };
-            let receipt = match recover_development_context_publication(
-                &development_request,
-                &request.transfer_id,
-            )? {
-                Some(receipt) => receipt,
-                None => import_development_context_with_publication(
-                    development_request,
-                    request.transfer_id.clone(),
-                )?,
-            };
-            ManagedContextImportedDevelopment::FromSource {
-                project_id: project_id.clone(),
-                receipt,
-            }
-        }
-        _ => {
-            return Err(package_error(
-                "managed context development component does not match the launch plan",
-            ))
-        }
-    };
-    let kernel_context = match &extracted.kernel_context {
-        ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
-        ManagedContextPackageKernel::FromKernel(snapshot) => {
-            let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
-            let receipt = import_kernel_context(KernelContextImportRequest {
-                snapshot: snapshot.clone(),
-                expected_source: TransferredVaultSourceBinding {
-                    context_id: request.expected_binding.plan.context_id.clone(),
-                    source_kernel_id: request.expected_binding.source_kernel_id.clone(),
-                    source_key_thumbprint: request.expected_binding.source_key_thumbprint.clone(),
+    let provider_accounts = import_provider_accounts(&request, &extracted.provider_accounts)?;
+    let imported_components = (|| {
+        let development = match (
+            &extracted.development,
+            &request.expected_binding.plan.development,
+        ) {
+            (
+                ExtractedManagedContextDevelopment::Empty,
+                ManagedContextDevelopmentSelection::Empty,
+            ) => ManagedContextImportedDevelopment::Empty,
+            (
+                ExtractedManagedContextDevelopment::FromSource {
+                    archive_path,
+                    archive_sha256,
                 },
-                target_kernel_id: request.expected_binding.target_kernel_id.clone(),
-                target_private_key: request.target_private_key,
-                capability_root,
-                vault_path,
-            })?;
-            ManagedContextImportedKernelContext::FromKernel { receipt }
+                ManagedContextDevelopmentSelection::SourceProject {
+                    project_id,
+                    repositories,
+                },
+            ) => {
+                let development_request = DevelopmentContextImportRequest {
+                    archive_path: archive_path.clone(),
+                    expected_archive_sha256: archive_sha256.clone(),
+                    expected_project_id: project_id.clone(),
+                    expected_source_repositories: Some(repositories.clone()),
+                    destination_root: request.development_destination_root.clone(),
+                };
+                let receipt = match recover_development_context_publication(
+                    &development_request,
+                    &request.transfer_id,
+                )? {
+                    Some(receipt) => receipt,
+                    None => import_development_context_with_publication(
+                        development_request,
+                        request.transfer_id.clone(),
+                    )?,
+                };
+                ManagedContextImportedDevelopment::FromSource {
+                    project_id: project_id.clone(),
+                    receipt,
+                }
+            }
+            _ => {
+                return Err(package_error(
+                    "managed context development component does not match the launch plan",
+                ))
+            }
+        };
+        let kernel_context = match &extracted.kernel_context {
+            ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
+            ManagedContextPackageKernel::FromKernel(snapshot) => {
+                let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+                let receipt = import_kernel_context(KernelContextImportRequest {
+                    snapshot: snapshot.clone(),
+                    expected_source: TransferredVaultSourceBinding {
+                        context_id: request.expected_binding.plan.context_id.clone(),
+                        source_kernel_id: request.expected_binding.source_kernel_id.clone(),
+                        source_key_thumbprint: request
+                            .expected_binding
+                            .source_key_thumbprint
+                            .clone(),
+                    },
+                    target_kernel_id: request.expected_binding.target_kernel_id.clone(),
+                    target_private_key: request.target_private_key.clone(),
+                    capability_root,
+                    vault_path,
+                })?;
+                ManagedContextImportedKernelContext::FromKernel { receipt }
+            }
+        };
+        Ok::<_, DaemonError>((development, kernel_context))
+    })();
+    let (development, kernel_context) = match imported_components {
+        Ok(imported) => imported,
+        Err(error) => {
+            if let Err(rollback_error) = rollback_imported_provider_accounts(
+                request.provider_account_target.as_ref(),
+                &provider_accounts,
+            ) {
+                return Err(package_unavailable(format!(
+                    "{error}; roll back provider accounts: {rollback_error}"
+                )));
+            }
+            return Err(error);
         }
     };
     Ok(ManagedContextPackageImportReceipt {
@@ -511,13 +643,94 @@ pub(crate) fn apply_managed_context_package(
         plan_digest: request.expected_binding.plan.plan_digest,
         development,
         kernel_context,
+        provider_accounts,
     })
+}
+
+fn import_provider_accounts(
+    request: &ManagedContextPackageApplicationRequest,
+    provider_accounts: &ManagedContextPackageProviderAccounts,
+) -> Result<ManagedContextImportedProviderAccounts, DaemonError> {
+    match (
+        provider_accounts,
+        &request.expected_binding.plan.provider_accounts,
+    ) {
+        (
+            ManagedContextPackageProviderAccounts::None,
+            ManagedContextProviderAccountSelection::None,
+        ) => Ok(ManagedContextImportedProviderAccounts::None),
+        (
+            ManagedContextPackageProviderAccounts::Selected { materializations },
+            ManagedContextProviderAccountSelection::Selected { .. },
+        ) => {
+            let target = request.provider_account_target.as_ref().ok_or_else(|| {
+                package_error("managed context provider-account target is unavailable")
+            })?;
+            let mut accounts = Vec::with_capacity(materializations.len());
+            for materialization in materializations {
+                match target.registry.materialize_managed_context_replica(
+                    &target.owner_user_id,
+                    &request.expected_binding.plan.context_id,
+                    &request.expected_package_sha256,
+                    materialization,
+                ) {
+                    Ok(receipt) => accounts.push(receipt),
+                    Err(error) => {
+                        let imported =
+                            ManagedContextImportedProviderAccounts::Selected { accounts };
+                        if let Err(rollback_error) =
+                            rollback_imported_provider_accounts(Some(target), &imported)
+                        {
+                            return Err(package_unavailable(format!(
+                                "{error}; roll back partial provider-account import: {rollback_error}"
+                            )));
+                        }
+                        return Err(error);
+                    }
+                }
+            }
+            Ok(ManagedContextImportedProviderAccounts::Selected { accounts })
+        }
+        _ => Err(package_error(
+            "managed context provider-account component does not match the launch plan",
+        )),
+    }
+}
+
+fn rollback_imported_provider_accounts(
+    target: Option<&ManagedContextProviderAccountImportTarget>,
+    provider_accounts: &ManagedContextImportedProviderAccounts,
+) -> Result<(), DaemonError> {
+    let ManagedContextImportedProviderAccounts::Selected { accounts } = provider_accounts else {
+        return Ok(());
+    };
+    let target = target.ok_or_else(|| {
+        package_error("managed context provider-account rollback target is unavailable")
+    })?;
+    let mut failures = Vec::new();
+    for receipt in accounts.iter().rev() {
+        if let Err(error) = target
+            .registry
+            .rollback_managed_context_replica(&target.owner_user_id, receipt)
+        {
+            failures.push(error);
+        }
+    }
+    if let Some(first) = failures.first() {
+        return Err(package_unavailable(format!(
+            "{} provider-account rollback(s) failed; first failure: {first}",
+            failures.len()
+        )));
+    }
+    Ok(())
 }
 
 pub(crate) fn rollback_managed_context_package_application(
     receipt: &ManagedContextPackageImportReceipt,
     target_private_key: &str,
+    provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
 ) -> Result<(), DaemonError> {
+    rollback_imported_provider_accounts(provider_account_target, &receipt.provider_accounts)?;
     if let ManagedContextImportedKernelContext::FromKernel { receipt } = &receipt.kernel_context {
         let (_, vault_path) = configured_managed_kernel_context_paths()?;
         cleanup_kernel_context_import(receipt, &vault_path, target_private_key)?;
@@ -538,8 +751,32 @@ pub(crate) fn rollback_managed_context_package_application(
 pub(crate) fn rollback_persisted_managed_context_publication(
     request: ManagedContextPackageImportRequest,
     target_private_key: &str,
+    provider_account_target: Option<&ManagedContextProviderAccountImportTarget>,
 ) -> Result<(), DaemonError> {
+    let context_id = request.expected_binding.plan.context_id.clone();
+    let package_sha256 = request.expected_package_sha256.clone();
     let extracted = extract_managed_context_package(request)?;
+    let provider_accounts = match &extracted.provider_accounts {
+        ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
+        ManagedContextPackageProviderAccounts::Selected { materializations } => {
+            let accounts = materializations
+                .iter()
+                .map(|materialization| {
+                    Ok(ManagedContextProviderAccountReceipt {
+                        context_id: context_id.clone(),
+                        package_sha256: package_sha256.clone(),
+                        materialization_sha256: provider_account_materialization_sha256(
+                            materialization,
+                        )?,
+                        provider: materialization.profile.provider.clone(),
+                        profile_id: materialization.profile.profile_id.clone(),
+                    })
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?;
+            ManagedContextImportedProviderAccounts::Selected { accounts }
+        }
+    };
+    rollback_imported_provider_accounts(provider_account_target, &provider_accounts)?;
     if let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context {
         let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
         cleanup_kernel_context_import(
@@ -624,6 +861,27 @@ fn preflight_import_receipt_capacity(
             }
         }
     };
+    let provider_accounts = match &extracted.provider_accounts {
+        ManagedContextPackageProviderAccounts::None => ManagedContextImportedProviderAccounts::None,
+        ManagedContextPackageProviderAccounts::Selected { materializations } => {
+            ManagedContextImportedProviderAccounts::Selected {
+                accounts: materializations
+                    .iter()
+                    .map(|materialization| {
+                        Ok(ManagedContextProviderAccountReceipt {
+                            context_id: request.expected_binding.plan.context_id.clone(),
+                            package_sha256: request.expected_package_sha256.clone(),
+                            materialization_sha256: provider_account_materialization_sha256(
+                                materialization,
+                            )?,
+                            provider: materialization.profile.provider.clone(),
+                            profile_id: materialization.profile.profile_id.clone(),
+                        })
+                    })
+                    .collect::<Result<Vec<_>, DaemonError>>()?,
+            }
+        }
+    };
     let receipt = ManagedContextPackageImportReceipt {
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id.clone(),
@@ -631,6 +889,7 @@ fn preflight_import_receipt_capacity(
         plan_digest: request.expected_binding.plan.plan_digest.clone(),
         development,
         kernel_context,
+        provider_accounts,
     };
     let placeholder_outer_bytes = serde_json::to_vec(&receipt)
         .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
@@ -744,6 +1003,43 @@ pub(crate) fn extract_managed_context_package(
             ManagedContextPackageKernel::FromKernel(snapshot)
         }
     };
+    let provider_accounts = match &manifest.provider_accounts {
+        ProviderAccountComponentManifest::None => ManagedContextPackageProviderAccounts::None,
+        ProviderAccountComponentManifest::Selected {
+            size_bytes,
+            sha256,
+            account_count,
+        } => {
+            let path = component_root.join("provider-accounts.json");
+            let file = create_private_file(&path)?;
+            let actual_sha256 = copy_component_to_file(
+                &mut reader,
+                file,
+                *size_bytes,
+                MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES,
+            )?;
+            if &actual_sha256 != sha256 {
+                return Err(package_error(
+                    "managed context provider-account component digest does not match",
+                ));
+            }
+            let file = open_regular_file_no_follow(&path)?;
+            let materializations =
+                serde_json::from_reader::<_, Vec<ProviderAccountMaterialization>>(file).map_err(
+                    |_| package_error("managed context provider-account component is invalid"),
+                )?;
+            if materializations.len() != *account_count {
+                return Err(package_error(
+                    "managed context provider-account count does not match its manifest",
+                ));
+            }
+            validate_provider_account_materializations(
+                &request.expected_binding.plan,
+                &materializations,
+            )?;
+            ManagedContextPackageProviderAccounts::Selected { materializations }
+        }
+    };
     let mut trailer = [0_u8; 16];
     reader
         .read_exact(&mut trailer)
@@ -767,6 +1063,7 @@ pub(crate) fn extract_managed_context_package(
     Ok(ExtractedManagedContextPackage {
         development,
         kernel_context,
+        provider_accounts,
         cleanup,
     })
 }
@@ -779,8 +1076,24 @@ fn validate_manifest(
     manifest: &ManagedContextPackageManifest,
     expected: &ManagedContextPackageBinding,
 ) -> Result<(), DaemonError> {
-    if manifest.schema_version != PACKAGE_SCHEMA_VERSION {
+    if !matches!(
+        manifest.schema_version,
+        LEGACY_PACKAGE_SCHEMA_VERSION | PACKAGE_SCHEMA_VERSION
+    ) {
         return Err(package_error("unsupported managed context package version"));
+    }
+    if manifest.schema_version == LEGACY_PACKAGE_SCHEMA_VERSION
+        && (!matches!(
+            &manifest.provider_accounts,
+            ProviderAccountComponentManifest::None
+        ) || !matches!(
+            &manifest.plan.provider_accounts,
+            ManagedContextProviderAccountSelection::None
+        ))
+    {
+        return Err(package_error(
+            "legacy managed context packages cannot carry provider accounts",
+        ));
     }
     let actual = ManagedContextPackageBinding {
         plan: manifest.plan.clone(),
@@ -837,6 +1150,35 @@ fn validate_manifest(
         }
         _ => Err(package_error(
             "managed context kernel component does not match the launch plan",
+        )),
+    }?;
+    match (
+        &manifest.provider_accounts,
+        &manifest.plan.provider_accounts,
+    ) {
+        (ProviderAccountComponentManifest::None, ManagedContextProviderAccountSelection::None) => {
+            Ok(())
+        }
+        (
+            ProviderAccountComponentManifest::Selected {
+                size_bytes,
+                sha256,
+                account_count,
+            },
+            ManagedContextProviderAccountSelection::Selected { accounts },
+        ) => {
+            if *size_bytes == 0
+                || *size_bytes > MAX_PROVIDER_ACCOUNT_COMPONENT_BYTES
+                || *account_count != accounts.len()
+            {
+                return Err(package_error(
+                    "managed context provider-account component size or count is invalid",
+                ));
+            }
+            validate_sha256(sha256, "provider-account component digest")
+        }
+        _ => Err(package_error(
+            "managed context provider-account component does not match the launch plan",
         )),
     }
 }
@@ -966,15 +1308,63 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
 
 fn validate_supported_package_plan(plan: &ManagedContextPlanBinding) -> Result<(), DaemonError> {
     if !matches!(
-        plan.provider_accounts,
-        ManagedContextProviderAccountSelection::None
-    ) || !matches!(
         plan.git_credentials,
         ManagedContextGitCredentialSelection::None
     ) {
         return Err(package_error(
-            "this managed-context package version does not yet carry provider accounts or Git credentials",
+            "this managed-context package version does not yet carry Git credentials",
         ));
+    }
+    Ok(())
+}
+
+fn validate_provider_account_materializations(
+    plan: &ManagedContextPlanBinding,
+    materializations: &[ProviderAccountMaterialization],
+) -> Result<(), DaemonError> {
+    let ManagedContextProviderAccountSelection::Selected { accounts } = &plan.provider_accounts
+    else {
+        return Err(package_error(
+            "managed context package includes unselected provider accounts",
+        ));
+    };
+    if materializations.len() != accounts.len() {
+        return Err(package_error(
+            "managed context provider-account payload does not match the selection count",
+        ));
+    }
+    let mut owner_user_id: Option<&str> = None;
+    for (selection, materialization) in accounts.iter().zip(materializations) {
+        let profile = &materialization.profile;
+        let profile_matches_selection = if selection.account_profile == "default" {
+            profile.is_default
+        } else {
+            profile.profile_id == selection.account_profile
+        };
+        if profile.provider != selection.provider
+            || !profile_matches_selection
+            || materialization.files.is_empty()
+        {
+            return Err(package_error(
+                "managed context provider-account payload does not match the launch plan",
+            ));
+        }
+        if !matches!(
+            crate::provider::canonical_provider_family(&profile.provider),
+            Some("codex" | "claude" | "opencode")
+        ) {
+            return Err(package_error(
+                "managed context provider-account payload names an unsupported provider",
+            ));
+        }
+        validate_reference(&profile.owner_user_id, "provider account owner")?;
+        if owner_user_id.is_some_and(|owner| owner != profile.owner_user_id) {
+            return Err(package_error(
+                "managed context provider accounts have different owners",
+            ));
+        }
+        owner_user_id = Some(&profile.owner_user_id);
+        provider_account_materialization_sha256(materialization)?;
     }
     Ok(())
 }
@@ -1370,6 +1760,15 @@ fn package_error(message: impl Into<String>) -> DaemonError {
         operation: "managed context package",
         message: message.into(),
         retryable: false,
+    }
+}
+
+fn package_unavailable(message: impl Into<String>) -> DaemonError {
+    DaemonError::ManagedContext {
+        code: "managed_context_unavailable",
+        operation: "managed context package",
+        message: message.into(),
+        retryable: true,
     }
 }
 

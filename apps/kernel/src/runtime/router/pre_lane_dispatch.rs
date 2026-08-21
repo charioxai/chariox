@@ -107,6 +107,7 @@ impl CommandRouter {
                     self.config_projection.snapshot(),
                     Arc::clone(&self.relay_state),
                     self.managed_context_outbound.clone(),
+                    self.provider_account_profiles.clone(),
                     caller_user_id,
                     request.clone(),
                 )

@@ -12,6 +12,7 @@ use crate::managed_context::package::{
     rollback_persisted_managed_context_publication, ManagedContextImportedKernelContext,
     ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
     ManagedContextPackageImportReceipt, ManagedContextPackageImportRequest,
+    ManagedContextProviderAccountImportTarget,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
@@ -186,6 +187,13 @@ impl CommandRouter {
             )
         })?;
         let completion_config = self.config_projection.snapshot();
+        let provider_account_target = ManagedContextProviderAccountImportTarget {
+            registry: self.provider_account_profiles.clone(),
+            owner_user_id: crate::account_profile::provider_account_authority_owner_user_id(
+                &completion_config,
+                &caller.owner_user_id,
+            ),
+        };
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -233,10 +241,12 @@ impl CommandRouter {
                 },
             };
             let rollback_private_key = target_private_key.clone();
+            let rollback_provider_account_target = provider_account_target.clone();
             if let Err(rollback_error) = run_import_blocking(move || {
                 rollback_persisted_managed_context_publication(
                     rollback_request,
                     &rollback_private_key,
+                    Some(&rollback_provider_account_target),
                 )
             })
             .await
@@ -252,6 +262,7 @@ impl CommandRouter {
             return Err(retire_terminal_import(store.clone(), transfer_id.clone(), error).await);
         }
         let rollback_private_key = target_private_key.clone();
+        let import_provider_account_target = provider_account_target.clone();
         let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
@@ -267,6 +278,7 @@ impl CommandRouter {
                 },
                 development_destination_root: ready.destination_root,
                 target_private_key,
+                provider_account_target: Some(import_provider_account_target),
             })
         })
         .await;
@@ -328,10 +340,12 @@ impl CommandRouter {
                     run_blocking(move || failure_store.release_import(&failure_transfer_id)).await;
             } else {
                 let rollback_receipt = receipt.clone();
+                let rollback_provider_account_target = provider_account_target.clone();
                 if let Err(rollback_error) = run_import_blocking(move || {
                     rollback_managed_context_package_application(
                         &rollback_receipt,
                         &rollback_private_key,
+                        Some(&rollback_provider_account_target),
                     )
                 })
                 .await

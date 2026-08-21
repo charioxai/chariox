@@ -252,6 +252,29 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
         .as_object_mut()
         .expect("state object")
         .remove("applied_contexts");
+    let legacy_entry = legacy_state["entries"][&armed.transfer_id]
+        .as_object_mut()
+        .expect("legacy consumed entry");
+    let mut legacy_receipt = serde_json::from_str::<serde_json::Value>(
+        legacy_entry["import_receipt_json"]
+            .as_str()
+            .expect("stored import receipt"),
+    )
+    .expect("parse pre-provider import receipt");
+    legacy_receipt
+        .as_object_mut()
+        .expect("legacy receipt object")
+        .remove("providerAccounts");
+    let legacy_receipt =
+        serde_json::to_string(&legacy_receipt).expect("serialize pre-provider import receipt");
+    legacy_entry.insert(
+        "import_receipt_sha256".to_string(),
+        serde_json::json!(sha256_bytes(legacy_receipt.as_bytes())),
+    );
+    legacy_entry.insert(
+        "import_receipt_json".to_string(),
+        serde_json::json!(legacy_receipt),
+    );
     write_private_state_file(
         &state_path,
         &serde_json::to_vec(&legacy_state).expect("serialize schema-v3 state"),
@@ -1747,6 +1770,8 @@ fn managed_package_receipt(
                 },
             },
         kernel_context: crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
+        provider_accounts:
+            crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
     })
     .expect("serialize managed context package receipt")
 }
@@ -1811,6 +1836,8 @@ fn large_managed_package_receipt(
                 },
             kernel_context:
                 crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
+            provider_accounts:
+                crate::managed_context::package::ManagedContextImportedProviderAccounts::None,
         },
     )
     .expect("serialize large managed context package receipt");

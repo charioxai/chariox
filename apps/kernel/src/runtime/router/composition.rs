@@ -364,6 +364,7 @@ pub(super) fn compose_command_router(
         provider_run_projection,
         provider_process_projection,
         credential_enrollment_control,
+        provider_account_profiles,
         managed_context_transfers,
         managed_context_outbound,
         managed_kernel_registration,

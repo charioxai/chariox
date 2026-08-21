@@ -61,6 +61,7 @@ pub(crate) struct CommandRouter {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     credential_enrollment_control: CredentialEnrollmentControl,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
     managed_context_outbound:
         crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
