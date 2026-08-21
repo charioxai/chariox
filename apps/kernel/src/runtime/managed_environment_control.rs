@@ -78,6 +78,26 @@ pub(crate) async fn execute_managed_environment_control_request(
                 environment: response.environment.into(),
             })
         }
+        LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(request) => {
+            let path = format!(
+                "/managed-environments/{}/context-transfer?{account_query}",
+                cloud_url_component(&request.environment_id),
+            );
+            let response = get_cloud_json_authenticated::<cloud_contract::ContextTransferTicket>(
+                cloud.api_url.clone(),
+                path,
+                token.to_string(),
+            )
+            .await?;
+            let ticket = response.into_ticket()?;
+            if ticket.environment_id != request.environment_id {
+                return Err(control_error(
+                    "Cloud returned a managed-context ticket for another environment",
+                ));
+            }
+            crate::managed_context::outbound_service::validate_ticket(&config, &ticket)?;
+            Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
+        }
         LocalDaemonRequest::CreateManagedEnvironment(request) => {
             let mut body =
                 serde_json::to_value(request).map_err(|error| DaemonError::LocalTransport {
@@ -161,7 +181,7 @@ mod tests {
         ManagedEnvironmentContextPlanInput, ManagedEnvironmentDevelopmentSetup,
         ManagedEnvironmentGitCredentials, ManagedEnvironmentKernelContextSelection,
         ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccounts,
-        RequestManagedEnvironmentLifecycleRequest,
+        PrepareManagedEnvironmentContextTransferRequest, RequestManagedEnvironmentLifecycleRequest,
     };
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
@@ -203,15 +223,45 @@ mod tests {
 
     #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
-        let server = ManagedEnvironmentCloudFixture::start();
         let mut config = DaemonConfig::for_tests();
         config.cloud_relay = Some(PersistedCloudRelayProfile {
-            api_url: server.url(),
             account_id: "account / one".to_string(),
             user_id: "cloud-user-1".to_string(),
             cloud_session_token: Some("session-secret".to_string()),
+            realm_id: "realm-1".to_string(),
+            machine_id: Some("source-machine-test".to_string()),
             ..PersistedCloudRelayProfile::default()
         });
+        let source_thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
+        let context_plan =
+            crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
+                "context-1",
+                "realm-1",
+                &config.daemon_id,
+                &source_thumbprint,
+                "project-1",
+            );
+        let target_private_key = crate::transport::relay_crypto::generate_private_key_base64();
+        let target_public_key =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&target_private_key)
+                .expect("target public key");
+        let target_thumbprint =
+            crate::runtime::terminal_pairings::public_key_thumbprint(&target_public_key);
+        let server = ManagedEnvironmentCloudFixture::start(serde_json::json!({
+            "environmentId": "environment / one",
+            "contextPlan": context_plan,
+            "target": {
+                "relayRealmId": "realm-1",
+                "machineId": "target-machine",
+                "kernelId": "target-kernel",
+                "relayPublicKey": target_public_key,
+                "keyThumbprint": target_thumbprint,
+                "futureTargetField": true
+            },
+            "futureTicketField": true
+        }));
+        config.cloud_relay.as_mut().expect("Cloud profile").api_url = server.url();
 
         let catalog = execute_managed_environment_control_request(
             config.clone(),
@@ -273,6 +323,24 @@ mod tests {
             LocalDaemonResponse::ManagedEnvironment { .. }
         ));
 
+        let prepared = execute_managed_environment_control_request(
+            config.clone(),
+            "cloud-user-1",
+            LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(
+                PrepareManagedEnvironmentContextTransferRequest {
+                    environment_id: "environment / one".to_string(),
+                },
+            ),
+        )
+        .await
+        .expect("prepare context transfer");
+        let LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket } = prepared
+        else {
+            panic!("unexpected context transfer response");
+        };
+        assert_eq!(ticket.environment_id, "environment / one");
+        assert_eq!(ticket.target.kernel_id, "target-kernel");
+
         let lifecycle = execute_managed_environment_control_request(
             config,
             "cloud-user-1",
@@ -292,7 +360,7 @@ mod tests {
         ));
 
         let requests = server.requests();
-        assert_eq!(requests.len(), 5);
+        assert_eq!(requests.len(), 6);
         assert!(requests.iter().all(|request| request
             .to_ascii_lowercase()
             .contains("authorization: bearer session-secret")));
@@ -303,6 +371,9 @@ mod tests {
             .starts_with("GET /managed-environments?accountId=account%20%2F%20one HTTP/1.1")));
         assert!(requests.iter().any(|request| request.starts_with(
             "GET /managed-environments/environment%20%2F%20one?accountId=account%20%2F%20one HTTP/1.1"
+        )));
+        assert!(requests.iter().any(|request| request.starts_with(
+            "GET /managed-environments/environment%20%2F%20one/context-transfer?accountId=account%20%2F%20one HTTP/1.1"
         )));
         let create_request = requests
             .iter()
@@ -327,7 +398,7 @@ mod tests {
     }
 
     impl ManagedEnvironmentCloudFixture {
-        fn start() -> Self {
+        fn start(context_transfer_ticket: serde_json::Value) -> Self {
             let listener = TcpListener::bind("127.0.0.1:0").expect("bind Cloud fixture");
             listener.set_nonblocking(true).expect("nonblocking fixture");
             let address = listener.local_addr().expect("fixture address");
@@ -343,7 +414,7 @@ mod tests {
                             if request.is_empty() {
                                 continue;
                             }
-                            let response = fixture_response(&request);
+                            let response = fixture_response(&request, &context_transfer_ticket);
                             thread_requests.lock().expect("requests lock").push(request);
                             write_http_response(&mut stream, &response);
                         }
@@ -387,8 +458,20 @@ mod tests {
             .expect("fixture timeout");
         let mut request = Vec::new();
         let mut buffer = [0_u8; 4096];
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
         loop {
-            let read = stream.read(&mut buffer).expect("read fixture request");
+            let read = match stream.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "timed out reading fixture request"
+                    );
+                    std::thread::sleep(Duration::from_millis(2));
+                    continue;
+                }
+                Err(error) => panic!("read fixture request: {error}"),
+            };
             if read == 0 {
                 break;
             }
@@ -417,7 +500,10 @@ mod tests {
         request.len() >= header_end + 4 + content_length
     }
 
-    fn fixture_response(request: &str) -> serde_json::Value {
+    fn fixture_response(
+        request: &str,
+        context_transfer_ticket: &serde_json::Value,
+    ) -> serde_json::Value {
         if request.starts_with("GET /managed-environments/options?") {
             return serde_json::json!({
                 "computeClasses": [{
@@ -437,6 +523,9 @@ mod tests {
         }
         if request.starts_with("GET /managed-environments?") {
             return serde_json::json!({ "environments": [environment_json()] });
+        }
+        if request.contains("/context-transfer?") {
+            return context_transfer_ticket.clone();
         }
         if request.starts_with("GET /managed-environments/") {
             return serde_json::json!({

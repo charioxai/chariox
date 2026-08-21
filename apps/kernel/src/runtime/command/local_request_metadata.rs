@@ -132,6 +132,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.get", Normal)
         }
+        LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_) => {
+            LocalRequestMetadata::new("managed_environment.context_transfer.prepare", Interactive)
+        }
         LocalDaemonRequest::CreateManagedEnvironment(_) => {
             LocalRequestMetadata::new("managed_environment.create", Interactive)
         }
@@ -798,6 +801,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::ExportDebugBundle(_)
         | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
         | LocalDaemonRequest::GetManagedEnvironment(_)
+        | LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(_)
         | LocalDaemonRequest::CreateManagedEnvironment(_)
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)

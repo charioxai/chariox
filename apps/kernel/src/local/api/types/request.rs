@@ -119,6 +119,7 @@ pub enum LocalDaemonRequest {
     ManageCredentialVault(ManageCredentialVaultRequest),
     ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
     GetManagedEnvironment(GetManagedEnvironmentRequest),
+    PrepareManagedEnvironmentContextTransfer(PrepareManagedEnvironmentContextTransferRequest),
     CreateManagedEnvironment(CreateManagedEnvironmentRequest),
     RequestManagedEnvironmentLifecycle(RequestManagedEnvironmentLifecycleRequest),
     StartManagedContextTransfer(StartManagedContextTransferRequest),

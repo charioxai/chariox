@@ -12,6 +12,12 @@ pub struct GetManagedEnvironmentRequest {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PrepareManagedEnvironmentContextTransferRequest {
+    pub environment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateManagedEnvironmentRequest {
     pub client_request_id: String,
     pub name: String,

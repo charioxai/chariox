@@ -1015,7 +1015,7 @@ fn restore_prepared_artifact(
     })
 }
 
-fn validate_ticket(
+pub(crate) fn validate_ticket(
     config: &DaemonConfig,
     ticket: &ManagedContextTransferTicket,
 ) -> Result<(), DaemonError> {

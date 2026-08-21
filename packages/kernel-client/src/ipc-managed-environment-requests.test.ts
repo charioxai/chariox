@@ -5,6 +5,7 @@ import {
   createManagedEnvironmentRequest,
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
+  prepareManagedEnvironmentContextTransferRequest,
   requestManagedEnvironmentLifecycleRequest,
   type ManagedEnvironmentSummary,
 } from "./ipc-managed-environment-requests.js"
@@ -13,6 +14,9 @@ test("managed environment requests use the shared local daemon shape", () => {
   assert.deepEqual(listManagedEnvironmentCatalogRequest(), { ListManagedEnvironmentCatalog: null })
   assert.deepEqual(getManagedEnvironmentRequest("environment-1"), {
     GetManagedEnvironment: { environmentId: "environment-1" },
+  })
+  assert.deepEqual(prepareManagedEnvironmentContextTransferRequest("environment-1"), {
+    PrepareManagedEnvironmentContextTransfer: { environmentId: "environment-1" },
   })
   assert.deepEqual(createManagedEnvironmentRequest({
     clientRequestId: "request-1",

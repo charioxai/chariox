@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -70,6 +70,23 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         created_at: "2026-08-21T00:00:00.000Z".to_string(),
         updated_at: "2026-08-21T00:00:00.000Z".to_string(),
     };
+    let transfer_ticket = crate::managed_context::outbound_service::ManagedContextTransferTicket {
+        environment_id: "environment-1".to_string(),
+        context_plan: crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
+            "context-1",
+            "realm-1",
+            "kernel-1",
+            "sha256:source-key",
+            "project-1",
+        ),
+        target: crate::managed_context::outbound_service::ManagedContextTransferTarget {
+            relay_realm_id: "realm-1".to_string(),
+            machine_id: "managed-machine-1".to_string(),
+            kernel_id: "managed-kernel-1".to_string(),
+            relay_public_key: "target-public-key".to_string(),
+            key_thumbprint: "sha256:target-key".to_string(),
+        },
+    };
     let snapshot = serde_json::json!([
         LocalDaemonRequest::ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest,),
         LocalDaemonRequest::CreateManagedEnvironment(CreateManagedEnvironmentRequest {
@@ -94,6 +111,11 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         LocalDaemonRequest::GetManagedEnvironment(GetManagedEnvironmentRequest {
             environment_id: "environment-1".to_string(),
         }),
+        LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(
+            PrepareManagedEnvironmentContextTransferRequest {
+                environment_id: "environment-1".to_string(),
+            },
+        ),
         LocalDaemonRequest::RequestManagedEnvironmentLifecycle(
             RequestManagedEnvironmentLifecycleRequest {
                 environment_id: "environment-1".to_string(),
@@ -134,6 +156,9 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         },
         LocalDaemonResponse::ManagedEnvironment {
             environment: source_environment.clone(),
+        },
+        LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared {
+            ticket: transfer_ticket,
         },
         LocalDaemonResponse::ManagedEnvironmentCreated {
             result: ManagedEnvironmentResult {
@@ -199,21 +224,25 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         Some(&serde_json::json!("work"))
     );
     assert_eq!(
-        snapshot.pointer("/8/ManagedEnvironmentCatalog/catalog/computeClasses/0/computeClass"),
+        snapshot.pointer("/9/ManagedEnvironmentCatalog/catalog/computeClasses/0/computeClass"),
         Some(&serde_json::json!("agent-small"))
     );
     assert_eq!(
-        snapshot.pointer("/11/ManagedEnvironmentLifecycleRequested/result/operation/status"),
+        snapshot.pointer("/13/ManagedEnvironmentLifecycleRequested/result/operation/status"),
         Some(&serde_json::json!("pending"))
     );
     assert_eq!(
-        snapshot.pointer("/8/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
+        snapshot.pointer("/9/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
+        Some(&serde_json::json!("managed-kernel-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/11/ManagedEnvironmentContextTransferPrepared/ticket/target/kernelId"),
         Some(&serde_json::json!("managed-kernel-1"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "366802630de6489aea3f8979297f75141d8e289258efdbbcca7c02e453e77970"
+        "2d5398f770de7285663e8d7fca403a5213f9a2320c8b078d0b7c2c0795417b0a"
     );
 }
 

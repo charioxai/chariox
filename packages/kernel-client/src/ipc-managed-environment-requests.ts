@@ -133,12 +133,28 @@ export type ManagedEnvironmentCatalog = {
   readonly environments: readonly ManagedEnvironmentSummary[]
 }
 
+export type ManagedContextTransferTicket = {
+  readonly environmentId: string
+  readonly contextPlan: ManagedEnvironmentContextPlan
+  readonly target: {
+    readonly relayRealmId: string
+    readonly machineId: string
+    readonly kernelId: string
+    readonly relayPublicKey: string
+    readonly keyThumbprint: string
+  }
+}
+
 export function listManagedEnvironmentCatalogRequest() {
   return { ListManagedEnvironmentCatalog: null } as const
 }
 
 export function getManagedEnvironmentRequest(environmentId: string) {
   return { GetManagedEnvironment: { environmentId } } as const
+}
+
+export function prepareManagedEnvironmentContextTransferRequest(environmentId: string) {
+  return { PrepareManagedEnvironmentContextTransfer: { environmentId } } as const
 }
 
 export function createManagedEnvironmentRequest(input: {

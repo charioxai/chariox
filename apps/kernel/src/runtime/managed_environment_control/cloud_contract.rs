@@ -1,5 +1,6 @@
 use serde::Deserialize;
 
+use crate::error::DaemonError;
 use crate::local::{
     ManagedEnvironmentAutoStopPolicy, ManagedEnvironmentComputeClassOption,
     ManagedEnvironmentContextPlan, ManagedEnvironmentContextSource,
@@ -10,6 +11,9 @@ use crate::local::{
     ManagedEnvironmentOperationSummary, ManagedEnvironmentProviderAccountSelection,
     ManagedEnvironmentProviderAccounts, ManagedEnvironmentRepositoryRole,
     ManagedEnvironmentRepositorySelection, ManagedEnvironmentResult, ManagedEnvironmentSummary,
+};
+use crate::managed_context::outbound_service::{
+    ManagedContextTransferTarget, ManagedContextTransferTicket,
 };
 
 #[derive(Deserialize)]
@@ -38,6 +42,24 @@ pub(super) struct EnvironmentDetailsResponse {
 pub(super) struct EnvironmentResult {
     environment: EnvironmentSummary,
     operation: OperationSummary,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) struct ContextTransferTicket {
+    environment_id: String,
+    context_plan: ContextPlan,
+    target: ContextTransferTarget,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ContextTransferTarget {
+    relay_realm_id: String,
+    machine_id: String,
+    kernel_id: String,
+    relay_public_key: String,
+    key_thumbprint: String,
 }
 
 #[derive(Deserialize)]
@@ -350,5 +372,33 @@ impl From<EnvironmentResult> for ManagedEnvironmentResult {
             environment: value.environment.into(),
             operation: value.operation.into(),
         }
+    }
+}
+
+impl ContextTransferTicket {
+    pub(super) fn into_ticket(self) -> Result<ManagedContextTransferTicket, DaemonError> {
+        let context_plan = ManagedEnvironmentContextPlan::from(self.context_plan);
+        let context_plan = serde_json::from_value(
+            serde_json::to_value(context_plan).map_err(ticket_decode_error)?,
+        )
+        .map_err(ticket_decode_error)?;
+        Ok(ManagedContextTransferTicket {
+            environment_id: self.environment_id,
+            context_plan,
+            target: ManagedContextTransferTarget {
+                relay_realm_id: self.target.relay_realm_id,
+                machine_id: self.target.machine_id,
+                kernel_id: self.target.kernel_id,
+                relay_public_key: self.target.relay_public_key,
+                key_thumbprint: self.target.key_thumbprint,
+            },
+        })
+    }
+}
+
+fn ticket_decode_error(error: impl std::fmt::Display) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "decode managed context transfer ticket",
+        message: error.to_string(),
     }
 }

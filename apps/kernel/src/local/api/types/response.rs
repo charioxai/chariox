@@ -134,6 +134,7 @@ pub enum LocalDaemonResponse {
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
     ManagedEnvironmentCatalog { catalog: ManagedEnvironmentCatalog, },
     ManagedEnvironment { environment: ManagedEnvironmentSummary, },
+    ManagedEnvironmentContextTransferPrepared { ticket: crate::managed_context::outbound_service::ManagedContextTransferTicket, },
     ManagedEnvironmentCreated { result: ManagedEnvironmentResult, },
     ManagedEnvironmentLifecycleRequested { result: ManagedEnvironmentResult, },
     ManagedContextTransferStarted { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
