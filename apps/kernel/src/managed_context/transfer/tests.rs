@@ -1349,7 +1349,7 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             &fs::read(root.join("state.json")).expect("read migrated state")
         )
         .expect("parse migrated state")["schema_version"],
-        4
+        TRANSFER_STATE_SCHEMA_VERSION
     );
     fs::remove_dir_all(root).expect("remove transfer root");
 }
