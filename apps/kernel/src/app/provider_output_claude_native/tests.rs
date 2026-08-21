@@ -157,6 +157,21 @@ fn yolo_rendered_permission_is_confirmed_without_user_interaction() {
             run.id(),
             &run,
             Some(std::sync::Arc::new(bridge.clone())),
+            "Write command\nprintf distinct\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("a distinct yolo permission should be confirmed immediately");
+    assert_ne!(
+        fs::read_to_string(&confirmation_marker)
+            .expect("distinct yolo confirmation marker should be present"),
+        first_confirmation,
+        "suppression must be scoped to the exact rendered prompt"
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
             "Claude composer ready",
         )
         .expect("dismissed permission should clear suppression state");

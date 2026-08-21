@@ -28,20 +28,42 @@ fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<Pat
         .map(|root| root.join("yolo-rendered-permission-confirmed"))
 }
 
-pub(super) fn mark_claude_yolo_rendered_permission_confirmed(context_file: &str) {
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ClaudeYoloRenderedPermissionConfirmation {
+    confirmed_at_ms: u64,
+    rendered_prompt: String,
+}
+
+pub(super) fn mark_claude_yolo_rendered_permission_confirmed(
+    context_file: &str,
+    rendered_prompt: &str,
+) {
     let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) else {
         return;
     };
-    let _ = fs::write(path, unix_epoch_ms().to_string());
+    let confirmation = ClaudeYoloRenderedPermissionConfirmation {
+        confirmed_at_ms: unix_epoch_ms(),
+        rendered_prompt: normalize_claude_rendered_permission_text(rendered_prompt),
+    };
+    if let Ok(raw) = serde_json::to_string(&confirmation) {
+        let _ = fs::write(path, raw);
+    }
 }
 
-pub(super) fn claude_yolo_rendered_permission_confirmation_pending(context_file: &str) -> bool {
+pub(super) fn claude_yolo_rendered_permission_confirmation_pending(
+    context_file: &str,
+    rendered_prompt: &str,
+) -> bool {
     claude_yolo_rendered_permission_marker_path(context_file)
         .and_then(|path| fs::read_to_string(path).ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .is_some_and(|confirmed_at_ms| {
-            unix_epoch_ms().saturating_sub(confirmed_at_ms)
-                < CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS
+        .and_then(|value| {
+            serde_json::from_str::<ClaudeYoloRenderedPermissionConfirmation>(&value).ok()
+        })
+        .is_some_and(|confirmation| {
+            confirmation.rendered_prompt
+                == normalize_claude_rendered_permission_text(rendered_prompt)
+                && unix_epoch_ms().saturating_sub(confirmation.confirmed_at_ms)
+                    < CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS
         })
 }
 

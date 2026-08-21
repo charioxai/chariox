@@ -759,14 +759,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         }
         if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
-            if claude_yolo_rendered_permission_confirmation_pending(context_file) {
+            if claude_yolo_rendered_permission_confirmation_pending(context_file, &recent) {
                 clear_claude_permission_recent(context_file);
                 return Ok(());
             }
             append_claude_headless_debug(context_file, "auto_confirm", "yolo_permission");
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
-            mark_claude_yolo_rendered_permission_confirmed(context_file);
+            mark_claude_yolo_rendered_permission_confirmed(context_file, &recent);
             clear_claude_permission_recent(context_file);
             return Ok(());
         }
