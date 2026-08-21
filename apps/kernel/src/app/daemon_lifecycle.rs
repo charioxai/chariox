@@ -130,6 +130,11 @@ impl DaemonApp {
                 self.config(),
                 self.managed_kernel_registration().as_ref(),
             )?;
+        let managed_activity_reporter =
+            crate::runtime::managed_kernel_activity::ManagedKernelActivityReporter::from_runtime(
+                self.config(),
+                self.managed_kernel_registration().as_ref(),
+            )?;
         let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
@@ -142,6 +147,8 @@ impl DaemonApp {
         );
         let runtime_state = router.runtime_state();
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let managed_activity_task = managed_activity_reporter
+            .map(|reporter| tokio::spawn(reporter.run(runtime_state.clone(), shutdown_rx.clone())));
         let history_migration_task = (!legacy_workflow_history.is_empty()).then(|| {
             tokio::spawn(run_legacy_workflow_history_migration(
                 history_migration_store,
@@ -229,6 +236,21 @@ impl DaemonApp {
         let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
         let _ = event_connection_reconciliation_task.await;
+        if let Some(task) = managed_activity_task {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => crate::logging::error_with_fields(
+                    "managed_kernel.activity",
+                    "managed kernel activity reporter stopped",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+                Err(error) => crate::logging::error_with_fields(
+                    "managed_kernel.activity",
+                    "managed kernel activity reporter task failed",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
         if let Some(task) = history_migration_task {
             let _ = task.await;
         }

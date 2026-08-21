@@ -1,6 +1,95 @@
 use super::*;
 
 #[tokio::test]
+async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-managed-activity-settlement",
+            "worktree-managed-activity-settlement",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-managed-activity-settlement",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "finish the managed turn",
+            Vec::new(),
+        )
+        .expect("prompt should start")
+    else {
+        panic!("first prompt should start immediately");
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    let response = "managed response persisted before idle";
+    runtime.owned.fan_out_terminal_output(
+        session.id(),
+        run.id(),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("managed-activity-response".to_string()),
+        vec![attachment.id().to_string()],
+        response.as_bytes(),
+    );
+    runtime.owned.record_assistant_message_completion(
+        session.id(),
+        run.id(),
+        vec![attachment.id().to_string()],
+        "managed-activity-completion",
+        crate::session::unix_epoch_ms(),
+    );
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    let before_settlement = runtime.managed_activity_change_sequence();
+
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .expect("prompt completion should settle")
+        .expect("active prompt should complete");
+
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_some());
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("durable response history should load")
+        .iter()
+        .any(|entry| entry.text.contains(response)));
+    assert_eq!(runtime.managed_running_agent_count(), 0);
+    assert!(runtime.managed_activity_change_sequence() > before_settlement);
+}
+
+#[tokio::test]
 async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
