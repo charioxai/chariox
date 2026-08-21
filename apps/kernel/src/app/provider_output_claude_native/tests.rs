@@ -484,8 +484,9 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
         ))
         .expect("attachment should attach");
     let root = std::env::temp_dir().join(format!(
-        "chariox-claude-headless-stop-test-{}-{}-{}",
+        "chariox-claude-headless-stop-test-{}-{}-{}-{}",
         provider,
+        advance_next_prompt_before_late_drain,
         std::process::id(),
         timestamp_millis()
     ));
