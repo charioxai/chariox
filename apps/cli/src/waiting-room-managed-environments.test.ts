@@ -15,6 +15,7 @@ import {
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
 
 test("managed environments share the Machine selector without duplicating runtime Machines", () => {
@@ -142,27 +143,64 @@ test("Empty development does not serialize the selected Project", () => {
   })
 })
 
-test("unsupported provider and Git transfer choices fail before provisioning", () => {
+test("selected provider account uses the exact connected source", () => {
   const state: WaitingRoomState = {
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
     managedComputeClass: "agent-small",
     managedRegion: "hel1",
+    managedContextSourceTargetId: "source-target-1",
     managedProviderAccountSource: "selected_account",
+    accountProfileId: "opencode-work",
   }
-  assert.match(managedEnvironmentDraftBlockReason(state, remote()) ?? "", /not available yet/)
-  const decision = deriveWaitingRoomActivationDecision({
-    state,
-    sessions: [],
-    catalog: catalog(),
-    currentProvider: "opencode",
-    currentModel: "opencode/gpt-5.4",
-    remote: remote(),
+  assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
+  assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()), {
+    sourceTargetId: "source-target-1",
+    kernelContext: "empty",
+    developmentSetup: { kind: "empty" },
+    providerAccounts: {
+      kind: "selected",
+      accounts: [{ provider: "opencode", accountProfile: "opencode-work" }],
+    },
+    gitCredentials: { kind: "none" },
   })
-  assert.deepEqual(decision, {
-    action: "error",
-    message: "Provider-account transfer is not available yet; choose None.",
-  })
+})
+
+test("both Claude execution modes transfer the canonical Claude account", () => {
+  for (const providerId of ["claude-headless", "claude-p"] as const) {
+    let state = normalizeWaitingRoomState({
+      ...baseState(),
+      providerId,
+      focus: "account",
+      accountProfileId: "default",
+      selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+      managedComputeClass: "agent-small",
+      managedRegion: "hel1",
+      managedContextSourceTargetId: "source-target-1",
+      managedProviderAccountSource: "selected_account",
+    }, [], catalog(), undefined, remote())
+    state = cycleWaitingRoomValue(state, [], catalog(), 1, undefined, remote())
+    assert.equal(state.accountProfileId, "claude-work")
+    assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
+    assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()).providerAccounts, {
+      kind: "selected",
+      accounts: [{ provider: "claude", accountProfile: "claude-work" }],
+    })
+  }
+})
+
+test("unsupported Git transfer choice fails before provisioning", () => {
+  const state: WaitingRoomState = {
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    managedComputeClass: "agent-small",
+    managedRegion: "hel1",
+    managedGitCredentialSource: "selected",
+  }
+  assert.equal(
+    managedEnvironmentDraftBlockReason(state, remote()),
+    "Git credential transfer is not available yet; choose None.",
+  )
 })
 
 test("catalog refresh preserves explicit unavailable selections and blocks launch", () => {
@@ -343,6 +381,49 @@ function remote(): WaitingRoomRemoteState {
       session_count: 0,
       joined_collaborator_count: 0,
       pending_collaboration_invite_count: 0,
+    }],
+    providerAccounts: [{
+      owner_user_id: "user-1",
+      provider: "opencode",
+      profile_id: "opencode-work",
+      label: "OpenCode work",
+      origin: "linked",
+      is_default: false,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opencode-work",
+        provider: "opencode",
+        availability: "unavailable",
+        source: "test",
+      },
+    }, {
+      owner_user_id: "user-1",
+      provider: "claude",
+      profile_id: "default",
+      label: "Claude default",
+      origin: "linked",
+      is_default: true,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "default",
+        provider: "claude",
+        availability: "unavailable",
+        source: "test",
+      },
+    }, {
+      owner_user_id: "user-1",
+      provider: "claude",
+      profile_id: "claude-work",
+      label: "Claude work",
+      origin: "linked",
+      is_default: false,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "claude-work",
+        provider: "claude",
+        availability: "unavailable",
+        source: "test",
+      },
     }],
   }
 }

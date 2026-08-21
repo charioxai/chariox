@@ -6,6 +6,7 @@ import type {
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { projectSelectionFromId } from "./waiting-room-projects.js"
+import { providerAccountFamily, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 export {
   NEW_MANAGED_MACHINE_REF,
@@ -263,6 +264,7 @@ export function managedEnvironmentDraftBlockReason(
   }
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
+    || state.managedProviderAccountSource === "selected_account"
   const source = remote.managedContextSources
     ?.find((candidate) => candidate.sourceTargetId === state.managedContextSourceTargetId)
   if (sourceRequired) {
@@ -279,8 +281,13 @@ export function managedEnvironmentDraftBlockReason(
     if (!selectedManagedProject(state, remote)) return "Choose an existing Project before transferring it."
     if (!remote.workspaceId) return "The connected source kernel returned no primary Workspace."
   }
-  if ((state.managedProviderAccountSource ?? "none") !== "none") {
-    return "Provider-account transfer is not available yet; choose None."
+  if ((state.managedProviderAccountSource ?? "none") === "selected_account") {
+    const account = selectedProviderAccount(
+      remote.providerAccounts,
+      state.providerId,
+      state.accountProfileId,
+    )
+    if (!account) return "Choose an available provider account before transferring it."
   }
   if ((state.managedGitCredentialSource ?? "none") !== "none") {
     return "Git credential transfer is not available yet; choose None."
@@ -296,6 +303,7 @@ export function managedEnvironmentContextPlanInput(
   if (blockReason) throw new Error(blockReason)
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
+    || state.managedProviderAccountSource === "selected_account"
   const project = selectedManagedProject(state, remote)
   const primaryWorkspaceId = remote.workspaceId ?? ""
   const workspaceIds = project
@@ -317,7 +325,15 @@ export function managedEnvironmentContextPlanInput(
     developmentSetup: state.managedDevelopmentMode === "current_project" && project
       ? { kind: "source_project", projectId: project.id, repositories }
       : { kind: "empty" },
-    providerAccounts: { kind: "none" },
+    providerAccounts: state.managedProviderAccountSource === "selected_account"
+      ? {
+          kind: "selected",
+          accounts: [{
+            provider: providerAccountFamily(state.providerId),
+            accountProfile: state.accountProfileId ?? "",
+          }],
+        }
+      : { kind: "none" },
     gitCredentials: { kind: "none" },
   }
 }
