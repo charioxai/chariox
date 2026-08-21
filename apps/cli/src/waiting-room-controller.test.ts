@@ -322,6 +322,57 @@ test("waiting room activation blocks stale reusable slice selections for new ses
   }
 })
 
+test("waiting room activation blocks unresolved Current Project slice setup", () => {
+  __setWaitingRoomWorktreeInventoryForTest({
+    workspacePath: "/workspace",
+    currentWorktreePath: "/workspace",
+    options: [{
+      id: "existing:/workspace",
+      kind: "existing",
+      label: "main",
+      path: "/workspace",
+      branch: "main",
+      isCurrent: true,
+    }],
+  })
+  const catalog = fallbackProviderCatalog()
+  try {
+    const state = {
+      ...createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "high"),
+      sliceSelectionId: "new",
+      projectSelectionId: "new",
+      managedDevelopmentMode: "current_project" as const,
+    }
+    const remote = {
+      workspaceId: "/workspace",
+      projects: [],
+      slices: [],
+    }
+    const expected = {
+      action: "error" as const,
+      message: "Choose an existing Project and primary Workspace before using Current Project in a slice.",
+    }
+
+    assert.deepEqual(deriveWaitingRoomActivationDecision({
+      state,
+      sessions: [],
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+      remote,
+    }), expected)
+    assert.deepEqual(deriveWaitingRoomCreateSessionDecision({
+      state,
+      catalog,
+      currentProvider: "opencode",
+      currentModel: "opencode/gpt-5.4",
+      remote,
+    }), expected)
+  } finally {
+    __setWaitingRoomWorktreeInventoryForTest(null)
+  }
+})
+
 test("waiting room activation creates regular sessions for slice and non-slice launches", () => {
   __setWaitingRoomWorktreeInventoryForTest({
     workspacePath: "/workspace",

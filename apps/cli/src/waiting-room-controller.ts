@@ -37,6 +37,7 @@ import {
   managedEnvironmentDraftBlockReason,
   managedEnvironmentIdFromMachineRef,
   waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectDevelopmentSetup,
 } from "./waiting-room-managed-environments.js"
 import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 
@@ -411,11 +412,20 @@ function waitingRoomUnavailableSliceMessage(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState | undefined,
 ): string | null {
+  if (
+    state.sliceSelectionId
+    && state.sliceSelectionId !== "none"
+    && state.managedDevelopmentMode === "current_project"
+    && !waitingRoomProjectDevelopmentSetup(state, remote ?? {})
+  ) {
+    return "Choose an existing Project and primary Workspace before using Current Project in a slice."
+  }
   const placement = waitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
     projectSelectionId: state.projectSelectionId,
-    repositoryMode: state.managedRepositoryMode,
+    developmentMode: state.managedDevelopmentMode,
+    repositorySelection: state.managedRepositorySelection,
     selectedMachineRef: placement.machineRef,
     selectedKernelRef: placement.kernelRef,
   })

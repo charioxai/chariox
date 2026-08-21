@@ -17,7 +17,8 @@ export type WaitingRoomSliceScope = {
   selectedMachineRef?: string | null | undefined
   selectedKernelRef?: string | null | undefined
   projectSelectionId?: string | null | undefined
-  repositoryMode?: WaitingRoomState["managedRepositoryMode"]
+  developmentMode?: WaitingRoomState["managedDevelopmentMode"]
+  repositorySelection?: WaitingRoomState["managedRepositorySelection"]
 }
 
 export function waitingRoomSlices(
@@ -27,14 +28,18 @@ export function waitingRoomSlices(
   const worktreePath = selectedWaitingRoomWorktreePath(scope.worktreeSelectionId, scope.worktreePath)
   const workspaceId = scope.workspacePath || remote.workspaceId
   const worktreeId = worktreePath || remote.worktreeId
-  const expectedDevelopment = waitingRoomProjectDevelopmentSetup({
-    ...(scope.projectSelectionId ? { projectSelectionId: scope.projectSelectionId } : {}),
-    ...(scope.repositoryMode ? { managedRepositoryMode: scope.repositoryMode } : {}),
-  }, {
-    ...remote,
-    ...(workspaceId ? { workspaceId } : {}),
-    ...(worktreeId ? { worktreeId } : {}),
-  })
+  const expectedDevelopment = scope.developmentMode
+    ? waitingRoomProjectDevelopmentSetup({
+        managedDevelopmentMode: scope.developmentMode,
+        ...(scope.projectSelectionId ? { projectSelectionId: scope.projectSelectionId } : {}),
+        ...(scope.repositorySelection ? { managedRepositorySelection: scope.repositorySelection } : {}),
+      }, {
+        ...remote,
+        ...(workspaceId ? { workspaceId } : {}),
+        ...(worktreeId ? { worktreeId } : {}),
+      })
+    : null
+  if (scope.developmentMode === "current_project" && !expectedDevelopment) return []
   return (remote.slices ?? [])
     .filter((slice) => sliceCompatibleWithScope(
       slice,
@@ -251,7 +256,7 @@ function sliceDevelopmentMatches(
   slice: SliceRecord,
   expected: ManagedEnvironmentDevelopmentSetup,
 ): boolean {
-  if (expected.kind === "empty") return slice.development?.kind === "empty"
+  if (expected.kind === "empty") return !slice.development || slice.development.kind === "empty"
   const actual = slice.development
   return actual?.kind === "source_project"
     && actual.project_id === expected.projectId

@@ -56,6 +56,12 @@ export type WaitingRoomKeyState = {
   right: boolean
 }
 
+export type WaitingRoomManagedRepositorySelection = {
+  projectId: string
+  primaryWorkspaceId: string
+  supportingWorkspaceIds: string[]
+}
+
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
@@ -74,7 +80,8 @@ export type WaitingRoomState = {
   managedKernelContext?: "empty" | "source_kernel"
   managedContextSourceTargetId?: string
   managedDevelopmentMode?: "empty" | "current_project"
-  managedRepositoryMode?: "project_defaults" | "primary_only"
+  managedRepositorySelection?: WaitingRoomManagedRepositorySelection
+  managedRepositoryIndex?: number
   managedProviderAccountSource?: "none" | "selected_account"
   managedGitCredentialSource?: "none" | "selected"
   managedAutoStopPreset?: "agents_done" | "idle_15m" | "idle_30m" | "minimum_3h" | "manual" | "custom"

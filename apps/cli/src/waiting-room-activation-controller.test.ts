@@ -190,7 +190,7 @@ test("waiting room activation sends the selected multi-repository Project to a n
     },
     waitingRoomState: {
       projectSelectionId: "existing:project-1",
-      managedRepositoryMode: "project_defaults",
+      managedDevelopmentMode: "current_project",
     },
     remoteState: {
       workspaceId: "/workspace",
@@ -218,6 +218,131 @@ test("waiting room activation sends the selected multi-repository Project to a n
     repositories: [
       { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
       { role: "supporting", workspaceId: "/supporting", worktreeId: null },
+    ],
+  })
+})
+
+test("waiting room activation keeps a new slice development setup empty", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "existing:project-1",
+      managedDevelopmentMode: "empty",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, { kind: "empty" })
+})
+
+test("waiting room activation refuses unresolved Current Project slice creation", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "new",
+      managedDevelopmentMode: "current_project",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices, [])
+  assert.deepEqual(harness.calls.slice(-2), [
+    "warn",
+    "flash:error:Choose an existing Project and primary Workspace before using Current Project in a slice.",
+  ])
+})
+
+test("waiting room activation sends an exact repository subset to a new slice", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "existing:project-1",
+      managedDevelopmentMode: "current_project",
+      managedRepositorySelection: {
+        projectId: "project-1",
+        primaryWorkspaceId: "/workspace",
+        supportingWorkspaceIds: [],
+      },
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
+    kind: "source_project",
+    projectId: "project-1",
+    repositories: [
+      { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
     ],
   })
 })

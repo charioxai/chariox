@@ -24,6 +24,7 @@ import {
   managedKernelContextLabel,
   selectedManagedEnvironment,
   waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomStartRowsChoice = {
@@ -50,7 +51,8 @@ export function waitingRoomStartRows(
     | "managedKernelContext"
     | "managedContextSourceTargetId"
     | "managedDevelopmentMode"
-    | "managedRepositoryMode"
+    | "managedRepositorySelection"
+    | "managedRepositoryIndex"
     | "managedProviderAccountSource"
     | "managedGitCredentialSource"
     | "managedAutoStopPreset"
@@ -80,7 +82,8 @@ export function waitingRoomStartRows(
       worktreeSelectionId: state.worktreeSelectionId,
       worktreePath: options.targets?.worktreePath,
       projectSelectionId: state.projectSelectionId,
-      repositoryMode: state.managedRepositoryMode,
+      developmentMode: state.managedDevelopmentMode,
+      repositorySelection: state.managedRepositorySelection,
       selectedMachineRef: state.selectedMachineRef,
       selectedKernelRef: state.selectedKernelRef,
     }),
@@ -88,22 +91,62 @@ export function waitingRoomStartRows(
   )
   const collaborationBackend = remote.collaborationBackend ?? "local"
   const configuresManaged = waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)
+  const configuresSliceDevelopment = !configuresManaged
+    && Boolean(state.sliceSelectionId && state.sliceSelectionId !== "none")
   const selectedEnvironment = selectedManagedEnvironment(state, remote)
+  const managedRepositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
+  const selectedSupportingRepositories = new Set(
+    state.managedRepositorySelection?.supportingWorkspaceIds ?? managedRepositoryOptions
+      .slice(1)
+      .map((option) => option.workspaceId),
+  )
+  const selectedManagedRepositoryCount = managedRepositoryOptions.filter((option) => (
+    option.primary || selectedSupportingRepositories.has(option.workspaceId)
+  )).length
+  const managedRepositoryRows: WaitingRoomRow[] = state.managedDevelopmentMode === "current_project"
+    ? [
+        {
+          id: "managed-repositories",
+          title: "Selected repositories",
+          value: `${selectedManagedRepositoryCount} of ${managedRepositoryOptions.length} included`,
+          titleWidth: options.titleWidth,
+          indent: 1,
+          focused: false,
+          selectable: false,
+          scrollbar: "",
+        },
+        ...managedRepositoryOptions.map((option, index): WaitingRoomRow => ({
+          id: `managed-repository:${option.workspaceId}`,
+          title: option.workspaceId,
+          value: option.primary
+            ? "Primary (included)"
+            : selectedSupportingRepositories.has(option.workspaceId) ? "Included" : "Excluded",
+          titleWidth: options.titleWidth,
+          indent: 2,
+          focused: !option.primary
+            && state.focus === "managed-repositories"
+            && (state.managedRepositoryIndex ?? 0) === index - 1,
+          selectable: !option.primary,
+          scrollbar: "",
+        })),
+      ]
+    : [{
+        id: "managed-repositories",
+        title: "Selected repositories",
+        value: "None",
+        titleWidth: options.titleWidth,
+        indent: 1,
+        focused: false,
+        selectable: false,
+        scrollbar: "",
+      }]
   const managedRows: WaitingRoomRow[] = configuresManaged
     ? [
         startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, options.titleWidth),
         startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, options.titleWidth),
         startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state as WaitingRoomState, remote), state, options.titleWidth),
-        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "empty" ? "Empty" : "Current Project", state, options.titleWidth),
-        startRow(
-          "managed-repositories",
-          "Selected repositories",
-          state.managedDevelopmentMode === "empty"
-            ? "None"
-            : state.managedRepositoryMode === "project_defaults" ? "Project defaults" : "Primary only",
-          state,
-          options.titleWidth,
-        ),
+        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
+        ...managedRepositoryRows,
         startRow(
           "managed-provider-accounts",
           "Provider accounts source",
@@ -137,6 +180,12 @@ export function waitingRoomStartRows(
               ),
             ]
           : []),
+      ]
+    : []
+  const sliceDevelopmentRows: WaitingRoomRow[] = configuresSliceDevelopment
+    ? [
+        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
+        ...managedRepositoryRows,
       ]
     : []
   return [
@@ -288,6 +337,7 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...sliceDevelopmentRows,
     {
       id: "join-header",
       title: "Join Existing Session",

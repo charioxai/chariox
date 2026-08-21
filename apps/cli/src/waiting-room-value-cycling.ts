@@ -33,7 +33,7 @@ import {
   cycleManagedKernelContext,
   cycleManagedProviderAccounts,
   cycleManagedRegion,
-  cycleManagedRepositoryMode,
+  toggleManagedRepositorySelection,
 } from "./waiting-room-managed-environments.js"
 import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
@@ -136,7 +136,7 @@ export function cycleWaitingRoomFocusedValue(
     return context.normalizeState(cycleManagedDevelopment(state))
   }
   if (state.focus === "managed-repositories") {
-    return context.normalizeState(cycleManagedRepositoryMode(state))
+    return context.normalizeState(toggleManagedRepositorySelection(state, remote))
   }
   if (state.focus === "managed-provider-accounts") {
     return context.normalizeState(cycleManagedProviderAccounts(state))
@@ -181,7 +181,8 @@ export function cycleWaitingRoomFocusedValue(
       waitingRoomSlices(remote, {
         worktreeSelectionId: state.worktreeSelectionId,
         projectSelectionId: state.projectSelectionId,
-        repositoryMode: state.managedRepositoryMode,
+        developmentMode: state.managedDevelopmentMode,
+        repositorySelection: state.managedRepositorySelection,
         selectedMachineRef: state.selectedMachineRef,
         selectedKernelRef: state.selectedKernelRef,
       }),

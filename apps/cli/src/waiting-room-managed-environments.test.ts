@@ -62,7 +62,7 @@ test("new managed Machine selection reveals every conditional configuration row"
     waitingRoomFocusTargets([], remote(), state)
       .filter((target) => target.focus.startsWith("managed-"))
       .map((target) => target.focus),
-    rows.filter((row) => row.id.startsWith("managed-")).map((row) => row.id),
+    rows.filter((row) => row.id.startsWith("managed-") && row.selectable).map((row) => row.id),
   )
 })
 
@@ -75,7 +75,6 @@ test("clean kernel plus Current Project retains one source and Project repositor
     managedKernelContext: "empty",
     managedContextSourceTargetId: "source-target-1",
     managedDevelopmentMode: "current_project",
-    managedRepositoryMode: "project_defaults",
     projectSelectionId: "existing:project-1",
   }
   assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
@@ -122,6 +121,109 @@ test("clean kernel plus Current Project retains one source and Project repositor
   } finally {
     __setWaitingRoomWorktreeInventoryForTest(null)
   }
+})
+
+test("managed repository rows remove and restore individual Project defaults", () => {
+  const selectionRemote = remote()
+  const project = selectionRemote.projects?.[0]
+  if (!project) throw new Error("expected Project fixture")
+  project.workspace_ids = ["workspace-primary", "workspace-supporting", "workspace-docs"]
+  let state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+    managedDevelopmentMode: "current_project",
+    projectSelectionId: "existing:project-1",
+    focus: "managed-repositories",
+    managedRepositoryIndex: 0,
+  }, [], catalog(), undefined, selectionRemote)
+
+  assert.deepEqual(state.managedRepositorySelection, {
+    projectId: "project-1",
+    primaryWorkspaceId: "workspace-primary",
+    supportingWorkspaceIds: ["workspace-supporting", "workspace-docs"],
+  })
+  assert.deepEqual(
+    waitingRoomFocusTargets([], selectionRemote, state)
+      .filter((target) => target.focus === "managed-repositories")
+      .map((target) => target.managedRepositoryIndex),
+    [0, 1],
+  )
+
+  state = cycleWaitingRoomValue(state, [], catalog(), 1, undefined, selectionRemote)
+  assert.deepEqual(state.managedRepositorySelection?.supportingWorkspaceIds, ["workspace-docs"])
+  assert.deepEqual(managedEnvironmentContextPlanInput(state, selectionRemote).developmentSetup, {
+    kind: "source_project",
+    projectId: "project-1",
+    repositories: [
+      { role: "primary", workspaceId: "workspace-primary", worktreeId: "worktree-primary" },
+      { role: "supporting", workspaceId: "workspace-docs", worktreeId: null },
+    ],
+  })
+  const rows = waitingRoomRows(state, [], catalog(), selectionRemote)
+  assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "2 of 3 included")
+  assert.equal(rows.find((row) => row.id === "managed-repository:workspace-primary")?.value, "Primary (included)")
+  assert.equal(rows.find((row) => row.id === "managed-repository:workspace-supporting")?.value, "Excluded")
+  assert.equal(rows.find((row) => row.id === "managed-repository:workspace-docs")?.value, "Included")
+
+  state = cycleWaitingRoomValue(state, [], catalog(), -1, undefined, selectionRemote)
+  assert.deepEqual(
+    state.managedRepositorySelection?.supportingWorkspaceIds,
+    ["workspace-supporting", "workspace-docs"],
+  )
+})
+
+test("ordinary slice setup exposes the same exact repository picker", () => {
+  const sliceRemote = remote()
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: "local",
+    selectedKernelRef: "local",
+    sliceSelectionId: "new",
+    managedDevelopmentMode: "current_project",
+    projectSelectionId: "existing:project-1",
+    focus: "managed-repositories",
+  }, [], catalog(), undefined, sliceRemote)
+
+  assert.equal(state.focus, "managed-repositories")
+  assert.deepEqual(
+    waitingRoomFocusTargets([], sliceRemote, state)
+      .filter((target) => target.focus === "managed-repositories")
+      .map((target) => target.managedRepositoryIndex),
+    [0],
+  )
+  const rows = waitingRoomRows(state, [], catalog(), sliceRemote)
+  assert.equal(rows.find((row) => row.id === "managed-development")?.value, "Current Project")
+  assert.equal(rows.find((row) => row.id === "managed-repository:workspace-supporting")?.selectable, true)
+
+  const primaryOnly = cycleWaitingRoomValue(state, [], catalog(), 1, undefined, sliceRemote)
+  assert.deepEqual(primaryOnly.managedRepositorySelection?.supportingWorkspaceIds, [])
+})
+
+test("repository inventory removal redirects focus to the remaining development selector", () => {
+  const refreshRemote = remote()
+  const project = refreshRemote.projects?.[0]
+  if (!project) throw new Error("expected Project fixture")
+  project.workspace_ids = ["workspace-primary"]
+
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+    managedDevelopmentMode: "current_project",
+    projectSelectionId: "existing:project-1",
+    focus: "managed-repositories",
+    managedRepositoryIndex: 8,
+    managedRepositorySelection: {
+      projectId: "project-1",
+      primaryWorkspaceId: "workspace-primary",
+      supportingWorkspaceIds: ["workspace-supporting"],
+    },
+  }, [], catalog(), undefined, refreshRemote)
+
+  assert.equal(state.focus, "managed-development")
+  assert.equal(state.managedRepositoryIndex, 0)
+  assert.deepEqual(state.managedRepositorySelection?.supportingWorkspaceIds, [])
 })
 
 test("Empty development does not serialize the selected Project", () => {

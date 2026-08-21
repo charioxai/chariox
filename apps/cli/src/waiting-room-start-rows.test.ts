@@ -37,6 +37,8 @@ test("waiting room start rows render configuration labels and join action", () =
     "live-sync",
     "collaborators",
     "slice",
+    "managed-development",
+    "managed-repositories",
     "join-header",
   ])
   assert.equal(rows.find((row) => row.id === "launch-machine")?.value, "local")
@@ -49,6 +51,8 @@ test("waiting room start rows render configuration labels and join action", () =
   assert.equal(rows.find((row) => row.id === "live-sync")?.value, "off (default; all repositories unrestricted)")
   assert.equal(rows.find((row) => row.id === "collaborators")?.value, "after session start")
   assert.equal(rows.find((row) => row.id === "slice")?.value, "linux-dev (running, headless, 0 agents, auth missing codex)")
+  assert.equal(rows.find((row) => row.id === "managed-development")?.value, "Empty")
+  assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "None")
   assert.equal(rows.find((row) => row.id === "join-header")?.value, "Press Enter")
   assert.equal(rows.find((row) => row.id === "join-header")?.focused, true)
 })

@@ -59,11 +59,33 @@ export function normalizeWaitingRoomManagedDraft(
   const sources = remote.managedContextSources ?? []
   const selectedSource = state.managedContextSourceTargetId
     ?? preferredManagedContextSource(sources, remote)?.sourceTargetId
-  return {
+  const repositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
+  const primaryWorkspaceId = repositoryOptions[0]?.workspaceId
+  const project = selectedManagedProject(state, remote)
+  const existingSelection = state.managedRepositorySelection
+  const supportingWorkspaceIds = repositoryOptions.slice(1).map((option) => option.workspaceId)
+  const selectedSupportingWorkspaceIds = existingSelection
+    && project
+    && existingSelection.projectId === project.id
+    && existingSelection.primaryWorkspaceId === primaryWorkspaceId
+      ? supportingWorkspaceIds.filter((workspaceId) => (
+          existingSelection.supportingWorkspaceIds.includes(workspaceId)
+        ))
+      : supportingWorkspaceIds
+  const managedRepositorySelection = project && primaryWorkspaceId
+    ? {
+        projectId: project.id,
+        primaryWorkspaceId,
+        supportingWorkspaceIds: selectedSupportingWorkspaceIds,
+      }
+    : undefined
+  const normalized: WaitingRoomState = {
     ...state,
     managedKernelContext: state.managedKernelContext ?? "empty",
     managedDevelopmentMode: state.managedDevelopmentMode ?? "empty",
-    managedRepositoryMode: state.managedRepositoryMode ?? "project_defaults",
+    managedRepositoryIndex: supportingWorkspaceIds.length === 0
+      ? 0
+      : modulo(state.managedRepositoryIndex ?? 0, supportingWorkspaceIds.length),
     managedProviderAccountSource: state.managedProviderAccountSource ?? "none",
     managedGitCredentialSource: state.managedGitCredentialSource ?? "none",
     managedAutoStopPreset: state.managedAutoStopPreset ?? "idle_15m",
@@ -75,6 +97,9 @@ export function normalizeWaitingRoomManagedDraft(
     ...(region ? { managedRegion: region } : {}),
     ...(selectedSource ? { managedContextSourceTargetId: selectedSource } : {}),
   }
+  if (managedRepositorySelection) normalized.managedRepositorySelection = managedRepositorySelection
+  else delete normalized.managedRepositorySelection
+  return normalized
 }
 
 export function preferredManagedContextSource(
@@ -147,12 +172,25 @@ export function cycleManagedDevelopment(state: WaitingRoomState): WaitingRoomSta
   }
 }
 
-export function cycleManagedRepositoryMode(state: WaitingRoomState): WaitingRoomState {
+export function toggleManagedRepositorySelection(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomState {
+  const normalized = normalizeWaitingRoomManagedDraft(state, remote)
+  const selection = normalized.managedRepositorySelection
+  const option = waitingRoomProjectRepositoryOptions(normalized, remote)
+    .slice(1)[normalized.managedRepositoryIndex ?? 0]
+  if (!selection || !option) return normalized
+  const selected = new Set(selection.supportingWorkspaceIds)
+  if (selected.has(option.workspaceId)) selected.delete(option.workspaceId)
+  else selected.add(option.workspaceId)
+  const supportingWorkspaceIds = waitingRoomProjectRepositoryOptions(normalized, remote)
+    .slice(1)
+    .map((candidate) => candidate.workspaceId)
+    .filter((workspaceId) => selected.has(workspaceId))
   return {
-    ...state,
-    managedRepositoryMode: state.managedRepositoryMode === "project_defaults"
-      ? "primary_only"
-      : "project_defaults",
+    ...normalized,
+    managedRepositorySelection: { ...selection, supportingWorkspaceIds },
   }
 }
 
@@ -331,25 +369,47 @@ export function managedEnvironmentContextPlanInput(
 }
 
 export function waitingRoomProjectDevelopmentSetup(
-  state: Pick<WaitingRoomState, "projectSelectionId" | "managedRepositoryMode">,
+  state: Pick<WaitingRoomState,
+    | "projectSelectionId"
+    | "managedDevelopmentMode"
+    | "managedRepositorySelection"
+  >,
   remote: WaitingRoomRemoteState,
 ): ManagedEnvironmentContextPlanInput["developmentSetup"] | null {
+  if (state.managedDevelopmentMode === "empty") return { kind: "empty" }
+  if (state.managedDevelopmentMode !== "current_project") return null
+  if (!remote.workspaceId) return null
   const project = selectedManagedProject(state, remote)
   if (!project) return null
-  const primaryWorkspaceId = remote.workspaceId ?? ""
-  const workspaceIds = project.workspace_ids?.length ? project.workspace_ids : [project.workspace_id]
-  const repositories = [
-    primaryWorkspaceId,
-    ...workspaceIds.filter((workspaceId) => workspaceId !== primaryWorkspaceId),
-  ]
-    .filter((workspaceId, index, values) => workspaceId && values.indexOf(workspaceId) === index)
-    .filter((_, index) => state.managedRepositoryMode === "primary_only" ? index === 0 : true)
-    .map((workspaceId, index) => ({
-      role: index === 0 ? "primary" as const : "supporting" as const,
-      workspaceId,
-      worktreeId: index === 0 ? remote.worktreeId ?? null : null,
+  const options = waitingRoomProjectRepositoryOptions(state, remote)
+  const primaryWorkspaceId = options[0]?.workspaceId ?? ""
+  const selection = state.managedRepositorySelection
+  const selectedSupporting = selection
+    && selection.projectId === project.id
+    && selection.primaryWorkspaceId === primaryWorkspaceId
+      ? new Set(selection.supportingWorkspaceIds)
+      : new Set(options.slice(1).map((option) => option.workspaceId))
+  const repositories = options
+    .filter((option) => option.primary || selectedSupporting.has(option.workspaceId))
+    .map((option) => ({
+      role: option.primary ? "primary" as const : "supporting" as const,
+      workspaceId: option.workspaceId,
+      worktreeId: option.primary ? remote.worktreeId ?? null : null,
     }))
   return { kind: "source_project", projectId: project.id, repositories }
+}
+
+export function waitingRoomProjectRepositoryOptions(
+  state: Pick<WaitingRoomState, "projectSelectionId">,
+  remote: WaitingRoomRemoteState,
+): Array<{ workspaceId: string; primary: boolean }> {
+  const project = selectedManagedProject(state, remote)
+  if (!project) return []
+  const primaryWorkspaceId = remote.workspaceId ?? ""
+  const workspaceIds = project.workspace_ids?.length ? project.workspace_ids : [project.workspace_id]
+  return [primaryWorkspaceId, ...workspaceIds.filter((workspaceId) => workspaceId !== primaryWorkspaceId)]
+    .filter((workspaceId, index, values) => workspaceId && values.indexOf(workspaceId) === index)
+    .map((workspaceId, index) => ({ workspaceId, primary: index === 0 }))
 }
 
 function selectedManagedProject(

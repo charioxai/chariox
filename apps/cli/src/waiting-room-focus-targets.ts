@@ -10,7 +10,10 @@ import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
-import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-managed-environments.js"
+import {
+  waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
+} from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomFocusTarget = {
   focus: WaitingRoomFocus
@@ -21,6 +24,7 @@ export type WaitingRoomFocusTarget = {
   sliceIndex: number
   terminalIndex: number
   externalSessionIndex: number
+  managedRepositoryIndex: number
 }
 
 export function moveWaitingRoomFocus(
@@ -38,6 +42,8 @@ export function moveWaitingRoomFocus(
     0,
     order.findIndex((target) => (
       target.focus === state.focus
+      && (target.focus !== "managed-repositories"
+        || target.managedRepositoryIndex === (state.managedRepositoryIndex ?? 0))
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
       && (target.focus !== "project-entry" || target.projectIndex === (state.projectIndex ?? 0))
       && (target.focus !== "machine" || target.machineIndex === state.machineIndex)
@@ -64,6 +70,11 @@ export function moveWaitingRoomFocus(
     machineIndex: next.focus === "machine" ? next.machineIndex : state.machineIndex,
     remoteKernelIndex: next.focus === "remote-kernel" ? next.remoteKernelIndex : state.remoteKernelIndex,
     terminalIndex: next.focus === "terminal" ? next.terminalIndex : state.terminalIndex,
+    ...(next.focus === "managed-repositories"
+      ? { managedRepositoryIndex: next.managedRepositoryIndex }
+      : state.managedRepositoryIndex !== undefined
+        ? { managedRepositoryIndex: state.managedRepositoryIndex }
+        : {}),
     ...(next.focus === "external-session"
       ? { externalSessionIndex: next.externalSessionIndex }
       : state.focus === "external-session"
@@ -78,7 +89,14 @@ export function moveWaitingRoomFocus(
 export function waitingRoomFocusTargets(
   sessions: SessionListEntry[],
   remote: WaitingRoomRemoteState = {},
-  state?: Pick<WaitingRoomState, "showArchivedProjects" | "selectedMachineRef" | "managedAutoStopPreset">,
+  state?: Pick<WaitingRoomState,
+    | "showArchivedProjects"
+    | "selectedMachineRef"
+    | "managedAutoStopPreset"
+    | "managedDevelopmentMode"
+    | "projectSelectionId"
+    | "sliceSelectionId"
+  >,
 ): WaitingRoomFocusTarget[] {
   const visibleSessions = waitingRoomSessions(sessions)
   const previewSessions = waitingRoomPreviewSessions(sessions)
@@ -90,6 +108,11 @@ export function waitingRoomFocusTargets(
   const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state?.showArchivedProjects))
   const archivedProjectCount = (remote.projects ?? []).filter((project) => project.status === "archived").length
   const managedConfiguration = waitingRoomConfiguresNewManagedMachine(state?.selectedMachineRef)
+  const sliceDevelopmentConfiguration = !managedConfiguration
+    && Boolean(state?.sliceSelectionId && state.sliceSelectionId !== "none")
+  const managedRepositoryOptions = state?.managedDevelopmentMode === "current_project"
+    ? waitingRoomProjectRepositoryOptions(state, remote).slice(1)
+    : []
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
@@ -100,7 +123,11 @@ export function waitingRoomFocusTargets(
           { focus: "managed-region" as const, sessionIndex: 0 },
           { focus: "managed-kernel-context" as const, sessionIndex: 0 },
           { focus: "managed-development" as const, sessionIndex: 0 },
-          { focus: "managed-repositories" as const, sessionIndex: 0 },
+          ...managedRepositoryOptions.map((_, managedRepositoryIndex) => ({
+            focus: "managed-repositories" as const,
+            sessionIndex: 0,
+            managedRepositoryIndex,
+          })),
           { focus: "managed-provider-accounts" as const, sessionIndex: 0 },
           { focus: "managed-git-credentials" as const, sessionIndex: 0 },
           { focus: "managed-auto-stop" as const, sessionIndex: 0 },
@@ -122,6 +149,16 @@ export function waitingRoomFocusTargets(
     { focus: "live-sync" as const, sessionIndex: 0 },
     { focus: "collaborators" as const, sessionIndex: 0 },
     { focus: "slice" as const, sessionIndex: 0 },
+    ...(sliceDevelopmentConfiguration
+      ? [
+          { focus: "managed-development" as const, sessionIndex: 0 },
+          ...managedRepositoryOptions.map((_, managedRepositoryIndex) => ({
+            focus: "managed-repositories" as const,
+            sessionIndex: 0,
+            managedRepositoryIndex,
+          })),
+        ]
+      : []),
     ...(visibleSessions.length > 0 || projects.length > 0 ? [{ focus: "join-sessions" as const, sessionIndex: 0 }] : []),
     ...(archivedProjectCount > 0 ? [{ focus: "archived-projects" as const, sessionIndex: 0 }] : []),
     ...(projects.length > 0
@@ -169,6 +206,7 @@ export function waitingRoomFocusTargets(
     terminalIndex: 0,
     externalSessionIndex: 0,
     projectIndex: 0,
+    managedRepositoryIndex: 0,
     ...target,
   }))
 }

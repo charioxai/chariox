@@ -41,6 +41,7 @@ import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js
 import {
   normalizeWaitingRoomManagedDraft,
   waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
 import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
@@ -69,7 +70,7 @@ export function createWaitingRoomState(
       selectedKernelRef: "local",
       managedKernelContext: "empty",
       managedDevelopmentMode: "empty",
-      managedRepositoryMode: "project_defaults",
+      managedRepositoryIndex: 0,
       managedProviderAccountSource: "none",
       managedGitCredentialSource: "none",
       managedAutoStopPreset: "idle_15m",
@@ -112,7 +113,8 @@ export function normalizeWaitingRoomState(
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
     projectSelectionId: state.projectSelectionId,
-    repositoryMode: state.managedRepositoryMode,
+    developmentMode: state.managedDevelopmentMode,
+    repositorySelection: state.managedRepositorySelection,
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
   })
@@ -130,9 +132,15 @@ export function normalizeWaitingRoomState(
     state.sliceDisplayMode,
     slices,
   )
+  const configuresManaged = waitingRoomConfiguresNewManagedMachine(placement.selectedMachineRef)
+  const configuresSliceDevelopment = !configuresManaged
+    && Boolean(sliceSelection.sliceSelectionId && sliceSelection.sliceSelectionId !== "none")
+  const sliceDevelopmentFocus = state.focus === "managed-development"
+    || state.focus === "managed-repositories"
   const focus = (state.focus.startsWith("managed-")
-    && !waitingRoomConfiguresNewManagedMachine(placement.selectedMachineRef))
-    ? "launch-machine"
+    && !configuresManaged
+    && !(configuresSliceDevelopment && sliceDevelopmentFocus))
+    ? sliceDevelopmentFocus ? "slice" : "launch-machine"
     : (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
     ? "new"
     : previewSessions.length === 0 && state.focus === "session"
@@ -154,7 +162,7 @@ export function normalizeWaitingRoomState(
         : state.focus === "slice-display"
           ? "slice"
           : state.focus
-  return normalizeWaitingRoomManagedDraft({
+  const normalized = normalizeWaitingRoomManagedDraft({
     ...state,
     focus,
     providerId,
@@ -190,6 +198,11 @@ export function normalizeWaitingRoomState(
     permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),
   }, remote)
+  const selectedRepositoryTargetExists = normalized.managedDevelopmentMode === "current_project"
+    && waitingRoomProjectRepositoryOptions(normalized, remote).length > 1
+  return normalized.focus === "managed-repositories" && !selectedRepositoryTargetExists
+    ? { ...normalized, focus: "managed-development" }
+    : normalized
 }
 
 export function waitingRoomExecutionMode(
