@@ -50,7 +50,7 @@ fn generated_runtime_identity_has_expected_prefixes() {
 
 #[test]
 fn runtime_identity_is_stable_per_host_port() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-identity-test-{}",
         generate_identity_suffix()
@@ -95,7 +95,7 @@ fn runtime_identity_is_stable_per_host_port() {
 
 #[test]
 fn chariox_home_owns_config_identity_state_and_runtime_paths() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-explicit-home-test-{}",
         generate_identity_suffix()
@@ -157,7 +157,7 @@ fn renamed_vault_backend_deserializes_to_the_only_supported_encrypted_backend() 
 
 #[test]
 fn env_relay_config_takes_precedence_over_persisted_cloud_relay_profile() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-relay-env-test-{}",
         generate_identity_suffix()
@@ -256,7 +256,7 @@ fn relay_url_uses_cloud_profile_tolerates_spacing_and_trailing_slashes() {
 
 #[test]
 fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-env-cloud-relay-test-{}",
         generate_identity_suffix()
@@ -320,7 +320,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
 
 #[test]
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-cli-cloud-import-test-{}",
         generate_identity_suffix()
@@ -393,7 +393,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
 
 #[test]
 fn persisted_daemon_cloud_profile_takes_precedence_over_cli_profile() {
-    let _guard = env_test_guard().lock().expect("env test guard poisoned");
+    let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(
         "chariox-config-daemon-cloud-precedence-test-{}",
         generate_identity_suffix()

@@ -130,10 +130,6 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     ))
 }
 
-pub(crate) fn provider_text_reports_resource_limit(text: &str) -> bool {
-    provider_normalized_text_reports_resource_limit(&text.to_lowercase())
-}
-
 fn provider_normalized_text_reports_resource_limit(normalized: &str) -> bool {
     let quota_or_billing = normalized.contains("insufficient_quota")
         || normalized.contains("quota exceeded")
