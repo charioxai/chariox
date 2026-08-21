@@ -6,7 +6,7 @@ use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, RuntimeSession, WorkflowHandoffValidationPolicy,
-    WorkflowMessage, WorkflowRun, WorkflowRunStatus,
+    WorkflowMessage, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
 use crate::{DaemonApp, DaemonConfig};
 
@@ -563,6 +563,82 @@ fn provider_completion_without_structured_output_schedules_a_correction_turn() {
     assert_eq!(
         active_prompt.workflow_node_run_id(),
         Some(correction_node_run.id())
+    );
+}
+
+#[test]
+fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (failed_session, failed_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-terminal-provider-failure");
+    let (failed_workflow_id, failed_node_id) = create_workflow_node(
+        &mut app,
+        failed_session.id(),
+        "wf-terminal-provider-failure",
+        &failed_agent_id,
+    );
+    let _failed_run = invoke_workflow_node(
+        &mut app,
+        failed_session.id(),
+        &failed_workflow_id,
+        &failed_node_id,
+    );
+    let failed_provider_run_id = app
+        .providers()
+        .get_run_for_agent(failed_session.id(), &failed_agent_id)
+        .expect("failed workflow provider should exist")
+        .id()
+        .to_string();
+
+    let (blocked_session, blocked_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-blocked-after-provider-failure");
+    let (blocked_workflow_id, blocked_node_id) = create_workflow_node(
+        &mut app,
+        blocked_session.id(),
+        "wf-blocked-after-provider-failure",
+        &blocked_agent_id,
+    );
+    let blocked_run = invoke_workflow_node(
+        &mut app,
+        blocked_session.id(),
+        &blocked_workflow_id,
+        &blocked_node_id,
+    );
+    let blocked_before_failure = app
+        .sessions()
+        .resolve_workflow_run_ref(blocked_session.id(), blocked_run.id())
+        .expect("blocked workflow should resolve");
+    assert_eq!(blocked_before_failure.status(), WorkflowRunStatus::Waiting);
+    assert_eq!(
+        blocked_before_failure.node_runs()[0].status(),
+        WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+    );
+
+    app.providers()
+        .record_terminal_diagnostic(
+            &failed_provider_run_id,
+            "Provider reported a resource limit".to_string(),
+        )
+        .expect("terminal diagnostic should be recorded");
+    let completed_prompt = app
+        .prompt_owner_complete_active_prompt_only(failed_session.id(), &failed_agent_id)
+        .expect("failed workflow prompt should settle");
+    super::on_workflow_prompt_completed(
+        &mut app,
+        failed_session.id(),
+        &completed_prompt,
+        Some(&failed_provider_run_id),
+    )
+    .expect("terminal provider completion should settle the workflow");
+
+    let retried_run = app
+        .sessions()
+        .resolve_workflow_run_ref(blocked_session.id(), blocked_run.id())
+        .expect("blocked workflow should resolve after claim release");
+    assert_eq!(retried_run.status(), WorkflowRunStatus::Running);
+    assert_eq!(
+        retried_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Running,
     );
 }
 
