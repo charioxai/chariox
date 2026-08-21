@@ -175,7 +175,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomCloudNotice, setWaitingRoomCloudNotice, terminalPairingOpen, setTerminalPairingOpen,
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, agentLocationLabel, sessionBrowserIndex,
-    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, pendingWorkspaceTarget,
+    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, waitingRoomLaunchOwnershipRevision, pendingWorkspaceTarget,
     setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, multiAgentResponseLayout,
     setMultiAgentResponseLayout, entries, setEntries, activeStatusLabel,
     setActiveStatusLabel, providerActivityLabel, setProviderActivityLabel, agentActivityLabels,
@@ -386,7 +386,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
     client, options, appLogger, formatError,
-    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState,
+    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, waitingRoomLaunchOwnershipRevision,
     availableSessions, setAvailableSessions, waitingRoomProjects, setWaitingRoomProjects,
     providerCatalogState, setProviderCatalogState,
     providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
@@ -394,7 +394,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     setRelayStatusState, remoteMachinesState, setRemoteMachinesState, remoteKernelsState,
     setRemoteKernelsState, providerAccountsState, setProviderAccountsState, terminalsState, setTerminalsState, externalProviderSessionsState,
     setExternalProviderSessionsState, externalProviderSessionsPageState, setExternalProviderSessionsPageState, slicesState,
-    setSlicesState, pendingWorkspaceTarget, pendingWorktreeTarget, preferencesState,
+    setSlicesState, pendingWorkspaceTarget, setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, preferencesState,
     setPreferencesState, setThemeRevision,
     resetTranscriptSyntax: () => {
       transcriptSyntaxStyleController.reset()
@@ -413,6 +413,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     openSessionBrowserDialog: () => openSessionBrowserDialog(),
     closeSessionBrowserDialog: () => closeSessionBrowserDialog(),
     attachBinding: (session, createdSession, launch) => attachBinding(session, createdSession, launch),
+    rollbackAttachedSession: (sessionId) => rollbackAttachedSession(sessionId),
     flashFooter: (message, tone) => flashFooter(message, tone),
     setKernelConnected, setDaemonDisconnected, sessionBrowserOpen, focusedProviderRun,
     focusedAgent, focusedAgentId, providerRunState, sessionState,
@@ -776,7 +777,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   let recordDaemonActivity: (activityType: string) => void = () => {}
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
-    transitionToNoSession, detachCurrentAttachment, attachBinding, recoverProviderRun,
+    transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
     requestExit, requestWaitingRoom, restoreTerminalAndExit,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,

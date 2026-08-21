@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { mergeExternalProviderSessionsSorted } from "@chariox/kernel-client/external-provider-sessions"
 import { updateAgentConfig, updateAgentProfile } from "./agent-api.js"
 import { createDetachedKernelConnectController } from "./detached-kernel-connect-controller.js"
@@ -33,8 +34,25 @@ import {
   startSlice,
 } from "./slice-api.js"
 import { applyTheme } from "./theme.js"
-import { createWaitingRoomActivationController } from "./waiting-room-activation-controller.js"
+import {
+  createWaitingRoomActivationController,
+  type WaitingRoomPreparedManagedLaunch,
+} from "./waiting-room-activation-controller.js"
+import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
+import {
+  createManagedEnvironment,
+  getManagedContextLaunchTarget,
+  getManagedContextTransferStatus,
+  getManagedEnvironment,
+  prepareManagedEnvironmentContextTransfer,
+  requestManagedEnvironmentLifecycle,
+  startManagedContextTransfer,
+} from "./managed-environment-api.js"
+import {
+  WaitingRoomManagedEnvironmentLaunchController,
+} from "./waiting-room-managed-environment-launch-controller.js"
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
+import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { createWaitingRoomInventoryCache } from "./waiting-room-inventory-cache.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
@@ -46,7 +64,20 @@ import {
   renameProject,
   restoreProject,
 } from "./project-api.js"
-import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import type {
+  ManagedEnvironmentCatalog,
+  ManagedEnvironmentSummary,
+} from "@chariox/kernel-client/ipc-managed-environment-requests"
+import {
+  clearStagedWaitingRoomWorktreeSelection,
+} from "./waiting-room-worktrees.js"
+import {
+  managedEnvironmentMachineRef,
+} from "./waiting-room-managed-environments.js"
+import {
+  beginMutableLocalIpcClientPivot,
+  type MutableLocalIpcClientPivot,
+} from "./mutable-local-ipc-client.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -59,6 +90,7 @@ export type CliWaitingRoomCompositionDeps = {
   kernelConnected: AnyFn
   waitingRoomState: AnyFn
   setWaitingRoomState: AnyFn
+  waitingRoomLaunchOwnershipRevision: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
   waitingRoomProjects: AnyFn
@@ -92,7 +124,9 @@ export type CliWaitingRoomCompositionDeps = {
   externalProviderSessionsPageState: AnyFn
   setExternalProviderSessionsPageState: AnyFn
   pendingWorkspaceTarget: AnyFn
+  setPendingWorkspaceTarget: AnyFn
   pendingWorktreeTarget: AnyFn
+  setPendingWorktreeTarget: AnyFn
   preferencesState: AnyFn
   setPreferencesState: AnyFn
   setThemeRevision: AnyFn
@@ -108,6 +142,7 @@ export type CliWaitingRoomCompositionDeps = {
   openTerminalPairingDialog: AnyFn
   openSessionBrowserDialog: AnyFn
   attachBinding: AnyFn
+  rollbackAttachedSession: AnyFn
   flashFooter: AnyFn
   setKernelConnected: AnyFn
   setDaemonDisconnected: AnyFn
@@ -285,11 +320,22 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   })
   const connectDetachedKernelFromWaitingRoom = detachedKernelConnectController.connect
 
-  const replaceClientForKernel = async (kernelRef: string | null | undefined, machineRef: string | null | undefined) => {
+  const replaceClientForKernel = async (
+    kernelRef: string | null | undefined,
+    machineRef: string | null | undefined,
+    isActive: () => boolean = () => true,
+    connected?: (inventory: WaitingRoomInventory) => void,
+    retainPrevious?: (pivot: MutableLocalIpcClientPivot) => void,
+  ): Promise<boolean> => {
     const targetKernelRef = kernelRef?.trim()
     const currentKernelId = deps.relayStatusState()?.daemon_id?.trim()
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
-      return
+      if (connected && targetKernelRef && targetKernelRef !== "local") {
+        const inventory = await getWaitingRoomInventory(deps.client)
+        if (!isActive()) return false
+        connected(inventory)
+      }
+      return isActive()
     }
     const localPresence = loadLocalKernelPresences()
       .find((presence) => presence.kernelId === targetKernelRef)
@@ -300,6 +346,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           machineRef: machineRef ?? null,
           clientId: deps.options.clientId,
         })
+    if (!isActive()) {
+      return false
+    }
     const nextClient = localPresence
       ? new LocalIpcClient(localKernelEndpoint(localPresence))
       : new LocalIpcClient(connection!.relayUrl, {
@@ -311,17 +360,204 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       await nextClient.close()
       throw new Error("kernel client pivot is unavailable in this build")
     }
+    let targetInventory: WaitingRoomInventory
     try {
-      await getWaitingRoomInventory(nextClient)
+      targetInventory = await getWaitingRoomInventory(nextClient)
     } catch (error) {
       await nextClient.close()
       throw error
     }
-    await deps.client.replaceClient(nextClient)
+    if (!isActive()) {
+      await nextClient.close()
+      return false
+    }
+    if (retainPrevious) {
+      if (typeof deps.client.swapClient !== "function") {
+        await nextClient.close()
+        throw new Error("transactional kernel client pivot is unavailable in this build")
+      }
+      const pivot = beginMutableLocalIpcClientPivot(deps.client, nextClient)
+      try {
+        connected?.(targetInventory)
+      } catch (error) {
+        await pivot.rollback()
+        throw error
+      }
+      retainPrevious(pivot)
+    } else {
+      await deps.client.replaceClient(nextClient)
+      connected?.(targetInventory)
+    }
     waitingRoomInventoryRefreshController.invalidate()
     deps.setKernelConnected(true)
     deps.setDaemonDisconnected(false)
     deps.flashFooter(`connected to kernel ${localPresence?.kernelAlias ?? connection?.targetDaemonAlias ?? connection?.kernelId ?? targetKernelRef}`, "info")
+    return isActive()
+  }
+
+  const managedEnvironmentLaunchController = new WaitingRoomManagedEnvironmentLaunchController({
+    createEnvironment: (input) => createManagedEnvironment(deps.client, input),
+    getEnvironment: (environmentId) => getManagedEnvironment(deps.client, environmentId),
+    requestLifecycle: (input) => requestManagedEnvironmentLifecycle(deps.client, input),
+    prepareContextTransfer: (environmentId) => prepareManagedEnvironmentContextTransfer(
+      deps.client,
+      environmentId,
+    ),
+    startContextTransfer: (ticket) => startManagedContextTransfer(deps.client, ticket),
+    getContextTransferStatus: (contextId) => getManagedContextTransferStatus(deps.client, contextId),
+    connectKernel: async (machineId, kernelId, isActive) => {
+      const sourceRelay = deps.relayStatusState()
+      const connectedTarget: { inventory: WaitingRoomInventory | null } = { inventory: null }
+      let clientPivot: MutableLocalIpcClientPivot | null = null
+      if (!await replaceClientForKernel(kernelId, machineId, isActive, (inventory) => {
+        const relay = inventory.relayStatus
+        if (relay.daemon_id !== kernelId || relay.machine_id !== machineId) {
+          throw new Error("connected kernel identity does not match the managed environment binding")
+        }
+        connectedTarget.inventory = inventory
+        deps.setRelayStatusState(relay)
+      }, (pivot) => {
+        clientPivot = pivot
+      })) {
+        return null
+      }
+      const relay = connectedTarget.inventory?.relayStatus ?? deps.relayStatusState()
+      if (relay?.daemon_id !== kernelId || relay.machine_id !== machineId) {
+        throw new Error("connected kernel identity does not match the managed environment binding")
+      }
+      deps.setRelayStatusState(relay)
+      let settled = false
+      const commit = async () => {
+        if (settled) return
+        settled = true
+        const pivot = clientPivot
+        clientPivot = null
+        try {
+          await pivot?.commit()
+        } catch (error) {
+          deps.appLogger?.warn("failed to close the previous kernel client after managed launch", {
+            error: deps.formatError(error),
+          })
+        }
+      }
+      const rollback = async () => {
+        if (settled) return
+        settled = true
+        const pivot = clientPivot
+        clientPivot = null
+        try {
+          await pivot?.rollback()
+        } finally {
+          if (pivot) deps.setRelayStatusState(sourceRelay)
+        }
+      }
+      if (relay.connected !== true) {
+        await rollback()
+        return null
+      }
+      return { commit, rollback }
+    },
+    getLaunchTarget: (contextId, planDigest) => getManagedContextLaunchTarget(
+      deps.client,
+      contextId,
+      planDigest,
+    ),
+    createIdempotencyKey: randomUUID,
+    environmentName: () => "Managed agent",
+    delay: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    nowMs: Date.now,
+  })
+
+  const prepareManagedSessionLaunch = async (
+    launch: WaitingRoomLaunchConfig,
+  ): Promise<WaitingRoomPreparedManagedLaunch> => {
+    const selection = launch.managedEnvironment
+    if (!selection) {
+      throw new Error("managed session launch selection is missing")
+    }
+    let expectedMachineRef = deps.waitingRoomState().selectedMachineRef
+    let expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
+    let cancelled = false
+    const assertActive = () => {
+      if (cancelled
+        || deps.waitingRoomState().selectedMachineRef !== expectedMachineRef
+        || deps.waitingRoomLaunchOwnershipRevision() !== expectedOwnershipRevision) {
+        cancelled = true
+        throw new Error("managed session launch was cancelled because the Waiting Room selection changed")
+      }
+    }
+    const environmentChanged = (environment: ManagedEnvironmentSummary) => {
+      assertActive()
+      if (managedEnvironmentCatalog) {
+        managedEnvironmentCatalog = {
+          ...managedEnvironmentCatalog,
+          environments: [
+            environment,
+            ...managedEnvironmentCatalog.environments.filter((candidate) => (
+              candidate.environmentId !== environment.environmentId
+            )),
+          ],
+        }
+      }
+      expectedMachineRef = managedEnvironmentMachineRef(environment.environmentId)
+      deps.setWaitingRoomState({
+        ...deps.waitingRoomState(),
+        selectedMachineRef: expectedMachineRef,
+        ...(environment.runtimeKernelId ? { selectedKernelRef: environment.runtimeKernelId } : {}),
+      })
+      expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
+      deps.rebuildTranscript()
+    }
+    const prepared = await managedEnvironmentLaunchController.prepare(selection, {
+      assertActive,
+      environmentChanged,
+      progress: (message) => deps.flashFooter(message, "info"),
+    })
+    try {
+      assertActive()
+      deps.setPendingWorkspaceTarget(prepared.workspacePath)
+      deps.setPendingWorktreeTarget(prepared.worktreePath)
+      clearStagedWaitingRoomWorktreeSelection()
+      const {
+        managedEnvironment: _managedEnvironment,
+        workerKernelRef: _workerKernelRef,
+        sliceRef: _sliceRef,
+        sliceCreate: _sliceCreate,
+        projectSelection: _projectSelection,
+        ...ordinaryLaunch
+      } = launch
+      expectedMachineRef = managedEnvironmentMachineRef(prepared.environment.environmentId)
+      deps.setWaitingRoomState({
+        ...deps.waitingRoomState(),
+        selectedMachineRef: expectedMachineRef,
+        selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
+        projectSelectionId: "default",
+        worktreeSelectionId: `existing:${prepared.worktreePath}`,
+        sliceSelectionId: "none",
+      })
+      expectedOwnershipRevision = deps.waitingRoomLaunchOwnershipRevision()
+      deps.rebuildTranscript()
+      return {
+        launch: {
+          ...ordinaryLaunch,
+          ownerMachineRef: prepared.environment.runtimeMachineId,
+          ownerKernelRef: prepared.environment.runtimeKernelId,
+          projectSelection: { kind: "default" as const },
+        },
+        assertActive,
+        commit: prepared.commit,
+        rollback: prepared.rollback,
+      }
+    } catch (error) {
+      try {
+        await prepared.rollback()
+      } catch (rollbackError) {
+        throw new Error(
+          `${deps.formatError(error)}; failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`,
+        )
+      }
+      throw error
+    }
   }
 
   const waitingRoomActivationController = createWaitingRoomActivationController({
@@ -362,6 +598,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       execution_mode: launch.execution_mode,
       permission_level: launch.permission_level,
     }, launch.sliceRef, launch.workspaceLiveSyncMode, launch.sliceRef ? null : (launch.workerKernelRef ?? null), null, launch.projectSelection),
+    deleteCreatedSession: async (sessionId, workspacePath) => {
+      await deleteSessionByRef(deps.client, sessionId, workspacePath)
+    },
     importExternalProviderSession: (externalSessionId) => importExternalProviderSession(deps.client, externalSessionId),
     loadOlderExternalProviderSessions: async () => {
       const pageState = deps.externalProviderSessionsPageState()
@@ -404,11 +643,13 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     prepareSessionOwnerClient: async (launch) => {
       await replaceClientForKernel(launch.ownerKernelRef, launch.ownerMachineRef)
     },
+    prepareManagedSessionLaunch,
     prepareExistingSessionClient: async (session) => {
       await replaceClientForKernel(session.kernel_id ?? session.host_daemon_id, session.machine_id ?? session.host_machine_id)
       await refreshWaitingRoomDataNow()
     },
     attachBinding: deps.attachBinding,
+    rollbackAttachedSession: deps.rollbackAttachedSession,
     flashFooter: (message, tone) => deps.flashFooter(message, tone),
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,

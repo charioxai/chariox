@@ -38,10 +38,14 @@ export async function getManagedEnvironment(
   environmentId: string,
 ): Promise<ManagedEnvironmentSummary> {
   const response = await client.send<Record<string, unknown>>(getManagedEnvironmentRequest(environmentId))
-  return expectVariant<{ environment: ManagedEnvironmentSummary }>(
+  const environment = expectVariant<{ environment: ManagedEnvironmentSummary }>(
     response,
     "ManagedEnvironment",
   ).environment
+  if (environment.environmentId !== environmentId) {
+    throw new Error("kernel returned a different managed environment")
+  }
+  return environment
 }
 
 export async function createManagedEnvironment(
@@ -56,10 +60,12 @@ export async function createManagedEnvironment(
   },
 ): Promise<ManagedEnvironmentResult> {
   const response = await client.send<Record<string, unknown>>(createManagedEnvironmentRequest(input))
-  return expectVariant<{ result: ManagedEnvironmentResult }>(
+  const result = expectVariant<{ result: ManagedEnvironmentResult }>(
     response,
     "ManagedEnvironmentCreated",
   ).result
+  validateManagedEnvironmentResult(result)
+  return result
 }
 
 export async function requestManagedEnvironmentLifecycle(
@@ -73,10 +79,12 @@ export async function requestManagedEnvironmentLifecycle(
   const response = await client.send<Record<string, unknown>>(
     requestManagedEnvironmentLifecycleRequest(input),
   )
-  return expectVariant<{ result: ManagedEnvironmentResult }>(
+  const result = expectVariant<{ result: ManagedEnvironmentResult }>(
     response,
     "ManagedEnvironmentLifecycleRequested",
   ).result
+  validateManagedEnvironmentResult(result, input.environmentId)
+  return result
 }
 
 export async function prepareManagedEnvironmentContextTransfer(
@@ -86,10 +94,14 @@ export async function prepareManagedEnvironmentContextTransfer(
   const response = await client.send<Record<string, unknown>>(
     prepareManagedEnvironmentContextTransferRequest(environmentId),
   )
-  return expectVariant<{ ticket: ManagedContextTransferTicket }>(
+  const ticket = expectVariant<{ ticket: ManagedContextTransferTicket }>(
     response,
     "ManagedEnvironmentContextTransferPrepared",
   ).ticket
+  if (ticket.environmentId !== environmentId) {
+    throw new Error("kernel returned a context transfer ticket for a different managed environment")
+  }
+  return ticket
 }
 
 export async function startManagedContextTransfer(
@@ -128,4 +140,14 @@ export async function getManagedContextLaunchTarget(
     response,
     "ManagedContextLaunchTarget",
   ).target
+}
+
+function validateManagedEnvironmentResult(
+  result: ManagedEnvironmentResult,
+  expectedEnvironmentId?: string,
+): void {
+  if (result.operation.environmentId !== result.environment.environmentId
+    || (expectedEnvironmentId !== undefined && result.environment.environmentId !== expectedEnvironmentId)) {
+    throw new Error("kernel returned a mismatched managed environment result")
+  }
 }

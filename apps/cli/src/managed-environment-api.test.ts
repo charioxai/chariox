@@ -18,8 +18,8 @@ test("managed environment API uses only shared LocalDaemon request variants", as
   const responses = [
     { ManagedEnvironmentCatalog: { catalog: { computeClasses: [], contextSources: [], environments: [] } } },
     { ManagedEnvironment: { environment: { environmentId: "environment-1" } } },
-    { ManagedEnvironmentCreated: { result: { environment: { environmentId: "environment-1" }, operation: {} } } },
-    { ManagedEnvironmentLifecycleRequested: { result: { environment: { environmentId: "environment-1" }, operation: {} } } },
+    { ManagedEnvironmentCreated: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
+    { ManagedEnvironmentLifecycleRequested: { result: { environment: { environmentId: "environment-1" }, operation: { environmentId: "environment-1" } } } },
     { ManagedEnvironmentContextTransferPrepared: { ticket: ticket() } },
     { ManagedContextTransferStarted: { status: status("preparing") } },
     { ManagedContextTransferStatus: { status: status("completed") } },
@@ -83,6 +83,17 @@ test("managed environment API uses only shared LocalDaemon request variants", as
     { GetManagedContextTransferStatus: { contextId: "context-1" } },
     { GetManagedContextLaunchTarget: { contextId: "context-1", planDigest: "sha256:plan" } },
   ])
+})
+
+test("managed environment API rejects responses for another environment", async () => {
+  const client = {
+    send: async () => ({ ManagedEnvironment: { environment: { environmentId: "environment-other" } } }),
+  } as unknown as LocalIpcClient
+
+  await assert.rejects(
+    getManagedEnvironment(client, "environment-1"),
+    /different managed environment/,
+  )
 })
 
 function ticket() {
