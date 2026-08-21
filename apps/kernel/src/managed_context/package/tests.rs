@@ -28,6 +28,7 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
             repositories: vec![
                 crate::managed_context::development::DevelopmentRepositorySelection {
                     workspace_id: "workspace-primary".to_string(),
+                    worktree_id: None,
                     worktree_path: repository,
                     role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
                 },
@@ -37,8 +38,21 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
     )
     .expect("export development context");
     let binding = ManagedContextPackageBinding {
-        context_id: "context-empty-apply".to_string(),
-        project_id: "project-empty-apply".to_string(),
+        plan: ManagedContextPlanBinding {
+            context_id: "context-empty-apply".to_string(),
+            plan_digest: format!("sha256:{}", "1".repeat(64)),
+            kernel_context: ManagedContextKernelSelection::Empty,
+            development: ManagedContextDevelopmentSelection::SourceProject {
+                project_id: "project-empty-apply".to_string(),
+                repositories: vec![DevelopmentSourceRepositoryBinding {
+                    role: DevelopmentRepositoryRole::Primary,
+                    workspace_id: "workspace-primary".to_string(),
+                    worktree_id: None,
+                }],
+            },
+            provider_accounts: ManagedContextProviderAccountSelection::None,
+            git_credentials: ManagedContextGitCredentialSelection::None,
+        },
         target_environment_id: "environment-empty-apply".to_string(),
         source_kernel_id: "source-kernel-empty-apply".to_string(),
         source_key_thumbprint: "a".repeat(64),
@@ -46,15 +60,16 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         target_key_thumbprint: "b".repeat(64),
     };
     let package = export_managed_context_package(ManagedContextPackageExportRequest {
-        context_id: binding.context_id.clone(),
-        project_id: binding.project_id.clone(),
+        plan: binding.plan.clone(),
         target_environment_id: binding.target_environment_id.clone(),
         source_kernel_id: binding.source_kernel_id.clone(),
         source_key_thumbprint: binding.source_key_thumbprint.clone(),
         target_kernel_id: binding.target_kernel_id.clone(),
         target_key_thumbprint: binding.target_key_thumbprint.clone(),
-        development_archive_path: development.archive_path,
-        development_archive_sha256: development.archive_sha256,
+        development: ManagedContextPackageDevelopment::FromSource {
+            archive_path: development.archive_path,
+            archive_sha256: development.archive_sha256,
+        },
         kernel_context: ManagedContextPackageKernel::Empty,
         package_path: root.join("context.chariox"),
     })
@@ -72,13 +87,12 @@ fn explicit_empty_package_applies_a_real_development_context_without_kernel_stat
         receipt.kernel_context,
         ManagedContextImportedKernelContext::Empty
     ));
+    let ManagedContextImportedDevelopment::FromSource { receipt, .. } = receipt.development else {
+        panic!("selected development context became Empty")
+    };
     assert_eq!(
-        fs::read_to_string(
-            receipt.development.repositories[0]
-                .destination_path
-                .join("tracked.txt")
-        )
-        .expect("read imported file"),
+        fs::read_to_string(receipt.repositories[0].destination_path.join("tracked.txt"))
+            .expect("read imported file"),
         "explicit Empty\n"
     );
     fs::remove_dir_all(root).expect("remove Empty apply fixture");
@@ -97,13 +111,88 @@ fn empty_package_round_trips_as_explicit_empty_context() {
         extracted.kernel_context,
         ManagedContextPackageKernel::Empty
     ));
+    let ExtractedManagedContextDevelopment::FromSource { archive_path, .. } =
+        &extracted.development
+    else {
+        panic!("selected development context became Empty")
+    };
     assert_eq!(
-        fs::read(&extracted.development_archive_path).expect("read development component"),
+        fs::read(archive_path).expect("read development component"),
         fixture.development_bytes
     );
     let component_root = extracted.component_root().to_path_buf();
     drop(extracted);
     assert!(!component_root.exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn package_applies_without_a_development_component_when_the_plan_selects_empty() {
+    let fixture = PackageFixture::new("no-development");
+    let mut request = fixture.export_request(ManagedContextPackageKernel::Empty);
+    request.plan.development = ManagedContextDevelopmentSelection::Empty;
+    request.development = ManagedContextPackageDevelopment::Empty;
+    let exported = export_managed_context_package(request).expect("export no-development package");
+    assert!(exported.development_archive_sha256.is_none());
+    let binding = ManagedContextPackageBinding {
+        plan: exported.plan.clone(),
+        ..fixture.binding.clone()
+    };
+    let receipt = apply_managed_context_package(ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_no_development".to_string(),
+        package_path: exported.package_path,
+        expected_package_sha256: exported.package_sha256,
+        expected_binding: binding,
+        development_destination_root: fixture.root.join("unused-development"),
+        target_private_key: "unused-for-empty-context".to_string(),
+    })
+    .expect("apply no-development package");
+    assert!(matches!(
+        receipt.development,
+        ManagedContextImportedDevelopment::Empty
+    ));
+    assert!(!fixture.root.join("unused-development").exists());
+    fixture.cleanup();
+}
+
+#[test]
+fn package_manifest_carries_a_near_cloud_limit_plan() {
+    let fixture = PackageFixture::new("large-plan");
+    let mut request = fixture.export_request(ManagedContextPackageKernel::Empty);
+    request.plan.development = ManagedContextDevelopmentSelection::SourceProject {
+        project_id: "project-large-plan".to_string(),
+        repositories: (0..16)
+            .map(|index| DevelopmentSourceRepositoryBinding {
+                role: if index == 0 {
+                    DevelopmentRepositoryRole::Primary
+                } else {
+                    DevelopmentRepositoryRole::Supporting
+                },
+                workspace_id: format!("workspace-{index}-{}", "x".repeat(4_060)),
+                worktree_id: None,
+            })
+            .collect(),
+    };
+    let plan_bytes = serde_json::to_vec(&request.plan).expect("serialize large plan");
+    assert!(plan_bytes.len() > 63 * 1024);
+    assert!(plan_bytes.len() <= MAX_PLAN_BINDING_BYTES);
+
+    let exported = export_managed_context_package(request).expect("export near-limit plan");
+    let package_bytes = fs::read(&exported.package_path).expect("read near-limit package");
+    let manifest_length = u32::from_be_bytes(
+        package_bytes[PACKAGE_MAGIC.len()..PACKAGE_MAGIC.len() + 4]
+            .try_into()
+            .expect("manifest length field"),
+    ) as usize;
+    assert!(manifest_length > 64 * 1024);
+    assert!(manifest_length <= MAX_MANIFEST_BYTES);
+    let extracted = extract_managed_context_package(fixture.import_request(&exported))
+        .expect("extract near-limit plan");
+    assert!(matches!(
+        extracted.kernel_context,
+        ManagedContextPackageKernel::Empty
+    ));
+    drop(extracted);
     fixture.cleanup();
 }
 
@@ -138,6 +227,32 @@ fn package_rejects_a_different_authenticated_binding() {
     let mut request = fixture.import_request(&exported);
     request.expected_binding.target_environment_id = "environment-other".to_string();
     let error = extract_managed_context_package(request).expect_err("binding mismatch must fail");
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+    fixture.cleanup();
+}
+
+#[test]
+fn package_rejects_a_substituted_workspace_selection_before_publication() {
+    let fixture = PackageFixture::new("workspace-binding");
+    let exported =
+        export_managed_context_package(fixture.export_request(ManagedContextPackageKernel::Empty))
+            .expect("export package");
+    let mut request = fixture.import_request(&exported);
+    let ManagedContextDevelopmentSelection::SourceProject { repositories, .. } =
+        &mut request.expected_binding.plan.development
+    else {
+        panic!("fixture must select source development")
+    };
+    repositories[0].workspace_id = "workspace-substituted".to_string();
+    let error = extract_managed_context_package(request)
+        .expect_err("substituted Workspace selection must fail");
     assert!(matches!(
         error,
         DaemonError::ManagedContext {
@@ -211,8 +326,21 @@ impl PackageFixture {
             development_path,
             development_bytes,
             binding: ManagedContextPackageBinding {
-                context_id: "context-1".to_string(),
-                project_id: "project-1".to_string(),
+                plan: ManagedContextPlanBinding {
+                    context_id: "context-1".to_string(),
+                    plan_digest: format!("sha256:{}", "1".repeat(64)),
+                    kernel_context: ManagedContextKernelSelection::Empty,
+                    development: ManagedContextDevelopmentSelection::SourceProject {
+                        project_id: "project-1".to_string(),
+                        repositories: vec![DevelopmentSourceRepositoryBinding {
+                            role: DevelopmentRepositoryRole::Primary,
+                            workspace_id: "workspace-1".to_string(),
+                            worktree_id: None,
+                        }],
+                    },
+                    provider_accounts: ManagedContextProviderAccountSelection::None,
+                    git_credentials: ManagedContextGitCredentialSelection::None,
+                },
                 target_environment_id: "environment-1".to_string(),
                 source_kernel_id: "source-kernel-1".to_string(),
                 source_key_thumbprint: "a".repeat(64),
@@ -226,16 +354,24 @@ impl PackageFixture {
         &self,
         kernel_context: ManagedContextPackageKernel,
     ) -> ManagedContextPackageExportRequest {
+        let mut plan = self.binding.plan.clone();
+        plan.kernel_context = match &kernel_context {
+            ManagedContextPackageKernel::Empty => ManagedContextKernelSelection::Empty,
+            ManagedContextPackageKernel::FromKernel(_) => {
+                ManagedContextKernelSelection::SourceKernel
+            }
+        };
         ManagedContextPackageExportRequest {
-            context_id: self.binding.context_id.clone(),
-            project_id: self.binding.project_id.clone(),
+            plan,
             target_environment_id: self.binding.target_environment_id.clone(),
             source_kernel_id: self.binding.source_kernel_id.clone(),
             source_key_thumbprint: self.binding.source_key_thumbprint.clone(),
             target_kernel_id: self.binding.target_kernel_id.clone(),
             target_key_thumbprint: self.binding.target_key_thumbprint.clone(),
-            development_archive_path: self.development_path.clone(),
-            development_archive_sha256: sha256_bytes(&self.development_bytes),
+            development: ManagedContextPackageDevelopment::FromSource {
+                archive_path: self.development_path.clone(),
+                archive_sha256: sha256_bytes(&self.development_bytes),
+            },
             kernel_context,
             package_path: self.root.join("context.chariox"),
         }
@@ -248,7 +384,10 @@ impl PackageFixture {
         ManagedContextPackageImportRequest {
             package_path: exported.package_path.clone(),
             expected_package_sha256: exported.package_sha256.clone(),
-            expected_binding: self.binding.clone(),
+            expected_binding: ManagedContextPackageBinding {
+                plan: exported.plan.clone(),
+                ..self.binding.clone()
+            },
         }
     }
 
@@ -256,7 +395,7 @@ impl PackageFixture {
         KernelContextSnapshot {
             payload: KernelContextPayload {
                 schema_version: 1,
-                context_id: self.binding.context_id.clone(),
+                context_id: self.binding.plan.context_id.clone(),
                 source_kernel_id: self.binding.source_kernel_id.clone(),
                 source_key_thumbprint: self.binding.source_key_thumbprint.clone(),
                 target_kernel_id: self.binding.target_kernel_id.clone(),
@@ -271,7 +410,7 @@ impl PackageFixture {
                 dependencies: Vec::new(),
                 vault: crate::secret::TransferredVaultSnapshot {
                     schema_version: 1,
-                    context_id: self.binding.context_id.clone(),
+                    context_id: self.binding.plan.context_id.clone(),
                     source_kernel_id: self.binding.source_kernel_id.clone(),
                     source_key_thumbprint: self.binding.source_key_thumbprint.clone(),
                     target_kernel_id: self.binding.target_kernel_id.clone(),

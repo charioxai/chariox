@@ -9,6 +9,7 @@ struct ArtifactExpectation {
 pub(super) fn extract_and_verify_archive(
     archive_file: File,
     expected_project_id: &str,
+    expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
     artifacts_root: &Path,
 ) -> Result<DevelopmentContextManifest, DaemonError> {
     let decoder = MultiGzDecoder::new(archive_file);
@@ -42,7 +43,11 @@ pub(super) fn extract_and_verify_archive(
                 serde_json::from_slice(&bytes).map_err(|error| {
                     context_error(format!("parse development context manifest: {error}"))
                 })?;
-            expected_artifacts = validate_import_manifest(&parsed, expected_project_id)?;
+            expected_artifacts = validate_import_manifest(
+                &parsed,
+                expected_project_id,
+                expected_source_repositories,
+            )?;
             manifest = Some(parsed);
             continue;
         }
@@ -94,6 +99,7 @@ pub(super) fn extract_and_verify_archive(
 fn validate_import_manifest(
     manifest: &DevelopmentContextManifest,
     expected_project_id: &str,
+    expected_source_repositories: Option<&[DevelopmentSourceRepositoryBinding]>,
 ) -> Result<BTreeMap<String, ArtifactExpectation>, DaemonError> {
     if manifest.schema_version != DEVELOPMENT_CONTEXT_SCHEMA_VERSION {
         return Err(context_error(format!(
@@ -105,6 +111,21 @@ fn validate_import_manifest(
         return Err(context_error(
             "development context project id does not match the expected project",
         ));
+    }
+    if let Some(expected) = expected_source_repositories {
+        let matches = manifest.repositories.len() == expected.len()
+            && manifest
+                .repositories
+                .iter()
+                .zip(expected)
+                .all(|(repository, binding)| {
+                    repository.source_binding_sha256 == source_repository_binding_sha256(binding)
+                });
+        if !matches {
+            return Err(context_error(
+                "development context source repository selection does not match the launch plan",
+            ));
+        }
     }
     if manifest.repositories.is_empty() || manifest.repositories.len() > MAX_REPOSITORIES {
         return Err(context_error(
@@ -129,6 +150,16 @@ fn validate_import_manifest(
     let mut artifacts = BTreeMap::new();
     let mut total_artifact_bytes = 0_u64;
     for repository in &manifest.repositories {
+        if repository.source_binding_sha256.len() != 64
+            || !repository
+                .source_binding_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(context_error(
+                "development context source repository binding is invalid",
+            ));
+        }
         if repository.repository_id.is_empty()
             || repository.repository_id.len() > 128
             || !repository

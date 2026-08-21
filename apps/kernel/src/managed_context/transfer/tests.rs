@@ -5,6 +5,23 @@ use std::path::PathBuf;
 use super::*;
 
 #[test]
+fn internal_transfer_debug_redacts_capabilities() {
+    let request = arm_request(b"archive", current_time_ms() + 10_000);
+    let request_debug = format!("{request:?}");
+    assert!(!request_debug.contains(&request.capability));
+    assert!(request_debug.contains("[REDACTED]"));
+
+    let armed = ArmedManagedContextTransfer {
+        transfer_id: "ctx_debug".to_string(),
+        capability: "armed-capability-canary".to_string(),
+        expires_at_ms: current_time_ms() + 10_000,
+    };
+    let armed_debug = format!("{armed:?}");
+    assert!(!armed_debug.contains(&armed.capability));
+    assert!(armed_debug.contains("[REDACTED]"));
+}
+
+#[test]
 fn transfer_resumes_retries_and_consumes_once_across_restart() {
     let root = test_root("resume");
     let archive = b"portable context archive";
@@ -12,7 +29,9 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     let mut request = arm_request(archive, now + 10_000);
     request.destination_parent = root.join("destinations");
     let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
-    let armed = store.arm(request, now).expect("arm transfer");
+    let armed = store.arm(request.clone(), now).expect("arm transfer");
+    let replayed = store.arm(request, now + 1).expect("replay identical arm");
+    assert_eq!(replayed, armed);
     assert!(!String::from_utf8(
         fs::read(root.join("state.json")).expect("read persisted transfer state")
     )
@@ -146,6 +165,7 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     );
     let prune_now = now + 20_001 + COMPLETED_TRANSFER_RETENTION_MS + 1;
     let mut replacement = arm_request(b"replacement archive", prune_now + 10_000);
+    replacement.plan.context_id = "context-replacement".to_string();
     replacement.destination_parent = root.join("destinations");
     store
         .arm(replacement, prune_now)
@@ -153,6 +173,9 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     assert!(store
         .get_status(&armed.transfer_id, &armed.capability, &caller, prune_now,)
         .is_err());
+    let mut replay_after_consumption = arm_request(archive, prune_now + 10_000);
+    replay_after_consumption.destination_parent = root.join("destinations");
+    assert!(store.arm(replay_after_consumption, prune_now).is_err());
     fs::remove_dir_all(root).expect("remove transfer root");
 }
 
@@ -215,7 +238,7 @@ fn arming_reserves_aggregate_state_capacity_for_combined_receipts() {
     let mut armed_count = 0;
     for sequence in 0..MAX_ACTIVE_TRANSFERS {
         let mut request = arm_request(b"x", now + 10_000);
-        request.context_id = format!("context-{sequence}");
+        request.plan.context_id = format!("context-{sequence}");
         request.destination_parent = root.join("destinations");
         match store.arm(request, now) {
             Ok(_) => armed_count += 1,
@@ -575,8 +598,10 @@ fn nonretryable_import_retirement_retains_replay_but_removes_artifacts_and_capac
             ..
         })
     ));
+    let mut replacement = arm_request(b"replacement", now + 20_000);
+    replacement.plan.context_id = "context-replacement".to_string();
     store
-        .arm(arm_request(b"replacement", now + 20_000), now + 6)
+        .arm(replacement, now + 6)
         .expect("retired failure does not consume active capacity");
     fs::remove_dir_all(root).expect("remove transfer root");
 }
@@ -621,6 +646,7 @@ fn interrupted_import_remains_recoverable_after_upload_and_restart_expiry() {
     fs::create_dir(&staging).expect("create abandoned staging");
     let recovery_now = now + 7 * 24 * 60 * 60 * 1_000;
     let mut while_active = arm_request(b"while active", recovery_now + 10_000);
+    while_active.plan.context_id = "context-while-active".to_string();
     while_active.destination_parent = root.join("destinations");
     store
         .arm(while_active, recovery_now)
@@ -635,6 +661,7 @@ fn interrupted_import_remains_recoverable_after_upload_and_restart_expiry() {
         ManagedContextTransferStore::open(root.clone()).expect("restart with interrupted import");
     assert!(!staging.exists());
     let mut after_crash = arm_request(b"after crash", recovery_now + 10_001);
+    after_crash.plan.context_id = "context-after-crash".to_string();
     after_crash.destination_parent = root.join("destinations");
     store
         .arm(after_crash, recovery_now + 1)
@@ -726,13 +753,13 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             &fs::read(root.join("state.json")).expect("read migrated state")
         )
         .expect("parse migrated state")["schema_version"],
-        2
+        3
     );
     fs::remove_dir_all(root).expect("remove transfer root");
 }
 
 #[test]
-fn schema_v1_consumed_receipt_migrates_to_explicit_empty_kernel_context() {
+fn schema_v1_consumed_receipt_is_retired_without_blocking_startup() {
     let root = test_root("schema-v1-consumed");
     let archive = b"legacy development archive";
     let now = current_time_ms();
@@ -786,23 +813,69 @@ fn schema_v1_consumed_receipt_migrates_to_explicit_empty_kernel_context() {
 
     let reopened = ManagedContextTransferStore::open(root.clone())
         .expect("schema-v1 consumed transfer cannot block startup");
-    let status = reopened
+    assert!(reopened
         .get_status(&armed.transfer_id, &armed.capability, &caller, now + 5)
-        .expect("migrated consumed status");
-    let receipt: crate::managed_context::package::ManagedContextPackageImportReceipt =
-        serde_json::from_str(
-            status
-                .import_receipt_json
-                .as_deref()
-                .expect("migrated receipt"),
-        )
-        .expect("parse migrated package receipt");
-    assert!(matches!(
-        receipt.kernel_context,
-        crate::managed_context::package::ManagedContextImportedKernelContext::Empty
-    ));
-    assert_eq!(receipt.development.project_id, "project-1");
+        .is_err());
     fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn legacy_consumed_marker_capacity_never_persists_an_unstartable_state() {
+    let now = current_time_ms();
+
+    let full_root = test_root("legacy-consumed-capacity-full");
+    write_legacy_consumed_state(&full_root, MAX_TRANSFER_RECORDS, now);
+    let full = ManagedContextTransferStore::open(full_root.clone())
+        .expect("migrate a full legacy consumed-marker set");
+    let mut rejected = arm_request(b"new archive", now + 10_000);
+    rejected.plan.context_id = "context-after-full-migration".to_string();
+    rejected.destination_parent = full_root.join("destinations");
+    assert!(full.arm(rejected, now).is_err());
+    drop(full);
+    ManagedContextTransferStore::open(full_root.clone())
+        .expect("full migrated marker state remains restartable");
+    fs::remove_dir_all(full_root).expect("remove full marker root");
+
+    let boundary_root = test_root("legacy-consumed-capacity-boundary");
+    write_legacy_consumed_state(&boundary_root, MAX_TRANSFER_RECORDS - 1, now);
+    let store = ManagedContextTransferStore::open(boundary_root.clone())
+        .expect("migrate a boundary legacy consumed-marker set");
+    let archive = b"boundary archive";
+    let mut request = arm_request(archive, now + 10_000);
+    request.plan.context_id = "context-final-marker".to_string();
+    request.destination_parent = boundary_root.join("destinations");
+    let armed = store.arm(request, now).expect("reserve final marker");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin boundary transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload boundary archive");
+    claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim boundary transfer"),
+    );
+    store
+        .commit_import(&armed.transfer_id, r#"{"boundary":true}"#, now + 4)
+        .expect("consume final marker");
+    assert_eq!(
+        store.lock_state().consumed_context_ids.len(),
+        MAX_TRANSFER_RECORDS
+    );
+    drop(store);
+    ManagedContextTransferStore::open(boundary_root.clone())
+        .expect("final valid marker state remains restartable");
+    fs::remove_dir_all(boundary_root).expect("remove boundary marker root");
 }
 
 #[test]
@@ -959,6 +1032,40 @@ fn rewrite_state_as_v1(path: &std::path::Path) {
     .expect("write v1 transfer state");
 }
 
+fn write_legacy_consumed_state(root: &std::path::Path, count: usize, now: u64) {
+    let store = ManagedContextTransferStore::open(root.to_path_buf())
+        .expect("open legacy marker fixture store");
+    let mut request = arm_request(b"legacy marker template", now + 10_000);
+    request.destination_parent = root.join("destinations");
+    store.arm(request, now).expect("arm legacy marker template");
+    let template = store
+        .lock_state()
+        .entries
+        .values()
+        .next()
+        .expect("legacy marker template")
+        .clone();
+    drop(store);
+
+    let mut state = PersistedTransferState {
+        schema_version: 2,
+        entries: std::collections::BTreeMap::new(),
+        consumed_context_ids: std::collections::BTreeSet::new(),
+    };
+    for index in 0..count {
+        let mut entry = template.clone();
+        entry.phase = ManagedContextTransferPhase::Consumed;
+        entry.legacy_context_id = format!("legacy-context-{index}");
+        entry.completed_at_ms = Some(now);
+        state.entries.insert(format!("ctx_legacy_{index}"), entry);
+    }
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&state).expect("serialize legacy marker fixture"),
+    )
+    .expect("write legacy marker fixture");
+}
+
 fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
     match claim {
         ManagedContextImportClaim::Claimed(ready) => ready,
@@ -968,7 +1075,27 @@ fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
 
 fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer {
     ArmManagedContextTransfer {
-        context_id: "context-1".to_string(),
+        plan: crate::managed_context::package::ManagedContextPlanBinding {
+            context_id: "context-1".to_string(),
+            plan_digest: format!("sha256:{}", "1".repeat(64)),
+            kernel_context:
+                crate::managed_context::package::ManagedContextKernelSelection::Empty,
+            development:
+                crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                    project_id: "project-1".to_string(),
+                    repositories: vec![
+                        crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                            role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                            workspace_id: "workspace-1".to_string(),
+                            worktree_id: None,
+                        },
+                    ],
+                },
+            provider_accounts:
+                crate::managed_context::package::ManagedContextProviderAccountSelection::None,
+            git_credentials:
+                crate::managed_context::package::ManagedContextGitCredentialSelection::None,
+        },
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "kernel-target".to_string(),
         target_key_thumbprint: sha256_bytes(b"target-key"),
@@ -976,7 +1103,7 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
         source_key_thumbprint: sha256_bytes(b"source-key"),
         owner_user_id: "user-1".to_string(),
         realm_id: "realm-1".to_string(),
-        project_id: "project-1".to_string(),
+        capability: "c".repeat(43),
         archive_sha256: sha256_bytes(archive),
         archive_size_bytes: archive.len() as u64,
         destination_parent: std::env::temp_dir().join("managed-projects"),

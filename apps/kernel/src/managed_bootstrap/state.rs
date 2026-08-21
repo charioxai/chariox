@@ -9,7 +9,9 @@ use url::Url;
 use crate::config::write_private_file;
 use crate::error::DaemonError;
 
-const MAX_STATE_BYTES: u64 = 64 * 1024;
+use super::context_plan::ManagedKernelContextPlan;
+
+const MAX_STATE_BYTES: u64 = 96 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct BootstrapConfig {
@@ -53,6 +55,8 @@ pub(super) struct BootstrapReceipt {
     pub(super) relay_public_key: String,
     pub(super) runtime_release_digest: String,
     pub(super) confirmed_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) context_plan: Option<ManagedKernelContextPlan>,
 }
 
 impl BootstrapConfig {
@@ -147,12 +151,24 @@ impl BootstrapReceipt {
             return Ok(None);
         }
         let receipt: Self = read_bounded_json(path, "managed bootstrap receipt")?;
+        let confirmation_is_valid = match (&receipt.status, receipt.confirmed_at.as_deref()) {
+            (BootstrapReceiptStatus::Exchanged, None) => true,
+            (BootstrapReceiptStatus::Confirmed, Some(value)) => {
+                DateTime::parse_from_rfc3339(value).is_ok()
+            }
+            _ => false,
+        };
         if receipt.schema_version != 1
             || !valid_identifier(&receipt.environment_id)
             || !valid_identifier(&receipt.machine_id)
             || !valid_identifier(&receipt.kernel_id)
             || receipt.relay_public_key.trim().is_empty()
             || !valid_digest(&receipt.runtime_release_digest)
+            || receipt
+                .context_plan
+                .as_ref()
+                .is_some_and(|plan| plan.validate().is_err())
+            || !confirmation_is_valid
         {
             return Err(state_error("managed bootstrap receipt is invalid"));
         }
@@ -162,6 +178,9 @@ impl BootstrapReceipt {
     pub(super) fn persist(&self, path: &Path) -> Result<(), DaemonError> {
         let bytes =
             serde_json::to_vec_pretty(self).map_err(|error| state_error(&error.to_string()))?;
+        if bytes.len() as u64 > MAX_STATE_BYTES {
+            return Err(state_error("managed bootstrap receipt is too large"));
+        }
         write_private_file(path, &bytes).map_err(|error| state_error(&error.to_string()))
     }
 }

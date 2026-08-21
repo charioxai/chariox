@@ -43,11 +43,13 @@ fn exports_two_repositories_with_unpushed_commits_and_exact_dirty_states() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: primary.display().to_string(),
+                worktree_id: None,
                 worktree_path: primary.clone(),
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: supporting.display().to_string(),
+                worktree_id: None,
                 worktree_path: supporting.clone(),
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -86,11 +88,13 @@ fn exports_two_repositories_with_unpushed_commits_and_exact_dirty_states() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: primary.display().to_string(),
+                worktree_id: None,
                 worktree_path: primary.clone(),
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: supporting.display().to_string(),
+                worktree_id: None,
                 worktree_path: supporting.clone(),
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -160,11 +164,13 @@ fn rejects_duplicate_sources_external_symlinks_submodules_and_lfs() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: "one".to_string(),
+                worktree_id: None,
                 worktree_path: repository.clone(),
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: "two".to_string(),
+                worktree_id: None,
                 worktree_path: repository.clone(),
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -221,6 +227,7 @@ fn rejects_dirty_symlinks_and_requires_exactly_one_primary() {
         project_id: "project-missing-primary".to_string(),
         repositories: vec![DevelopmentRepositorySelection {
             workspace_id: "workspace".to_string(),
+            worktree_id: None,
             worktree_path: repository.clone(),
             role: DevelopmentRepositoryRole::Supporting,
         }],
@@ -235,6 +242,7 @@ fn rejects_dirty_symlinks_and_requires_exactly_one_primary() {
         project_id: "project-occupied".to_string(),
         repositories: vec![DevelopmentRepositorySelection {
             workspace_id: "workspace".to_string(),
+            worktree_id: None,
             worktree_path: repository.clone(),
             role: DevelopmentRepositoryRole::Primary,
         }],
@@ -281,6 +289,7 @@ fn rejects_in_repository_outputs_shallow_sources_and_oversized_index_blobs() {
         project_id: "project-inside-output".to_string(),
         repositories: vec![DevelopmentRepositorySelection {
             workspace_id: "workspace".to_string(),
+            worktree_id: None,
             worktree_path: repository.clone(),
             role: DevelopmentRepositoryRole::Primary,
         }],
@@ -529,11 +538,13 @@ fn imports_two_repositories_with_exact_index_and_worktree_states() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: "primary-workspace".to_string(),
+                worktree_id: None,
                 worktree_path: primary,
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: "supporting-workspace".to_string(),
+                worktree_id: None,
                 worktree_path: supporting,
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -546,6 +557,7 @@ fn imports_two_repositories_with_exact_index_and_worktree_states() {
         archive_path,
         expected_archive_sha256: exported.archive_sha256,
         expected_project_id: "project-import".to_string(),
+        expected_source_repositories: None,
         destination_root: destination.clone(),
     })
     .expect("import development context");
@@ -635,6 +647,7 @@ fn import_rejects_wrong_bindings_corruption_and_occupied_destinations_atomically
         archive_path: exported.archive_path.clone(),
         expected_archive_sha256: exported.archive_sha256.clone(),
         expected_project_id: "different-project".to_string(),
+        expected_source_repositories: None,
         destination_root: wrong_project_destination.clone(),
     })
     .expect_err("wrong project binding should fail");
@@ -653,6 +666,7 @@ fn import_rejects_wrong_bindings_corruption_and_occupied_destinations_atomically
         archive_path: corrupt_archive.clone(),
         expected_archive_sha256: sha256_file(&corrupt_archive).expect("hash corrupt archive"),
         expected_project_id: exported.manifest.project_id.clone(),
+        expected_source_repositories: None,
         destination_root: corrupt_destination.clone(),
     })
     .expect_err("corrupt archive should fail before publication");
@@ -670,6 +684,7 @@ fn import_rejects_wrong_bindings_corruption_and_occupied_destinations_atomically
         archive_path: exported.archive_path,
         expected_archive_sha256: exported.archive_sha256,
         expected_project_id: exported.manifest.project_id,
+        expected_source_repositories: None,
         destination_root: occupied.clone(),
     })
     .expect_err("occupied destination should not be replaced");
@@ -696,11 +711,13 @@ fn supporting_repository_failure_publishes_no_partial_project() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: "primary".to_string(),
+                worktree_id: None,
                 worktree_path: primary,
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: "supporting".to_string(),
+                worktree_id: None,
                 worktree_path: supporting,
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -734,6 +751,7 @@ fn supporting_repository_failure_publishes_no_partial_project() {
         archive_path: broken_archive.clone(),
         expected_archive_sha256: sha256_file(&broken_archive).expect("hash broken archive"),
         expected_project_id: broken_manifest.project_id,
+        expected_source_repositories: None,
         destination_root: destination.clone(),
     })
     .expect_err("invalid supporting bundle should abort the whole import");
@@ -768,6 +786,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
         archive_path: unsafe_archive.clone(),
         expected_archive_sha256: sha256_file(&unsafe_archive).expect("hash unsafe archive"),
         expected_project_id: unsafe_manifest.project_id,
+        expected_source_repositories: None,
         destination_root: unsafe_destination.clone(),
     })
     .expect_err("unsafe target directory should fail before extraction");
@@ -786,6 +805,7 @@ fn import_rejects_unsafe_manifest_paths_and_archive_symlinks() {
             archive_path: archive_symlink,
             expected_archive_sha256: exported.archive_sha256,
             expected_project_id: exported.manifest.project_id,
+            expected_source_repositories: None,
             destination_root: symlink_destination.clone(),
         })
         .expect_err("archive symlink should fail closed");
@@ -828,6 +848,7 @@ fn import_rejects_git_administrative_overlay_paths() {
             archive_path: archive.clone(),
             expected_archive_sha256: sha256_file(&archive).expect("hash malicious archive"),
             expected_project_id: manifest.project_id,
+            expected_source_repositories: None,
             destination_root: destination.clone(),
         })
         .expect_err("Git administrative overlay must fail closed");
@@ -894,8 +915,9 @@ fn archive_snapshot_is_immutable_after_source_changes() {
     assert_eq!(fs::read(&snapshot_path).expect("read snapshot"), original);
     let artifacts = root.join("artifacts");
     create_private_directory(&artifacts).expect("create artifacts root");
-    let manifest = extract_and_verify_archive(snapshot, &exported.manifest.project_id, &artifacts)
-        .expect("parse immutable snapshot");
+    let manifest =
+        extract_and_verify_archive(snapshot, &exported.manifest.project_id, None, &artifacts)
+            .expect("parse immutable snapshot");
     assert_eq!(manifest, exported.manifest);
     fs::remove_dir_all(root).expect("remove test root");
 }
@@ -922,6 +944,7 @@ fn import_rejects_pax_extension_bomb_before_body_allocation() {
         archive_path: archive.clone(),
         expected_archive_sha256: sha256_file(&archive).expect("hash PAX archive"),
         expected_project_id: "pax-bomb".to_string(),
+        expected_source_repositories: None,
         destination_root: destination.clone(),
     })
     .expect_err("PAX extension metadata must fail closed");
@@ -970,11 +993,13 @@ fn multi_repository_entry_budget_rejects_before_any_checkout() {
         repositories: vec![
             DevelopmentRepositorySelection {
                 workspace_id: "primary".to_string(),
+                worktree_id: None,
                 worktree_path: primary,
                 role: DevelopmentRepositoryRole::Primary,
             },
             DevelopmentRepositorySelection {
                 workspace_id: "supporting".to_string(),
+                worktree_id: None,
                 worktree_path: supporting,
                 role: DevelopmentRepositoryRole::Supporting,
             },
@@ -988,6 +1013,7 @@ fn multi_repository_entry_budget_rejects_before_any_checkout() {
             archive_path: archive,
             expected_archive_sha256: exported.archive_sha256,
             expected_project_id: exported.manifest.project_id,
+            expected_source_repositories: None,
             destination_root: destination.clone(),
         },
         MAX_CHECKOUT_BYTES_PER_PROJECT,
@@ -1015,6 +1041,7 @@ fn overlay_entries_count_toward_prepare_budget() {
             archive_path: exported.archive_path,
             expected_archive_sha256: exported.archive_sha256,
             expected_project_id: exported.manifest.project_id,
+            expected_source_repositories: None,
             destination_root: destination.clone(),
         },
         MAX_CHECKOUT_BYTES_PER_PROJECT,
@@ -1047,6 +1074,7 @@ fn empty_repository_root_cannot_exceed_zero_remaining_budget() {
             archive_path: exported.archive_path,
             expected_archive_sha256: exported.archive_sha256,
             expected_project_id: exported.manifest.project_id,
+            expected_source_repositories: None,
             destination_root: destination.clone(),
         },
         0,
@@ -1116,6 +1144,7 @@ fn published_import_receipt_recovers_an_import_after_process_restart() {
         archive_path: exported.archive_path,
         expected_archive_sha256: exported.archive_sha256,
         expected_project_id: "project-publication-recovery".to_string(),
+        expected_source_repositories: None,
         destination_root: root.join("managed/project"),
     };
     let receipt = import_development_context_with_publication(
@@ -1152,6 +1181,7 @@ fn failed_transfer_cleanup_removes_only_its_receipted_publication() {
             archive_path: exported.archive_path,
             expected_archive_sha256: exported.archive_sha256,
             expected_project_id: "project-failed-publication-cleanup".to_string(),
+            expected_source_repositories: None,
             destination_root: destination_root.clone(),
         },
         "ctx_failed_publication".to_string(),
@@ -1181,6 +1211,7 @@ fn deterministic_import_validation_errors_are_not_retryable() {
         archive_path: PathBuf::from("/unused/invalid-context.tar.gz"),
         expected_archive_sha256: "not-a-sha256".to_string(),
         expected_project_id: "project-1".to_string(),
+        expected_source_repositories: None,
         destination_root: PathBuf::from("/unused/destination"),
     })
     .expect_err("invalid digest should fail before filesystem access");
@@ -1203,6 +1234,7 @@ fn one_repo_export(
         project_id: format!("project-{label}"),
         repositories: vec![DevelopmentRepositorySelection {
             workspace_id: "workspace".to_string(),
+            worktree_id: None,
             worktree_path: repository.to_path_buf(),
             role: DevelopmentRepositoryRole::Primary,
         }],

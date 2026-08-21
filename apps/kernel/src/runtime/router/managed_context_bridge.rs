@@ -16,27 +16,41 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
     RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
-    RelayManagedContextTransferStatus, RelayManagedKernelContextImportReceipt, RelayPeerResponse,
-    RELAY_PEER_PROTOCOL_VERSION,
+    RelayManagedContextTransferStatus, RelayManagedDevelopmentContextImportReceipt,
+    RelayManagedKernelContextImportReceipt, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::CommandRouter;
 
 const TRANSFER_TTL: Duration = Duration::from_secs(30 * 60);
 
+struct AuthorizedManagedContextCaller {
+    caller: ManagedContextTransferCaller,
+    plan: crate::managed_context::package::ManagedContextPlanBinding,
+}
+
 impl CommandRouter {
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
         context_id: String,
+        plan_digest: String,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,
-        project_id: String,
+        capability: String,
         archive_sha256: String,
         archive_size_bytes: u64,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?;
+        let authorization = managed_context_caller(self, &identity)?;
+        if authorization.plan.context_id != context_id
+            || authorization.plan.plan_digest != plan_digest
+        {
+            return Err(managed_context_authorization_error(
+                "managed context selection does not match the Cloud launch plan",
+            ));
+        }
+        let caller = authorization.caller;
         let config = self.config_projection.snapshot();
         if caller.target_environment_id != target_environment_id
             || caller.target_kernel_id != target_kernel_id
@@ -57,7 +71,7 @@ impl CommandRouter {
         let armed = run_blocking(move || {
             store.arm(
                 ArmManagedContextTransfer {
-                    context_id,
+                    plan: authorization.plan,
                     target_environment_id,
                     target_kernel_id,
                     target_key_thumbprint,
@@ -65,7 +79,7 @@ impl CommandRouter {
                     source_key_thumbprint: caller.key_thumbprint,
                     owner_user_id: caller.owner_user_id,
                     realm_id: caller.realm_id,
-                    project_id,
+                    capability,
                     archive_sha256,
                     archive_size_bytes,
                     destination_parent,
@@ -90,7 +104,7 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?;
+        let caller = managed_context_caller(self, &identity)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.begin(
@@ -113,7 +127,7 @@ impl CommandRouter {
         bytes: Vec<u8>,
         chunk_sha256: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?;
+        let caller = managed_context_caller(self, &identity)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.upload_chunk(
@@ -136,7 +150,7 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?;
+        let caller = managed_context_caller(self, &identity)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.get_status(
@@ -156,7 +170,7 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?;
+        let caller = managed_context_caller(self, &identity)?.caller;
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -184,8 +198,7 @@ impl CommandRouter {
                 package_path: ready.archive_path,
                 expected_package_sha256: ready.archive_sha256,
                 expected_binding: ManagedContextPackageBinding {
-                    context_id: ready.context_id,
-                    project_id: ready.project_id,
+                    plan: ready.plan,
                     target_environment_id: ready.target_environment_id,
                     source_kernel_id: ready.source_kernel_id,
                     source_key_thumbprint: ready.source_key_thumbprint,
@@ -270,7 +283,7 @@ impl CommandRouter {
 fn managed_context_caller(
     router: &CommandRouter,
     identity: &RelayCallerIdentity,
-) -> Result<ManagedContextTransferCaller, DaemonError> {
+) -> Result<AuthorizedManagedContextCaller, DaemonError> {
     let owner_user_id = identity.user_id.clone().ok_or_else(|| {
         managed_context_authorization_error(
             "managed context source kernel has no authenticated owner",
@@ -284,6 +297,16 @@ fn managed_context_caller(
             "context imports require a confirmed Chariox-managed kernel",
         )
     })?;
+    let context_plan = registration.context_plan.as_ref().ok_or_else(|| {
+        managed_context_authorization_error(
+            "managed kernel registration has no Cloud context authorization",
+        )
+    })?;
+    let source = context_plan.source_binding().ok_or_else(|| {
+        managed_context_authorization_error(
+            "managed kernel launch plan has no source context selection",
+        )
+    })?;
     let config = router.config_projection.snapshot();
     let profile = config.cloud_relay.as_ref().ok_or_else(|| {
         managed_context_authorization_error("managed context target has no Cloud relay profile")
@@ -291,6 +314,9 @@ fn managed_context_caller(
     let target_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
     if registration.kernel_id != config.daemon_id
         || registration.machine_id != config.host_machine_id
+        || source.kernel_id != identity.subject
+        || source.key_thumbprint != key_thumbprint
+        || source.relay_realm_id != identity.realm_id
         || profile.realm_id != identity.realm_id
         || profile.user_id != owner_user_id
     {
@@ -298,14 +324,17 @@ fn managed_context_caller(
             "managed context target or owner binding does not match",
         ));
     }
-    Ok(ManagedContextTransferCaller {
-        kernel_id: identity.subject.clone(),
-        key_thumbprint,
-        owner_user_id,
-        realm_id: identity.realm_id.clone(),
-        target_environment_id: registration.environment_id.clone(),
-        target_kernel_id: registration.kernel_id.clone(),
-        target_key_thumbprint,
+    Ok(AuthorizedManagedContextCaller {
+        caller: ManagedContextTransferCaller {
+            kernel_id: identity.subject.clone(),
+            key_thumbprint,
+            owner_user_id,
+            realm_id: identity.realm_id.clone(),
+            target_environment_id: registration.environment_id.clone(),
+            target_kernel_id: registration.kernel_id.clone(),
+            target_key_thumbprint,
+        },
+        plan: context_plan.package_binding(),
     })
 }
 
@@ -376,28 +405,41 @@ fn relay_receipt(
     receipt: ManagedContextPackageImportReceipt,
     receipt_sha256: &str,
 ) -> Result<RelayManagedContextImportReceipt, DaemonError> {
-    let destination_root = utf8_path(&receipt.development.destination_root)?;
-    let repositories = receipt
-        .development
-        .repositories
-        .into_iter()
-        .map(|repository| {
-            Ok(RelayManagedContextImportedRepository {
-                repository_id: repository.repository_id,
-                role: repository.role,
-                target_directory: repository.target_directory,
-                destination_path: utf8_path(&repository.destination_path)?,
-                head_sha: repository.head_sha,
-            })
-        })
-        .collect::<Result<Vec<_>, DaemonError>>()?;
+    let development = match receipt.development {
+        crate::managed_context::package::ManagedContextImportedDevelopment::Empty => {
+            RelayManagedDevelopmentContextImportReceipt::Empty
+        }
+        crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+            project_id,
+            receipt,
+        } => {
+            let destination_root = utf8_path(&receipt.destination_root)?;
+            let repositories = receipt
+                .repositories
+                .into_iter()
+                .map(|repository| {
+                    Ok(RelayManagedContextImportedRepository {
+                        repository_id: repository.repository_id,
+                        role: repository.role,
+                        target_directory: repository.target_directory,
+                        destination_path: utf8_path(&repository.destination_path)?,
+                        head_sha: repository.head_sha,
+                    })
+                })
+                .collect::<Result<Vec<_>, DaemonError>>()?;
+            RelayManagedDevelopmentContextImportReceipt::FromSource {
+                project_id,
+                destination_root,
+                primary_repository_id: receipt.primary_repository_id,
+                repositories,
+            }
+        }
+    };
     Ok(RelayManagedContextImportReceipt {
         transfer_id: receipt.transfer_id,
         archive_sha256: receipt.package_sha256,
-        project_id: receipt.project_id,
-        destination_root,
-        primary_repository_id: receipt.development.primary_repository_id,
-        repositories,
+        plan_digest: receipt.plan_digest,
+        development,
         kernel_context: match receipt.kernel_context {
             ManagedContextImportedKernelContext::Empty => {
                 RelayManagedKernelContextImportReceipt::Empty

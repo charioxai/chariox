@@ -911,10 +911,11 @@ pub(super) async fn handle_daemon_peer_request(
         }
         RelayPeerRequest::ArmManagedContextImport {
             context_id,
+            plan_digest,
             target_environment_id,
             target_kernel_id,
             target_key_thumbprint,
-            project_id,
+            capability,
             archive_sha256,
             archive_size_bytes,
         } => {
@@ -924,10 +925,11 @@ pub(super) async fn handle_daemon_peer_request(
                         .clone()
                         .expect("managed context identity checked before dispatch"),
                     context_id,
+                    plan_digest,
                     target_environment_id,
                     target_kernel_id,
                     target_key_thumbprint,
-                    project_id,
+                    capability.into_inner(),
                     archive_sha256,
                     archive_size_bytes,
                 )
@@ -1130,7 +1132,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     use crate::config::PersistedCloudRelayProfile;
-    use crate::managed_bootstrap::ConfirmedManagedKernelRegistration;
+    use crate::error::DaemonError;
+    use crate::managed_bootstrap::{ConfirmedManagedKernelRegistration, ManagedKernelContextPlan};
     use crate::managed_context::development::{
         export_development_context, DevelopmentContextExportRequest, DevelopmentRepositoryRole,
         DevelopmentRepositorySelection,
@@ -1139,8 +1142,8 @@ mod tests {
         KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
     };
     use crate::managed_context::package::{
-        export_managed_context_package, ManagedContextPackageExportRequest,
-        ManagedContextPackageKernel,
+        export_managed_context_package, ManagedContextPackageDevelopment,
+        ManagedContextPackageExportRequest, ManagedContextPackageKernel,
     };
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
@@ -1218,10 +1221,11 @@ mod tests {
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
             context_id: "context-1".to_string(),
+            plan_digest: format!("sha256:{}", "f".repeat(64)),
             target_environment_id: "environment-1".to_string(),
             target_kernel_id: "target-kernel-1".to_string(),
             target_key_thumbprint: "a".repeat(64),
-            project_id: "project-1".to_string(),
+            capability: RelayManagedContextCapability::new("c".repeat(43)),
             archive_sha256: "b".repeat(64),
             archive_size_bytes: 42,
         };
@@ -1299,12 +1303,21 @@ mod tests {
             project_id: "project-managed-peer".to_string(),
             repositories: vec![DevelopmentRepositorySelection {
                 workspace_id: "workspace-primary".to_string(),
+                worktree_id: None,
                 worktree_path: repository,
                 role: DevelopmentRepositoryRole::Primary,
             }],
             archive_path: archive_path.clone(),
         })
         .expect("export managed peer context");
+
+        let source_private_key = relay_crypto::generate_private_key_base64();
+        let source_public_key =
+            relay_crypto::public_key_from_private_key_base64(&source_private_key)
+                .expect("source public key");
+        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+        let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
+        let context_id = "context-managed-peer".to_string();
 
         let mut config = DaemonConfig::for_tests();
         config.session_history_root = root.join("sessions");
@@ -1320,6 +1333,15 @@ mod tests {
         let target_machine_id = config.host_machine_id.clone();
         let target_public_key = config.relay_public_key.clone();
         let target_key_thumbprint = public_key_thumbprint(&target_public_key);
+        let context_plan = ManagedKernelContextPlan::source_project_for_tests(
+            &context_id,
+            "realm-1",
+            &identity.subject,
+            &source_key_thumbprint,
+            "project-managed-peer",
+        );
+        let plan_binding = context_plan.package_binding();
+        let plan_digest = plan_binding.plan_digest.clone();
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
         ));
@@ -1329,18 +1351,12 @@ mod tests {
                     environment_id: "environment-managed-1".to_string(),
                     machine_id: target_machine_id,
                     kernel_id: target_kernel_id.clone(),
+                    context_plan: Some(context_plan),
                 },
             ),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
-        let source_private_key = relay_crypto::generate_private_key_base64();
-        let source_public_key =
-            relay_crypto::public_key_from_private_key_base64(&source_private_key)
-                .expect("source public key");
-        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
-        let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
-        let context_id = "context-managed-peer".to_string();
         let source_vault_path = root.join("source-vault.json");
         let target_vault_path = root.join("target-vault.json");
         let capability_root = root.join("target-capabilities");
@@ -1397,19 +1413,65 @@ mod tests {
             snapshot_sha256: snapshot_sha256.clone(),
         };
         let package = export_managed_context_package(ManagedContextPackageExportRequest {
-            context_id: context_id.clone(),
-            project_id: "project-managed-peer".to_string(),
+            plan: plan_binding,
             target_environment_id: "environment-managed-1".to_string(),
             source_kernel_id: identity.subject.clone(),
-            source_key_thumbprint,
+            source_key_thumbprint: source_key_thumbprint.clone(),
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
-            development_archive_path: archive_path,
-            development_archive_sha256: exported.archive_sha256,
+            development: ManagedContextPackageDevelopment::FromSource {
+                archive_path,
+                archive_sha256: exported.archive_sha256,
+            },
             kernel_context: ManagedContextPackageKernel::FromKernel(kernel_context),
             package_path: root.join("context.chariox"),
         })
         .expect("compose managed context package");
+
+        let wrong_context_error = router
+            .relay_arm_managed_context_import(
+                identity.clone(),
+                "wrong-context".to_string(),
+                plan_digest.clone(),
+                "environment-managed-1".to_string(),
+                target_kernel_id.clone(),
+                target_key_thumbprint.clone(),
+                "w".repeat(43),
+                package.package_sha256.clone(),
+                package.package_size_bytes,
+            )
+            .await
+            .expect_err("Cloud context ID must bind the import");
+        assert!(matches!(
+            wrong_context_error,
+            DaemonError::ManagedContext {
+                code: "unauthorized",
+                ..
+            }
+        ));
+        let mut wrong_source_identity = identity.clone();
+        wrong_source_identity.subject = "other-source-kernel".to_string();
+        let wrong_source_error = router
+            .relay_arm_managed_context_import(
+                wrong_source_identity,
+                context_id.clone(),
+                plan_digest.clone(),
+                "environment-managed-1".to_string(),
+                target_kernel_id.clone(),
+                target_key_thumbprint.clone(),
+                "w".repeat(43),
+                package.package_sha256.clone(),
+                package.package_size_bytes,
+            )
+            .await
+            .expect_err("Cloud source kernel must bind the import");
+        assert!(matches!(
+            wrong_source_error,
+            DaemonError::ManagedContext {
+                code: "unauthorized",
+                ..
+            }
+        ));
 
         let armed = send_managed_peer_request(
             &router,
@@ -1420,10 +1482,11 @@ mod tests {
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
                 context_id,
+                plan_digest: plan_digest.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id,
                 target_key_thumbprint,
-                project_id: "project-managed-peer".to_string(),
+                capability: RelayManagedContextCapability::new("c".repeat(43)),
                 archive_sha256: package.package_sha256.clone(),
                 archive_size_bytes: package.package_size_bytes,
             },
@@ -1500,8 +1563,7 @@ mod tests {
             response => panic!("unexpected finalize response: {response:?}"),
         };
         assert_eq!(receipt.transfer_id, transfer_id);
-        assert_eq!(receipt.project_id, "project-managed-peer");
-        assert_eq!(receipt.repositories.len(), 1);
+        assert_eq!(receipt.plan_digest, plan_digest);
         assert!(matches!(
             receipt.kernel_context,
             crate::transport::relay_peer::RelayManagedKernelContextImportReceipt::FromKernel {
@@ -1521,9 +1583,19 @@ mod tests {
             .expect("read imported Vault canary"),
             "managed-peer-secret-canary"
         );
+        let crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
+            project_id,
+            repositories,
+            ..
+        } = receipt.development
+        else {
+            panic!("selected development context became Empty")
+        };
+        assert_eq!(project_id, "project-managed-peer");
+        assert_eq!(repositories.len(), 1);
         assert_eq!(
             fs::read_to_string(
-                std::path::Path::new(&receipt.repositories[0].destination_path).join("tracked.txt")
+                std::path::Path::new(&repositories[0].destination_path).join("tracked.txt")
             )
             .expect("read imported repository file"),
             "managed context\n"

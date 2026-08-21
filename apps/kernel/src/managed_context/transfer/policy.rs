@@ -69,7 +69,6 @@ pub(super) fn validate_arm_request(
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
-        ("context", request.context_id.as_str()),
         ("target environment", request.target_environment_id.as_str()),
         ("target kernel", request.target_kernel_id.as_str()),
         ("target key", request.target_key_thumbprint.as_str()),
@@ -77,9 +76,17 @@ pub(super) fn validate_arm_request(
         ("source key", request.source_key_thumbprint.as_str()),
         ("owner", request.owner_user_id.as_str()),
         ("realm", request.realm_id.as_str()),
-        ("project", request.project_id.as_str()),
     ] {
         validate_identifier(value, label)?;
+    }
+    crate::managed_context::package::validate_plan_binding(&request.plan)?;
+    if request.capability.len() < 40
+        || request.capability.len() > 256
+        || request.capability.chars().any(char::is_control)
+    {
+        return Err(transfer_error(
+            "managed context transfer capability is invalid",
+        ));
     }
     validate_sha256(&request.target_key_thumbprint, "target key thumbprint")?;
     validate_sha256(&request.source_key_thumbprint, "source key thumbprint")?;
@@ -104,6 +111,14 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             "managed context transfer state exceeds its record limit",
         ));
     }
+    if state.consumed_context_ids.len() > MAX_TRANSFER_RECORDS {
+        return Err(transfer_error(
+            "managed context consumed authorization state exceeds its record limit",
+        ));
+    }
+    for context_id in &state.consumed_context_ids {
+        validate_identifier(context_id, "consumed context")?;
+    }
     for (transfer_id, entry) in &state.entries {
         if !valid_transfer_id(transfer_id) {
             return Err(transfer_error(
@@ -111,16 +126,15 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
-            ("context", entry.context_id.as_str()),
             ("target environment", entry.target_environment_id.as_str()),
             ("target kernel", entry.target_kernel_id.as_str()),
             ("source kernel", entry.source_kernel_id.as_str()),
             ("owner", entry.owner_user_id.as_str()),
             ("realm", entry.realm_id.as_str()),
-            ("project", entry.project_id.as_str()),
         ] {
             validate_identifier(value, label)?;
         }
+        crate::managed_context::package::validate_plan_binding(&entry.plan)?;
         validate_sha256(&entry.capability_sha256, "capability")?;
         validate_sha256(&entry.target_key_thumbprint, "target key thumbprint")?;
         validate_sha256(&entry.source_key_thumbprint, "source key thumbprint")?;

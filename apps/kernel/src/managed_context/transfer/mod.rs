@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
@@ -18,9 +18,8 @@ pub(crate) use model::{
     ReadyManagedContextImport,
 };
 use policy::{
-    authorize_entry, current_time_ms, prune_expired, random_identifier, random_secret,
-    sha256_bytes, status, transfer_error, validate_arm_request, validate_persisted_state,
-    validate_sha256,
+    authorize_entry, current_time_ms, prune_expired, random_identifier, sha256_bytes, status,
+    transfer_error, validate_arm_request, validate_persisted_state, validate_sha256,
 };
 use storage::{
     create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
@@ -28,7 +27,7 @@ use storage::{
     write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 2;
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 3;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
@@ -45,6 +44,8 @@ const STATE_CAPACITY_MARGIN_BYTES: usize = 64 * 1024;
 struct PersistedTransferState {
     schema_version: u32,
     entries: BTreeMap<String, PersistedTransfer>,
+    #[serde(default)]
+    consumed_context_ids: BTreeSet<String>,
 }
 
 impl Default for PersistedTransferState {
@@ -52,6 +53,7 @@ impl Default for PersistedTransferState {
         Self {
             schema_version: TRANSFER_STATE_SCHEMA_VERSION,
             entries: BTreeMap::new(),
+            consumed_context_ids: BTreeSet::new(),
         }
     }
 }
@@ -59,8 +61,20 @@ impl Default for PersistedTransferState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedTransfer {
     capability_sha256: String,
-    #[serde(default)]
-    context_id: String,
+    #[serde(default = "legacy_plan_binding")]
+    plan: crate::managed_context::package::ManagedContextPlanBinding,
+    #[serde(
+        default,
+        rename = "context_id",
+        skip_serializing_if = "String::is_empty"
+    )]
+    legacy_context_id: String,
+    #[serde(
+        default,
+        rename = "project_id",
+        skip_serializing_if = "String::is_empty"
+    )]
+    legacy_project_id: String,
     target_environment_id: String,
     target_kernel_id: String,
     target_key_thumbprint: String,
@@ -68,7 +82,6 @@ struct PersistedTransfer {
     source_key_thumbprint: String,
     owner_user_id: String,
     realm_id: String,
-    project_id: String,
     archive_sha256: String,
     archive_size_bytes: u64,
     destination_root: PathBuf,
@@ -85,6 +98,22 @@ struct PersistedTransfer {
     import_started_at_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     failure_code: Option<String>,
+}
+
+fn legacy_plan_binding() -> crate::managed_context::package::ManagedContextPlanBinding {
+    use crate::managed_context::package::{
+        ManagedContextDevelopmentSelection, ManagedContextGitCredentialSelection,
+        ManagedContextKernelSelection, ManagedContextPlanBinding,
+        ManagedContextProviderAccountSelection,
+    };
+    ManagedContextPlanBinding {
+        context_id: "legacy-pending-migration".to_string(),
+        plan_digest: format!("sha256:{}", "0".repeat(64)),
+        kernel_context: ManagedContextKernelSelection::Empty,
+        development: ManagedContextDevelopmentSelection::Empty,
+        provider_accounts: ManagedContextProviderAccountSelection::None,
+        git_credentials: ManagedContextGitCredentialSelection::None,
+    }
 }
 
 #[derive(Clone)]
@@ -106,7 +135,7 @@ impl ManagedContextTransferStore {
             }
             None => PersistedTransferState::default(),
         };
-        if !matches!(state.schema_version, 1 | TRANSFER_STATE_SCHEMA_VERSION) {
+        if !matches!(state.schema_version, 1 | 2 | TRANSFER_STATE_SCHEMA_VERSION) {
             return Err(transfer_error(format!(
                 "unsupported managed context transfer state version {}",
                 state.schema_version
@@ -117,8 +146,8 @@ impl ManagedContextTransferStore {
             state: Arc::new(Mutex::new(state)),
             active_imports: Arc::new(Mutex::new(HashSet::new())),
         };
-        if store.lock_state().schema_version == 1 {
-            store.migrate_v1_state()?;
+        if store.lock_state().schema_version < TRANSFER_STATE_SCHEMA_VERSION {
+            store.migrate_legacy_state()?;
         }
         validate_persisted_state(&store.lock_state())?;
         store.cleanup_failed_transfers()?;
@@ -141,6 +170,58 @@ impl ManagedContextTransferStore {
         self.prune_expired_transfers(now_ms)?;
         let mut state = self.lock_state();
         if state
+            .consumed_context_ids
+            .contains(&request.plan.context_id)
+        {
+            return Err(transfer_error(
+                "managed context launch authorization has already been consumed",
+            ));
+        }
+        let capability_sha256 = sha256_bytes(request.capability.as_bytes());
+        if let Some((transfer_id, entry)) = state
+            .entries
+            .iter()
+            .find(|(_, entry)| entry.plan.context_id == request.plan.context_id)
+        {
+            if entry.plan == request.plan
+                && entry.target_environment_id == request.target_environment_id
+                && entry.target_kernel_id == request.target_kernel_id
+                && entry.target_key_thumbprint == request.target_key_thumbprint
+                && entry.source_kernel_id == request.source_kernel_id
+                && entry.source_key_thumbprint == request.source_key_thumbprint
+                && entry.owner_user_id == request.owner_user_id
+                && entry.realm_id == request.realm_id
+                && entry.archive_sha256 == request.archive_sha256.to_ascii_lowercase()
+                && entry.archive_size_bytes == request.archive_size_bytes
+                && entry.capability_sha256 == capability_sha256
+            {
+                return Ok(ArmedManagedContextTransfer {
+                    transfer_id: transfer_id.clone(),
+                    capability: request.capability,
+                    expires_at_ms: entry.expires_at_ms,
+                });
+            }
+            return Err(transfer_error(
+                "managed context launch authorization conflicts with an existing transfer",
+            ));
+        }
+        let reserved_contexts = state.consumed_context_ids.len()
+            + state
+                .entries
+                .values()
+                .filter(|entry| {
+                    !matches!(
+                        entry.phase,
+                        ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
+                    )
+                })
+                .count();
+        if reserved_contexts >= MAX_TRANSFER_RECORDS {
+            return Err(transfer_error(
+                "managed context consumed authorization capacity is full",
+            ));
+        }
+        if state
             .entries
             .values()
             .filter(|entry| {
@@ -160,12 +241,14 @@ impl ManagedContextTransferStore {
             ));
         }
         let transfer_id = random_identifier("ctx");
-        let capability = random_secret();
+        let capability = request.capability;
         state.entries.insert(
             transfer_id.clone(),
             PersistedTransfer {
-                capability_sha256: sha256_bytes(capability.as_bytes()),
-                context_id: request.context_id,
+                capability_sha256,
+                plan: request.plan,
+                legacy_context_id: String::new(),
+                legacy_project_id: String::new(),
                 target_environment_id: request.target_environment_id,
                 target_kernel_id: request.target_kernel_id,
                 target_key_thumbprint: request.target_key_thumbprint,
@@ -173,7 +256,6 @@ impl ManagedContextTransferStore {
                 source_key_thumbprint: request.source_key_thumbprint,
                 owner_user_id: request.owner_user_id,
                 realm_id: request.realm_id,
-                project_id: request.project_id,
                 archive_sha256: request.archive_sha256.to_ascii_lowercase(),
                 archive_size_bytes: request.archive_size_bytes,
                 destination_root: canonical_destination_parent.join(&transfer_id),
@@ -463,13 +545,13 @@ impl ManagedContextTransferStore {
             .map_err(|_| transfer_error("managed context import receipt is invalid JSON"))?;
         let receipt_sha256 = sha256_bytes(import_receipt_json.as_bytes());
         let mut state = self.lock_state();
-        let entry = state
+        let existing = state
             .entries
-            .get_mut(transfer_id)
+            .get(transfer_id)
             .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
-        if entry.phase == ManagedContextTransferPhase::Consumed {
-            return if entry.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
-                && entry.import_receipt_json.as_deref() == Some(import_receipt_json)
+        if existing.phase == ManagedContextTransferPhase::Consumed {
+            return if existing.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
+                && existing.import_receipt_json.as_deref() == Some(import_receipt_json)
             {
                 drop(state);
                 self.cleanup_transfer_artifacts(transfer_id)
@@ -479,6 +561,15 @@ impl ManagedContextTransferStore {
                 ))
             };
         }
+        if state.consumed_context_ids.len() >= MAX_TRANSFER_RECORDS {
+            return Err(transfer_error(
+                "managed context consumed authorization capacity is full",
+            ));
+        }
+        let entry = state
+            .entries
+            .get_mut(transfer_id)
+            .ok_or_else(|| transfer_error("managed context transfer disappeared"))?;
         if entry.phase != ManagedContextTransferPhase::Importing {
             return Err(transfer_error(
                 "managed context transfer is not ready to commit",
@@ -488,6 +579,8 @@ impl ManagedContextTransferStore {
         entry.import_receipt_sha256 = Some(receipt_sha256);
         entry.import_receipt_json = Some(import_receipt_json.to_string());
         entry.completed_at_ms = Some(now_ms);
+        let context_id = entry.plan.context_id.clone();
+        state.consumed_context_ids.insert(context_id.clone());
         if let Err(error) = self.persist_locked(&state) {
             if let Some(entry) = state.entries.get_mut(transfer_id) {
                 entry.phase = ManagedContextTransferPhase::Importing;
@@ -495,6 +588,7 @@ impl ManagedContextTransferStore {
                 entry.import_receipt_json = None;
                 entry.completed_at_ms = None;
             }
+            state.consumed_context_ids.remove(&context_id);
             return Err(error);
         }
         self.lock_active_imports().remove(transfer_id);
@@ -524,46 +618,20 @@ impl ManagedContextTransferStore {
         remove_archive_if_present(&archive_path)
     }
 
-    fn migrate_v1_state(&self) -> Result<(), DaemonError> {
-        use crate::managed_context::package::{
-            ManagedContextImportedKernelContext, ManagedContextPackageImportReceipt,
-        };
-
+    fn migrate_legacy_state(&self) -> Result<(), DaemonError> {
         let mut state = self.lock_state();
-        if state.schema_version != 1 {
+        if state.schema_version >= TRANSFER_STATE_SCHEMA_VERSION {
             return Ok(());
         }
-
-        for (transfer_id, entry) in &mut state.entries {
-            entry.context_id = format!("legacy-v1-{transfer_id}");
-        }
-        validate_persisted_state(&state)?;
-
-        let mut consumed = Vec::new();
-        for (transfer_id, mut entry) in std::mem::take(&mut state.entries) {
+        let legacy_version = state.schema_version;
+        for (transfer_id, entry) in std::mem::take(&mut state.entries) {
             if entry.phase == ManagedContextTransferPhase::Consumed {
-                let migrated_receipt = entry
-                    .import_receipt_json
-                    .as_deref()
-                    .and_then(|json| serde_json::from_str(json).ok())
-                    .and_then(|development| {
-                        serde_json::to_string(&ManagedContextPackageImportReceipt {
-                            schema_version: 1,
-                            transfer_id: transfer_id.clone(),
-                            package_sha256: entry.archive_sha256.clone(),
-                            project_id: entry.project_id.clone(),
-                            development,
-                            kernel_context: ManagedContextImportedKernelContext::Empty,
-                        })
-                        .ok()
-                    });
-                if let Some(receipt_json) = migrated_receipt {
-                    if receipt_json.len() <= MAX_IMPORT_RECEIPT_BYTES {
-                        entry.import_receipt_sha256 = Some(sha256_bytes(receipt_json.as_bytes()));
-                        entry.import_receipt_json = Some(receipt_json);
-                        consumed.push((transfer_id.clone(), entry));
-                    }
-                }
+                let context_id = if entry.legacy_context_id.is_empty() {
+                    format!("legacy-v{legacy_version}-{transfer_id}")
+                } else {
+                    entry.legacy_context_id.clone()
+                };
+                state.consumed_context_ids.insert(context_id);
                 self.cleanup_transfer_artifacts(&transfer_id)?;
                 continue;
             }
@@ -584,19 +652,6 @@ impl ManagedContextTransferStore {
             self.cleanup_transfer_artifacts(&transfer_id)?;
         }
         state.schema_version = TRANSFER_STATE_SCHEMA_VERSION;
-        consumed.sort_by(|left, right| {
-            right
-                .1
-                .completed_at_ms
-                .cmp(&left.1.completed_at_ms)
-                .then_with(|| left.0.cmp(&right.0))
-        });
-        for (transfer_id, entry) in consumed {
-            state.entries.insert(transfer_id.clone(), entry);
-            if persisted_state_size(&state)? > MAX_STATE_FILE_BYTES as usize {
-                state.entries.remove(&transfer_id);
-            }
-        }
         validate_persisted_state(&state)?;
         self.persist_locked(&state)
     }
@@ -830,8 +885,7 @@ fn ready_import(
     ReadyManagedContextImport {
         transfer_id: transfer_id.to_string(),
         archive_path: archive_path.to_path_buf(),
-        context_id: entry.context_id.clone(),
-        project_id: entry.project_id.clone(),
+        plan: entry.plan.clone(),
         archive_sha256: entry.archive_sha256.clone(),
         destination_root: entry.destination_root.clone(),
         target_environment_id: entry.target_environment_id.clone(),

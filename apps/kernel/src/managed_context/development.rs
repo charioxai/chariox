@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 1;
+const DEVELOPMENT_CONTEXT_SCHEMA_VERSION: u32 = 2;
 const MAX_REPOSITORIES: usize = 32;
 const MAX_OVERLAY_FILES_PER_REPOSITORY: usize = 20_000;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
@@ -49,8 +49,18 @@ pub enum DevelopmentRepositoryRole {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DevelopmentRepositorySelection {
     pub workspace_id: String,
+    pub worktree_id: Option<String>,
     pub worktree_path: PathBuf,
     pub role: DevelopmentRepositoryRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DevelopmentSourceRepositoryBinding {
+    pub role: DevelopmentRepositoryRole,
+    pub workspace_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worktree_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +80,7 @@ pub struct DevelopmentContextManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DevelopmentRepositoryManifest {
     pub repository_id: String,
+    pub source_binding_sha256: String,
     pub logical_name: String,
     pub role: DevelopmentRepositoryRole,
     pub target_directory: String,
@@ -85,6 +96,11 @@ pub struct DevelopmentRepositoryManifest {
     pub bundle_size_bytes: u64,
     pub overlay: Vec<DevelopmentOverlayEntry>,
     pub overlay_size_bytes: u64,
+}
+
+fn source_repository_binding_sha256(binding: &DevelopmentSourceRepositoryBinding) -> String {
+    let bytes = serde_json::to_vec(binding).expect("source repository binding is serializable");
+    sha256_bytes(&bytes)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -126,6 +142,7 @@ pub struct DevelopmentContextImportRequest {
     pub archive_path: PathBuf,
     pub expected_archive_sha256: String,
     pub expected_project_id: String,
+    pub expected_source_repositories: Option<Vec<DevelopmentSourceRepositoryBinding>>,
     pub destination_root: PathBuf,
 }
 

@@ -322,6 +322,13 @@ fn export_repository(
     Ok((
         DevelopmentRepositoryManifest {
             repository_id: repository_id.clone(),
+            source_binding_sha256: source_repository_binding_sha256(
+                &DevelopmentSourceRepositoryBinding {
+                    role: selection.role,
+                    workspace_id: selection.workspace_id.clone(),
+                    worktree_id: selection.worktree_id.clone(),
+                },
+            ),
             logical_name,
             role: selection.role,
             target_directory,

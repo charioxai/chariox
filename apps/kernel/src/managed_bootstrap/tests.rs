@@ -16,6 +16,7 @@ use super::cloud::{
 use super::prepare_managed_kernel;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
 use super::supervisor::run_kernel_once;
+use super::ManagedKernelContextPlan;
 use crate::error::DaemonError;
 
 struct FakeCloud {
@@ -117,6 +118,13 @@ fn bootstrap_verifies_release_persists_identity_and_profile_then_resumes_without
         .expect("read receipt")
         .expect("receipt exists");
     assert_eq!(receipt.status, BootstrapReceiptStatus::Exchanged);
+    assert_eq!(
+        receipt
+            .context_plan
+            .as_ref()
+            .map(ManagedKernelContextPlan::context_id),
+        Some("managed_ctx_bootstrap")
+    );
     assert_eq!(
         cloud.exchange_calls.lock().expect("exchange calls").len(),
         1
@@ -263,6 +271,69 @@ fn bootstrap_rejects_a_tampered_kernel_before_contacting_cloud() {
 }
 
 #[test]
+fn bootstrap_rejects_a_context_source_in_another_relay_realm() {
+    let _env = crate::env_lock::lock();
+    let fixture = Fixture::new("context-realm-mismatch");
+    let previous_home = std::env::var_os("CHARIOX_HOME");
+    std::env::set_var("CHARIOX_HOME", &fixture.config.chariox_home);
+    let mut response = fixture.exchange_response();
+    response.context_plan = ManagedKernelContextPlan::source_project_for_tests(
+        "managed_ctx_bootstrap",
+        "realm-2",
+        "source-kernel",
+        &"a".repeat(64),
+        "project-chariox",
+    );
+    let cloud = FakeCloud::new(response);
+
+    let error = prepare_managed_kernel(&fixture.config, &cloud, fixture.now)
+        .expect_err("a target outside the source realm must fail bootstrap");
+    assert!(error
+        .to_string()
+        .contains("does not match the local identity"));
+    assert!(!fixture.config.receipt_path.exists());
+
+    restore_env("CHARIOX_HOME", previous_home);
+    fixture.cleanup();
+}
+
+#[test]
+fn legacy_confirmed_receipt_remains_readable_without_context_authorization() {
+    let fixture = Fixture::new("legacy-receipt");
+    fs::create_dir_all(
+        fixture
+            .config
+            .receipt_path
+            .parent()
+            .expect("receipt parent"),
+    )
+    .expect("create receipt parent");
+    fs::write(
+        &fixture.config.receipt_path,
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "status": "confirmed",
+            "environmentId": "managed-env-legacy",
+            "machineId": "managed-machine-legacy",
+            "kernelId": "managed-kernel-legacy",
+            "relayPublicKey": "legacy-relay-public-key",
+            "runtimeReleaseDigest": fixture.release_digest,
+            "confirmedAt": fixture.now.to_rfc3339(),
+        }))
+        .expect("encode legacy receipt"),
+    )
+    .expect("write legacy receipt");
+
+    let receipt = BootstrapReceipt::read(&fixture.config.receipt_path)
+        .expect("read legacy receipt")
+        .expect("legacy receipt exists");
+    assert_eq!(receipt.status, BootstrapReceiptStatus::Confirmed);
+    assert!(receipt.context_plan.is_none());
+
+    fixture.cleanup();
+}
+
+#[test]
 fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
     let unit = include_str!("../../../../deploy/managed-kernel/chariox-managed-bootstrap.service");
     for required in [
@@ -390,6 +461,7 @@ impl Fixture {
             environment_id: String::new(),
             kernel_id: String::new(),
             runtime_release_digest: String::new(),
+            context_plan: ManagedKernelContextPlan::empty_for_tests("managed_ctx_bootstrap"),
             cloud_relay: ManagedCloudRelayProfile {
                 api_url: "https://cloud.example.test".to_string(),
                 email: "owner@example.test".to_string(),

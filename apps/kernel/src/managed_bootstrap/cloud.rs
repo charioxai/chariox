@@ -5,7 +5,9 @@ use serde::{de::DeserializeOwned, Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
-const MAX_RESPONSE_BYTES: u64 = 32 * 1024;
+use super::context_plan::ManagedKernelContextPlan;
+
+const MAX_RESPONSE_BYTES: u64 = 96 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -24,6 +26,7 @@ pub(super) struct ExchangeResponse {
     pub(super) environment_id: String,
     pub(super) kernel_id: String,
     pub(super) runtime_release_digest: String,
+    pub(super) context_plan: ManagedKernelContextPlan,
     pub(super) cloud_relay: ManagedCloudRelayProfile,
 }
 

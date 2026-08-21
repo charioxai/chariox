@@ -9,6 +9,7 @@ use super::development::MAX_PACKAGE_BYTES as MAX_DEVELOPMENT_BYTES;
 use super::development::{
     import_development_context_with_publication, recover_development_context_publication,
     DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
+    DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding,
 };
 use super::kernel::{
     configured_managed_kernel_context_paths, import_kernel_context, KernelContextImportReceipt,
@@ -17,10 +18,11 @@ use super::kernel::{
 use crate::error::DaemonError;
 use crate::secret::TransferredVaultSourceBinding;
 
-const PACKAGE_SCHEMA_VERSION: u32 = 1;
+const PACKAGE_SCHEMA_VERSION: u32 = 2;
 const PACKAGE_MAGIC: &[u8; 16] = b"CHARIOXCTXPKG1\r\n";
 const PACKAGE_TRAILER: &[u8; 16] = b"CHARIOXCTXEND1\r\n";
-const MAX_MANIFEST_BYTES: usize = 64 * 1024;
+const MAX_PLAN_BINDING_BYTES: usize = 72 * 1024;
+const MAX_MANIFEST_BYTES: usize = MAX_PLAN_BINDING_BYTES + 24 * 1024;
 const KERNEL_CONTEXT_WRAPPER_BYTES: u64 = 64 * 1024;
 const MAX_KERNEL_CONTEXT_BYTES: u64 =
     super::kernel::MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES as u64 + KERNEL_CONTEXT_WRAPPER_BYTES;
@@ -32,6 +34,66 @@ pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 =
 pub enum ManagedContextPackageKernel {
     Empty,
     FromKernel(KernelContextSnapshot),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManagedContextPackageDevelopment {
+    Empty,
+    FromSource {
+        archive_path: PathBuf,
+        archive_sha256: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextPlanBinding {
+    pub context_id: String,
+    pub plan_digest: String,
+    pub kernel_context: ManagedContextKernelSelection,
+    pub development: ManagedContextDevelopmentSelection,
+    pub provider_accounts: ManagedContextProviderAccountSelection,
+    pub git_credentials: ManagedContextGitCredentialSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ManagedContextKernelSelection {
+    Empty,
+    SourceKernel,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedContextDevelopmentSelection {
+    Empty,
+    SourceProject {
+        project_id: String,
+        repositories: Vec<DevelopmentSourceRepositoryBinding>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedContextProviderAccountSelection {
+    None,
+    Selected {
+        accounts: Vec<ManagedContextProviderAccount>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ManagedContextProviderAccount {
+    pub provider: String,
+    pub account_profile: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ManagedContextGitCredentialSelection {
+    None,
+    Selected { credential_ids: Vec<String> },
 }
 
 impl std::fmt::Debug for ManagedContextPackageKernel {
@@ -47,32 +109,30 @@ impl std::fmt::Debug for ManagedContextPackageKernel {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ManagedContextPackageExportRequest {
-    pub context_id: String,
-    pub project_id: String,
+    pub plan: ManagedContextPlanBinding,
     pub target_environment_id: String,
     pub source_kernel_id: String,
     pub source_key_thumbprint: String,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
-    pub development_archive_path: PathBuf,
-    pub development_archive_sha256: String,
+    pub development: ManagedContextPackageDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
     pub package_path: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ManagedContextPackageExportResult {
+    pub plan: ManagedContextPlanBinding,
     pub package_path: PathBuf,
     pub package_sha256: String,
     pub package_size_bytes: u64,
-    pub development_archive_sha256: String,
+    pub development_archive_sha256: Option<String>,
     pub kernel_context_snapshot_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedContextPackageBinding {
-    pub context_id: String,
-    pub project_id: String,
+    pub plan: ManagedContextPlanBinding,
     pub target_environment_id: String,
     pub source_kernel_id: String,
     pub source_key_thumbprint: String,
@@ -120,8 +180,8 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub schema_version: u32,
     pub transfer_id: String,
     pub package_sha256: String,
-    pub project_id: String,
-    pub development: DevelopmentContextPublicationReceipt,
+    pub plan_digest: String,
+    pub development: ManagedContextImportedDevelopment,
     pub kernel_context: ManagedContextImportedKernelContext,
 }
 
@@ -132,12 +192,30 @@ pub(crate) enum ManagedContextImportedKernelContext {
     FromKernel { receipt: KernelContextImportReceipt },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum ManagedContextImportedDevelopment {
+    Empty,
+    FromSource {
+        project_id: String,
+        receipt: DevelopmentContextPublicationReceipt,
+    },
+}
+
 #[derive(Debug)]
 pub(crate) struct ExtractedManagedContextPackage {
-    pub development_archive_path: PathBuf,
-    pub development_archive_sha256: String,
+    pub development: ExtractedManagedContextDevelopment,
     pub kernel_context: ManagedContextPackageKernel,
     cleanup: PackageExtractionCleanup,
+}
+
+#[derive(Debug)]
+pub(crate) enum ExtractedManagedContextDevelopment {
+    Empty,
+    FromSource {
+        archive_path: PathBuf,
+        archive_sha256: String,
+    },
 }
 
 impl ExtractedManagedContextPackage {
@@ -150,22 +228,21 @@ impl ExtractedManagedContextPackage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ManagedContextPackageManifest {
     schema_version: u32,
-    context_id: String,
-    project_id: String,
+    plan: ManagedContextPlanBinding,
     target_environment_id: String,
     source_kernel_id: String,
     source_key_thumbprint: String,
     target_kernel_id: String,
     target_key_thumbprint: String,
-    development: PackageComponentManifest,
+    development: DevelopmentContextComponentManifest,
     kernel_context: KernelContextComponentManifest,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct PackageComponentManifest {
-    size_bytes: u64,
-    sha256: String,
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+enum DevelopmentContextComponentManifest {
+    Empty,
+    FromSource { size_bytes: u64, sha256: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -183,8 +260,7 @@ pub fn export_managed_context_package(
     request: ManagedContextPackageExportRequest,
 ) -> Result<ManagedContextPackageExportResult, DaemonError> {
     let binding = ManagedContextPackageBinding {
-        context_id: request.context_id,
-        project_id: request.project_id,
+        plan: request.plan,
         target_environment_id: request.target_environment_id,
         source_kernel_id: request.source_kernel_id,
         source_key_thumbprint: request.source_key_thumbprint,
@@ -192,33 +268,77 @@ pub fn export_managed_context_package(
         target_key_thumbprint: request.target_key_thumbprint,
     };
     validate_binding(&binding)?;
-    validate_sha256(
-        &request.development_archive_sha256,
-        "development archive digest",
-    )?;
+    validate_supported_package_plan(&binding.plan)?;
     validate_output_path(&request.package_path)?;
 
-    let mut development = open_regular_file_no_follow(&request.development_archive_path)?;
-    let development_size = development
-        .metadata()
-        .map_err(|error| package_io_error("inspect development archive", error))?
-        .len();
-    if development_size == 0 || development_size > MAX_DEVELOPMENT_BYTES {
-        return Err(package_error("development archive size is invalid"));
-    }
-    let actual_development_sha256 = hash_reader(&mut development, MAX_DEVELOPMENT_BYTES)?;
-    if actual_development_sha256 != request.development_archive_sha256.to_ascii_lowercase() {
-        return Err(package_error(
-            "development archive digest does not match the requested digest",
-        ));
-    }
-    development
-        .seek(SeekFrom::Start(0))
-        .map_err(|error| package_io_error("rewind development archive", error))?;
+    let (mut development, development_manifest, development_sha256) = match request.development {
+        ManagedContextPackageDevelopment::Empty => {
+            if !matches!(
+                binding.plan.development,
+                ManagedContextDevelopmentSelection::Empty
+            ) {
+                return Err(package_error(
+                    "managed context package omits the selected development context",
+                ));
+            }
+            (None, DevelopmentContextComponentManifest::Empty, None)
+        }
+        ManagedContextPackageDevelopment::FromSource {
+            archive_path,
+            archive_sha256,
+        } => {
+            if !matches!(
+                binding.plan.development,
+                ManagedContextDevelopmentSelection::SourceProject { .. }
+            ) {
+                return Err(package_error(
+                    "managed context package includes unselected development context",
+                ));
+            }
+            validate_sha256(&archive_sha256, "development archive digest")?;
+            let mut archive = open_regular_file_no_follow(&archive_path)?;
+            let size = archive
+                .metadata()
+                .map_err(|error| package_io_error("inspect development archive", error))?
+                .len();
+            if size == 0 || size > MAX_DEVELOPMENT_BYTES {
+                return Err(package_error("development archive size is invalid"));
+            }
+            let actual_sha256 = hash_reader(&mut archive, MAX_DEVELOPMENT_BYTES)?;
+            if actual_sha256 != archive_sha256.to_ascii_lowercase() {
+                return Err(package_error(
+                    "development archive digest does not match the requested digest",
+                ));
+            }
+            archive
+                .seek(SeekFrom::Start(0))
+                .map_err(|error| package_io_error("rewind development archive", error))?;
+            (
+                Some((archive, size)),
+                DevelopmentContextComponentManifest::FromSource {
+                    size_bytes: size,
+                    sha256: actual_sha256.clone(),
+                },
+                Some(actual_sha256),
+            )
+        }
+    };
 
     let (kernel_bytes, kernel_manifest, kernel_snapshot_sha256) = match request.kernel_context {
-        ManagedContextPackageKernel::Empty => (None, KernelContextComponentManifest::Empty, None),
+        ManagedContextPackageKernel::Empty => {
+            if binding.plan.kernel_context != ManagedContextKernelSelection::Empty {
+                return Err(package_error(
+                    "managed context package omits the selected kernel context",
+                ));
+            }
+            (None, KernelContextComponentManifest::Empty, None)
+        }
         ManagedContextPackageKernel::FromKernel(snapshot) => {
+            if binding.plan.kernel_context != ManagedContextKernelSelection::SourceKernel {
+                return Err(package_error(
+                    "managed context package includes unselected kernel context",
+                ));
+            }
             validate_snapshot_binding(&snapshot, &binding)?;
             let bytes = serialize_bounded_json(&snapshot, MAX_KERNEL_CONTEXT_BYTES as usize)?;
             let sha256 = sha256_bytes(&bytes);
@@ -233,17 +353,13 @@ pub fn export_managed_context_package(
     };
     let manifest = ManagedContextPackageManifest {
         schema_version: PACKAGE_SCHEMA_VERSION,
-        context_id: binding.context_id,
-        project_id: binding.project_id,
+        plan: binding.plan,
         target_environment_id: binding.target_environment_id,
         source_kernel_id: binding.source_kernel_id,
         source_key_thumbprint: binding.source_key_thumbprint,
         target_kernel_id: binding.target_kernel_id,
         target_key_thumbprint: binding.target_key_thumbprint,
-        development: PackageComponentManifest {
-            size_bytes: development_size,
-            sha256: actual_development_sha256.clone(),
-        },
+        development: development_manifest,
         kernel_context: kernel_manifest,
     };
     let manifest_bytes = serialize_bounded_json(&manifest, MAX_MANIFEST_BYTES)?;
@@ -281,16 +397,14 @@ pub fn export_managed_context_package(
     writer
         .write_all(&manifest_bytes)
         .map_err(package_write_error)?;
-    let copied_development = copy_component(
-        &mut development,
-        &mut writer,
-        development_size,
-        MAX_DEVELOPMENT_BYTES,
-    )?;
-    if copied_development != actual_development_sha256 {
-        return Err(package_error(
-            "development archive changed while composing the managed context package",
-        ));
+    if let Some((archive, size)) = development.as_mut() {
+        let copied_development =
+            copy_component(archive, &mut writer, *size, MAX_DEVELOPMENT_BYTES)?;
+        if Some(copied_development) != development_sha256 {
+            return Err(package_error(
+                "development archive changed while composing the managed context package",
+            ));
+        }
     }
     if let Some(bytes) = kernel_bytes.as_deref() {
         writer.write_all(bytes).map_err(package_write_error)?;
@@ -308,10 +422,11 @@ pub fn export_managed_context_package(
     sync_directory(&canonical_parent)?;
     cleanup.keep();
     Ok(ManagedContextPackageExportResult {
+        plan: manifest.plan,
         package_path: destination,
         package_sha256,
         package_size_bytes,
-        development_archive_sha256: actual_development_sha256,
+        development_archive_sha256: development_sha256,
         kernel_context_snapshot_sha256: kernel_snapshot_sha256,
     })
 }
@@ -324,21 +439,50 @@ pub(crate) fn apply_managed_context_package(
         expected_package_sha256: request.expected_package_sha256.clone(),
         expected_binding: request.expected_binding.clone(),
     })?;
-    let development_request = DevelopmentContextImportRequest {
-        archive_path: extracted.development_archive_path.clone(),
-        expected_archive_sha256: extracted.development_archive_sha256.clone(),
-        expected_project_id: request.expected_binding.project_id.clone(),
-        destination_root: request.development_destination_root,
-    };
-    let development = match recover_development_context_publication(
-        &development_request,
-        &request.transfer_id,
-    )? {
-        Some(receipt) => receipt,
-        None => import_development_context_with_publication(
-            development_request,
-            request.transfer_id.clone(),
-        )?,
+    let development = match (
+        &extracted.development,
+        &request.expected_binding.plan.development,
+    ) {
+        (ExtractedManagedContextDevelopment::Empty, ManagedContextDevelopmentSelection::Empty) => {
+            ManagedContextImportedDevelopment::Empty
+        }
+        (
+            ExtractedManagedContextDevelopment::FromSource {
+                archive_path,
+                archive_sha256,
+            },
+            ManagedContextDevelopmentSelection::SourceProject {
+                project_id,
+                repositories,
+            },
+        ) => {
+            let development_request = DevelopmentContextImportRequest {
+                archive_path: archive_path.clone(),
+                expected_archive_sha256: archive_sha256.clone(),
+                expected_project_id: project_id.clone(),
+                expected_source_repositories: Some(repositories.clone()),
+                destination_root: request.development_destination_root,
+            };
+            let receipt = match recover_development_context_publication(
+                &development_request,
+                &request.transfer_id,
+            )? {
+                Some(receipt) => receipt,
+                None => import_development_context_with_publication(
+                    development_request,
+                    request.transfer_id.clone(),
+                )?,
+            };
+            ManagedContextImportedDevelopment::FromSource {
+                project_id: project_id.clone(),
+                receipt,
+            }
+        }
+        _ => {
+            return Err(package_error(
+                "managed context development component does not match the launch plan",
+            ))
+        }
     };
     let kernel_context = match &extracted.kernel_context {
         ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
@@ -347,7 +491,7 @@ pub(crate) fn apply_managed_context_package(
             let receipt = import_kernel_context(KernelContextImportRequest {
                 snapshot: snapshot.clone(),
                 expected_source: TransferredVaultSourceBinding {
-                    context_id: request.expected_binding.context_id.clone(),
+                    context_id: request.expected_binding.plan.context_id.clone(),
                     source_kernel_id: request.expected_binding.source_kernel_id.clone(),
                     source_key_thumbprint: request.expected_binding.source_key_thumbprint.clone(),
                 },
@@ -363,7 +507,7 @@ pub(crate) fn apply_managed_context_package(
         schema_version: PACKAGE_SCHEMA_VERSION,
         transfer_id: request.transfer_id,
         package_sha256: request.expected_package_sha256,
-        project_id: request.expected_binding.project_id,
+        plan_digest: request.expected_binding.plan.plan_digest,
         development,
         kernel_context,
     })
@@ -416,19 +560,24 @@ pub(crate) fn extract_managed_context_package(
         .map_err(|_| package_error("managed context package manifest is invalid"))?;
     validate_manifest(&manifest, &request.expected_binding)?;
 
-    let development_archive_path = component_root.join("development.tar.gz");
-    let development_file = create_private_file(&development_archive_path)?;
-    let development_archive_sha256 = copy_component_to_file(
-        &mut reader,
-        development_file,
-        manifest.development.size_bytes,
-        MAX_DEVELOPMENT_BYTES,
-    )?;
-    if development_archive_sha256 != manifest.development.sha256 {
-        return Err(package_error(
-            "managed context development component digest does not match",
-        ));
-    }
+    let development = match &manifest.development {
+        DevelopmentContextComponentManifest::Empty => ExtractedManagedContextDevelopment::Empty,
+        DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 } => {
+            let archive_path = component_root.join("development.tar.gz");
+            let file = create_private_file(&archive_path)?;
+            let actual_sha256 =
+                copy_component_to_file(&mut reader, file, *size_bytes, MAX_DEVELOPMENT_BYTES)?;
+            if &actual_sha256 != sha256 {
+                return Err(package_error(
+                    "managed context development component digest does not match",
+                ));
+            }
+            ExtractedManagedContextDevelopment::FromSource {
+                archive_path,
+                archive_sha256: actual_sha256,
+            }
+        }
+    };
 
     let kernel_context = match &manifest.kernel_context {
         KernelContextComponentManifest::Empty => ManagedContextPackageKernel::Empty,
@@ -479,8 +628,7 @@ pub(crate) fn extract_managed_context_package(
     }
     sync_directory(&component_root)?;
     Ok(ExtractedManagedContextPackage {
-        development_archive_path,
-        development_archive_sha256,
+        development,
         kernel_context,
         cleanup,
     })
@@ -498,8 +646,7 @@ fn validate_manifest(
         return Err(package_error("unsupported managed context package version"));
     }
     let actual = ManagedContextPackageBinding {
-        context_id: manifest.context_id.clone(),
-        project_id: manifest.project_id.clone(),
+        plan: manifest.plan.clone(),
         target_environment_id: manifest.target_environment_id.clone(),
         source_kernel_id: manifest.source_kernel_id.clone(),
         source_key_thumbprint: manifest.source_key_thumbprint.clone(),
@@ -507,26 +654,42 @@ fn validate_manifest(
         target_key_thumbprint: manifest.target_key_thumbprint.clone(),
     };
     validate_binding(&actual)?;
+    validate_supported_package_plan(&actual.plan)?;
     if &actual != expected {
         return Err(package_error(
             "managed context package source or target binding does not match",
         ));
     }
-    if manifest.development.size_bytes == 0
-        || manifest.development.size_bytes > MAX_DEVELOPMENT_BYTES
-    {
-        return Err(package_error(
-            "managed context development component size is invalid",
-        ));
+    match (&manifest.development, &manifest.plan.development) {
+        (DevelopmentContextComponentManifest::Empty, ManagedContextDevelopmentSelection::Empty) => {
+        }
+        (
+            DevelopmentContextComponentManifest::FromSource { size_bytes, sha256 },
+            ManagedContextDevelopmentSelection::SourceProject { .. },
+        ) => {
+            if *size_bytes == 0 || *size_bytes > MAX_DEVELOPMENT_BYTES {
+                return Err(package_error(
+                    "managed context development component size is invalid",
+                ));
+            }
+            validate_sha256(sha256, "development component digest")?;
+        }
+        _ => {
+            return Err(package_error(
+                "managed context development component does not match the launch plan",
+            ))
+        }
     }
-    validate_sha256(&manifest.development.sha256, "development component digest")?;
-    match &manifest.kernel_context {
-        KernelContextComponentManifest::Empty => Ok(()),
-        KernelContextComponentManifest::FromKernel {
-            size_bytes,
-            sha256,
-            snapshot_sha256,
-        } => {
+    match (&manifest.kernel_context, manifest.plan.kernel_context) {
+        (KernelContextComponentManifest::Empty, ManagedContextKernelSelection::Empty) => Ok(()),
+        (
+            KernelContextComponentManifest::FromKernel {
+                size_bytes,
+                sha256,
+                snapshot_sha256,
+            },
+            ManagedContextKernelSelection::SourceKernel,
+        ) => {
             if *size_bytes == 0 || *size_bytes > MAX_KERNEL_CONTEXT_BYTES {
                 return Err(package_error(
                     "managed context kernel component size is invalid",
@@ -535,6 +698,9 @@ fn validate_manifest(
             validate_sha256(sha256, "kernel component digest")?;
             validate_sha256(snapshot_sha256, "kernel snapshot digest")
         }
+        _ => Err(package_error(
+            "managed context kernel component does not match the launch plan",
+        )),
     }
 }
 
@@ -543,7 +709,7 @@ fn validate_snapshot_binding(
     binding: &ManagedContextPackageBinding,
 ) -> Result<(), DaemonError> {
     let payload = &snapshot.payload;
-    if payload.context_id != binding.context_id
+    if payload.context_id != binding.plan.context_id
         || payload.source_kernel_id != binding.source_kernel_id
         || payload.source_key_thumbprint != binding.source_key_thumbprint
         || payload.target_kernel_id != binding.target_kernel_id
@@ -557,9 +723,8 @@ fn validate_snapshot_binding(
 }
 
 fn validate_binding(binding: &ManagedContextPackageBinding) -> Result<(), DaemonError> {
+    validate_plan_binding(&binding.plan)?;
     for (label, value) in [
-        ("context id", binding.context_id.as_str()),
-        ("project id", binding.project_id.as_str()),
         (
             "target environment id",
             binding.target_environment_id.as_str(),
@@ -571,6 +736,123 @@ fn validate_binding(binding: &ManagedContextPackageBinding) -> Result<(), Daemon
     }
     validate_sha256(&binding.source_key_thumbprint, "source key thumbprint")?;
     validate_sha256(&binding.target_key_thumbprint, "target key thumbprint")
+}
+
+pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<(), DaemonError> {
+    serialize_bounded_json(plan, MAX_PLAN_BINDING_BYTES)?;
+    validate_identifier(&plan.context_id, "context id")?;
+    let digest = plan
+        .plan_digest
+        .strip_prefix("sha256:")
+        .ok_or_else(|| package_error("managed context plan digest is invalid"))?;
+    validate_sha256(digest, "plan digest")?;
+    match &plan.development {
+        ManagedContextDevelopmentSelection::Empty => {}
+        ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        } => {
+            validate_identifier(project_id, "project id")?;
+            if repositories.is_empty() || repositories.len() > 32 {
+                return Err(package_error(
+                    "managed context repository selection is invalid",
+                ));
+            }
+            let mut primary = 0;
+            let mut seen = std::collections::HashSet::new();
+            for repository in repositories {
+                primary += usize::from(repository.role == DevelopmentRepositoryRole::Primary);
+                validate_reference(&repository.workspace_id, "Workspace id")?;
+                if let Some(worktree_id) = repository.worktree_id.as_deref() {
+                    validate_reference(worktree_id, "worktree id")?;
+                }
+                if !seen.insert((
+                    repository.workspace_id.as_str(),
+                    repository.worktree_id.as_deref(),
+                )) {
+                    return Err(package_error(
+                        "managed context repository selection contains duplicates",
+                    ));
+                }
+            }
+            if primary != 1 {
+                return Err(package_error(
+                    "managed context repository selection must have one primary",
+                ));
+            }
+        }
+    }
+    match &plan.provider_accounts {
+        ManagedContextProviderAccountSelection::None => {}
+        ManagedContextProviderAccountSelection::Selected { accounts } => {
+            if accounts.is_empty() || accounts.len() > 16 {
+                return Err(package_error(
+                    "managed context provider account selection is invalid",
+                ));
+            }
+            let mut previous: Option<(&str, &str)> = None;
+            for account in accounts {
+                validate_identifier(&account.provider, "provider")?;
+                validate_identifier(&account.account_profile, "provider account")?;
+                let current = (account.provider.as_str(), account.account_profile.as_str());
+                if previous.is_some_and(|value| value >= current) {
+                    return Err(package_error(
+                        "managed context provider account selection is not canonical",
+                    ));
+                }
+                previous = Some(current);
+            }
+        }
+    }
+    match &plan.git_credentials {
+        ManagedContextGitCredentialSelection::None => {}
+        ManagedContextGitCredentialSelection::Selected { credential_ids } => {
+            if credential_ids.is_empty() || credential_ids.len() > 16 {
+                return Err(package_error(
+                    "managed context Git credential selection is invalid",
+                ));
+            }
+            let mut previous: Option<&str> = None;
+            for credential_id in credential_ids {
+                validate_identifier(credential_id, "Git credential")?;
+                if previous.is_some_and(|value| value >= credential_id.as_str()) {
+                    return Err(package_error(
+                        "managed context Git credential selection is not canonical",
+                    ));
+                }
+                previous = Some(credential_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validate_supported_package_plan(plan: &ManagedContextPlanBinding) -> Result<(), DaemonError> {
+    if !matches!(
+        plan.provider_accounts,
+        ManagedContextProviderAccountSelection::None
+    ) || !matches!(
+        plan.git_credentials,
+        ManagedContextGitCredentialSelection::None
+    ) {
+        return Err(package_error(
+            "this managed-context package version does not yet carry provider accounts or Git credentials",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_reference(value: &str, label: &str) -> Result<(), DaemonError> {
+    if value.is_empty()
+        || value.trim() != value
+        || value.len() > 4096
+        || value
+            .bytes()
+            .any(|byte| matches!(byte, b'\0' | b'\r' | b'\n'))
+    {
+        return Err(package_error(format!("managed context {label} is invalid")));
+    }
+    Ok(())
 }
 
 fn validate_identifier(value: &str, label: &str) -> Result<(), DaemonError> {

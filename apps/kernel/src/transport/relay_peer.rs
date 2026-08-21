@@ -49,9 +49,9 @@ impl std::fmt::Debug for RelayManagedContextChunk {
     }
 }
 
-/// Version 20 binds resumable managed-context packages to an explicit context
-/// and reports whether the target imported Empty or source-kernel context.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 20;
+/// Version 21 binds managed-context packages to the complete Cloud launch plan,
+/// supports Empty development context, and makes arm replay source-idempotent.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,12 +76,22 @@ pub struct RelayManagedContextImportedRepository {
 pub struct RelayManagedContextImportReceipt {
     pub transfer_id: String,
     pub archive_sha256: String,
-    pub project_id: String,
-    pub destination_root: String,
-    pub primary_repository_id: String,
-    pub repositories: Vec<RelayManagedContextImportedRepository>,
+    pub plan_digest: String,
+    pub development: RelayManagedDevelopmentContextImportReceipt,
     pub kernel_context: RelayManagedKernelContextImportReceipt,
     pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayManagedDevelopmentContextImportReceipt {
+    Empty,
+    FromSource {
+        project_id: String,
+        destination_root: String,
+        primary_repository_id: String,
+        repositories: Vec<RelayManagedContextImportedRepository>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -544,10 +554,11 @@ pub enum RelayPeerRequest {
     },
     ArmManagedContextImport {
         context_id: String,
+        plan_digest: String,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,
-        project_id: String,
+        capability: RelayManagedContextCapability,
         archive_sha256: String,
         archive_size_bytes: u64,
     },

@@ -1,4 +1,5 @@
 mod cloud;
+mod context_plan;
 mod release;
 mod state;
 mod supervisor;
@@ -19,6 +20,7 @@ use cloud::{
     BootstrapCloudClient, ConfirmRequest, ExchangeRequest, HttpBootstrapCloudClient,
     ManagedCloudRelayProfile,
 };
+pub(crate) use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
     remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,
@@ -33,6 +35,7 @@ pub(crate) struct ConfirmedManagedKernelRegistration {
     pub environment_id: String,
     pub machine_id: String,
     pub kernel_id: String,
+    pub context_plan: Option<ManagedKernelContextPlan>,
 }
 
 #[derive(Debug)]
@@ -106,6 +109,7 @@ pub(crate) fn confirmed_managed_kernel_registration_from_env(
         environment_id: receipt.environment_id,
         machine_id: receipt.machine_id,
         kernel_id: receipt.kernel_id,
+        context_plan: receipt.context_plan,
     }))
 }
 
@@ -212,6 +216,7 @@ fn begin_registration(
         relay_public_key: identity.relay_public_key.clone(),
         runtime_release_digest: envelope.runtime_release_digest.clone(),
         confirmed_at: None,
+        context_plan: Some(exchanged.context_plan),
     };
     receipt.persist(&config.receipt_path)?;
     Ok(Some(PendingConfirmation {
@@ -322,6 +327,11 @@ fn validate_exchange_response(
         || response.cloud_relay.machine_alias.len() > 256
         || !valid_managed_relay_url(&response.cloud_relay.relay_url)
         || !valid_secret(&response.cloud_relay.machine_credential, "mcred_")
+        || response.context_plan.validate().is_err()
+        || response
+            .context_plan
+            .source_binding()
+            .is_some_and(|source| source.relay_realm_id != response.cloud_relay.realm_id)
     {
         return Err(bootstrap_error(
             "Cloud bootstrap response does not match the local identity",
@@ -355,6 +365,11 @@ fn validate_profile(
             .as_deref()
             .is_none_or(|value| !valid_secret(value, "mcred_"))
         || !valid_managed_relay_url(&profile.relay_url)
+        || receipt
+            .context_plan
+            .as_ref()
+            .and_then(ManagedKernelContextPlan::source_binding)
+            .is_some_and(|source| source.relay_realm_id != profile.realm_id)
     {
         return Err(bootstrap_error(
             "managed Cloud profile does not match its receipt",

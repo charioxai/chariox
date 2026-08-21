@@ -198,8 +198,12 @@ fn import_development_context_with_options(
     create_private_directory(&artifacts_root)?;
     create_private_directory(&project_root)?;
 
-    let manifest =
-        extract_and_verify_archive(archive_file, &request.expected_project_id, &artifacts_root)?;
+    let manifest = extract_and_verify_archive(
+        archive_file,
+        &request.expected_project_id,
+        request.expected_source_repositories.as_deref(),
+        &artifacts_root,
+    )?;
     let mut imported = Vec::with_capacity(manifest.repositories.len());
     let mut checkout_bytes = 0_u64;
     let mut materialized_entries = 0_u64;

@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        20
+        21
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -58,7 +58,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        20
+        21
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -81,10 +81,11 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     );
     let arm = serde_json::to_value(RelayPeerRequest::ArmManagedContextImport {
         context_id: "context-1".to_string(),
+        plan_digest: format!("sha256:{}", "f".repeat(64)),
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "target-kernel-1".to_string(),
         target_key_thumbprint: "d".repeat(64),
-        project_id: "project-1".to_string(),
+        capability: RelayManagedContextCapability::new("arm-capability-canary".to_string()),
         archive_sha256: "e".repeat(64),
         archive_size_bytes: 42,
     })
@@ -104,16 +105,19 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
             receipt: Some(RelayManagedContextImportReceipt {
                 transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
                 archive_sha256: "a".repeat(64),
-                project_id: "project-1".to_string(),
-                destination_root: "/managed/context".to_string(),
-                primary_repository_id: "repo-primary".to_string(),
-                repositories: vec![RelayManagedContextImportedRepository {
-                    repository_id: "repo-primary".to_string(),
-                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
-                    target_directory: "primary".to_string(),
-                    destination_path: "/managed/context/primary".to_string(),
-                    head_sha: "b".repeat(40),
-                }],
+                plan_digest: format!("sha256:{}", "f".repeat(64)),
+                development: crate::transport::relay_peer::RelayManagedDevelopmentContextImportReceipt::FromSource {
+                    project_id: "project-1".to_string(),
+                    destination_root: "/managed/context".to_string(),
+                    primary_repository_id: "repo-primary".to_string(),
+                    repositories: vec![RelayManagedContextImportedRepository {
+                        repository_id: "repo-primary".to_string(),
+                        role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        destination_path: "/managed/context/primary".to_string(),
+                        head_sha: "b".repeat(40),
+                    }],
+                },
                 kernel_context: RelayManagedKernelContextImportReceipt::Empty,
                 receipt_sha256: "c".repeat(64),
             }),
@@ -125,7 +129,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
         Some(&serde_json::json!("consumed"))
     );
     assert_eq!(
-        value.pointer("/status/receipt/repositories/0/role"),
+        value.pointer("/status/receipt/development/repositories/0/role"),
         Some(&serde_json::json!("primary"))
     );
     assert_eq!(
