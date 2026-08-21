@@ -11,8 +11,7 @@ import { claudeHookSettings, writeClaudeHookHandler } from "./native-tui/claude-
 type PermissionContractCase = {
   name: string
   input: Record<string, unknown>
-  permissionDecision: string
-  permissionDecisionReason: string
+  behavior: string
 }
 
 test("Claude hook generators obey the shared immediate permission contract", async () => {
@@ -46,12 +45,8 @@ test("Claude hook generators obey the shared immediate permission contract", asy
       })
       const response = JSON.parse(stdout)
       assert.equal(response.hookSpecificOutput.hookEventName, "PermissionRequest", contractCase.name)
-      assert.equal(response.hookSpecificOutput.permissionDecision, contractCase.permissionDecision, contractCase.name)
-      assert.equal(
-        response.hookSpecificOutput.permissionDecisionReason,
-        contractCase.permissionDecisionReason,
-        contractCase.name,
-      )
+      assert.equal(response.hookSpecificOutput.decision.behavior, contractCase.behavior, contractCase.name)
+      assert.equal(response.hookSpecificOutput.permissionDecision, undefined, contractCase.name)
     }
     assert.match(await readFile(events, "utf8"), /"hook_event_name":"PermissionRequest"/)
   } finally {

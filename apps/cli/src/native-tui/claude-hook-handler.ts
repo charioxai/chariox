@@ -63,10 +63,9 @@ if (eventName === "UserPromptSubmit") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",
-          permissionDecision: "allow",
-          permissionDecisionReason: isCharioxRuntimeTool
-            ? "Allowed Chariox runtime tool."
-            : "Allowed by the agent's yolo permission mode."
+          decision: {
+            behavior: "allow"
+          }
         }
       }))
     }
@@ -81,14 +80,23 @@ if (eventName === "UserPromptSubmit") {
         })
         if (response.ok) {
           const decision = await response.json()
-          if (decision?.handled && decision.permissionDecision) {
-            process.stdout.write(JSON.stringify({
-              hookSpecificOutput: {
-                hookEventName: eventName,
-                permissionDecision: decision.permissionDecision,
-                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
-              }
-            }))
+          if (decision?.handled && (decision.behavior === "allow" || decision.behavior === "deny")) {
+            const hookSpecificOutput = eventName === "PermissionRequest"
+              ? {
+                  hookEventName: "PermissionRequest",
+                  decision: {
+                    behavior: decision.behavior,
+                    ...(decision.behavior === "deny"
+                      ? { message: decision.message ?? "Denied through Chariox." }
+                      : {})
+                  }
+                }
+              : {
+                  hookEventName: "PreToolUse",
+                  permissionDecision: decision.behavior,
+                  permissionDecisionReason: decision.message ?? "Resolved through Chariox."
+                }
+            process.stdout.write(JSON.stringify({ hookSpecificOutput }))
           }
         }
       } catch {}
