@@ -320,7 +320,7 @@ impl DaemonApp {
             started.run.id(),
             "failed_provider_resume_state_cleared",
         )? {
-            crate::agent::ProviderResumeClearOutcome::Cleared(_agent) => {}
+            crate::agent::ProviderResumeClearOutcome::Cleared => {}
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
             crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
         }

@@ -117,9 +117,9 @@ impl PromptStateOwner {
         prompt_id: &str,
         provider_run_id: &str,
         provider_session_id: &str,
-        expected_status: PromptStatus,
-        next_status: PromptStatus,
+        status_transition: (PromptStatus, PromptStatus),
     ) -> Option<PromptQueueItem> {
+        let (expected_status, next_status) = status_transition;
         let mut owner = self
             .state
             .lock()

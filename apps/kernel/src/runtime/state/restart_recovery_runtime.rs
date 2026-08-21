@@ -630,7 +630,7 @@ impl KernelRuntimeState {
                 failed_provider_run_id,
                 "unresponsive_provider_resume_state_cleared_after_restart",
             )? {
-                crate::agent::ProviderResumeClearOutcome::Cleared(_)
+                crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {}
                 crate::agent::ProviderResumeClearOutcome::Superseded {
                     current_provider_session_id,
@@ -1655,8 +1655,7 @@ mod tests {
                     &prompt_id,
                     &provider_run_id,
                     "codex-thread-failed-before-restart",
-                    active_status,
-                    PromptStatus::Cancelling,
+                    (active_status, PromptStatus::Cancelling),
                 )
                 .expect("failure intent should persist")
                 .expect("failure intent should match");
@@ -1992,8 +1991,7 @@ mod tests {
                 active.id(),
                 provider_run.id(),
                 "codex-thread-failed",
-                active.status(),
-                PromptStatus::Cancelling,
+                (active.status(), PromptStatus::Cancelling),
             )
             .expect("failure intent should persist")
             .expect("failure intent should match the active prompt");
@@ -2306,11 +2304,11 @@ mod tests {
             .load_events_after(0)
             .expect("durable events should load")
             .into_iter()
-            .filter(|event| {
+            .rev()
+            .find(|event| {
                 event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
                     && event.subject_id.as_deref() == Some(session_id.as_str())
             })
-            .last()
             .map(|event| {
                 serde_json::from_value::<
                         crate::durable_prompt_state::DurablePromptStateEventPayload,

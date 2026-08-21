@@ -20,7 +20,7 @@ pub struct AgentServiceStore {
 
 #[derive(Debug)]
 pub(crate) enum ProviderResumeClearOutcome {
-    Cleared(AgentInstance),
+    Cleared,
     AlreadyAbsent,
     Superseded { current_provider_session_id: String },
 }
@@ -270,7 +270,7 @@ impl AgentServiceStore {
             agents.restore_agent(previous);
             return Err(error);
         }
-        Ok(ProviderResumeClearOutcome::Cleared(updated))
+        Ok(ProviderResumeClearOutcome::Cleared)
     }
 
     pub fn set_remote_extension_manifest_sync(

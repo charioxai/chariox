@@ -297,6 +297,7 @@ impl KernelRuntimeState {
         Ok(records)
     }
 
+    #[cfg(test)]
     pub(super) async fn apply_owned_structured_output_batch(
         &self,
         session_id: &str,

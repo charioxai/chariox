@@ -156,8 +156,7 @@ impl KernelRuntimeOwnedState {
         prompt_id: &str,
         provider_run_id: &str,
         provider_session_id: &str,
-        expected_status: crate::session::PromptStatus,
-        next_status: crate::session::PromptStatus,
+        status_transition: (crate::session::PromptStatus, crate::session::PromptStatus),
     ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
         let prompt = self
@@ -168,8 +167,7 @@ impl KernelRuntimeOwnedState {
                 prompt_id,
                 provider_run_id,
                 provider_session_id,
-                expected_status,
-                next_status,
+                status_transition,
             );
         if prompt.is_none() {
             return Ok(None);
@@ -190,8 +188,7 @@ impl KernelRuntimeOwnedState {
                     prompt_id,
                     provider_run_id,
                     provider_session_id,
-                    next_status,
-                    expected_status,
+                    (status_transition.1, status_transition.0),
                 );
             let (active_prompt, queued_prompts) =
                 self.prompt_state_owner.state_parts(&session, agent_id);

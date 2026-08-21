@@ -61,7 +61,7 @@ impl ProviderLaunchFailureRetryStore {
         self.schedule_if_absent(ProviderLaunchFailureRetry {
             started: started.clone(),
             provider_run_id: provider_run_id.clone(),
-            operation: *operation,
+            operation,
             message: message.clone(),
             attempt: 1,
             due_at_ms: retry_due_at_ms(now_ms, 1),
@@ -103,9 +103,8 @@ impl ProviderLaunchFailureRetryStore {
             .lock()
             .expect("provider launch failure retry store poisoned")
             .iter()
-            .filter_map(|(provider_run_id, retry)| {
-                (retry.due_at_ms <= now_ms).then(|| provider_run_id.clone())
-            })
+            .filter(|(_, retry)| retry.due_at_ms <= now_ms)
+            .map(|(provider_run_id, _)| provider_run_id.clone())
             .collect()
     }
 

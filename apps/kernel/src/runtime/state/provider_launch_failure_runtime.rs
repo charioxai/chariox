@@ -120,16 +120,14 @@ impl KernelRuntimeState {
                             owned
                                 .provider_launch_failure_retries
                                 .reschedule(retry, crate::session::unix_epoch_ms())
+                        } else if owned.provider_launch_failure_retries.schedule_initial(
+                            started,
+                            error,
+                            crate::session::unix_epoch_ms(),
+                        ) {
+                            crate::app::ProviderLaunchFailureRetryScheduleOutcome::Scheduled
                         } else {
-                            if owned.provider_launch_failure_retries.schedule_initial(
-                                started,
-                                error,
-                                crate::session::unix_epoch_ms(),
-                            ) {
-                                crate::app::ProviderLaunchFailureRetryScheduleOutcome::Scheduled
-                            } else {
-                                crate::app::ProviderLaunchFailureRetryScheduleOutcome::AlreadyScheduled
-                            }
+                            crate::app::ProviderLaunchFailureRetryScheduleOutcome::AlreadyScheduled
                         };
                         match outcome {
                             crate::app::ProviderLaunchFailureRetryScheduleOutcome::Scheduled => {
@@ -370,7 +368,7 @@ fn clear_failed_provider_resume_state_for_runtime(
             started.run.id(),
             "failed_provider_resume_state_cleared",
         )? {
-        crate::agent::ProviderResumeClearOutcome::Cleared(_agent) => {}
+        crate::agent::ProviderResumeClearOutcome::Cleared => {}
         crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => return Ok(true),
         crate::agent::ProviderResumeClearOutcome::Superseded { .. } => return Ok(false),
     }

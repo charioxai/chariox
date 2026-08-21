@@ -329,8 +329,10 @@ impl KernelRuntimeOwnedState {
                 prompt_id,
                 provider_run.id(),
                 &stale_provider_session_id,
-                active_prompt.status(),
-                crate::session::PromptStatus::Cancelling,
+                (
+                    active_prompt.status(),
+                    crate::session::PromptStatus::Cancelling,
+                ),
             )?
             .is_none()
         {
@@ -347,7 +349,7 @@ impl KernelRuntimeOwnedState {
                 "failed_provider_resume_state_cleared",
             )?;
         match cleared {
-            crate::agent::ProviderResumeClearOutcome::Cleared(_agent) => {}
+            crate::agent::ProviderResumeClearOutcome::Cleared => {}
             crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {
                 return Ok(FailedPromptResumePreparation::Cleared(settlement_claim));
             }

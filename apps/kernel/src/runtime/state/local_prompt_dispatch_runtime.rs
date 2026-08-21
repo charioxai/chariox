@@ -2730,8 +2730,7 @@ impl KernelRuntimeState {
                         &dispatch.prompt_id,
                         &dispatch.provider_run_id,
                         &expected_provider_session_id,
-                        dispatching_status,
-                        crate::session::PromptStatus::Cancelling,
+                        (dispatching_status, crate::session::PromptStatus::Cancelling),
                     )?
                     .is_none()
                 {
@@ -2742,7 +2741,7 @@ impl KernelRuntimeState {
                     &expected_provider_session_id,
                 ) {
                     Ok(
-                        crate::agent::ProviderResumeClearOutcome::Cleared(_)
+                        crate::agent::ProviderResumeClearOutcome::Cleared
                         | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
                     ) => {}
                     Ok(crate::agent::ProviderResumeClearOutcome::Superseded {

@@ -123,7 +123,7 @@ impl KernelRuntimeState {
                     .expect("classified resume failure must retain its provider session"),
                 "failed_provider_resume_state_cleared",
             )?,
-            crate::agent::ProviderResumeClearOutcome::Cleared(_)
+            crate::agent::ProviderResumeClearOutcome::Cleared
                 | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent
         ))
     }
@@ -166,10 +166,7 @@ impl KernelRuntimeState {
                 provider_run_id,
                 reason,
             )?;
-        if matches!(
-            outcome,
-            crate::agent::ProviderResumeClearOutcome::Cleared(_)
-        ) {
+        if matches!(outcome, crate::agent::ProviderResumeClearOutcome::Cleared) {
             self.owned.record_notice(
                 session_id,
                 Some(provider_run_id),
