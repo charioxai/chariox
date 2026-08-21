@@ -6,6 +6,7 @@ import {
   getManagedEnvironmentRequest,
   listManagedEnvironmentCatalogRequest,
   requestManagedEnvironmentLifecycleRequest,
+  type ManagedEnvironmentSummary,
 } from "./ipc-managed-environment-requests.js"
 
 test("managed environment requests use the shared local daemon shape", () => {
@@ -104,4 +105,40 @@ test("managed environment requests use the shared local daemon shape", () => {
       },
     })
   }
+})
+
+test("managed environment summaries bind the runtime machine and kernel", () => {
+  const summary: ManagedEnvironmentSummary = {
+    environmentId: "environment-1",
+    accountId: "account-1",
+    createdByUserId: "user-1",
+    name: "Managed agent",
+    region: "hel1",
+    computeClass: "agent-small",
+    desiredState: "running",
+    observedState: "ready",
+    desiredRevision: 1,
+    observedRevision: 1,
+    runtimeMachineId: "managed-machine-1",
+    runtimeKernelId: "managed-kernel-1",
+    runtimeReleaseDigest: "sha256:release",
+    contextPlan: {
+      schemaVersion: 1,
+      contextId: "context-1",
+      planDigest: "sha256:plan",
+      source: null,
+      kernelContext: "empty",
+      developmentSetup: { kind: "empty" },
+      providerAccounts: { kind: "none" },
+      gitCredentials: { kind: "none" },
+    },
+    contextManifestDigest: "sha256:manifest",
+    autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    createdAt: "2026-08-21T00:00:00.000Z",
+    updatedAt: "2026-08-21T00:00:00.000Z",
+  }
+
+  assert.equal(summary.runtimeKernelId, "managed-kernel-1")
 })

@@ -183,6 +183,24 @@ mod tests {
         assert!(authorized_cloud_profile(&config, "cloud-user-2").is_err());
     }
 
+    #[test]
+    fn managed_environment_cloud_summary_tolerates_pre_kernel_binding_responses() {
+        let mut legacy = environment_json();
+        legacy
+            .as_object_mut()
+            .expect("environment object")
+            .remove("runtimeKernelId");
+        let decoded: cloud_contract::EnvironmentSummary =
+            serde_json::from_value(legacy).expect("legacy Cloud summary");
+        let summary: crate::local::ManagedEnvironmentSummary = decoded.into();
+
+        assert_eq!(
+            summary.runtime_machine_id.as_deref(),
+            Some("managed-machine-1")
+        );
+        assert_eq!(summary.runtime_kernel_id, None);
+    }
+
     #[tokio::test]
     async fn managed_environment_control_uses_authenticated_cloud_profile_for_all_operations() {
         let server = ManagedEnvironmentCloudFixture::start();
@@ -208,6 +226,10 @@ mod tests {
         assert_eq!(catalog.compute_classes[0].compute_class, "agent-small");
         assert_eq!(catalog.context_sources[0].source_target_id, "source-1");
         assert_eq!(catalog.environments[0].environment_id, "environment-1");
+        assert_eq!(
+            catalog.environments[0].runtime_kernel_id.as_deref(),
+            Some("managed-kernel-1")
+        );
 
         let create = execute_managed_environment_control_request(
             config.clone(),
@@ -446,6 +468,7 @@ mod tests {
             "desiredRevision": 1,
             "observedRevision": 1,
             "runtimeMachineId": "managed-machine-1",
+            "runtimeKernelId": "managed-kernel-1",
             "runtimeReleaseDigest": "sha256:release",
             "contextPlan": {
                 "schemaVersion": 1,

@@ -3,7 +3,7 @@ use crate::local::*;
 
 #[test]
 fn local_daemon_managed_environment_control_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
     let policy = ManagedEnvironmentAutoStopPolicy {
         minimum_runtime_seconds: 0,
         idle_delay_seconds: Some(900),
@@ -206,10 +206,14 @@ fn local_daemon_managed_environment_control_shape_is_versioned() {
         snapshot.pointer("/11/ManagedEnvironmentLifecycleRequested/result/operation/status"),
         Some(&serde_json::json!("pending"))
     );
+    assert_eq!(
+        snapshot.pointer("/8/ManagedEnvironmentCatalog/catalog/environments/0/runtimeKernelId"),
+        Some(&serde_json::json!("managed-kernel-1"))
+    );
     let serialized = serde_json::to_string(&snapshot).expect("managed environment shape");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "e0a72861f56cf040fdc8e48b81d7e9cd8ec9f8b19d6c58907a865d8a53d3cca8"
+        "366802630de6489aea3f8979297f75141d8e289258efdbbcca7c02e453e77970"
     );
 }
 
@@ -228,7 +232,8 @@ fn managed_environment_summary(
         observed_state: ManagedEnvironmentObservedState::Requested,
         desired_revision: 1,
         observed_revision: 0,
-        runtime_machine_id: None,
+        runtime_machine_id: Some("managed-machine-1".to_string()),
+        runtime_kernel_id: Some("managed-kernel-1".to_string()),
         runtime_release_digest: None,
         context_plan: ManagedEnvironmentContextPlan {
             schema_version: 1,

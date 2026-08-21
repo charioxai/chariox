@@ -93,6 +93,7 @@ export type ManagedEnvironmentSummary = {
   readonly desiredRevision: number
   readonly observedRevision: number
   readonly runtimeMachineId: string | null
+  readonly runtimeKernelId: string | null
   readonly runtimeReleaseDigest: string | null
   readonly contextPlan: ManagedEnvironmentContextPlan
   readonly contextManifestDigest: string | null

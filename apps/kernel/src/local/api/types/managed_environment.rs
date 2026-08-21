@@ -163,6 +163,7 @@ pub struct ManagedEnvironmentSummary {
     pub desired_revision: u64,
     pub observed_revision: u64,
     pub runtime_machine_id: Option<String>,
+    pub runtime_kernel_id: Option<String>,
     pub runtime_release_digest: Option<String>,
     pub context_plan: ManagedEnvironmentContextPlan,
     pub context_manifest_digest: Option<String>,

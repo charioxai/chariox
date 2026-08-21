@@ -70,6 +70,8 @@ pub(super) struct EnvironmentSummary {
     desired_revision: u64,
     observed_revision: u64,
     runtime_machine_id: Option<String>,
+    #[serde(default)]
+    runtime_kernel_id: Option<String>,
     runtime_release_digest: Option<String>,
     context_plan: ContextPlan,
     context_manifest_digest: Option<String>,
@@ -217,6 +219,7 @@ impl From<EnvironmentSummary> for ManagedEnvironmentSummary {
             desired_revision: value.desired_revision,
             observed_revision: value.observed_revision,
             runtime_machine_id: value.runtime_machine_id,
+            runtime_kernel_id: value.runtime_kernel_id,
             runtime_release_digest: value.runtime_release_digest,
             context_plan: value.context_plan.into(),
             context_manifest_digest: value.context_manifest_digest,
