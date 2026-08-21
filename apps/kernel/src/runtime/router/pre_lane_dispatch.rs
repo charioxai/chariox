@@ -114,14 +114,18 @@ impl CommandRouter {
                 .map(Some);
             }
             request @ LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
-                return execute_managed_context_target_request(
+                let response = execute_managed_context_target_request(
                     self.config_projection.snapshot(),
                     self.managed_kernel_registration.clone(),
                     self.managed_context_transfers.clone(),
                     caller_user_id,
                     request.clone(),
-                )
-                .map(Some);
+                )?;
+                if let LocalDaemonResponse::ManagedContextLaunchTarget { target } = &response {
+                    self.runtime_state
+                        .ensure_managed_context_project(target, caller_user_id)?;
+                }
+                return Ok(Some(response));
             }
             LocalDaemonRequest::GetTerminalCommandCatalog(_) => {
                 return terminal_command_catalog_response().map(Some);
