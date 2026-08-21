@@ -547,7 +547,7 @@ function environment(mode: "local_runtime" | "hosted_container") {
     desiredRevision: 1,
     observedRevision: 0,
     operationalDeploymentId: "deployment-1",
-    publicUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/deployments/demo",
+    publicUrl: "https://staging.chariox.com/deployments/demo",
     createdAt: timestamp,
     updatedAt: timestamp,
   }
@@ -611,9 +611,9 @@ function jsonResponse(value: unknown, status = 200, headers?: HeadersInit): Resp
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://staging.chariox.com",
   email: "user@example.test",
-  relayUrl: "wss://relay.scalingo.test",
+  relayUrl: "wss://relay.chariox.test",
   accountId: "account-1",
   userId: "user-1",
   accountSlug: "account",

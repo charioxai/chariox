@@ -54,7 +54,7 @@ test("relay cloud login without args uses device flow", async () => {
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string, input: { clientId?: string; machineId?: string; machineAlias?: string }) => {
-      assert.equal(apiUrl, "https://chariox-cloud-staging.osc-fr1.scalingo.io")
+      assert.equal(apiUrl, "https://staging.chariox.com")
       assert.equal(input.clientId, "client-1")
       assert.equal(input.machineId, "machine-1")
       assert.equal(input.machineAlias, "laptop")
@@ -62,7 +62,7 @@ test("relay cloud login without args uses device flow", async () => {
         apiUrl,
         deviceCode: "dev-code",
         userCode: "ABCD-EFGH",
-        verificationUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
+        verificationUrl: "https://staging.chariox.com/activate?user_code=ABCD-EFGH",
         expiresAtMs: Date.now() + 60_000,
         intervalSeconds: 1,
       }
@@ -73,7 +73,7 @@ test("relay cloud login without args uses device flow", async () => {
       return {
         status: "approved",
         profile: {
-          apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+          apiUrl: "https://staging.chariox.com",
           email: "user@example.com",
           accountId: "account-1",
           userId: "user-1",
@@ -360,7 +360,7 @@ test("/cloud link triggers hosted device login flow", async () => {
 test("relay cloud login without args prefers configured hosted api url", async () => {
   const handlers = createCommandActionHandlers(makeCommandDeps({
     clientId: "client-1",
-    cloudRelayApiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/",
+    cloudRelayApiUrl: "https://staging.chariox.com/",
     getRelayStatus: async () => ({
       configured: false,
       connected: false,
@@ -371,12 +371,12 @@ test("relay cloud login without args prefers configured hosted api url", async (
       machine_alias: "laptop",
     }),
     startCloudDeviceLogin: async (apiUrl: string) => {
-      assert.equal(apiUrl, "https://chariox-cloud-staging.osc-fr1.scalingo.io/")
+      assert.equal(apiUrl, "https://staging.chariox.com/")
       return {
         apiUrl,
         deviceCode: "dev-code",
         userCode: "ABCD-EFGH",
-        verificationUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/activate?user_code=ABCD-EFGH",
+        verificationUrl: "https://staging.chariox.com/activate?user_code=ABCD-EFGH",
         expiresAtMs: Date.now() + 60_000,
         intervalSeconds: 1,
       }

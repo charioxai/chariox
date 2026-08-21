@@ -184,7 +184,7 @@ test("classifies common drill failure owners and next actions", () => {
   })
 
   assert.deepEqual(classifyDrillFailureManifest(validManifest({
-    error: { name: "Error", message: "deployment did not become ready: Scalingo 503 service unavailable", stack: null },
+    error: { name: "Error", message: "deployment did not become ready: OpenShip 503 service unavailable", stack: null },
   })), {
     kind: "cloud-runtime",
     owner: "cloud-deployment",

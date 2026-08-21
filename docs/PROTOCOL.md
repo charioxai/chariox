@@ -695,7 +695,7 @@ Workflow trigger and deployment direction:
     `chariox serve` process over an outbound connector
   - `hosted_container`: a public publication ingress routes to one Docker
     container per deployment on the publication runner
-- Scalingo-hosted Chariox Cloud APIs own deployment records and control commands
+- OpenShip-hosted Chariox Cloud APIs own deployment records and control commands
   only. Runtime publication traffic should terminate at the dedicated
   publication ingress and route from there to the active backend.
 
@@ -837,7 +837,7 @@ Remote terminal and Cloud invocation:
   artifacts, outputs, or published transport payloads
 - Cloud publication ingress forwards HTTP and its internal SSE progress stream
   to the active backend target and must preserve streaming semantics.
-- Scalingo Cloud should not proxy runtime publication streams. It may create,
+- Chariox Cloud should not proxy runtime publication streams. It may create,
   list, start, stop, and observe deployment metadata, and the web terminal may
   embed `public_base_url` in the central panel.
 - If the active backend is unavailable, HTTP returns an unavailable page or a
