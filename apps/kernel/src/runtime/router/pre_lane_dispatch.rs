@@ -12,6 +12,7 @@ use crate::runtime::event_catalog_control::{
     workflow_event_binding_contract, WorkflowEventBindingContract,
 };
 use crate::runtime::managed_context_outbound_control::execute_managed_context_outbound_request;
+use crate::runtime::managed_context_target_control::execute_managed_context_target_request;
 use crate::runtime::managed_environment_control::execute_managed_environment_control_request;
 use crate::runtime::provider_catalog_control::execute_provider_catalog_request;
 use crate::runtime::provider_process_control::provider_processes_visible_to_user_from_projection;
@@ -105,6 +106,16 @@ impl CommandRouter {
                     self.config_projection.snapshot(),
                     Arc::clone(&self.relay_state),
                     self.managed_context_outbound.clone(),
+                    caller_user_id,
+                    request.clone(),
+                )
+                .map(Some);
+            }
+            request @ LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
+                return execute_managed_context_target_request(
+                    self.config_projection.snapshot(),
+                    self.managed_kernel_registration.clone(),
+                    self.managed_context_transfers.clone(),
                     caller_user_id,
                     request.clone(),
                 )

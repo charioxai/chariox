@@ -578,12 +578,13 @@ fn preflight_import_receipt_capacity(
             ManagedContextDevelopmentSelection::SourceProject { project_id, .. },
         ) => {
             let placeholder = DevelopmentContextPublicationReceipt {
-                schema_version: 1,
+                schema_version: 2,
                 publication_id: request.transfer_id.clone(),
                 archive_sha256: "0".repeat(64),
                 project_id: project_id.clone(),
                 destination_root: PathBuf::new(),
                 primary_repository_id: "repository".to_string(),
+                source_repository_binding_sha256s: Vec::new(),
                 repositories: Vec::new(),
             };
             let placeholder_receipt_bytes = serde_json::to_vec(&placeholder)

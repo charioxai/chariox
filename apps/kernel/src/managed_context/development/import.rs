@@ -1,6 +1,6 @@
 use super::*;
 
-const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 1;
+const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 2;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
 pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
 
@@ -60,6 +60,109 @@ pub(crate) fn recover_development_context_publication(
         })?;
     validate_publication_receipt(&receipt, request, publication_id, &canonical_destination)?;
     Ok(Some(receipt))
+}
+
+pub(crate) fn recover_pruned_development_context_publication(
+    destination_parent: &Path,
+    expected_project_id: &str,
+    expected_repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    let expected_binding_sha256s = expected_repositories
+        .iter()
+        .map(source_repository_binding_sha256)
+        .collect::<Vec<_>>();
+    let parent_metadata = match fs::symlink_metadata(destination_parent) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(context_io_error(
+                "inspect managed context publication parent",
+                error,
+            ))
+        }
+    };
+    if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+        return Err(context_error(
+            "managed context publication parent must be a real directory",
+        ));
+    }
+    let canonical_parent = fs::canonicalize(destination_parent)
+        .map_err(|error| context_io_error("resolve managed context publication parent", error))?;
+    let mut entries = Vec::new();
+    for entry in fs::read_dir(&canonical_parent)
+        .map_err(|error| context_io_error("list managed context publications", error))?
+    {
+        if entries.len() == 256 {
+            return Err(context_error(
+                "managed context publication recovery exceeds its entry limit",
+            ));
+        }
+        entries.push(
+            entry.map_err(|error| {
+                context_io_error("read managed context publication entry", error)
+            })?,
+        );
+    }
+    entries.sort_by_key(|entry| entry.file_name());
+
+    let mut matching = None;
+    for entry in entries {
+        let metadata = entry
+            .file_type()
+            .map_err(|error| context_io_error("inspect managed context publication", error))?;
+        if !metadata.is_dir() || metadata.is_symlink() {
+            continue;
+        }
+        let Some(publication_id) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if validate_publication_id(&publication_id).is_err() {
+            continue;
+        }
+        let destination = fs::canonicalize(entry.path())
+            .map_err(|error| context_io_error("resolve managed context publication", error))?;
+        if destination.parent() != Some(canonical_parent.as_path()) {
+            return Err(context_error(
+                "managed context publication escaped its private parent",
+            ));
+        }
+        let receipt = read_publication_receipt(&destination.join(PUBLICATION_RECEIPT_FILE))?
+            .ok_or_else(|| context_error("managed context publication receipt is missing"))?;
+        if receipt.project_id != expected_project_id
+            || receipt.repositories.len() != expected_repositories.len()
+            || !receipt
+                .repositories
+                .iter()
+                .zip(expected_repositories)
+                .all(|(repository, expected)| repository.role == expected.role)
+        {
+            continue;
+        }
+        if receipt.schema_version != PUBLICATION_RECEIPT_SCHEMA_VERSION
+            || receipt.source_repository_binding_sha256s.len() != expected_repositories.len()
+        {
+            return Err(context_error(
+                "legacy managed context publication lacks exact source repository bindings",
+            ));
+        }
+        if receipt.source_repository_binding_sha256s != expected_binding_sha256s {
+            continue;
+        }
+        let validation_request = DevelopmentContextImportRequest {
+            archive_path: PathBuf::new(),
+            expected_archive_sha256: receipt.archive_sha256.clone(),
+            expected_project_id: expected_project_id.to_string(),
+            expected_source_repositories: Some(expected_repositories.to_vec()),
+            destination_root: destination.clone(),
+        };
+        validate_publication_receipt(&receipt, &validation_request, &publication_id, &destination)?;
+        if matching.replace(receipt).is_some() {
+            return Err(context_error(
+                "managed context publication recovery is ambiguous",
+            ));
+        }
+    }
+    Ok(matching)
 }
 
 pub(crate) fn cleanup_development_context_publication(
@@ -255,6 +358,12 @@ fn import_development_context_with_options(
             project_id: request.expected_project_id.clone(),
             destination_root: destination_root.clone(),
             primary_repository_id: result.primary_repository_id.clone(),
+            source_repository_binding_sha256s: result
+                .manifest
+                .repositories
+                .iter()
+                .map(|repository| repository.source_binding_sha256.clone())
+                .collect(),
             repositories: result.repositories.clone(),
         });
     if let Some(receipt) = &publication_receipt {
@@ -517,10 +626,28 @@ fn validate_publication_receipt(
         || receipt.destination_root != canonical_destination
         || receipt.repositories.is_empty()
         || receipt.repositories.len() > MAX_REPOSITORIES
+        || receipt.source_repository_binding_sha256s.len() != receipt.repositories.len()
+        || receipt
+            .source_repository_binding_sha256s
+            .iter()
+            .any(|digest| {
+                digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            })
     {
         return Err(context_error(
             "development context publication receipt does not match the import",
         ));
+    }
+    if let Some(expected) = request.expected_source_repositories.as_deref() {
+        let expected_binding_sha256s = expected
+            .iter()
+            .map(source_repository_binding_sha256)
+            .collect::<Vec<_>>();
+        if receipt.source_repository_binding_sha256s != expected_binding_sha256s {
+            return Err(context_error(
+                "development context publication source repositories do not match the import",
+            ));
+        }
     }
     let mut repository_ids = BTreeSet::new();
     let mut target_directories = BTreeSet::new();

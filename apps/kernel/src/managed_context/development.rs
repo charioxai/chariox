@@ -173,6 +173,8 @@ pub(crate) struct DevelopmentContextPublicationReceipt {
     pub project_id: String,
     pub destination_root: PathBuf,
     pub primary_repository_id: String,
+    #[serde(default)]
+    pub source_repository_binding_sha256s: Vec<String>,
     pub repositories: Vec<DevelopmentImportedRepository>,
 }
 
@@ -218,7 +220,7 @@ pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
     import_development_context_with_publication, recover_development_context_publication,
-    MAX_PUBLICATION_RECEIPT_BYTES,
+    recover_pruned_development_context_publication, MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};

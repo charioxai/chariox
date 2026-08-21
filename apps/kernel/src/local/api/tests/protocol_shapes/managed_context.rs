@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_managed_context_outbound_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
     let plan = crate::managed_bootstrap::ManagedKernelContextPlan::source_project_for_tests(
         "context-1",
         "realm-1",
@@ -42,10 +42,39 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
                 context_id: "context-1".to_string(),
             },
         ),
+        LocalDaemonRequest::GetManagedContextLaunchTarget(
+            crate::local::GetManagedContextLaunchTargetRequest {
+                context_id: "context-1".to_string(),
+                plan_digest: status.plan_digest.clone(),
+            },
+        ),
         LocalDaemonResponse::ManagedContextTransferStarted {
             status: status.clone(),
         },
-        LocalDaemonResponse::ManagedContextTransferStatus { status },
+        LocalDaemonResponse::ManagedContextTransferStatus {
+            status: status.clone(),
+        },
+        LocalDaemonResponse::ManagedContextLaunchTarget {
+            target: crate::local::ManagedContextLaunchTarget {
+                environment_id: "environment-1".to_string(),
+                kernel_id: "target-kernel".to_string(),
+                context_id: "context-1".to_string(),
+                plan_digest: status.plan_digest,
+                development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+                    project_id: "project-1".to_string(),
+                    destination_root: "/managed/context".to_string(),
+                    primary_repository_id: "repository-1".to_string(),
+                    repositories: vec![crate::local::ManagedContextRepositoryLaunchTarget {
+                        repository_id: "repository-1".to_string(),
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        workspace_path: "/managed/context/primary".to_string(),
+                        head_sha: "c".repeat(40),
+                    }],
+                },
+            },
+        },
     ]);
     assert_eq!(
         snapshot.pointer("/0/StartManagedContextTransfer/ticket/environmentId"),
@@ -56,12 +85,18 @@ fn local_daemon_managed_context_outbound_shape_is_versioned() {
         Some(&serde_json::json!("source_project"))
     );
     assert_eq!(
-        snapshot.pointer("/2/ManagedContextTransferStarted/status/phase"),
+        snapshot.pointer("/3/ManagedContextTransferStarted/status/phase"),
         Some(&serde_json::json!("uploading"))
+    );
+    assert_eq!(
+        snapshot.pointer(
+            "/5/ManagedContextLaunchTarget/target/development/repositories/0/workspacePath"
+        ),
+        Some(&serde_json::json!("/managed/context/primary"))
     );
     let serialized = serde_json::to_string(&snapshot).expect("managed-context shape should encode");
     assert_eq!(
         format!("{:x}", Sha256::digest(serialized.as_bytes())),
-        "7f33c41160efee83aa38a0022308a4fe439ba3b7318a9a5bedd9b58e710802af"
+        "02a90203fa10041e3c7a5b239603b26587da9f540fb3741e8bcaa80f09a8f9f4"
     );
 }

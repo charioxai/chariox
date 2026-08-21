@@ -144,6 +144,9 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetManagedContextTransferStatus(_) => {
             LocalRequestMetadata::new("managed_context.transfer.status", Normal)
         }
+        LocalDaemonRequest::GetManagedContextLaunchTarget(_) => {
+            LocalRequestMetadata::new("managed_context.launch_target.get", Normal)
+        }
         LocalDaemonRequest::SubmitPrompt(request) => {
             let mut metadata = LocalRequestMetadata::new("prompt.submit", Interactive)
                 .session(&request.session_id)
@@ -799,6 +802,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
+        | LocalDaemonRequest::GetManagedContextLaunchTarget(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)
         | LocalDaemonRequest::GetSessionHistoryBlobContent(_)
         | LocalDaemonRequest::GetProviderRun(_) => unreachable!("handled by metadata matcher"),

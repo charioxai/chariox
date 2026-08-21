@@ -123,6 +123,7 @@ pub enum LocalDaemonRequest {
     RequestManagedEnvironmentLifecycle(RequestManagedEnvironmentLifecycleRequest),
     StartManagedContextTransfer(StartManagedContextTransferRequest),
     GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),
+    GetManagedContextLaunchTarget(GetManagedContextLaunchTargetRequest),
     ListSlices(ListSlicesRequest),
     CreateSlice(CreateSliceRequest),
     GetSlice(SliceRefRequest),

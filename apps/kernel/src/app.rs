@@ -245,16 +245,29 @@ impl DaemonApp {
                 operation: "open managed context transfer store",
                 message: "durable state path has no parent directory".to_string(),
             })?;
+        let managed_kernel_registration =
+            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
+        let managed_context_launch_recovery =
+            managed_kernel_registration
+                .as_ref()
+                .and_then(|registration| {
+                    registration.context_plan.as_ref().map(|plan| {
+                        crate::managed_context::transfer::ManagedContextLaunchRecoveryBinding {
+                            environment_id: registration.environment_id.clone(),
+                            kernel_id: registration.kernel_id.clone(),
+                            plan: plan.package_binding(),
+                        }
+                    })
+                });
         let managed_context_transfers =
-            crate::managed_context::transfer::ManagedContextTransferStore::open(
+            crate::managed_context::transfer::ManagedContextTransferStore::open_with_launch_recovery(
                 managed_context_root.join("managed-context-transfers"),
+                managed_context_launch_recovery.as_ref(),
             )?;
         let managed_context_outbound =
             crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
                 managed_context_root.join("managed-context-outbound"),
             )?;
-        let managed_kernel_registration =
-            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state store opened",

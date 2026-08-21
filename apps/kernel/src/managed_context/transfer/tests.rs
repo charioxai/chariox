@@ -180,6 +180,362 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
 }
 
 #[test]
+fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_restart() {
+    let root = test_root("durable-launch-target");
+    let archive = b"portable context archive";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let plan_digest = request.plan.plan_digest.clone();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let armed = store.arm(request, now).expect("arm transfer");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload archive");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim import"),
+    );
+    assert!(matches!(
+        store
+            .launch_target("context-1", &plan_digest)
+            .expect_err("launch target is pending before local commit"),
+        DaemonError::ManagedContext {
+            code: "managed_context_launch_target_unavailable",
+            retryable: true,
+            ..
+        }
+    ));
+    let receipt = managed_package_receipt(&armed.transfer_id, archive, &ready.destination_root);
+    store
+        .commit_import(&armed.transfer_id, &receipt, now + 4)
+        .expect("commit import");
+
+    let target = store
+        .launch_target("context-1", &plan_digest)
+        .expect("launch target");
+    let crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+        primary_repository_id,
+        repositories,
+        ..
+    } = &target.development
+    else {
+        panic!("expected imported development launch target")
+    };
+    assert_eq!(primary_repository_id, "repository-1");
+    assert_eq!(
+        repositories[0].workspace_path,
+        ready.destination_root.join("primary").display().to_string()
+    );
+
+    drop(store);
+    let state_path = root.join("state.json");
+    let mut legacy_state = serde_json::from_slice::<serde_json::Value>(
+        &fs::read(&state_path).expect("read schema-v4 state"),
+    )
+    .expect("parse schema-v4 state");
+    legacy_state["schema_version"] = serde_json::json!(3);
+    legacy_state
+        .as_object_mut()
+        .expect("state object")
+        .remove("applied_contexts");
+    write_private_state_file(
+        &state_path,
+        &serde_json::to_vec(&legacy_state).expect("serialize schema-v3 state"),
+    )
+    .expect("write schema-v3 state");
+    let store =
+        ManagedContextTransferStore::open(root.clone()).expect("migrate schema-v3 launch target");
+    assert_eq!(
+        store
+            .launch_target("context-1", &plan_digest)
+            .expect("migrated launch target"),
+        target
+    );
+
+    let prune_now = now + 4 + COMPLETED_TRANSFER_RETENTION_MS + 1;
+    let mut replacement = arm_request(b"replacement", prune_now + 10_000);
+    replacement.plan.context_id = "context-replacement".to_string();
+    replacement.destination_parent = root.join("destinations");
+    store
+        .arm(replacement, prune_now)
+        .expect("prune transfer record");
+    assert!(store
+        .get_status(&armed.transfer_id, &armed.capability, &caller, prune_now)
+        .is_err());
+    drop(store);
+
+    let reopened = ManagedContextTransferStore::open(root.clone()).expect("reopen transfer store");
+    assert_eq!(
+        reopened
+            .launch_target("context-1", &plan_digest)
+            .expect("durable launch target"),
+        target
+    );
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
+    let root = test_root("schema-v3-pruned-launch-target");
+    let transfer_root = root.join("managed-context-transfers");
+    let store = ManagedContextTransferStore::open(transfer_root.clone())
+        .expect("create transfer state root");
+    drop(store);
+
+    let mut consumed_context_ids = std::collections::BTreeSet::new();
+    consumed_context_ids.insert("context-1".to_string());
+    consumed_context_ids.insert("legacy-context".to_string());
+    let schema_v3 = PersistedTransferState {
+        schema_version: 3,
+        entries: std::collections::BTreeMap::new(),
+        consumed_context_ids,
+        applied_contexts: std::collections::BTreeMap::new(),
+    };
+    write_private_state_file(
+        &transfer_root.join("state.json"),
+        &serde_json::to_vec(&schema_v3).expect("serialize schema-v3 pruned state"),
+    )
+    .expect("write schema-v3 pruned state");
+
+    let stale_publication_id = format!("ctx_{}", "s".repeat(43));
+    let stale_destination_root = root
+        .join("managed-context-workspaces")
+        .join(&stale_publication_id);
+    let stale_head_sha = initialize_git_repository(&stale_destination_root.join("primary"));
+    let stale_destination_root = fs::canonicalize(stale_destination_root)
+        .expect("canonicalize stale publication destination");
+    fs::write(
+        stale_destination_root.join(".chariox-managed-import-receipt.json"),
+        serde_json::to_vec(
+            &crate::managed_context::development::DevelopmentContextPublicationReceipt {
+                schema_version: 2,
+                publication_id: stale_publication_id,
+                archive_sha256: sha256_bytes(b"stale archive"),
+                project_id: "project-1".to_string(),
+                destination_root: stale_destination_root.clone(),
+                primary_repository_id: "stale-repository".to_string(),
+                source_repository_binding_sha256s: vec![source_binding_sha256(
+                    &crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: "workspace-stale".to_string(),
+                        worktree_id: Some("worktree-stale".to_string()),
+                    },
+                )],
+                repositories: vec![
+                    crate::managed_context::development::DevelopmentImportedRepository {
+                        repository_id: "stale-repository".to_string(),
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        destination_path: stale_destination_root.join("primary"),
+                        head_sha: stale_head_sha,
+                    },
+                ],
+            },
+        )
+        .expect("serialize stale publication receipt"),
+    )
+    .expect("write stale publication receipt");
+
+    let publication_id = format!("ctx_{}", "r".repeat(43));
+    let destination_root = root
+        .join("managed-context-workspaces")
+        .join(&publication_id);
+    let head_sha = initialize_git_repository(&destination_root.join("primary"));
+    let destination_root =
+        fs::canonicalize(destination_root).expect("canonicalize publication destination");
+    let repository_path = destination_root.join("primary");
+    fs::write(
+        destination_root.join(".chariox-managed-import-receipt.json"),
+        serde_json::to_vec(
+            &crate::managed_context::development::DevelopmentContextPublicationReceipt {
+                schema_version: 2,
+                publication_id: publication_id.clone(),
+                archive_sha256: sha256_bytes(b"pruned archive"),
+                project_id: "project-1".to_string(),
+                destination_root: destination_root.clone(),
+                primary_repository_id: "repository-1".to_string(),
+                source_repository_binding_sha256s: vec![source_binding_sha256(
+                    &crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        workspace_id: "workspace-1".to_string(),
+                        worktree_id: None,
+                    },
+                )],
+                repositories: vec![
+                    crate::managed_context::development::DevelopmentImportedRepository {
+                        repository_id: "repository-1".to_string(),
+                        role:
+                            crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                        target_directory: "primary".to_string(),
+                        destination_path: repository_path.clone(),
+                        head_sha: head_sha.clone(),
+                    },
+                ],
+            },
+        )
+        .expect("serialize publication receipt"),
+    )
+    .expect("write publication receipt");
+
+    let plan = arm_request(b"pruned archive", current_time_ms() + 10_000).plan;
+    let plan_digest = plan.plan_digest.clone();
+    let recovery = ManagedContextLaunchRecoveryBinding {
+        environment_id: "environment-1".to_string(),
+        kernel_id: "kernel-target".to_string(),
+        plan,
+    };
+    let recovered = ManagedContextTransferStore::open_with_launch_recovery(
+        transfer_root.clone(),
+        Some(&recovery),
+    )
+    .expect("recover pruned schema-v3 launch target");
+    let target = recovered
+        .launch_target("context-1", &plan_digest)
+        .expect("recovered launch target");
+    assert!(recovered
+        .lock_state()
+        .consumed_context_ids
+        .contains("legacy-context"));
+    assert_eq!(target.environment_id, "environment-1");
+    assert!(matches!(
+        &target.development,
+        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            primary_repository_id,
+            repositories,
+            ..
+        } if primary_repository_id == "repository-1"
+            && repositories[0].workspace_path == repository_path.display().to_string()
+            && repositories[0].head_sha == head_sha
+    ));
+    assert!(!matches!(
+        &target.development,
+        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            primary_repository_id,
+            ..
+        } if primary_repository_id == "stale-repository"
+    ));
+    drop(recovered);
+
+    let reopened =
+        ManagedContextTransferStore::open(transfer_root).expect("reopen recovered schema-v4 state");
+    assert_eq!(
+        reopened
+            .launch_target("context-1", &plan_digest)
+            .expect("persisted recovered launch target"),
+        target
+    );
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn schema_v3_pruned_import_rejects_legacy_publication_without_source_bindings() {
+    let root = test_root("schema-v3-pruned-legacy-publication");
+    let transfer_root = root.join("managed-context-transfers");
+    let store = ManagedContextTransferStore::open(transfer_root.clone())
+        .expect("create transfer state root");
+    drop(store);
+
+    let schema_v3 = PersistedTransferState {
+        schema_version: 3,
+        entries: std::collections::BTreeMap::new(),
+        consumed_context_ids: std::collections::BTreeSet::from(["context-1".to_string()]),
+        applied_contexts: std::collections::BTreeMap::new(),
+    };
+    write_private_state_file(
+        &transfer_root.join("state.json"),
+        &serde_json::to_vec(&schema_v3).expect("serialize schema-v3 pruned state"),
+    )
+    .expect("write schema-v3 pruned state");
+
+    let publication_id = format!("ctx_{}", "l".repeat(43));
+    let destination_root = root
+        .join("managed-context-workspaces")
+        .join(&publication_id);
+    let head_sha = initialize_git_repository(&destination_root.join("primary"));
+    let destination_root =
+        fs::canonicalize(destination_root).expect("canonicalize legacy publication destination");
+    let mut legacy_receipt = serde_json::to_value(
+        crate::managed_context::development::DevelopmentContextPublicationReceipt {
+            schema_version: 2,
+            publication_id,
+            archive_sha256: sha256_bytes(b"legacy archive"),
+            project_id: "project-1".to_string(),
+            destination_root: destination_root.clone(),
+            primary_repository_id: "repository-legacy".to_string(),
+            source_repository_binding_sha256s: vec![source_binding_sha256(
+                &crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    workspace_id: "workspace-1".to_string(),
+                    worktree_id: None,
+                },
+            )],
+            repositories: vec![
+                crate::managed_context::development::DevelopmentImportedRepository {
+                    repository_id: "repository-legacy".to_string(),
+                    role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                    target_directory: "primary".to_string(),
+                    destination_path: destination_root.join("primary"),
+                    head_sha,
+                },
+            ],
+        },
+    )
+    .expect("serialize legacy publication receipt");
+    legacy_receipt["schemaVersion"] = serde_json::json!(1);
+    legacy_receipt
+        .as_object_mut()
+        .expect("publication receipt object")
+        .remove("sourceRepositoryBindingSha256s");
+    fs::write(
+        destination_root.join(".chariox-managed-import-receipt.json"),
+        serde_json::to_vec(&legacy_receipt).expect("serialize legacy receipt JSON"),
+    )
+    .expect("write legacy publication receipt");
+
+    let plan = arm_request(b"legacy archive", current_time_ms() + 10_000).plan;
+    let recovery = ManagedContextLaunchRecoveryBinding {
+        environment_id: "environment-1".to_string(),
+        kernel_id: "kernel-target".to_string(),
+        plan,
+    };
+    assert!(matches!(
+        ManagedContextTransferStore::open_with_launch_recovery(
+            transfer_root.clone(),
+            Some(&recovery),
+        ),
+        Err(DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            message,
+            retryable: false,
+            ..
+        }) if message.contains("lacks exact source repository bindings")
+    ));
+    let persisted: serde_json::Value = serde_json::from_slice(
+        &fs::read(transfer_root.join("state.json")).expect("read retained schema-v3 state"),
+    )
+    .expect("parse retained schema-v3 state");
+    assert_eq!(persisted["schema_version"], 3);
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
 fn combined_receipt_can_wrap_a_near_limit_development_receipt() {
     let root = test_root("combined-receipt-limit");
     let archive = b"context archive";
@@ -256,6 +612,200 @@ fn arming_reserves_aggregate_state_capacity_for_combined_receipts() {
         .expect("accepted transfers retain receipt capacity");
     assert!(persisted_state_size(&state).expect("measure state") <= MAX_STATE_FILE_BYTES as usize);
     drop(state);
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn near_capacity_state_can_commit_the_launch_target_reserved_at_arm() {
+    let root = test_root("launch-target-capacity");
+    let mut state = PersistedTransferState::default();
+    let sample_target = large_launch_target("context-sample");
+    let estimated_target_bytes = serde_json::to_vec(&sample_target)
+        .expect("serialize sample launch target")
+        .len()
+        + 128;
+    let target_count = (MAX_STATE_FILE_BYTES as usize
+        - MAX_PERSISTED_IMPORT_BYTES
+        - STATE_CAPACITY_MARGIN_BYTES
+        - 4 * 1024)
+        / estimated_target_bytes;
+    for index in 0..target_count.min(MAX_TRANSFER_RECORDS - 1) {
+        let context_id = format!("context-existing-{index}");
+        state.consumed_context_ids.insert(context_id.clone());
+        state
+            .applied_contexts
+            .insert(context_id.clone(), large_launch_target(&context_id));
+    }
+    while persisted_state_size(&state)
+        .expect("measure aggregate launch targets")
+        .saturating_add(MAX_PERSISTED_IMPORT_BYTES)
+        .saturating_add(STATE_CAPACITY_MARGIN_BYTES)
+        > MAX_STATE_FILE_BYTES as usize
+    {
+        let context_id = state
+            .applied_contexts
+            .last_key_value()
+            .expect("at least one launch target")
+            .0
+            .clone();
+        state.applied_contexts.remove(&context_id);
+        state.consumed_context_ids.remove(&context_id);
+    }
+    assert!(state.applied_contexts.len() > 32);
+    assert!(persisted_state_size(&state).expect("measure near-capacity state") > 8 * 1024 * 1024);
+    fs::create_dir_all(&root).expect("create transfer root");
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&state).expect("serialize near-capacity state"),
+    )
+    .expect("write near-capacity state");
+
+    let archive = b"x";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.plan.context_id = "context-final".to_string();
+    request.destination_parent = root.join("destinations");
+    let plan_digest = request.plan.plan_digest.clone();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open near-capacity store");
+    let armed = store.arm(request, now).expect("arm reserved final import");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin final import");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload final import");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim final import"),
+    );
+    let receipt = large_managed_package_receipt(
+        &armed.transfer_id,
+        archive,
+        &plan_digest,
+        &ready.destination_root,
+    );
+    assert!(receipt.len() <= MAX_IMPORT_RECEIPT_BYTES);
+    store
+        .commit_import(&armed.transfer_id, &receipt, now + 4)
+        .expect("commit reserved launch target");
+    assert!(store.launch_target("context-final", &plan_digest).is_ok());
+    assert!(
+        persisted_state_size(&store.lock_state()).expect("measure committed state")
+            <= MAX_STATE_FILE_BYTES as usize
+    );
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn schema_v3_near_capacity_migration_compacts_receipts_and_keeps_launch_targets() {
+    let root = test_root("schema-v3-launch-target-capacity");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open fixture store");
+    let mut request = arm_request(b"x", now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let armed = store.arm(request, now).expect("arm fixture transfer");
+    let template = store
+        .lock_state()
+        .entries
+        .get(&armed.transfer_id)
+        .expect("fixture transfer")
+        .clone();
+    drop(store);
+
+    let mut state = PersistedTransferState {
+        schema_version: 3,
+        entries: std::collections::BTreeMap::new(),
+        consumed_context_ids: std::collections::BTreeSet::new(),
+        applied_contexts: std::collections::BTreeMap::new(),
+    };
+    let sample_receipt = large_managed_package_receipt(
+        &format!("ctx_{:043}", 0),
+        b"x",
+        &format!("sha256:{}", sha256_bytes(b"sample-context")),
+        &root.join("destinations").join("sample"),
+    );
+    let estimated_entry_bytes = sample_receipt.len()
+        + serde_json::to_vec(&template)
+            .expect("serialize sample transfer")
+            .len()
+        + 512;
+    let target_fixture_bytes = 12 * 1024 * 1024;
+    let fixture_count =
+        (target_fixture_bytes / estimated_entry_bytes).clamp(65, MAX_TRANSFER_RECORDS - 1);
+    for index in 0..fixture_count {
+        let transfer_id = format!("ctx_{index:043}");
+        let context_id = format!("context-migrated-{index}");
+        let plan_digest = format!("sha256:{}", sha256_bytes(context_id.as_bytes()));
+        let mut entry = template.clone();
+        entry.plan.context_id = context_id.clone();
+        entry.plan.plan_digest = plan_digest.clone();
+        entry.phase = ManagedContextTransferPhase::Consumed;
+        entry.accepted_bytes = entry.archive_size_bytes;
+        entry.import_started_at_ms = Some(now);
+        entry.completed_at_ms = Some(now + index as u64);
+        entry.destination_root = root.join("destinations").join(&transfer_id);
+        let receipt = large_managed_package_receipt(
+            &transfer_id,
+            b"x",
+            &plan_digest,
+            &entry.destination_root,
+        );
+        entry.import_receipt_sha256 = Some(sha256_bytes(receipt.as_bytes()));
+        entry.import_receipt_json = Some(receipt);
+        state.consumed_context_ids.insert(context_id.clone());
+        state.entries.insert(transfer_id.clone(), entry);
+    }
+    while persisted_state_size(&state).expect("measure schema-v3 fixture")
+        + STATE_CAPACITY_MARGIN_BYTES
+        > MAX_STATE_FILE_BYTES as usize
+    {
+        let (_, entry) = state.entries.pop_last().expect("schema-v3 fixture entry");
+        state.consumed_context_ids.remove(&entry.plan.context_id);
+    }
+    let original_entry_count = state.entries.len();
+    let original_context_count = state.consumed_context_ids.len();
+    assert!(original_entry_count > 64);
+    assert!(
+        persisted_state_size(&state).expect("measure near-capacity schema-v3 state")
+            > 8 * 1024 * 1024
+    );
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&state).expect("serialize near-capacity schema-v3 state"),
+    )
+    .expect("write near-capacity schema-v3 state");
+
+    let migrated = ManagedContextTransferStore::open(root.clone())
+        .expect("migrate near-capacity schema-v3 state");
+    let migrated_state = migrated.lock_state();
+    assert_eq!(migrated_state.schema_version, TRANSFER_STATE_SCHEMA_VERSION);
+    assert_eq!(
+        migrated_state.consumed_context_ids.len(),
+        original_context_count
+    );
+    assert_eq!(
+        migrated_state.applied_contexts.len(),
+        original_context_count
+    );
+    assert!(migrated_state.entries.len() < original_entry_count);
+    assert!(
+        persisted_state_size(&migrated_state).expect("measure migrated state")
+            <= MAX_STATE_FILE_BYTES as usize
+    );
+    drop(migrated_state);
+    drop(migrated);
+
+    ManagedContextTransferStore::open(root.clone()).expect("reopen compacted schema-v4 state");
     fs::remove_dir_all(root).expect("remove transfer root");
 }
 
@@ -753,7 +1303,7 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             &fs::read(root.join("state.json")).expect("read migrated state")
         )
         .expect("parse migrated state")["schema_version"],
-        3
+        4
     );
     fs::remove_dir_all(root).expect("remove transfer root");
 }
@@ -1051,6 +1601,7 @@ fn write_legacy_consumed_state(root: &std::path::Path, count: usize, now: u64) {
         schema_version: 2,
         entries: std::collections::BTreeMap::new(),
         consumed_context_ids: std::collections::BTreeSet::new(),
+        applied_contexts: std::collections::BTreeMap::new(),
     };
     for index in 0..count {
         let mut entry = template.clone();
@@ -1109,6 +1660,188 @@ fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer 
         destination_parent: std::env::temp_dir().join("managed-projects"),
         expires_at_ms,
     }
+}
+
+fn managed_package_receipt(
+    transfer_id: &str,
+    archive: &[u8],
+    destination_root: &std::path::Path,
+) -> String {
+    serde_json::to_string(&crate::managed_context::package::ManagedContextPackageImportReceipt {
+        schema_version: 2,
+        transfer_id: transfer_id.to_string(),
+        package_sha256: sha256_bytes(archive),
+        plan_digest: format!("sha256:{}", "1".repeat(64)),
+        development:
+            crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+                project_id: "project-1".to_string(),
+                receipt: crate::managed_context::development::DevelopmentContextPublicationReceipt {
+                    schema_version: 2,
+                    publication_id: transfer_id.to_string(),
+                    archive_sha256: sha256_bytes(archive),
+                    project_id: "project-1".to_string(),
+                    destination_root: destination_root.to_path_buf(),
+                    primary_repository_id: "repository-1".to_string(),
+                    source_repository_binding_sha256s: vec![source_binding_sha256(
+                        &crate::managed_context::development::DevelopmentSourceRepositoryBinding {
+                            role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                            workspace_id: "workspace-1".to_string(),
+                            worktree_id: None,
+                        },
+                    )],
+                    repositories: vec![
+                        crate::managed_context::development::DevelopmentImportedRepository {
+                            repository_id: "repository-1".to_string(),
+                            role: crate::managed_context::development::DevelopmentRepositoryRole::Primary,
+                            target_directory: "primary".to_string(),
+                            destination_path: destination_root.join("primary"),
+                            head_sha: "a".repeat(40),
+                        },
+                    ],
+                },
+            },
+        kernel_context: crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
+    })
+    .expect("serialize managed context package receipt")
+}
+
+fn large_launch_target(context_id: &str) -> crate::local::ManagedContextLaunchTarget {
+    let destination_root = std::env::temp_dir().join("chariox-large-managed-context-target");
+    let repositories = large_imported_repositories(&destination_root);
+    crate::local::ManagedContextLaunchTarget {
+        environment_id: "environment-1".to_string(),
+        kernel_id: "kernel-target".to_string(),
+        context_id: context_id.to_string(),
+        plan_digest: format!("sha256:{}", sha256_bytes(context_id.as_bytes())),
+        development: crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            project_id: "project-1".to_string(),
+            destination_root: destination_root.display().to_string(),
+            primary_repository_id: repositories[0].repository_id.clone(),
+            repositories: repositories
+                .into_iter()
+                .map(
+                    |repository| crate::local::ManagedContextRepositoryLaunchTarget {
+                        repository_id: repository.repository_id,
+                        role: repository.role,
+                        target_directory: repository.target_directory,
+                        workspace_path: repository.destination_path.display().to_string(),
+                        head_sha: repository.head_sha,
+                    },
+                )
+                .collect(),
+        },
+    }
+}
+
+fn large_managed_package_receipt(
+    transfer_id: &str,
+    archive: &[u8],
+    plan_digest: &str,
+    destination_root: &std::path::Path,
+) -> String {
+    let repositories = large_imported_repositories(destination_root);
+    let receipt = serde_json::to_string(
+        &crate::managed_context::package::ManagedContextPackageImportReceipt {
+            schema_version: 2,
+            transfer_id: transfer_id.to_string(),
+            package_sha256: sha256_bytes(archive),
+            plan_digest: plan_digest.to_string(),
+            development:
+                crate::managed_context::package::ManagedContextImportedDevelopment::FromSource {
+                    project_id: "project-1".to_string(),
+                    receipt:
+                        crate::managed_context::development::DevelopmentContextPublicationReceipt {
+                            schema_version: 2,
+                            publication_id: transfer_id.to_string(),
+                            archive_sha256: sha256_bytes(archive),
+                            project_id: "project-1".to_string(),
+                            destination_root: destination_root.to_path_buf(),
+                            primary_repository_id: repositories[0].repository_id.clone(),
+                            source_repository_binding_sha256s: (0..repositories.len())
+                                .map(|index| sha256_bytes(format!("binding-{index}").as_bytes()))
+                                .collect(),
+                            repositories,
+                        },
+                },
+            kernel_context:
+                crate::managed_context::package::ManagedContextImportedKernelContext::Empty,
+        },
+    )
+    .expect("serialize large managed context package receipt");
+    assert!(receipt.len() > 64 * 1024);
+    assert!(receipt.len() <= MAX_IMPORT_RECEIPT_BYTES);
+    receipt
+}
+
+fn large_imported_repositories(
+    destination_root: &std::path::Path,
+) -> Vec<crate::managed_context::development::DevelopmentImportedRepository> {
+    (0..32)
+        .map(|index| {
+            let repository_id = format!("repository-{index}-{}", "r".repeat(2_450));
+            let target_directory = format!("repository-{index}-{}", "d".repeat(180));
+            crate::managed_context::development::DevelopmentImportedRepository {
+                repository_id,
+                role: if index == 0 {
+                    crate::managed_context::development::DevelopmentRepositoryRole::Primary
+                } else {
+                    crate::managed_context::development::DevelopmentRepositoryRole::Supporting
+                },
+                destination_path: destination_root.join(&target_directory),
+                target_directory,
+                head_sha: format!("{index:040x}"),
+            }
+        })
+        .collect()
+}
+
+fn initialize_git_repository(path: &std::path::Path) -> String {
+    fs::create_dir_all(path).expect("create Git repository root");
+    let init = std::process::Command::new("git")
+        .args(["init", "--quiet"])
+        .arg(path)
+        .output()
+        .expect("initialize Git repository");
+    assert!(init.status.success(), "git init failed");
+    fs::write(path.join("README.md"), "managed context\n").expect("write repository fixture");
+    for args in [
+        vec!["add", "README.md"],
+        vec![
+            "-c",
+            "user.name=Chariox Test",
+            "-c",
+            "user.email=chariox@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        let output = std::process::Command::new("git")
+            .arg("-C")
+            .arg(path)
+            .args(args)
+            .output()
+            .expect("run Git fixture command");
+        assert!(output.status.success(), "Git fixture command failed");
+    }
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .expect("read fixture HEAD");
+    assert!(output.status.success(), "git rev-parse failed");
+    String::from_utf8(output.stdout)
+        .expect("Git HEAD is UTF-8")
+        .trim()
+        .to_string()
+}
+
+fn source_binding_sha256(
+    binding: &crate::managed_context::development::DevelopmentSourceRepositoryBinding,
+) -> String {
+    sha256_bytes(&serde_json::to_vec(binding).expect("serialize source repository binding"))
 }
 
 fn caller(source_thumbprint: &str) -> ManagedContextTransferCaller {

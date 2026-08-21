@@ -27,7 +27,7 @@ use storage::{
     write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 3;
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 4;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
@@ -37,7 +37,7 @@ const MAX_DESTINATION_BYTES: usize = 16 * 1024;
 const MAX_TRANSFER_TTL_MS: u64 = 30 * 60 * 1_000;
 const COMPLETED_TRANSFER_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
 pub(crate) const MAX_IMPORT_RECEIPT_BYTES: usize = 128 * 1024;
-const MAX_PERSISTED_RECEIPT_BYTES: usize = MAX_IMPORT_RECEIPT_BYTES * 2 + 512;
+const MAX_PERSISTED_IMPORT_BYTES: usize = MAX_IMPORT_RECEIPT_BYTES * 3 + 16 * 1024;
 const STATE_CAPACITY_MARGIN_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -46,6 +46,8 @@ struct PersistedTransferState {
     entries: BTreeMap<String, PersistedTransfer>,
     #[serde(default)]
     consumed_context_ids: BTreeSet<String>,
+    #[serde(default)]
+    applied_contexts: BTreeMap<String, crate::local::ManagedContextLaunchTarget>,
 }
 
 impl Default for PersistedTransferState {
@@ -54,6 +56,7 @@ impl Default for PersistedTransferState {
             schema_version: TRANSFER_STATE_SCHEMA_VERSION,
             entries: BTreeMap::new(),
             consumed_context_ids: BTreeSet::new(),
+            applied_contexts: BTreeMap::new(),
         }
     }
 }
@@ -116,6 +119,13 @@ fn legacy_plan_binding() -> crate::managed_context::package::ManagedContextPlanB
     }
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ManagedContextLaunchRecoveryBinding {
+    pub environment_id: String,
+    pub kernel_id: String,
+    pub plan: crate::managed_context::package::ManagedContextPlanBinding,
+}
+
 #[derive(Clone)]
 pub(crate) struct ManagedContextTransferStore {
     root: PathBuf,
@@ -125,6 +135,13 @@ pub(crate) struct ManagedContextTransferStore {
 
 impl ManagedContextTransferStore {
     pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
+        Self::open_with_launch_recovery(root, None)
+    }
+
+    pub(crate) fn open_with_launch_recovery(
+        root: PathBuf,
+        recovery: Option<&ManagedContextLaunchRecoveryBinding>,
+    ) -> Result<Self, DaemonError> {
         ensure_private_directory(&root)?;
         let state_path = root.join("state.json");
         let state = match read_private_state_file(&state_path)? {
@@ -135,7 +152,10 @@ impl ManagedContextTransferStore {
             }
             None => PersistedTransferState::default(),
         };
-        if !matches!(state.schema_version, 1 | 2 | TRANSFER_STATE_SCHEMA_VERSION) {
+        if !matches!(
+            state.schema_version,
+            1 | 2 | 3 | TRANSFER_STATE_SCHEMA_VERSION
+        ) {
             return Err(transfer_error(format!(
                 "unsupported managed context transfer state version {}",
                 state.schema_version
@@ -147,7 +167,7 @@ impl ManagedContextTransferStore {
             active_imports: Arc::new(Mutex::new(HashSet::new())),
         };
         if store.lock_state().schema_version < TRANSFER_STATE_SCHEMA_VERSION {
-            store.migrate_legacy_state()?;
+            store.migrate_legacy_state(recovery)?;
         }
         validate_persisted_state(&store.lock_state())?;
         store.cleanup_failed_transfers()?;
@@ -543,16 +563,26 @@ impl ManagedContextTransferStore {
         }
         serde_json::from_str::<serde_json::Value>(import_receipt_json)
             .map_err(|_| transfer_error("managed context import receipt is invalid JSON"))?;
+        let import_receipt = serde_json::from_str::<
+            crate::managed_context::package::ManagedContextPackageImportReceipt,
+        >(import_receipt_json)
+        .ok();
         let receipt_sha256 = sha256_bytes(import_receipt_json.as_bytes());
         let mut state = self.lock_state();
         let existing = state
             .entries
             .get(transfer_id)
             .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
+        let launch_target = import_receipt
+            .as_ref()
+            .map(|receipt| launch_target_from_receipt(transfer_id, existing, receipt))
+            .transpose()?;
         if existing.phase == ManagedContextTransferPhase::Consumed {
             return if existing.import_receipt_sha256.as_deref() == Some(receipt_sha256.as_str())
                 && existing.import_receipt_json.as_deref() == Some(import_receipt_json)
-            {
+                && launch_target.as_ref().is_none_or(|target| {
+                    state.applied_contexts.get(&existing.plan.context_id) == Some(target)
+                }) {
                 drop(state);
                 self.cleanup_transfer_artifacts(transfer_id)
             } else {
@@ -566,6 +596,17 @@ impl ManagedContextTransferStore {
                 "managed context consumed authorization capacity is full",
             ));
         }
+        if launch_target.is_some()
+            && !state
+                .applied_contexts
+                .contains_key(&existing.plan.context_id)
+            && state.applied_contexts.len() >= MAX_TRANSFER_RECORDS
+        {
+            return Err(transfer_error(
+                "managed context launch target capacity is full",
+            ));
+        }
+        let context_id = existing.plan.context_id.clone();
         let entry = state
             .entries
             .get_mut(transfer_id)
@@ -579,8 +620,10 @@ impl ManagedContextTransferStore {
         entry.import_receipt_sha256 = Some(receipt_sha256);
         entry.import_receipt_json = Some(import_receipt_json.to_string());
         entry.completed_at_ms = Some(now_ms);
-        let context_id = entry.plan.context_id.clone();
         state.consumed_context_ids.insert(context_id.clone());
+        let launch_target_changed = launch_target.is_some();
+        let prior_launch_target = launch_target
+            .and_then(|target| state.applied_contexts.insert(context_id.clone(), target));
         if let Err(error) = self.persist_locked(&state) {
             if let Some(entry) = state.entries.get_mut(transfer_id) {
                 entry.phase = ManagedContextTransferPhase::Importing;
@@ -589,6 +632,13 @@ impl ManagedContextTransferStore {
                 entry.completed_at_ms = None;
             }
             state.consumed_context_ids.remove(&context_id);
+            if launch_target_changed {
+                if let Some(target) = prior_launch_target {
+                    state.applied_contexts.insert(context_id, target);
+                } else {
+                    state.applied_contexts.remove(&context_id);
+                }
+            }
             return Err(error);
         }
         self.lock_active_imports().remove(transfer_id);
@@ -608,6 +658,35 @@ impl ManagedContextTransferStore {
         Ok(status(transfer_id, entry))
     }
 
+    pub(crate) fn launch_target(
+        &self,
+        context_id: &str,
+        plan_digest: &str,
+    ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
+        let state = self.lock_state();
+        let Some(target) = state.applied_contexts.get(context_id) else {
+            if state.entries.values().any(|entry| {
+                entry.plan.context_id == context_id && entry.plan.plan_digest == plan_digest
+            }) {
+                return Err(DaemonError::ManagedContext {
+                    code: "managed_context_launch_target_unavailable",
+                    operation: "get managed context launch target",
+                    message: "managed context launch target is not committed yet".to_string(),
+                    retryable: true,
+                });
+            }
+            return Err(transfer_error(
+                "managed context launch target is unavailable",
+            ));
+        };
+        if target.plan_digest != plan_digest {
+            return Err(transfer_error(
+                "managed context launch target plan digest does not match",
+            ));
+        }
+        Ok(target.clone())
+    }
+
     fn archive_path(&self, transfer_id: &str) -> PathBuf {
         self.root.join(format!("{transfer_id}.archive"))
     }
@@ -618,45 +697,89 @@ impl ManagedContextTransferStore {
         remove_archive_if_present(&archive_path)
     }
 
-    fn migrate_legacy_state(&self) -> Result<(), DaemonError> {
+    fn migrate_legacy_state(
+        &self,
+        recovery: Option<&ManagedContextLaunchRecoveryBinding>,
+    ) -> Result<(), DaemonError> {
         let mut state = self.lock_state();
         if state.schema_version >= TRANSFER_STATE_SCHEMA_VERSION {
             return Ok(());
         }
         let legacy_version = state.schema_version;
-        for (transfer_id, entry) in std::mem::take(&mut state.entries) {
-            if entry.phase == ManagedContextTransferPhase::Consumed {
-                let context_id = if entry.legacy_context_id.is_empty() {
-                    format!("legacy-v{legacy_version}-{transfer_id}")
-                } else {
-                    entry.legacy_context_id.clone()
-                };
-                state.consumed_context_ids.insert(context_id);
-                self.cleanup_transfer_artifacts(&transfer_id)?;
-                continue;
-            }
+        if legacy_version <= 2 {
+            for (transfer_id, entry) in std::mem::take(&mut state.entries) {
+                if entry.phase == ManagedContextTransferPhase::Consumed {
+                    let context_id = if entry.legacy_context_id.is_empty() {
+                        format!("legacy-v{legacy_version}-{transfer_id}")
+                    } else {
+                        entry.legacy_context_id.clone()
+                    };
+                    state.consumed_context_ids.insert(context_id);
+                    self.cleanup_transfer_artifacts(&transfer_id)?;
+                    continue;
+                }
 
-            crate::managed_context::development::cleanup_development_context_publication_staging(
-                &entry.destination_root,
-                &transfer_id,
-            )?;
-            if matches!(
-                entry.phase,
-                ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
-            ) {
-                crate::managed_context::development::cleanup_development_context_publication(
+                crate::managed_context::development::cleanup_development_context_publication_staging(
                     &entry.destination_root,
                     &transfer_id,
                 )?;
+                if matches!(
+                    entry.phase,
+                    ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
+                ) {
+                    crate::managed_context::development::cleanup_development_context_publication(
+                        &entry.destination_root,
+                        &transfer_id,
+                    )?;
+                }
+                self.cleanup_transfer_artifacts(&transfer_id)?;
             }
-            self.cleanup_transfer_artifacts(&transfer_id)?;
+        } else {
+            let mut applied_contexts = Vec::new();
+            for (transfer_id, entry) in &state.entries {
+                if entry.phase != ManagedContextTransferPhase::Consumed {
+                    continue;
+                }
+                let receipt_json = entry.import_receipt_json.as_deref().ok_or_else(|| {
+                    transfer_error("consumed managed context transfer has no import receipt")
+                })?;
+                let receipt = serde_json::from_str::<
+                    crate::managed_context::package::ManagedContextPackageImportReceipt,
+                >(receipt_json)
+                .map_err(|_| transfer_error("stored managed context import receipt is invalid"))?;
+                applied_contexts.push((
+                    entry.plan.context_id.clone(),
+                    launch_target_from_receipt(transfer_id, entry, &receipt)?,
+                ));
+            }
+            for (context_id, target) in applied_contexts {
+                state.applied_contexts.insert(context_id, target);
+            }
+            if let Some(recovery) = recovery.filter(|recovery| {
+                state
+                    .consumed_context_ids
+                    .contains(&recovery.plan.context_id)
+                    && !state
+                        .applied_contexts
+                        .contains_key(&recovery.plan.context_id)
+            }) {
+                let target = recover_launch_target_from_publication(&self.root, recovery)?;
+                state
+                    .applied_contexts
+                    .insert(recovery.plan.context_id.clone(), target);
+            }
         }
         state.schema_version = TRANSFER_STATE_SCHEMA_VERSION;
         validate_persisted_state(&state)?;
+        let removed = compact_consumed_entries_for_state_capacity(&mut state)?;
+        for transfer_id in removed {
+            self.cleanup_transfer_artifacts(&transfer_id)?;
+        }
         self.persist_locked(&state)
     }
 
     fn persist_locked(&self, state: &PersistedTransferState) -> Result<(), DaemonError> {
+        ensure_state_file_capacity(state)?;
         let bytes = serde_json::to_vec(state).map_err(|error| {
             transfer_error(format!("serialize managed context transfer state: {error}"))
         })?;
@@ -842,6 +965,158 @@ impl ManagedContextTransferStore {
     }
 }
 
+fn launch_target_from_receipt(
+    transfer_id: &str,
+    entry: &PersistedTransfer,
+    receipt: &crate::managed_context::package::ManagedContextPackageImportReceipt,
+) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
+    use crate::local::{ManagedContextDevelopmentLaunchTarget, ManagedContextLaunchTarget};
+    use crate::managed_context::package::ManagedContextImportedDevelopment;
+
+    if receipt.transfer_id != transfer_id
+        || receipt.plan_digest != entry.plan.plan_digest
+        || receipt.package_sha256 != entry.archive_sha256
+    {
+        return Err(transfer_error(
+            "managed context import receipt does not match the transfer",
+        ));
+    }
+    let development = match &receipt.development {
+        ManagedContextImportedDevelopment::Empty => {
+            if !matches!(
+                entry.plan.development,
+                crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
+            ) {
+                return Err(transfer_error(
+                    "managed context import receipt omits selected development context",
+                ));
+            }
+            ManagedContextDevelopmentLaunchTarget::Empty
+        }
+        ManagedContextImportedDevelopment::FromSource {
+            project_id,
+            receipt,
+        } => {
+            let crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+                project_id: expected_project_id,
+                ..
+            } = &entry.plan.development
+            else {
+                return Err(transfer_error(
+                    "managed context import receipt contains unexpected development context",
+                ));
+            };
+            if project_id != expected_project_id || receipt.project_id != *expected_project_id {
+                return Err(transfer_error(
+                    "managed context import receipt project does not match",
+                ));
+            }
+            development_launch_target(project_id, receipt)?
+        }
+    };
+    Ok(ManagedContextLaunchTarget {
+        environment_id: entry.target_environment_id.clone(),
+        kernel_id: entry.target_kernel_id.clone(),
+        context_id: entry.plan.context_id.clone(),
+        plan_digest: entry.plan.plan_digest.clone(),
+        development,
+    })
+}
+
+fn development_launch_target(
+    project_id: &str,
+    receipt: &crate::managed_context::development::DevelopmentContextPublicationReceipt,
+) -> Result<crate::local::ManagedContextDevelopmentLaunchTarget, DaemonError> {
+    let destination_root = receipt
+        .destination_root
+        .to_str()
+        .ok_or_else(|| transfer_error("managed context destination is not UTF-8"))?
+        .to_string();
+    let repositories = receipt
+        .repositories
+        .iter()
+        .map(|repository| {
+            Ok(crate::local::ManagedContextRepositoryLaunchTarget {
+                repository_id: repository.repository_id.clone(),
+                role: repository.role,
+                target_directory: repository.target_directory.clone(),
+                workspace_path: repository
+                    .destination_path
+                    .to_str()
+                    .ok_or_else(|| transfer_error("managed context Workspace path is not UTF-8"))?
+                    .to_string(),
+                head_sha: repository.head_sha.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>, DaemonError>>()?;
+    Ok(
+        crate::local::ManagedContextDevelopmentLaunchTarget::FromSource {
+            project_id: project_id.to_string(),
+            destination_root,
+            primary_repository_id: receipt.primary_repository_id.clone(),
+            repositories,
+        },
+    )
+}
+
+fn recover_launch_target_from_publication(
+    transfer_root: &std::path::Path,
+    recovery: &ManagedContextLaunchRecoveryBinding,
+) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
+    let development = match &recovery.plan.development {
+        crate::managed_context::package::ManagedContextDevelopmentSelection::Empty => {
+            crate::local::ManagedContextDevelopmentLaunchTarget::Empty
+        }
+        crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        } => {
+            let workspace_parent = transfer_root
+                .parent()
+                .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?
+                .join("managed-context-workspaces");
+            let receipt = crate::managed_context::development::recover_pruned_development_context_publication(
+                &workspace_parent,
+                project_id,
+                repositories,
+            )?
+            .ok_or_else(|| {
+                transfer_error("schema-3 managed context publication could not be recovered")
+            })?;
+            development_launch_target(project_id, &receipt)?
+        }
+    };
+    Ok(crate::local::ManagedContextLaunchTarget {
+        environment_id: recovery.environment_id.clone(),
+        kernel_id: recovery.kernel_id.clone(),
+        context_id: recovery.plan.context_id.clone(),
+        plan_digest: recovery.plan.plan_digest.clone(),
+        development,
+    })
+}
+
+fn compact_consumed_entries_for_state_capacity(
+    state: &mut PersistedTransferState,
+) -> Result<Vec<String>, DaemonError> {
+    let mut removed = Vec::new();
+    while ensure_state_capacity_with_receipt_reservations(state).is_err() {
+        let Some(transfer_id) = state
+            .entries
+            .iter()
+            .filter(|(_, entry)| entry.phase == ManagedContextTransferPhase::Consumed)
+            .min_by_key(|(_, entry)| entry.completed_at_ms.unwrap_or(0))
+            .map(|(transfer_id, _)| transfer_id.clone())
+        else {
+            return Err(transfer_error(
+                "managed context transfer state cannot fit the migrated launch targets",
+            ));
+        };
+        state.entries.remove(&transfer_id);
+        removed.push(transfer_id);
+    }
+    Ok(removed)
+}
+
 fn persisted_state_size(state: &PersistedTransferState) -> Result<usize, DaemonError> {
     serde_json::to_vec(state)
         .map(|bytes| bytes.len())
@@ -865,13 +1140,22 @@ fn ensure_state_capacity_with_receipt_reservations(
             )
         })
         .count()
-        .saturating_mul(MAX_PERSISTED_RECEIPT_BYTES);
+        .saturating_mul(MAX_PERSISTED_IMPORT_BYTES);
     let required = persisted_state_size(state)?
         .saturating_add(future_receipts)
         .saturating_add(STATE_CAPACITY_MARGIN_BYTES);
     if required > MAX_STATE_FILE_BYTES as usize {
         return Err(transfer_error(
             "managed context transfer state has no capacity for another import receipt",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_state_file_capacity(state: &PersistedTransferState) -> Result<(), DaemonError> {
+    if persisted_state_size(state)? > MAX_STATE_FILE_BYTES as usize {
+        return Err(transfer_error(
+            "managed context transfer state exceeds its file capacity",
         ));
     }
     Ok(())

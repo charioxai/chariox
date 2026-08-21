@@ -2101,7 +2101,10 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
         };
-        let recovery_store = app.lock().await.managed_context_transfer_store();
+        let recovery_store = {
+            let guard = app.clone().lock_owned().await;
+            guard.managed_context_transfer_store()
+        };
         let recovery_ready = match recovery_store
             .prepare_and_claim_import(
                 &recovery_transfer_id,
