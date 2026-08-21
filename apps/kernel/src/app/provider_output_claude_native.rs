@@ -32,16 +32,17 @@ use permission::{
     claude_headless_bypass_selection_pending, claude_headless_composer_visible,
     claude_headless_prompt_waiting_in_composer, claude_headless_workspace_trust_visible,
     claude_native_marker, claude_permission_recent_file, claude_rendered_permission_visible,
-    clear_claude_hook_permission_tombstone, clear_claude_permission_recent,
+    claude_yolo_rendered_permission_confirmation_pending, clear_claude_hook_permission_tombstone,
+    clear_claude_permission_recent, clear_claude_yolo_rendered_permission_confirmation,
     extract_native_hidden_instructions, format_claude_permission_message,
-    normalize_claude_visible_prompt_for_headless, read_claude_headless_submit_retry,
-    redact_native_hidden_instructions, should_bridge_claude_permission,
-    take_claude_permission_inputs, take_matching_claude_hook_permission_tombstone,
-    timestamp_millis, update_claude_permission_recent,
-    write_claude_headless_bypass_selection_marker, write_claude_headless_startup_wait_marker,
-    write_claude_headless_submit_retry, write_claude_hook_context_response,
-    write_claude_hook_permission_tombstone, write_claude_native_marker,
-    write_claude_permission_input, write_claude_permission_response,
+    mark_claude_yolo_rendered_permission_confirmed, normalize_claude_visible_prompt_for_headless,
+    read_claude_headless_submit_retry, redact_native_hidden_instructions,
+    should_bridge_claude_permission, take_claude_permission_inputs,
+    take_matching_claude_hook_permission_tombstone, timestamp_millis,
+    update_claude_permission_recent, write_claude_headless_bypass_selection_marker,
+    write_claude_headless_startup_wait_marker, write_claude_headless_submit_retry,
+    write_claude_hook_context_response, write_claude_hook_permission_tombstone,
+    write_claude_native_marker, write_claude_permission_input, write_claude_permission_response,
 };
 #[cfg(test)]
 use transcript::drain_claude_transcript_file;
@@ -750,6 +751,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             update_claude_permission_recent(context_file, rendered)
         };
         if !visible && !claude_rendered_permission_visible(&recent) {
+            clear_claude_yolo_rendered_permission_confirmation(context_file);
             return Ok(());
         }
         if take_matching_claude_hook_permission_tombstone(context_file, &recent) {
@@ -757,9 +759,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             return Ok(());
         }
         if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
+            if claude_yolo_rendered_permission_confirmation_pending(context_file) {
+                clear_claude_permission_recent(context_file);
+                return Ok(());
+            }
             append_claude_headless_debug(context_file, "auto_confirm", "yolo_permission");
             self.app
                 .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            mark_claude_yolo_rendered_permission_confirmed(context_file);
             clear_claude_permission_recent(context_file);
             return Ok(());
         }

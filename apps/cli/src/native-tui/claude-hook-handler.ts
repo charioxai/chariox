@@ -56,13 +56,17 @@ if (eventName === "UserPromptSubmit") {
     }
   }))
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  if (input.permission_mode === "bypassPermissions") {
+  const toolName = String(input.tool_name ?? "")
+  const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
+  if (isCharioxRuntimeTool || input.permission_mode === "bypassPermissions") {
     if (eventName === "PermissionRequest") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",
           permissionDecision: "allow",
-          permissionDecisionReason: "Allowed by the agent's yolo permission mode."
+          permissionDecisionReason: isCharioxRuntimeTool
+            ? "Allowed Chariox runtime tool."
+            : "Allowed by the agent's yolo permission mode."
         }
       }))
     }

@@ -1,0 +1,35 @@
+[
+  {
+    "name": "yolo permission request",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": { "command": "true" }
+    },
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Allowed by the agent's yolo permission mode."
+  },
+  {
+    "name": "Chariox MCP runtime tool",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "default",
+      "tool_name": "mcp__chariox__workflow_status",
+      "tool_input": {}
+    },
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Allowed Chariox runtime tool."
+  },
+  {
+    "name": "Chariox dotted runtime tool",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "default",
+      "tool_name": "chariox.workflow_status",
+      "tool_input": {}
+    },
+    "permissionDecision": "allow",
+    "permissionDecisionReason": "Allowed Chariox runtime tool."
+  }
+]

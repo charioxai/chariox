@@ -355,18 +355,17 @@ mod tests {
     }
 
     #[test]
-    fn yolo_permission_request_hook_returns_an_allow_decision() {
+    fn permission_request_hook_matches_shared_immediate_decision_contract() {
         if Command::new("node").arg("--version").output().is_err() {
             return;
         }
         let request = LaunchProviderRequest::new(
-            "session-yolo-hook",
+            "session-hook-contract",
             "claude",
             "claude-headless",
             "default",
             "opus",
-        )
-        .with_permission_level(AgentPermissionLevel::Yolo);
+        );
         let native =
             prepare_claude_native_tui_files(&request).expect("native files should be prepared");
         let hook_handler = native
@@ -374,63 +373,85 @@ mod tests {
             .parent()
             .expect("events file should have a root")
             .join("hook-handler.mjs");
-        let mut child = Command::new("node")
-            .arg(hook_handler)
-            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
-            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
-            .env(
-                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
-                &native.context_response_dir,
-            )
-            .env(
-                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
-                &native.permission_response_dir,
-            )
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("hook handler should start");
-        child
-            .stdin
-            .take()
-            .expect("hook stdin should be piped")
-            .write_all(
-                br#"{"hook_event_name":"PermissionRequest","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"true"}}"#,
-            )
-            .expect("hook input should write");
+        let contract: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../../../../../fixtures/claude-permission-hook-contract.json"
+        ))
+        .expect("shared Claude permission contract should be valid JSON");
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while child
-            .try_wait()
-            .expect("hook process status should be readable")
-            .is_none()
-        {
-            if std::time::Instant::now() >= deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("yolo PermissionRequest hook blocked instead of allowing immediately");
+        for contract_case in contract {
+            let mut child = Command::new("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                    &native.context_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("hook handler should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(
+                    serde_json::to_string(&contract_case["input"])
+                        .expect("contract input should serialize")
+                        .as_bytes(),
+                )
+                .expect("hook input should write");
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            while child
+                .try_wait()
+                .expect("hook process status should be readable")
+                .is_none()
+            {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "PermissionRequest hook blocked instead of resolving contract case {}",
+                        contract_case["name"]
+                    );
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
-            std::thread::sleep(std::time::Duration::from_millis(10));
+            let output = child
+                .wait_with_output()
+                .expect("hook handler should finish");
+            assert!(
+                output.status.success(),
+                "hook handler failed for {}: {}",
+                contract_case["name"],
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let response: serde_json::Value =
+                serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+            assert_eq!(
+                response["hookSpecificOutput"]["hookEventName"], "PermissionRequest",
+                "{}",
+                contract_case["name"]
+            );
+            assert_eq!(
+                response["hookSpecificOutput"]["permissionDecision"],
+                contract_case["permissionDecision"],
+                "{}",
+                contract_case["name"]
+            );
+            assert_eq!(
+                response["hookSpecificOutput"]["permissionDecisionReason"],
+                contract_case["permissionDecisionReason"],
+                "{}",
+                contract_case["name"]
+            );
         }
-        let output = child
-            .wait_with_output()
-            .expect("hook handler should finish");
-        assert!(
-            output.status.success(),
-            "hook handler failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
-        let response: serde_json::Value =
-            serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
-        assert_eq!(
-            response["hookSpecificOutput"]["hookEventName"],
-            "PermissionRequest"
-        );
-        assert_eq!(
-            response["hookSpecificOutput"]["permissionDecision"],
-            "allow"
-        );
     }
 
     #[test]

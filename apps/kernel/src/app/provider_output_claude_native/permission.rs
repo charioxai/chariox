@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
@@ -19,6 +20,35 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+}
+
+fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("yolo-rendered-permission-confirmed"))
+}
+
+pub(super) fn mark_claude_yolo_rendered_permission_confirmed(context_file: &str) {
+    let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) else {
+        return;
+    };
+    let _ = fs::write(path, unix_epoch_ms().to_string());
+}
+
+pub(super) fn claude_yolo_rendered_permission_confirmation_pending(context_file: &str) -> bool {
+    claude_yolo_rendered_permission_marker_path(context_file)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|value| value.trim().parse::<u64>().ok())
+        .is_some_and(|confirmed_at_ms| {
+            unix_epoch_ms().saturating_sub(confirmed_at_ms)
+                < CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS
+        })
+}
+
+pub(super) fn clear_claude_yolo_rendered_permission_confirmation(context_file: &str) {
+    if let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 pub(super) fn claude_headless_submit_retry_path(context_file: &str) -> Option<PathBuf> {

@@ -132,6 +132,38 @@ fn yolo_rendered_permission_is_confirmed_without_user_interaction() {
             "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
         )
         .expect("yolo permission should be confirmed");
+    let confirmation_marker = root.join("yolo-rendered-permission-confirmed");
+    let first_confirmation = fs::read_to_string(&confirmation_marker)
+        .expect("yolo confirmation should leave a suppression marker");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("lingering yolo permission should be suppressed");
+    assert_eq!(
+        fs::read_to_string(&confirmation_marker)
+            .expect("yolo confirmation marker should remain present"),
+        first_confirmation,
+        "the same rendered prompt must not be confirmed twice"
+    );
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            "Claude composer ready",
+        )
+        .expect("dismissed permission should clear suppression state");
+    assert!(
+        !confirmation_marker.exists(),
+        "a later permission prompt must be eligible for confirmation"
+    );
 
     std::thread::sleep(std::time::Duration::from_millis(100));
     assert!(
