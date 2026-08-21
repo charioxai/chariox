@@ -125,6 +125,11 @@ impl DaemonApp {
     }
 
     async fn run_with_listener(self, listener: Option<TcpListener>) -> Result<(), DaemonError> {
+        let empty_context_completion =
+            crate::managed_context::empty::EmptyManagedContextCompletion::prepare(
+                self.config(),
+                self.managed_kernel_registration().as_ref(),
+            )?;
         let legacy_workflow_history = self.legacy_workflow_history_store();
         let history_migration_store = self.durable_state_store();
         let history_migration_owner = self.config.daemon_id.clone();
@@ -152,10 +157,13 @@ impl DaemonApp {
         let relay_task = tokio::spawn(
             crate::transport::relay_client::run_daemon_relay_connector_with_router(
                 Arc::clone(&router),
-                relay_state,
+                relay_state.clone(),
                 shutdown_rx.clone(),
             ),
         );
+        let empty_context_completion_task = empty_context_completion.map(|completion| {
+            tokio::spawn(completion.run(relay_state.clone(), shutdown_rx.clone()))
+        });
         let event_delivery_config = {
             let app = app.lock().await;
             let config_projection = app.config_projection_store();
@@ -215,6 +223,9 @@ impl DaemonApp {
 
         let _ = shutdown_tx.send(true);
         let _ = relay_task.await;
+        if let Some(task) = empty_context_completion_task {
+            let _ = task.await;
+        }
         let _ = event_delivery_task.await;
         let _ = external_provider_session_discovery_task.await;
         let _ = event_connection_reconciliation_task.await;

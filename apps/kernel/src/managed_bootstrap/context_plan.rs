@@ -241,6 +241,14 @@ impl ManagedKernelContextPlan {
         }
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.source.is_none()
+            && self.kernel_context == ManagedKernelContextSelection::Empty
+            && matches!(self.development_setup, ManagedKernelDevelopmentSetup::Empty)
+            && matches!(self.provider_accounts, ManagedKernelProviderAccounts::None)
+            && matches!(self.git_credentials, ManagedKernelGitCredentials::None)
+    }
+
     fn validate_development(&self) -> Result<(), &'static str> {
         let ManagedKernelDevelopmentSetup::SourceProject {
             project_id,
@@ -472,6 +480,7 @@ mod tests {
     #[test]
     fn context_plan_rejects_tampered_digest_and_ambiguous_sources() {
         let mut plan = ManagedKernelContextPlan::empty_for_tests("managed_ctx_empty");
+        assert!(plan.is_empty());
         plan.plan_digest = format!("sha256:{}", "f".repeat(64));
         assert_eq!(
             plan.validate(),
@@ -485,6 +494,7 @@ mod tests {
             &"a".repeat(64),
             "project-chariox",
         );
+        assert!(!source_plan.is_empty());
         source_plan.source = None;
         assert_eq!(
             source_plan.validate(),
