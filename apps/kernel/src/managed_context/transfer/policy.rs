@@ -253,7 +253,9 @@ fn validate_launch_target_development(
 ) -> Result<(), DaemonError> {
     use crate::local::ManagedContextDevelopmentLaunchTarget;
     match development {
-        ManagedContextDevelopmentLaunchTarget::Empty => Ok(()),
+        ManagedContextDevelopmentLaunchTarget::Empty { workspace_path } => {
+            validate_destination(Path::new(workspace_path))
+        }
         ManagedContextDevelopmentLaunchTarget::FromSource {
             project_id,
             destination_root,

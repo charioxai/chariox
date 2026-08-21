@@ -36,13 +36,19 @@ pub(crate) fn execute_managed_context_target_request(
         binding.development,
         crate::managed_context::package::ManagedContextDevelopmentSelection::Empty
     ) {
+        let workspace_path = crate::managed_context::empty::ensure_empty_managed_context_workspace(
+            &config,
+            &binding.context_id,
+        )?;
         return Ok(LocalDaemonResponse::ManagedContextLaunchTarget {
             target: crate::local::ManagedContextLaunchTarget {
                 environment_id: registration.environment_id,
                 kernel_id: registration.kernel_id,
                 context_id: binding.context_id,
                 plan_digest: binding.plan_digest,
-                development: crate::local::ManagedContextDevelopmentLaunchTarget::Empty,
+                development: crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
+                    workspace_path: workspace_path.to_string_lossy().into_owned(),
+                },
             },
         });
     }
@@ -91,6 +97,7 @@ fn target_error(message: impl Into<String>) -> DaemonError {
 mod tests {
     use super::*;
     use crate::config::PersistedCloudRelayProfile;
+    use crate::managed_bootstrap::ManagedKernelContextPlan;
 
     #[test]
     fn launch_target_requires_exact_cloud_owner() {
@@ -105,5 +112,82 @@ mod tests {
         assert!(
             authorize_managed_kernel_owner(&config, crate::session::DEFAULT_LOCAL_USER_ID).is_err()
         );
+    }
+
+    #[test]
+    fn empty_launch_target_uses_a_stable_target_owned_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-empty-launch-target-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.daemon_id = "kernel-empty".to_string();
+        config.user_config.state.path = Some(root.join("state.db").display().to_string());
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            user_id: "cloud-user-1".to_string(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let registration = ConfirmedManagedKernelRegistration {
+            environment_id: "environment-empty".to_string(),
+            machine_id: "machine-empty".to_string(),
+            kernel_id: "kernel-empty".to_string(),
+            context_plan: Some(ManagedKernelContextPlan::empty_for_tests("context-empty")),
+        };
+        let store = ManagedContextTransferStore::open(root.join("managed-context-transfers"))
+            .expect("open transfer store");
+        let plan = registration
+            .context_plan
+            .as_ref()
+            .expect("context plan")
+            .package_binding();
+        let response = execute_managed_context_target_request(
+            config.clone(),
+            Some(registration.clone()),
+            store.clone(),
+            "cloud-user-1",
+            LocalDaemonRequest::GetManagedContextLaunchTarget(
+                crate::local::GetManagedContextLaunchTargetRequest {
+                    context_id: plan.context_id.clone(),
+                    plan_digest: plan.plan_digest.clone(),
+                },
+            ),
+        )
+        .expect("empty launch target");
+        let LocalDaemonResponse::ManagedContextLaunchTarget { target } = response else {
+            panic!("expected launch target response")
+        };
+        let crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path } =
+            target.development
+        else {
+            panic!("expected empty development target")
+        };
+        let workspace = std::path::PathBuf::from(workspace_path);
+        assert!(workspace.is_dir());
+        assert!(workspace.starts_with(std::fs::canonicalize(&root).expect("canonical test root")));
+
+        let replay = execute_managed_context_target_request(
+            config,
+            Some(registration),
+            store,
+            "cloud-user-1",
+            LocalDaemonRequest::GetManagedContextLaunchTarget(
+                crate::local::GetManagedContextLaunchTargetRequest {
+                    context_id: plan.context_id,
+                    plan_digest: plan.plan_digest,
+                },
+            ),
+        )
+        .expect("replayed empty launch target");
+        let LocalDaemonResponse::ManagedContextLaunchTarget { target } = replay else {
+            panic!("expected replayed launch target response")
+        };
+        assert_eq!(
+            target.development,
+            crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
+                workspace_path: workspace.to_string_lossy().into_owned(),
+            }
+        );
+        let _ = std::fs::remove_dir_all(root);
     }
 }

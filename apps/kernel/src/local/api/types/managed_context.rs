@@ -35,12 +35,23 @@ pub struct ManagedContextLaunchTarget {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 pub enum ManagedContextDevelopmentLaunchTarget {
-    Empty,
+    Empty {
+        #[serde(default)]
+        workspace_path: String,
+    },
     FromSource {
+        #[serde(alias = "project_id")]
         project_id: String,
+        #[serde(alias = "destination_root")]
         destination_root: String,
+        #[serde(alias = "primary_repository_id")]
         primary_repository_id: String,
         repositories: Vec<ManagedContextRepositoryLaunchTarget>,
     },

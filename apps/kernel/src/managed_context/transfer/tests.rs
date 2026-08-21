@@ -289,6 +289,52 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
 }
 
 #[test]
+fn schema_v4_empty_launch_target_gains_a_durable_workspace_on_upgrade() {
+    let root = test_root("schema-v4-empty-workspace");
+    fs::create_dir_all(&root).expect("create transfer root");
+    let plan_digest = format!("sha256:{}", "a".repeat(64));
+    let legacy = serde_json::json!({
+        "schema_version": 4,
+        "entries": {},
+        "consumed_context_ids": ["context-empty"],
+        "applied_contexts": {
+            "context-empty": {
+                "environmentId": "environment-empty",
+                "kernelId": "kernel-empty",
+                "contextId": "context-empty",
+                "planDigest": plan_digest,
+                "development": { "kind": "empty" }
+            }
+        }
+    });
+    write_private_state_file(
+        &root.join("state.json"),
+        &serde_json::to_vec(&legacy).expect("serialize schema-v4 state"),
+    )
+    .expect("write schema-v4 state");
+
+    let store = ManagedContextTransferStore::open(root.clone()).expect("migrate schema-v4 state");
+    let target = store
+        .launch_target(
+            "context-empty",
+            legacy["applied_contexts"]["context-empty"]["planDigest"]
+                .as_str()
+                .unwrap(),
+        )
+        .expect("migrated empty launch target");
+    let crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path } =
+        target.development
+    else {
+        panic!("expected empty launch target")
+    };
+    assert!(!workspace_path.is_empty());
+    assert!(workspace_path.contains("managed-context-empty-workspaces"));
+    drop(store);
+    ManagedContextTransferStore::open(root.clone()).expect("reopen schema-v5 state");
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
 fn schema_v3_pruned_import_recovers_launch_target_from_confirmed_publication() {
     let root = test_root("schema-v3-pruned-launch-target");
     let transfer_root = root.join("managed-context-transfers");

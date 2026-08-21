@@ -27,7 +27,7 @@ use storage::{
     write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 4;
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 5;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
 const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
@@ -154,7 +154,7 @@ impl ManagedContextTransferStore {
         };
         if !matches!(
             state.schema_version,
-            1 | 2 | 3 | TRANSFER_STATE_SCHEMA_VERSION
+            1 | 2 | 3 | 4 | TRANSFER_STATE_SCHEMA_VERSION
         ) {
             return Err(transfer_error(format!(
                 "unsupported managed context transfer state version {}",
@@ -768,6 +768,27 @@ impl ManagedContextTransferStore {
                     .applied_contexts
                     .insert(recovery.plan.context_id.clone(), target);
             }
+            if legacy_version == 4 {
+                let state_root = self
+                    .root
+                    .parent()
+                    .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
+                for (context_id, target) in &mut state.applied_contexts {
+                    if let crate::local::ManagedContextDevelopmentLaunchTarget::Empty {
+                        workspace_path,
+                    } = &mut target.development
+                    {
+                        if workspace_path.is_empty() {
+                            *workspace_path = state_root
+                                .join("managed-context-empty-workspaces")
+                                .join(sha256_bytes(context_id.as_bytes()))
+                                .join("workspace")
+                                .to_string_lossy()
+                                .into_owned();
+                        }
+                    }
+                }
+            }
         }
         state.schema_version = TRANSFER_STATE_SCHEMA_VERSION;
         validate_persisted_state(&state)?;
@@ -991,7 +1012,13 @@ fn launch_target_from_receipt(
                     "managed context import receipt omits selected development context",
                 ));
             }
-            ManagedContextDevelopmentLaunchTarget::Empty
+            ManagedContextDevelopmentLaunchTarget::Empty {
+                workspace_path: entry
+                    .destination_root
+                    .join("workspace")
+                    .to_string_lossy()
+                    .into_owned(),
+            }
         }
         ManagedContextImportedDevelopment::FromSource {
             project_id,
@@ -1065,7 +1092,16 @@ fn recover_launch_target_from_publication(
 ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
     let development = match &recovery.plan.development {
         crate::managed_context::package::ManagedContextDevelopmentSelection::Empty => {
-            crate::local::ManagedContextDevelopmentLaunchTarget::Empty
+            let state_root = transfer_root
+                .parent()
+                .ok_or_else(|| transfer_error("managed context transfer root has no parent"))?;
+            let workspace_path = state_root
+                .join("managed-context-empty-workspaces")
+                .join(sha256_bytes(recovery.plan.context_id.as_bytes()))
+                .join("workspace")
+                .to_string_lossy()
+                .into_owned();
+            crate::local::ManagedContextDevelopmentLaunchTarget::Empty { workspace_path }
         }
         crate::managed_context::package::ManagedContextDevelopmentSelection::SourceProject {
             project_id,

@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tokio::sync::{watch, RwLock};
 
 use crate::config::DaemonConfig;
@@ -70,6 +71,11 @@ impl EmptyManagedContextCompletion {
         let receipt = expected_receipt(registration, &plan);
         let receipt_path = empty_context_receipt_path(config)?;
         let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+        let receipt_exists = read_receipt(&receipt_path)?.is_some();
+        let workspace = ensure_empty_managed_context_workspace(config, &plan.context_id)?;
+        if !receipt_exists {
+            validate_empty_workspace(&workspace)?;
+        }
         let receipt_json =
             load_or_create_empty_receipt(&receipt_path, &receipt, &capability_root, &vault_path)?;
         let manifest_digest = context_manifest_digest(&receipt_json)?;
@@ -132,6 +138,99 @@ impl EmptyManagedContextCompletion {
             retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
         }
     }
+}
+
+pub(crate) fn empty_managed_context_workspace_path(
+    config: &DaemonConfig,
+    context_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    let state_root = config
+        .durable_state_path()
+        .parent()
+        .map(Path::to_path_buf)
+        .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
+    Ok(state_root
+        .join("managed-context-empty-workspaces")
+        .join(format!("{:x}", Sha256::digest(context_id.as_bytes())))
+        .join("workspace"))
+}
+
+pub(crate) fn ensure_empty_managed_context_workspace(
+    config: &DaemonConfig,
+    context_id: &str,
+) -> Result<PathBuf, DaemonError> {
+    let workspace = empty_managed_context_workspace_path(config, context_id)?;
+    let durable_state_path = config.durable_state_path();
+    let state_root = durable_state_path
+        .parent()
+        .ok_or_else(|| empty_context_error("durable state path has no parent directory"))?;
+    let workspace_root = workspace
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| empty_context_error("empty workspace path has no managed root"))?;
+    ensure_real_private_directory(state_root)?;
+    ensure_real_private_directory(workspace_root)?;
+    ensure_real_private_directory(
+        workspace
+            .parent()
+            .ok_or_else(|| empty_context_error("empty workspace path has no context root"))?,
+    )?;
+    ensure_real_private_directory(&workspace)?;
+    let canonical_state_root = fs::canonicalize(state_root)
+        .map_err(|error| empty_context_io_error("resolve managed state root", error))?;
+    let canonical_workspace = fs::canonicalize(&workspace)
+        .map_err(|error| empty_context_io_error("resolve empty managed workspace", error))?;
+    if !canonical_workspace.starts_with(&canonical_state_root) {
+        return Err(empty_context_error(
+            "empty managed workspace escapes the managed state root",
+        ));
+    }
+    Ok(canonical_workspace)
+}
+
+fn validate_empty_workspace(workspace: &Path) -> Result<(), DaemonError> {
+    let mut entries = fs::read_dir(workspace)
+        .map_err(|error| empty_context_io_error("inspect empty managed workspace", error))?;
+    if entries
+        .next()
+        .transpose()
+        .map_err(|error| empty_context_io_error("inspect empty managed workspace", error))?
+        .is_some()
+    {
+        return Err(empty_context_error(
+            "empty managed workspace is not pristine before initialization",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_real_private_directory(path: &Path) -> Result<(), DaemonError> {
+    match fs::create_dir(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(empty_context_io_error(
+                "create empty managed workspace directory",
+                error,
+            ))
+        }
+    }
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        empty_context_io_error("inspect empty managed workspace directory", error)
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(empty_context_error(
+            "empty managed workspace path must be a real directory",
+        ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            empty_context_io_error("secure empty managed workspace directory", error)
+        })?;
+    }
+    Ok(())
 }
 
 fn expected_receipt(
