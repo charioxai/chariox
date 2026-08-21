@@ -428,6 +428,30 @@ Current pushed event contract:
 - `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
 - `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
 
+Managed remote-kernel control uses local daemon protocol version 278. The kernel
+client surface includes:
+
+- Waiting Room inventory fields for provider accounts and safe Git credential
+  summaries
+- managed-environment create, list, detail, lifecycle, keep-running, and transfer
+  preparation requests
+- direct managed-context transfer start and status requests plus an explicit
+  launch-target request
+- multi-Workspace Project updates and exact slice repository selections
+
+These messages coordinate a launch but do not move runtime authority into Cloud or
+the client. A source-backed launch is bound to one source target, one target
+kernel, one context id, and one plan digest. Package chunks travel through the
+encrypted relay peer lane directly between those kernels. The target durably
+commits each offset before acknowledgement and returns an idempotent consumed
+receipt after completion. Retryable disconnects resume from the committed target
+offset. Clients must surface failure and must not substitute Empty context.
+
+An imported managed Project reports target-owned Workspace and worktree paths.
+The target kernel persists and publishes that Project before it returns the launch
+target, so a retry or restart cannot expose a launch target that session creation
+cannot resolve.
+
 Minimum request set:
 
 - `session.create`
@@ -537,6 +561,14 @@ Current session-lifecycle note:
   - `session.end` is an internal/runtime operation and may still be reused for resumable daemon-owned transitions
   - `session.delete` is the user-facing destructive operation and removes the session from the daemon registry after teardown
 - the current local implementation now uses 16-character lowercase hexadecimal session ids with optional aliases and unique-prefix resolution
+- detaching the last terminal does not cancel an active provider turn or queued
+  prompt backlog. The kernel keeps source attribution in private durable prompt
+  state, advances queued prompts without a live attachment, writes output and
+  completion to durable agent-scoped history, and retains unresolved runtime
+  interactions for later attachments
+- bounded terminal fanout records are recipient-scoped and are not the recovery
+  source for a long disconnection. Reattachment uses the session snapshot and
+  durable history before it accepts live tail output
 
 OpenCode current runtime note:
 
