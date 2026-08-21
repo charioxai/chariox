@@ -2,7 +2,7 @@ use super::*;
 
 const PUBLICATION_RECEIPT_SCHEMA_VERSION: u32 = 1;
 const PUBLICATION_RECEIPT_FILE: &str = ".chariox-managed-import-receipt.json";
-const MAX_PUBLICATION_RECEIPT_BYTES: u64 = 64 * 1024;
+pub(crate) const MAX_PUBLICATION_RECEIPT_BYTES: usize = 64 * 1024;
 
 pub fn import_development_context(
     request: DevelopmentContextImportRequest,
@@ -260,7 +260,7 @@ fn import_development_context_with_options(
     if let Some(receipt) = &publication_receipt {
         let bytes = serde_json::to_vec(receipt)
             .map_err(|error| context_error(format!("serialize import receipt: {error}")))?;
-        if bytes.len() as u64 > MAX_PUBLICATION_RECEIPT_BYTES {
+        if bytes.len() > MAX_PUBLICATION_RECEIPT_BYTES {
             return Err(context_error(
                 "development context publication receipt exceeds its size limit",
             ));
@@ -485,16 +485,16 @@ fn read_publication_receipt(
     let metadata = file
         .metadata()
         .map_err(|error| context_io_error("inspect import publication receipt", error))?;
-    if !metadata.is_file() || metadata.len() > MAX_PUBLICATION_RECEIPT_BYTES {
+    if !metadata.is_file() || metadata.len() > MAX_PUBLICATION_RECEIPT_BYTES as u64 {
         return Err(context_error(
             "development context publication receipt must be a bounded regular file",
         ));
     }
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    file.take(MAX_PUBLICATION_RECEIPT_BYTES + 1)
+    file.take(MAX_PUBLICATION_RECEIPT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|error| context_io_error("read import publication receipt", error))?;
-    if bytes.len() as u64 > MAX_PUBLICATION_RECEIPT_BYTES {
+    if bytes.len() > MAX_PUBLICATION_RECEIPT_BYTES {
         return Err(context_error(
             "development context publication receipt exceeds its size limit",
         ));

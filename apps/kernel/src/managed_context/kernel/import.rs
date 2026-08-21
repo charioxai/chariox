@@ -173,6 +173,59 @@ pub fn import_kernel_context(
     result
 }
 
+pub(crate) fn cleanup_kernel_context_import(
+    receipt: &KernelContextImportReceipt,
+    vault_path: &Path,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    validate_import_paths(&receipt.capability_root, vault_path)?;
+    let target_public_key =
+        crate::transport::relay_crypto::public_key_from_private_key_base64(target_private_key)?;
+    if receipt.target_key_thumbprint
+        != crate::runtime::terminal_pairings::public_key_thumbprint(&target_public_key)
+    {
+        return Err(import_error(
+            "kernel context rollback target key does not match the receipt",
+        ));
+    }
+    let parent = receipt
+        .capability_root
+        .parent()
+        .ok_or_else(|| import_error("kernel context capability root has no parent"))?;
+    ensure_private_directory(parent)?;
+    let _lock = acquire_import_lock(parent)?;
+    match fs::symlink_metadata(&receipt.capability_root) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() || !metadata.is_dir() {
+                return Err(import_error(
+                    "kernel context rollback target is not a private directory",
+                ));
+            }
+            verify_published_receipt(&receipt.capability_root, receipt)?;
+            fs::remove_dir_all(&receipt.capability_root)
+                .map_err(|error| import_io_error("remove failed kernel context", error))?;
+            sync_directory(parent)?;
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(import_io_error(
+                "inspect failed kernel context rollback target",
+                error,
+            ))
+        }
+    }
+    crate::secret::remove_installed_transferred_vault(
+        vault_path,
+        &crate::secret::TransferredVaultSourceBinding {
+            context_id: receipt.context_id.clone(),
+            source_kernel_id: receipt.source_kernel_id.clone(),
+            source_key_thumbprint: receipt.source_key_thumbprint.clone(),
+        },
+        &receipt.target_kernel_id,
+        target_private_key,
+    )
+}
+
 fn verify_existing_import(
     request: &KernelContextImportRequest,
     expected_receipt: &KernelContextImportReceipt,

@@ -1128,6 +1128,8 @@ mod tests {
     use chariox_relay::auth::RelaySubjectKind;
     use sha2::{Digest, Sha256};
     use std::fs;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
     use std::process::Command;
     use tokio::sync::Mutex;
 
@@ -1142,8 +1144,10 @@ mod tests {
         KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
     };
     use crate::managed_context::package::{
-        export_managed_context_package, ManagedContextPackageDevelopment,
-        ManagedContextPackageExportRequest, ManagedContextPackageKernel,
+        apply_managed_context_package, export_managed_context_package,
+        ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
+        ManagedContextPackageDevelopment, ManagedContextPackageExportRequest,
+        ManagedContextPackageKernel,
     };
     use crate::runtime::terminal_pairings::public_key_thumbprint;
     use crate::secret::{
@@ -1279,8 +1283,27 @@ mod tests {
         assert!(!serialized.contains("git stderr canary"));
     }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault() {
+    #[test]
+    fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault() {
+        std::thread::Builder::new()
+            .name("managed-context-peer-transfer".to_string())
+            .stack_size(crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(|| {
+                tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .expect("managed context test runtime")
+                    .block_on(
+                        encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault_inner(),
+                    );
+            })
+            .expect("managed context test thread")
+            .join()
+            .unwrap_or_else(|error| std::panic::resume_unwind(error));
+    }
+
+    async fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault_inner(
+    ) {
         let _env_guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-peer-import-{}-{}",
@@ -1318,6 +1341,10 @@ mod tests {
         let source_key_thumbprint = public_key_thumbprint(&source_public_key);
         let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
         let context_id = "context-managed-peer".to_string();
+        let transfer_state_path = root.join("kernel/managed-context-transfers/state.json");
+        let retirement_state_backup = transfer_state_path.with_extension("retirement-backup");
+        let (cloud_api_url, completion_fixture) =
+            context_completion_fixture(transfer_state_path.clone());
 
         let mut config = DaemonConfig::for_tests();
         config.session_history_root = root.join("sessions");
@@ -1328,10 +1355,12 @@ mod tests {
         config.user_config.artifacts.operational.index_path =
             Some(root.join("artifacts.db").display().to_string());
         config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
-        config.cloud_relay = Some(test_cloud_profile());
         let target_kernel_id = config.daemon_id.clone();
         let target_machine_id = config.host_machine_id.clone();
+        config.cloud_relay = Some(test_cloud_profile(cloud_api_url, target_machine_id.clone()));
+        let restart_config = config.clone();
         let target_public_key = config.relay_public_key.clone();
+        let target_private_key = config.relay_private_key.clone();
         let target_key_thumbprint = public_key_thumbprint(&target_public_key);
         let context_plan = ManagedKernelContextPlan::source_project_for_tests(
             &context_id,
@@ -1346,14 +1375,13 @@ mod tests {
             DaemonApp::bootstrap(config).expect("managed target daemon should bootstrap"),
         ));
         let router = Arc::new(
-            CommandRouter::with_interactive_capacity(app, 1).with_managed_kernel_registration(
-                ConfirmedManagedKernelRegistration {
+            CommandRouter::with_interactive_capacity(app.clone(), 1)
+                .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
                     environment_id: "environment-managed-1".to_string(),
-                    machine_id: target_machine_id,
+                    machine_id: target_machine_id.clone(),
                     kernel_id: target_kernel_id.clone(),
                     context_plan: Some(context_plan),
-                },
-            ),
+                }),
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
@@ -1420,8 +1448,8 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path,
-                archive_sha256: exported.archive_sha256,
+                archive_path: archive_path.clone(),
+                archive_sha256: exported.archive_sha256.clone(),
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(kernel_context),
             package_path: root.join("context.chariox"),
@@ -1481,11 +1509,11 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
-                context_id,
+                context_id: context_id.clone(),
                 plan_digest: plan_digest.clone(),
                 target_environment_id: "environment-managed-1".to_string(),
-                target_kernel_id,
-                target_key_thumbprint,
+                target_kernel_id: target_kernel_id.clone(),
+                target_key_thumbprint: target_key_thumbprint.clone(),
                 capability: RelayManagedContextCapability::new("c".repeat(43)),
                 archive_sha256: package.package_sha256.clone(),
                 archive_size_bytes: package.package_size_bytes,
@@ -1541,6 +1569,26 @@ mod tests {
             .await;
             offset += chunk.len() as u64;
         }
+        let unavailable = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(capability.clone()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            unavailable,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: true,
+            } if code == "managed_context_cloud_completion_unavailable"
+        ));
         let completed = send_managed_peer_request(
             &router,
             &state,
@@ -1622,7 +1670,543 @@ mod tests {
                 }
             }
         ));
+
+        let terminal_context_id = "context-managed-peer-terminal".to_string();
+        let terminal_capability_root = root.join("terminal-capabilities");
+        let terminal_vault_path = root.join("terminal-vault.json");
+        let terminal_vault_envelope_path = terminal_vault_path.with_file_name(format!(
+            "terminal-vault.json.managed-context-key-{}.json",
+            format!("{:x}", Sha256::digest(target_kernel_id.as_bytes()))
+        ));
+        let _terminal_capability_env = ScopedEnv::set(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            terminal_capability_root.as_os_str(),
+        );
+        let _terminal_vault_env = ScopedEnv::set(
+            "CHARIOX_MANAGED_VAULT_PATH",
+            terminal_vault_path.as_os_str(),
+        );
+        let terminal_plan = ManagedKernelContextPlan::source_project_for_tests(
+            &terminal_context_id,
+            "realm-1",
+            &identity.subject,
+            &source_key_thumbprint,
+            "project-managed-peer",
+        );
+        let terminal_plan_binding = terminal_plan.package_binding();
+        let terminal_plan_digest = terminal_plan_binding.plan_digest.clone();
+        let terminal_vault = export_transferred_vault_snapshot(
+            &source_vault_path,
+            &terminal_context_id,
+            &identity.subject,
+            &source_private_key,
+            &target_kernel_id,
+            &target_public_key,
+        )
+        .expect("export terminal transferred Vault");
+        let terminal_payload = KernelContextPayload {
+            schema_version: 1,
+            context_id: terminal_context_id.clone(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint: source_key_thumbprint.clone(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            compatibility: KernelContextCompatibility {
+                source_kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            },
+            extensions: Vec::new(),
+            dependencies: Vec::new(),
+            vault: terminal_vault,
+        };
+        let terminal_snapshot_sha256 = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&terminal_payload).expect("serialize terminal kernel payload")
+            )
+        );
+        let terminal_package = export_managed_context_package(ManagedContextPackageExportRequest {
+            plan: terminal_plan_binding,
+            target_environment_id: "environment-managed-1".to_string(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint: source_key_thumbprint.clone(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            development: ManagedContextPackageDevelopment::FromSource {
+                archive_path,
+                archive_sha256: exported.archive_sha256.clone(),
+            },
+            kernel_context: ManagedContextPackageKernel::FromKernel(KernelContextSnapshot {
+                payload: terminal_payload,
+                snapshot_sha256: terminal_snapshot_sha256,
+            }),
+            package_path: root.join("terminal-context.chariox"),
+        })
+        .expect("compose terminal managed context package");
+        let terminal_router = Arc::new(
+            CommandRouter::with_interactive_capacity(app.clone(), 1)
+                .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
+                    environment_id: "environment-managed-1".to_string(),
+                    machine_id: target_machine_id.clone(),
+                    kernel_id: target_kernel_id.clone(),
+                    context_plan: Some(terminal_plan),
+                }),
+        );
+        let terminal_armed = send_managed_peer_request(
+            &terminal_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::ArmManagedContextImport {
+                context_id: terminal_context_id.clone(),
+                plan_digest: terminal_plan_digest.clone(),
+                target_environment_id: "environment-managed-1".to_string(),
+                target_kernel_id: target_kernel_id.clone(),
+                target_key_thumbprint: target_key_thumbprint.clone(),
+                capability: RelayManagedContextCapability::new("t".repeat(43)),
+                archive_sha256: terminal_package.package_sha256.clone(),
+                archive_size_bytes: terminal_package.package_size_bytes,
+            },
+        )
+        .await;
+        let (terminal_transfer_id, terminal_capability, terminal_max_chunk_bytes) =
+            match terminal_armed {
+                RelayPeerResponse::ManagedContextImportArmed {
+                    transfer_id,
+                    capability,
+                    max_chunk_bytes,
+                    ..
+                } => (transfer_id, capability.into_inner(), max_chunk_bytes),
+                response => panic!("unexpected terminal arm response: {response:?}"),
+            };
+        send_managed_peer_request(
+            &terminal_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::BeginManagedContextImport {
+                transfer_id: terminal_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(terminal_capability.clone()),
+            },
+        )
+        .await;
+        let terminal_archive =
+            fs::read(&terminal_package.package_path).expect("read terminal package");
+        let mut terminal_offset = 0_u64;
+        for chunk in terminal_archive.chunks(terminal_max_chunk_bytes) {
+            send_managed_peer_request(
+                &terminal_router,
+                &state,
+                &outgoing_tx,
+                &identity,
+                &source_private_key,
+                &target_public_key,
+                RelayPeerRequest::UploadManagedContextChunk {
+                    transfer_id: terminal_transfer_id.clone(),
+                    capability: RelayManagedContextCapability::new(terminal_capability.clone()),
+                    offset: terminal_offset,
+                    data_base64: RelayManagedContextChunk::new(
+                        base64::engine::general_purpose::STANDARD.encode(chunk),
+                    ),
+                    chunk_sha256: format!("{:x}", Sha256::digest(chunk)),
+                },
+            )
+            .await;
+            terminal_offset += chunk.len() as u64;
+        }
+        let retirement_unavailable = send_managed_peer_request(
+            &terminal_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: terminal_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(terminal_capability.clone()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            retirement_unavailable,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: true,
+            } if code == "managed_context_import_unavailable"
+        ));
+        assert!(!terminal_capability_root.exists());
+        assert!(!terminal_vault_path.exists());
+        assert!(!terminal_vault_envelope_path.exists());
+        fs::remove_dir(&transfer_state_path).expect("remove blocked transfer state path");
+        fs::rename(&retirement_state_backup, &transfer_state_path)
+            .expect("restore transfer state after retirement failure");
+
+        let terminal = send_managed_peer_request(
+            &terminal_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: terminal_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(terminal_capability.clone()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            terminal,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "managed_context_cloud_completion_rejected"
+        ));
+        assert!(!terminal_capability_root.exists());
+        assert!(!terminal_vault_path.exists());
+        assert!(!terminal_vault_envelope_path.exists());
+        let terminal_replay = send_managed_peer_request(
+            &terminal_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::GetManagedContextImportStatus {
+                transfer_id: terminal_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(terminal_capability.clone()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            terminal_replay,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "managed_context_cloud_completion_rejected"
+        ));
+        drop(terminal_router);
+        let reopened = crate::managed_context::transfer::ManagedContextTransferStore::open(
+            root.join("kernel/managed-context-transfers"),
+        )
+        .expect("reopen managed context transfer store");
+        let reopened_status = reopened
+            .get_status(
+                &terminal_transfer_id,
+                &terminal_capability,
+                &crate::managed_context::transfer::ManagedContextTransferCaller {
+                    kernel_id: identity.subject.clone(),
+                    key_thumbprint: source_key_thumbprint.clone(),
+                    owner_user_id: identity.user_id.clone().expect("source owner"),
+                    realm_id: identity.realm_id.clone(),
+                    target_environment_id: "environment-managed-1".to_string(),
+                    target_kernel_id: target_kernel_id.clone(),
+                    target_key_thumbprint: target_key_thumbprint.clone(),
+                },
+                crate::session::unix_epoch_ms(),
+            )
+            .expect("read reopened terminal transfer");
+        assert_eq!(
+            reopened_status.phase,
+            crate::managed_context::transfer::ManagedContextTransferPhase::Failed
+        );
+        assert_eq!(
+            reopened_status.failure_code.as_deref(),
+            Some("managed_context_cloud_completion_rejected")
+        );
+        assert!(!terminal_capability_root.exists());
+        assert!(!terminal_vault_path.exists());
+        assert!(!terminal_vault_envelope_path.exists());
+
+        let completion_requests = completion_fixture.join().expect("Cloud completion fixture");
+        assert_eq!(completion_requests.len(), 4);
+        assert_eq!(completion_requests[0], completion_requests[1]);
+        let completion_request = &completion_requests[1];
+        assert_eq!(completion_request["accountId"], "account-1");
+        assert_eq!(completion_request["environmentId"], "environment-managed-1");
+        assert_eq!(completion_request["machineId"], target_machine_id);
+        assert_eq!(completion_request["kernelId"], target_kernel_id);
+        assert_eq!(
+            completion_request["machineCredential"],
+            test_machine_credential()
+        );
+        assert_eq!(completion_request["contextId"], context_id);
+        assert_eq!(completion_request["planDigest"], plan_digest);
+        assert_eq!(
+            completion_request["contextManifestDigest"],
+            format!("sha256:{}", receipt.receipt_sha256)
+        );
+        assert_eq!(completion_requests[2]["contextId"], terminal_context_id);
+        assert_eq!(completion_requests[2]["planDigest"], terminal_plan_digest);
+        assert_eq!(completion_requests[2], completion_requests[3]);
+
+        let recovery_context_id = "context-managed-peer-recovery".to_string();
+        let recovery_capability_root = root.join("recovery-capabilities");
+        let recovery_vault_path = root.join("recovery-vault.json");
+        let recovery_vault_envelope_path = recovery_vault_path.with_file_name(format!(
+            "recovery-vault.json.managed-context-key-{}.json",
+            format!("{:x}", Sha256::digest(target_kernel_id.as_bytes()))
+        ));
+        let _recovery_capability_env = ScopedEnv::set(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            recovery_capability_root.as_os_str(),
+        );
+        let _recovery_vault_env = ScopedEnv::set(
+            "CHARIOX_MANAGED_VAULT_PATH",
+            recovery_vault_path.as_os_str(),
+        );
+        let recovery_plan = ManagedKernelContextPlan::source_project_for_tests(
+            &recovery_context_id,
+            "realm-1",
+            &identity.subject,
+            &source_key_thumbprint,
+            "project-managed-peer",
+        );
+        let recovery_plan_binding = recovery_plan.package_binding();
+        let recovery_plan_digest = recovery_plan_binding.plan_digest.clone();
+        let recovery_vault = export_transferred_vault_snapshot(
+            &source_vault_path,
+            &recovery_context_id,
+            &identity.subject,
+            &source_private_key,
+            &target_kernel_id,
+            &target_public_key,
+        )
+        .expect("export recovery transferred Vault");
+        let recovery_payload = KernelContextPayload {
+            schema_version: 1,
+            context_id: recovery_context_id.clone(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint: source_key_thumbprint.clone(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            compatibility: KernelContextCompatibility {
+                source_kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            },
+            extensions: Vec::new(),
+            dependencies: Vec::new(),
+            vault: recovery_vault,
+        };
+        let recovery_snapshot_sha256 = format!(
+            "{:x}",
+            Sha256::digest(
+                serde_json::to_vec(&recovery_payload).expect("serialize recovery kernel payload")
+            )
+        );
+        let recovery_package = export_managed_context_package(ManagedContextPackageExportRequest {
+            plan: recovery_plan_binding,
+            target_environment_id: "environment-managed-1".to_string(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint: source_key_thumbprint.clone(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            development: ManagedContextPackageDevelopment::FromSource {
+                archive_path: root.join("development.tar.gz"),
+                archive_sha256: exported.archive_sha256,
+            },
+            kernel_context: ManagedContextPackageKernel::FromKernel(KernelContextSnapshot {
+                payload: recovery_payload,
+                snapshot_sha256: recovery_snapshot_sha256,
+            }),
+            package_path: root.join("recovery-context.chariox"),
+        })
+        .expect("compose recovery managed context package");
+        let recovery_router = Arc::new(
+            CommandRouter::with_interactive_capacity(app.clone(), 1)
+                .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
+                    environment_id: "environment-managed-1".to_string(),
+                    machine_id: target_machine_id.clone(),
+                    kernel_id: target_kernel_id.clone(),
+                    context_plan: Some(recovery_plan.clone()),
+                }),
+        );
+        let recovery_armed = send_managed_peer_request(
+            &recovery_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::ArmManagedContextImport {
+                context_id: recovery_context_id,
+                plan_digest: recovery_plan_digest,
+                target_environment_id: "environment-managed-1".to_string(),
+                target_kernel_id: target_kernel_id.clone(),
+                target_key_thumbprint: target_key_thumbprint.clone(),
+                capability: RelayManagedContextCapability::new("r".repeat(43)),
+                archive_sha256: recovery_package.package_sha256.clone(),
+                archive_size_bytes: recovery_package.package_size_bytes,
+            },
+        )
+        .await;
+        let (recovery_transfer_id, recovery_capability, recovery_max_chunk_bytes) =
+            match recovery_armed {
+                RelayPeerResponse::ManagedContextImportArmed {
+                    transfer_id,
+                    capability,
+                    max_chunk_bytes,
+                    ..
+                } => (transfer_id, capability.into_inner(), max_chunk_bytes),
+                response => panic!("unexpected recovery arm response: {response:?}"),
+            };
+        send_managed_peer_request(
+            &recovery_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::BeginManagedContextImport {
+                transfer_id: recovery_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(recovery_capability.clone()),
+            },
+        )
+        .await;
+        let recovery_archive =
+            fs::read(&recovery_package.package_path).expect("read recovery package");
+        let mut recovery_offset = 0_u64;
+        for chunk in recovery_archive.chunks(recovery_max_chunk_bytes) {
+            send_managed_peer_request(
+                &recovery_router,
+                &state,
+                &outgoing_tx,
+                &identity,
+                &source_private_key,
+                &target_public_key,
+                RelayPeerRequest::UploadManagedContextChunk {
+                    transfer_id: recovery_transfer_id.clone(),
+                    capability: RelayManagedContextCapability::new(recovery_capability.clone()),
+                    offset: recovery_offset,
+                    data_base64: RelayManagedContextChunk::new(
+                        base64::engine::general_purpose::STANDARD.encode(chunk),
+                    ),
+                    chunk_sha256: format!("{:x}", Sha256::digest(chunk)),
+                },
+            )
+            .await;
+            recovery_offset += chunk.len() as u64;
+        }
+        let recovery_caller = crate::managed_context::transfer::ManagedContextTransferCaller {
+            kernel_id: identity.subject.clone(),
+            key_thumbprint: source_key_thumbprint.clone(),
+            owner_user_id: identity.user_id.clone().expect("source owner"),
+            realm_id: identity.realm_id.clone(),
+            target_environment_id: "environment-managed-1".to_string(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+        };
+        let recovery_store = app.lock().await.managed_context_transfer_store();
+        let recovery_ready = match recovery_store
+            .prepare_and_claim_import(
+                &recovery_transfer_id,
+                &recovery_capability,
+                &recovery_caller,
+                crate::session::unix_epoch_ms(),
+            )
+            .expect("claim recovery import before simulated crash")
+        {
+            crate::managed_context::transfer::ManagedContextImportClaim::Claimed(ready) => ready,
+            other => panic!("unexpected recovery claim: {other:?}"),
+        };
+        apply_managed_context_package(ManagedContextPackageApplicationRequest {
+            transfer_id: recovery_ready.transfer_id,
+            package_path: recovery_ready.archive_path,
+            expected_package_sha256: recovery_ready.archive_sha256,
+            expected_binding: ManagedContextPackageBinding {
+                plan: recovery_ready.plan,
+                target_environment_id: recovery_ready.target_environment_id,
+                source_kernel_id: recovery_ready.source_kernel_id,
+                source_key_thumbprint: recovery_ready.source_key_thumbprint,
+                target_kernel_id: recovery_ready.target_kernel_id,
+                target_key_thumbprint: recovery_ready.target_key_thumbprint,
+            },
+            development_destination_root: recovery_ready.destination_root,
+            target_private_key,
+        })
+        .expect("publish recovery context before simulated crash");
+        recovery_store
+            .release_import(&recovery_transfer_id)
+            .expect("release recovery owner for simulated crash");
+        assert!(recovery_capability_root.exists());
+        assert!(recovery_vault_path.exists());
+        assert!(recovery_vault_envelope_path.exists());
+        drop(recovery_store);
+        drop(recovery_router);
         drop(router);
+        drop(reopened);
+        drop(app);
+
+        let mismatched_plan = ManagedKernelContextPlan::source_project_for_tests(
+            "context-managed-peer-rebound",
+            "realm-1",
+            &identity.subject,
+            &source_key_thumbprint,
+            "project-managed-peer",
+        );
+        let restarted_app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(restart_config)
+                .expect("managed target daemon should reopen interrupted import"),
+        ));
+        let restarted_router = Arc::new(
+            CommandRouter::with_interactive_capacity(restarted_app.clone(), 1)
+                .with_managed_kernel_registration(ConfirmedManagedKernelRegistration {
+                    environment_id: "environment-managed-1".to_string(),
+                    machine_id: target_machine_id.clone(),
+                    kernel_id: target_kernel_id.clone(),
+                    context_plan: Some(mismatched_plan),
+                }),
+        );
+        let rebound = send_managed_peer_request(
+            &restarted_router,
+            &state,
+            &outgoing_tx,
+            &identity,
+            &source_private_key,
+            &target_public_key,
+            RelayPeerRequest::FinalizeManagedContextImport {
+                transfer_id: recovery_transfer_id.clone(),
+                capability: RelayManagedContextCapability::new(recovery_capability.clone()),
+            },
+        )
+        .await;
+        assert!(matches!(
+            rebound,
+            RelayPeerResponse::ManagedContextImportFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+        assert!(!recovery_capability_root.exists());
+        assert!(!recovery_vault_path.exists());
+        assert!(!recovery_vault_envelope_path.exists());
+        drop(restarted_router);
+        drop(restarted_app);
+        let recovery_reopened =
+            crate::managed_context::transfer::ManagedContextTransferStore::open(
+                root.join("kernel/managed-context-transfers"),
+            )
+            .expect("reopen recovered transfer store");
+        let recovery_status = recovery_reopened
+            .get_status(
+                &recovery_transfer_id,
+                &recovery_capability,
+                &recovery_caller,
+                crate::session::unix_epoch_ms(),
+            )
+            .expect("read rebound transfer failure after restart");
+        assert_eq!(
+            recovery_status.phase,
+            crate::managed_context::transfer::ManagedContextTransferPhase::Failed
+        );
+        assert!(!recovery_capability_root.exists());
+        assert!(!recovery_vault_path.exists());
+        assert!(!recovery_vault_envelope_path.exists());
         lock_chariox_encrypted_vault(&source_vault_path).expect("lock source Vault");
         lock_chariox_encrypted_vault(&target_vault_path).expect("lock target Vault");
         fs::remove_dir_all(root).expect("remove managed peer fixture");
@@ -1686,9 +2270,99 @@ mod tests {
         serde_json::from_slice(&decrypted.plaintext).expect("decode peer response")
     }
 
-    fn test_cloud_profile() -> PersistedCloudRelayProfile {
+    fn context_completion_fixture(
+        transfer_state_path: std::path::PathBuf,
+    ) -> (String, std::thread::JoinHandle<Vec<serde_json::Value>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind Cloud completion fixture");
+        let address = listener.local_addr().expect("Cloud completion address");
+        let fixture = std::thread::spawn(move || {
+            let mut bodies = Vec::new();
+            for attempt in 0..4 {
+                let (mut stream, _) = listener.accept().expect("accept Cloud completion");
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                    .expect("Cloud completion read timeout");
+                let mut request = Vec::new();
+                let mut chunk = [0_u8; 4096];
+                let (header_end, content_length) = loop {
+                    let read = stream.read(&mut chunk).expect("read Cloud completion");
+                    assert!(read > 0, "Cloud completion request ended before its body");
+                    request.extend_from_slice(&chunk[..read]);
+                    let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    assert!(headers.starts_with("POST /v1/managed-kernels/context/complete "));
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .expect("Cloud completion content length");
+                    if request.len() < header_end + 4 + content_length {
+                        continue;
+                    }
+                    break (header_end, content_length);
+                };
+                let body = serde_json::from_slice::<serde_json::Value>(
+                    &request[header_end + 4..header_end + 4 + content_length],
+                )
+                .expect("decode Cloud completion request");
+                if attempt == 2 {
+                    let backup = transfer_state_path.with_extension("retirement-backup");
+                    fs::rename(&transfer_state_path, &backup)
+                        .expect("move transfer state before retirement failure");
+                    fs::create_dir(&transfer_state_path)
+                        .expect("block transfer state replacement during retirement");
+                }
+                let (status, response) = match attempt {
+                    0 => (
+                        "200 OK",
+                        b"{\"ready\":true,\"observedState\":\"ready\"".to_vec(),
+                    ),
+                    1 => (
+                        "200 OK",
+                        serde_json::to_vec(&serde_json::json!({
+                            "ready": true,
+                            "observedState": "ready",
+                            "contextManifestDigest": body["contextManifestDigest"],
+                            "forwardCompatibleField": true,
+                        }))
+                        .expect("encode successful Cloud completion response"),
+                    ),
+                    _ => (
+                        "409 Conflict",
+                        serde_json::to_vec(&serde_json::json!({
+                            "error": {
+                                "message": "context completion conflicts with Cloud state",
+                                "code": "identity_conflict",
+                            },
+                        }))
+                        .expect("encode rejected Cloud completion response"),
+                    ),
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+                    response.len()
+                )
+                .expect("write Cloud completion headers");
+                stream
+                    .write_all(&response)
+                    .expect("write Cloud completion response");
+                bodies.push(body);
+            }
+            bodies
+        });
+        (format!("http://{address}"), fixture)
+    }
+
+    fn test_cloud_profile(api_url: String, machine_id: String) -> PersistedCloudRelayProfile {
         PersistedCloudRelayProfile {
-            api_url: "https://cloud.example.test".to_string(),
+            api_url,
             email: "user@example.test".to_string(),
             account_id: "account-1".to_string(),
             user_id: "user-1".to_string(),
@@ -1698,13 +2372,17 @@ mod tests {
             issuer_id: "issuer-1".to_string(),
             client_id: None,
             client_alias: None,
-            machine_id: Some("machine-test".to_string()),
+            machine_id: Some(machine_id),
             machine_alias: Some("Managed test".to_string()),
-            machine_credential: Some("machine-credential".to_string()),
+            machine_credential: Some(test_machine_credential()),
             cloud_session_token: None,
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: None,
         }
+    }
+
+    fn test_machine_credential() -> String {
+        format!("mcred_{}", "m".repeat(43))
     }
 
     fn git(path: &std::path::Path, args: &[&str]) {

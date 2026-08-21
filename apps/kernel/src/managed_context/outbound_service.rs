@@ -25,7 +25,7 @@ use crate::managed_context::package::{
     ManagedContextPackageKernel, ManagedContextProviderAccountSelection,
     MAX_MANAGED_CONTEXT_PACKAGE_BYTES,
 };
-use crate::runtime::cloud_api_client::{cloud_error_code, post_cloud_json};
+use crate::runtime::cloud_api_client::{cloud_error_is_retryable, post_cloud_json};
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime::workspace_git_common::same_fs_path;
 use crate::runtime::workspace_worktrees::list_workspace_worktrees;
@@ -428,37 +428,12 @@ async fn fetch_authoritative_ticket(
     )
     .await
     .map_err(|error| {
-        let retryable = cloud_ticket_error_is_retryable(&error);
+        let retryable = cloud_error_is_retryable(&error);
         outbound_service_error(
             format!("Cloud could not authorize the managed-context transfer ticket: {error}"),
             retryable,
         )
     })
-}
-
-fn cloud_ticket_error_is_retryable(error: &DaemonError) -> bool {
-    if let Some(code) = cloud_error_code(error) {
-        return matches!(
-            code,
-            "capacity_exceeded" | "dependency_unavailable" | "internal_error" | "rate_limited"
-        );
-    }
-    let message = match error {
-        DaemonError::LocalTransport { message, .. } => message.as_str(),
-        _ => return true,
-    };
-    ![
-        "cloud relay request failed with 400",
-        "cloud relay request failed with 401",
-        "cloud relay request failed with 402",
-        "cloud relay request failed with 403",
-        "cloud relay request failed with 404",
-        "cloud relay request failed with 409",
-        "cloud relay request failed with 410",
-        "cloud relay request failed with 422",
-    ]
-    .iter()
-    .any(|needle| message.contains(needle))
 }
 
 fn retire_matching_artifact_after_terminal_preflight(
@@ -1655,26 +1630,22 @@ mod tests {
             message: "cloud relay request failed with 409: cloud_api_code=identity_conflict: body"
                 .to_string(),
         };
-        assert!(!cloud_ticket_error_is_retryable(&terminal));
+        assert!(!cloud_error_is_retryable(&terminal));
         let unavailable = DaemonError::LocalTransport {
             operation: "cloud relay request",
             message:
                 "cloud relay request failed with 503: cloud_api_code=dependency_unavailable: body"
                     .to_string(),
         };
-        assert!(cloud_ticket_error_is_retryable(&unavailable));
-        assert!(cloud_ticket_error_is_retryable(
-            &DaemonError::LocalTransport {
-                operation: "cloud relay request",
-                message: "network timeout".to_string(),
-            }
-        ));
-        assert!(!cloud_ticket_error_is_retryable(
-            &DaemonError::LocalTransport {
-                operation: "cloud relay request",
-                message: "cloud relay request failed with 404".to_string(),
-            }
-        ));
+        assert!(cloud_error_is_retryable(&unavailable));
+        assert!(cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "network timeout".to_string(),
+        }));
+        assert!(!cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "cloud relay request failed with 404".to_string(),
+        }));
     }
 
     #[cfg(unix)]

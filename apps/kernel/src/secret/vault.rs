@@ -591,6 +591,51 @@ pub fn validate_installed_transferred_vault(
     Ok(())
 }
 
+pub(crate) fn remove_installed_transferred_vault(
+    path: impl AsRef<Path>,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
+    let vault_exists = path.try_exists().map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred Vault during rollback: {error}"
+        ))
+    })?;
+    let envelope_exists = envelope_path.try_exists().map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred Vault envelope during rollback: {error}"
+        ))
+    })?;
+    if !vault_exists && !envelope_exists {
+        unlocked_vaults()
+            .lock()
+            .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+            .remove(&path);
+        return Ok(());
+    }
+    if !vault_exists || !envelope_exists {
+        return Err(secret_error(
+            "transferred Vault rollback found incomplete installed material".to_string(),
+        ));
+    }
+    validate_installed_transferred_vault(
+        &path,
+        expected_source,
+        target_kernel_id,
+        target_private_key,
+    )?;
+    remove_transferred_vault_file(&envelope_path, "Vault key envelope")?;
+    remove_transferred_vault_file(&path, "Vault")?;
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+        .remove(&path);
+    sync_vault_parent_dir(&path)
+}
+
 fn restore_transferred_vault_unlock_bound(
     path: &Path,
     expected_source: Option<&TransferredVaultSourceBinding>,
@@ -1147,6 +1192,24 @@ fn cleanup_private_staging(path: &Path, target_kernel_id: &str) -> Result<(), Da
     fs::remove_file(&temporary).map_err(|error| {
         secret_error(format!(
             "failed to remove transferred Vault staging: {error}"
+        ))
+    })
+}
+
+fn remove_transferred_vault_file(path: &Path, label: &str) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred {label} during rollback: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(secret_error(format!(
+            "transferred {label} rollback target is not a regular file"
+        )));
+    }
+    fs::remove_file(path).map_err(|error| {
+        secret_error(format!(
+            "failed to remove transferred {label} during rollback: {error}"
         ))
     })
 }

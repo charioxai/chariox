@@ -172,6 +172,48 @@ pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
     Some(code.split(':').next().unwrap_or(code))
 }
 
+pub(crate) fn cloud_error_is_retryable(error: &DaemonError) -> bool {
+    if let Some(code) = cloud_error_code(error) {
+        match code {
+            "capacity_exceeded" | "dependency_unavailable" | "internal_error" | "rate_limited" => {
+                return true
+            }
+            "account_deleted"
+            | "authorization_denied"
+            | "identity_conflict"
+            | "identity_revoked"
+            | "invalid_request"
+            | "not_found"
+            | "realm_not_found"
+            | "session_invalid"
+            | "subscription_required"
+            | "user_deleted" => return false,
+            _ => {}
+        }
+    }
+    let (operation, message) = match error {
+        DaemonError::LocalTransport {
+            operation, message, ..
+        } => (*operation, message.as_str()),
+        _ => return true,
+    };
+    if operation == "decode cloud relay response" {
+        return true;
+    }
+    ![
+        "cloud relay request failed with 400",
+        "cloud relay request failed with 401",
+        "cloud relay request failed with 402",
+        "cloud relay request failed with 403",
+        "cloud relay request failed with 404",
+        "cloud relay request failed with 409",
+        "cloud relay request failed with 410",
+        "cloud relay request failed with 422",
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
 pub(crate) fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
     let message = match error {
         DaemonError::LocalTransport { message, .. } => message.as_str(),
@@ -249,6 +291,35 @@ mod tests {
             }),
             None
         );
+    }
+
+    #[test]
+    fn cloud_error_retryability_preserves_terminal_and_transient_classes() {
+        assert!(!cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "cloud relay request failed with 409: cloud_api_code=identity_conflict: body"
+                .to_string(),
+        }));
+        assert!(cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message:
+                "cloud relay request failed with 503: cloud_api_code=dependency_unavailable: body"
+                    .to_string(),
+        }));
+        assert!(cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message:
+                "cloud relay request failed with 503: cloud_api_code=service_unavailable: body"
+                    .to_string(),
+        }));
+        assert!(cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "network timeout".to_string(),
+        }));
+        assert!(cloud_error_is_retryable(&DaemonError::LocalTransport {
+            operation: "decode cloud relay response",
+            message: "unexpected response shape".to_string(),
+        }));
     }
 
     #[test]

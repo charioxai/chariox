@@ -13,8 +13,8 @@ mod export;
 mod import;
 mod source_snapshot;
 pub use export::export_kernel_context;
-pub(crate) use import::configured_managed_kernel_context_paths;
 pub use import::import_kernel_context;
+pub(crate) use import::{cleanup_kernel_context_import, configured_managed_kernel_context_paths};
 pub use source_snapshot::scavenge_source_snapshots;
 pub(crate) const MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES: usize = export::MAX_SNAPSHOT_BYTES;
 

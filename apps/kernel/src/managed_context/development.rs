@@ -218,6 +218,7 @@ pub use import::import_development_context;
 pub(crate) use import::{
     cleanup_development_context_publication, cleanup_development_context_publication_staging,
     import_development_context_with_publication, recover_development_context_publication,
+    MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};

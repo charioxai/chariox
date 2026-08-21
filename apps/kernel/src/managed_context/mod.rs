@@ -1,3 +1,4 @@
+pub(crate) mod cloud_completion;
 pub mod development;
 pub mod kernel;
 pub(crate) mod outbound;

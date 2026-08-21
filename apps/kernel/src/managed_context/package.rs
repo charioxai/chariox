@@ -9,11 +9,11 @@ use super::development::MAX_PACKAGE_BYTES as MAX_DEVELOPMENT_BYTES;
 use super::development::{
     import_development_context_with_publication, recover_development_context_publication,
     DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
-    DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding,
+    DevelopmentRepositoryRole, DevelopmentSourceRepositoryBinding, MAX_PUBLICATION_RECEIPT_BYTES,
 };
 use super::kernel::{
-    configured_managed_kernel_context_paths, import_kernel_context, KernelContextImportReceipt,
-    KernelContextImportRequest, KernelContextSnapshot,
+    cleanup_kernel_context_import, configured_managed_kernel_context_paths, import_kernel_context,
+    KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
 };
 use crate::error::DaemonError;
 use crate::secret::TransferredVaultSourceBinding;
@@ -435,10 +435,11 @@ pub(crate) fn apply_managed_context_package(
     request: ManagedContextPackageApplicationRequest,
 ) -> Result<ManagedContextPackageImportReceipt, DaemonError> {
     let extracted = extract_managed_context_package(ManagedContextPackageImportRequest {
-        package_path: request.package_path,
+        package_path: request.package_path.clone(),
         expected_package_sha256: request.expected_package_sha256.clone(),
         expected_binding: request.expected_binding.clone(),
     })?;
+    preflight_import_receipt_capacity(&request, &extracted)?;
     let development = match (
         &extracted.development,
         &request.expected_binding.plan.development,
@@ -511,6 +512,141 @@ pub(crate) fn apply_managed_context_package(
         development,
         kernel_context,
     })
+}
+
+pub(crate) fn rollback_managed_context_package_application(
+    receipt: &ManagedContextPackageImportReceipt,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    if let ManagedContextImportedKernelContext::FromKernel { receipt } = &receipt.kernel_context {
+        let (_, vault_path) = configured_managed_kernel_context_paths()?;
+        cleanup_kernel_context_import(receipt, &vault_path, target_private_key)?;
+    }
+    if let ManagedContextImportedDevelopment::FromSource { receipt, .. } = &receipt.development {
+        super::development::cleanup_development_context_publication_staging(
+            &receipt.destination_root,
+            &receipt.publication_id,
+        )?;
+        super::development::cleanup_development_context_publication(
+            &receipt.destination_root,
+            &receipt.publication_id,
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn rollback_persisted_managed_context_publication(
+    request: ManagedContextPackageImportRequest,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    let extracted = extract_managed_context_package(request)?;
+    if let ManagedContextPackageKernel::FromKernel(snapshot) = &extracted.kernel_context {
+        let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
+        cleanup_kernel_context_import(
+            &KernelContextImportReceipt {
+                schema_version: 1,
+                context_id: snapshot.payload.context_id.clone(),
+                source_kernel_id: snapshot.payload.source_kernel_id.clone(),
+                source_key_thumbprint: snapshot.payload.source_key_thumbprint.clone(),
+                target_kernel_id: snapshot.payload.target_kernel_id.clone(),
+                target_key_thumbprint: snapshot.payload.target_key_thumbprint.clone(),
+                snapshot_sha256: snapshot.snapshot_sha256.clone(),
+                capability_root,
+                extension_count: snapshot.payload.extensions.len(),
+                dependency_count: snapshot.payload.dependencies.len(),
+            },
+            &vault_path,
+            target_private_key,
+        )?;
+    }
+    Ok(())
+}
+
+fn preflight_import_receipt_capacity(
+    request: &ManagedContextPackageApplicationRequest,
+    extracted: &ExtractedManagedContextPackage,
+) -> Result<(), DaemonError> {
+    let (development, placeholder_receipt_bytes) = match (
+        &extracted.development,
+        &request.expected_binding.plan.development,
+    ) {
+        (ExtractedManagedContextDevelopment::Empty, ManagedContextDevelopmentSelection::Empty) => {
+            (ManagedContextImportedDevelopment::Empty, 0)
+        }
+        (
+            ExtractedManagedContextDevelopment::FromSource { .. },
+            ManagedContextDevelopmentSelection::SourceProject { project_id, .. },
+        ) => {
+            let placeholder = DevelopmentContextPublicationReceipt {
+                schema_version: 1,
+                publication_id: request.transfer_id.clone(),
+                archive_sha256: "0".repeat(64),
+                project_id: project_id.clone(),
+                destination_root: PathBuf::new(),
+                primary_repository_id: "repository".to_string(),
+                repositories: Vec::new(),
+            };
+            let placeholder_receipt_bytes = serde_json::to_vec(&placeholder)
+                .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
+                .len();
+            (
+                ManagedContextImportedDevelopment::FromSource {
+                    project_id: project_id.clone(),
+                    receipt: placeholder,
+                },
+                placeholder_receipt_bytes,
+            )
+        }
+        _ => {
+            return Err(package_error(
+                "managed context development component does not match the launch plan",
+            ))
+        }
+    };
+    let kernel_context = match &extracted.kernel_context {
+        ManagedContextPackageKernel::Empty => ManagedContextImportedKernelContext::Empty,
+        ManagedContextPackageKernel::FromKernel(snapshot) => {
+            let (capability_root, _) = configured_managed_kernel_context_paths()?;
+            ManagedContextImportedKernelContext::FromKernel {
+                receipt: KernelContextImportReceipt {
+                    schema_version: 1,
+                    context_id: snapshot.payload.context_id.clone(),
+                    source_kernel_id: snapshot.payload.source_kernel_id.clone(),
+                    source_key_thumbprint: snapshot.payload.source_key_thumbprint.clone(),
+                    target_kernel_id: snapshot.payload.target_kernel_id.clone(),
+                    target_key_thumbprint: snapshot.payload.target_key_thumbprint.clone(),
+                    snapshot_sha256: snapshot.snapshot_sha256.clone(),
+                    capability_root,
+                    extension_count: snapshot.payload.extensions.len(),
+                    dependency_count: snapshot.payload.dependencies.len(),
+                },
+            }
+        }
+    };
+    let receipt = ManagedContextPackageImportReceipt {
+        schema_version: PACKAGE_SCHEMA_VERSION,
+        transfer_id: request.transfer_id.clone(),
+        package_sha256: request.expected_package_sha256.clone(),
+        plan_digest: request.expected_binding.plan.plan_digest.clone(),
+        development,
+        kernel_context,
+    };
+    let placeholder_outer_bytes = serde_json::to_vec(&receipt)
+        .map_err(|error| package_error(format!("serialize receipt preflight: {error}")))?
+        .len();
+    let maximum_receipt_bytes = placeholder_outer_bytes
+        .saturating_sub(placeholder_receipt_bytes)
+        .saturating_add(if placeholder_receipt_bytes == 0 {
+            0
+        } else {
+            MAX_PUBLICATION_RECEIPT_BYTES
+        });
+    if maximum_receipt_bytes > super::transfer::MAX_IMPORT_RECEIPT_BYTES {
+        return Err(package_error(
+            "managed context import receipt would exceed its durable size limit",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn extract_managed_context_package(

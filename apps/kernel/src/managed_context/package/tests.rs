@@ -219,6 +219,59 @@ fn source_kernel_package_round_trips_with_identity_bindings() {
 }
 
 #[test]
+fn receipt_capacity_is_rejected_before_context_publication() {
+    let _env_guard = crate::env_lock::lock();
+    let fixture = PackageFixture::new("receipt-capacity");
+    let exported = export_managed_context_package(fixture.export_request(
+        ManagedContextPackageKernel::FromKernel(fixture.kernel_snapshot()),
+    ))
+    .expect("export receipt-capacity package");
+    let binding = ManagedContextPackageBinding {
+        plan: exported.plan.clone(),
+        ..fixture.binding.clone()
+    };
+    let prior_capability_root = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+    let prior_vault_path = std::env::var_os("CHARIOX_MANAGED_VAULT_PATH");
+    std::env::set_var(
+        "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+        format!(
+            "/{}",
+            "c".repeat(crate::managed_context::transfer::MAX_IMPORT_RECEIPT_BYTES)
+        ),
+    );
+    std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", "/managed-vault.json");
+    let destination = fixture.root.join("must-not-publish");
+    let request = ManagedContextPackageApplicationRequest {
+        transfer_id: "ctx_receipt_capacity".to_string(),
+        package_path: exported.package_path,
+        expected_package_sha256: exported.package_sha256,
+        expected_binding: binding,
+        development_destination_root: destination.clone(),
+        target_private_key: "unused-before-preflight".to_string(),
+    };
+    let error = apply_managed_context_package(request)
+        .expect_err("oversized durable receipt must fail before publication");
+    match prior_capability_root {
+        Some(value) => std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", value),
+        None => std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT"),
+    }
+    match prior_vault_path {
+        Some(value) => std::env::set_var("CHARIOX_MANAGED_VAULT_PATH", value),
+        None => std::env::remove_var("CHARIOX_MANAGED_VAULT_PATH"),
+    }
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(!destination.exists());
+    fixture.cleanup();
+}
+
+#[test]
 fn package_rejects_a_different_authenticated_binding() {
     let fixture = PackageFixture::new("binding");
     let exported =

@@ -3,16 +3,23 @@ use std::time::Duration;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 use crate::error::DaemonError;
+use crate::managed_context::cloud_completion::{
+    complete_managed_context_import, context_manifest_digest,
+    validate_managed_context_completion_binding,
+};
 use crate::managed_context::package::{
-    apply_managed_context_package, ManagedContextImportedKernelContext,
+    apply_managed_context_package, rollback_managed_context_package_application,
+    rollback_persisted_managed_context_publication, ManagedContextImportedKernelContext,
     ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
-    ManagedContextPackageImportReceipt,
+    ManagedContextPackageImportReceipt, ManagedContextPackageImportRequest,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
-    ManagedContextTransferPhase, ManagedContextTransferStatus, MAX_TRANSFER_CHUNK_BYTES,
+    ManagedContextTransferPhase, ManagedContextTransferStatus, ManagedContextTransferStore,
+    MAX_TRANSFER_CHUNK_BYTES,
 };
 use crate::runtime::terminal_pairings::public_key_thumbprint;
+use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
     RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
@@ -170,7 +177,15 @@ impl CommandRouter {
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?.caller;
+        let authorization = managed_context_caller(self, &identity)?;
+        let caller = authorization.caller;
+        let completion_plan = authorization.plan;
+        let registration = self.managed_kernel_registration.clone().ok_or_else(|| {
+            managed_context_authorization_error(
+                "context completion requires a confirmed Chariox-managed kernel",
+            )
+        })?;
+        let completion_config = self.config_projection.snapshot();
         let store = self.managed_context_transfers.clone();
         let claim_store = store.clone();
         let claim_transfer_id = transfer_id.clone();
@@ -192,7 +207,52 @@ impl CommandRouter {
         };
 
         let target_private_key = self.relay_private_key();
-        let imported = run_blocking(move || {
+        let early_terminal_error = if ready.plan != completion_plan {
+            Some(managed_context_authorization_error(
+                "managed context transfer no longer matches the Cloud launch plan",
+            ))
+        } else {
+            validate_managed_context_completion_binding(
+                &completion_config,
+                &registration,
+                &completion_plan,
+            )
+            .err()
+        };
+        if let Some(error) = early_terminal_error {
+            let rollback_request = ManagedContextPackageImportRequest {
+                package_path: ready.archive_path.clone(),
+                expected_package_sha256: ready.archive_sha256.clone(),
+                expected_binding: ManagedContextPackageBinding {
+                    plan: ready.plan.clone(),
+                    target_environment_id: ready.target_environment_id.clone(),
+                    source_kernel_id: ready.source_kernel_id.clone(),
+                    source_key_thumbprint: ready.source_key_thumbprint.clone(),
+                    target_kernel_id: ready.target_kernel_id.clone(),
+                    target_key_thumbprint: ready.target_key_thumbprint.clone(),
+                },
+            };
+            let rollback_private_key = target_private_key.clone();
+            if let Err(rollback_error) = run_import_blocking(move || {
+                rollback_persisted_managed_context_publication(
+                    rollback_request,
+                    &rollback_private_key,
+                )
+            })
+            .await
+            {
+                let release_store = store.clone();
+                let release_transfer_id = transfer_id.clone();
+                let _ =
+                    run_blocking(move || release_store.release_import(&release_transfer_id)).await;
+                return Err(managed_context_unavailable(format!(
+                    "roll back recovered managed context publication: {rollback_error}"
+                )));
+            }
+            return Err(retire_terminal_import(store.clone(), transfer_id.clone(), error).await);
+        }
+        let rollback_private_key = target_private_key.clone();
+        let imported = run_import_blocking(move || {
             apply_managed_context_package(ManagedContextPackageApplicationRequest {
                 transfer_id: ready.transfer_id,
                 package_path: ready.archive_path,
@@ -243,6 +303,55 @@ impl CommandRouter {
                 )));
             }
         };
+        let manifest_digest = match context_manifest_digest(&receipt_json) {
+            Ok(digest) => digest,
+            Err(error) => {
+                let release_store = store.clone();
+                let release_transfer_id = transfer_id.clone();
+                run_blocking(move || release_store.release_import(&release_transfer_id)).await?;
+                return Err(error);
+            }
+        };
+        if let Err(completion_error) = complete_managed_context_import(
+            &completion_config,
+            &registration,
+            &completion_plan,
+            &manifest_digest,
+        )
+        .await
+        {
+            let (_, retryable) = managed_context_failure_policy(&completion_error);
+            let failure_store = store.clone();
+            let failure_transfer_id = transfer_id.clone();
+            if retryable {
+                let _ =
+                    run_blocking(move || failure_store.release_import(&failure_transfer_id)).await;
+            } else {
+                let rollback_receipt = receipt.clone();
+                if let Err(rollback_error) = run_import_blocking(move || {
+                    rollback_managed_context_package_application(
+                        &rollback_receipt,
+                        &rollback_private_key,
+                    )
+                })
+                .await
+                {
+                    let _ =
+                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
+                            .await;
+                    return Err(managed_context_unavailable(format!(
+                        "roll back rejected managed context import: {rollback_error}"
+                    )));
+                }
+                return Err(retire_terminal_import(
+                    store.clone(),
+                    transfer_id.clone(),
+                    completion_error,
+                )
+                .await);
+            }
+            return Err(completion_error);
+        }
         let commit_store = store.clone();
         let commit_transfer_id = transfer_id.clone();
         if let Err(commit_error) = run_blocking(move || {
@@ -401,6 +510,24 @@ fn managed_context_failure_policy(error: &DaemonError) -> (&'static str, bool) {
     }
 }
 
+async fn retire_terminal_import(
+    store: ManagedContextTransferStore,
+    transfer_id: String,
+    original_error: DaemonError,
+) -> DaemonError {
+    let (failure_code, _) = managed_context_failure_policy(&original_error);
+    match run_blocking(move || {
+        store.retire_import(&transfer_id, failure_code, crate::session::unix_epoch_ms())
+    })
+    .await
+    {
+        Ok(()) => original_error,
+        Err(error) => managed_context_unavailable(format!(
+            "persist terminal managed context failure before replying: {error}"
+        )),
+    }
+}
+
 fn relay_receipt(
     receipt: ManagedContextPackageImportReceipt,
     receipt_sha256: &str,
@@ -473,6 +600,37 @@ async fn run_blocking<T: Send + 'static>(
         .map_err(|error| managed_context_error(format!("managed context task failed: {error}")))?
 }
 
+async fn run_import_blocking<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, DaemonError> + Send + 'static,
+) -> Result<T, DaemonError> {
+    run_import_blocking_with_spawner(operation, |task| {
+        std::thread::Builder::new()
+            .name("chariox-context-import".to_string())
+            .stack_size(KERNEL_RUNTIME_THREAD_STACK_SIZE)
+            .spawn(task)
+            .map(|_| ())
+    })
+    .await
+}
+
+type ImportThreadTask = Box<dyn FnOnce() + Send + 'static>;
+
+async fn run_import_blocking_with_spawner<T: Send + 'static>(
+    operation: impl FnOnce() -> Result<T, DaemonError> + Send + 'static,
+    spawn: impl FnOnce(ImportThreadTask) -> std::io::Result<()>,
+) -> Result<T, DaemonError> {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    spawn(Box::new(move || {
+        let _ = sender.send(operation());
+    }))
+    .map_err(|error| {
+        managed_context_unavailable(format!("start managed context import task: {error}"))
+    })?;
+    receiver.await.map_err(|_| {
+        managed_context_unavailable("managed context import task exited without a result")
+    })?
+}
+
 fn managed_context_error(message: impl Into<String>) -> DaemonError {
     DaemonError::ManagedContext {
         code: "managed_context_import_failed",
@@ -482,11 +640,43 @@ fn managed_context_error(message: impl Into<String>) -> DaemonError {
     }
 }
 
+fn managed_context_unavailable(message: impl Into<String>) -> DaemonError {
+    DaemonError::ManagedContext {
+        code: "managed_context_import_unavailable",
+        operation: "managed context relay import",
+        message: message.into(),
+        retryable: true,
+    }
+}
+
 fn managed_context_authorization_error(message: impl Into<String>) -> DaemonError {
     DaemonError::ManagedContext {
         code: "unauthorized",
         operation: "managed context relay import",
         message: message.into(),
         retryable: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn import_thread_creation_failure_is_retryable() {
+        let error = run_import_blocking_with_spawner(
+            || Ok::<_, DaemonError>(()),
+            |_task| Err(std::io::Error::other("injected thread capacity failure")),
+        )
+        .await
+        .expect_err("thread allocation failure must remain retryable");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "managed_context_import_unavailable",
+                retryable: true,
+                ..
+            }
+        ));
     }
 }

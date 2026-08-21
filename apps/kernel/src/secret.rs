@@ -18,6 +18,7 @@ use crate::credential::CharioxCredentialRegistry;
 use crate::error::DaemonError;
 
 mod vault;
+pub(crate) use vault::remove_installed_transferred_vault;
 use vault::vault_store_for_config;
 pub use vault::{
     chariox_encrypted_vault_status, clear_all_chariox_encrypted_vault_unlocks,
