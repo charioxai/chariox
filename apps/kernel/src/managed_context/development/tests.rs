@@ -1140,6 +1140,42 @@ fn published_import_receipt_recovers_an_import_after_process_restart() {
 }
 
 #[test]
+fn failed_transfer_cleanup_removes_only_its_receipted_publication() {
+    let root = test_root("failed-publication-cleanup");
+    let repository = root.join("repository");
+    init_repository(&repository, "tracked.txt", "base\n");
+    let exported = one_repo_export(&root, &repository, "failed-publication-cleanup")
+        .expect("export cleanup fixture");
+    let destination_root = root.join("managed/project");
+    import_development_context_with_publication(
+        DevelopmentContextImportRequest {
+            archive_path: exported.archive_path,
+            expected_archive_sha256: exported.archive_sha256,
+            expected_project_id: "project-failed-publication-cleanup".to_string(),
+            destination_root: destination_root.clone(),
+        },
+        "ctx_failed_publication".to_string(),
+    )
+    .expect("publish cleanup fixture");
+
+    let error = cleanup_development_context_publication(&destination_root, "ctx_other")
+        .expect_err("different publication must not be removed");
+    assert!(matches!(
+        error,
+        DaemonError::ManagedContext {
+            code: "invalid_managed_context",
+            retryable: false,
+            ..
+        }
+    ));
+    assert!(destination_root.exists());
+    cleanup_development_context_publication(&destination_root, "ctx_failed_publication")
+        .expect("remove exact failed publication");
+    assert!(!destination_root.exists());
+    fs::remove_dir_all(root).expect("remove test root");
+}
+
+#[test]
 fn deterministic_import_validation_errors_are_not_retryable() {
     let error = import_development_context(DevelopmentContextImportRequest {
         archive_path: PathBuf::from("/unused/invalid-context.tar.gz"),

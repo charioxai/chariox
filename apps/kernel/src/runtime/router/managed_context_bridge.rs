@@ -3,9 +3,10 @@ use std::time::Duration;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 use crate::error::DaemonError;
-use crate::managed_context::development::{
-    import_development_context_with_publication, recover_development_context_publication,
-    DevelopmentContextImportRequest, DevelopmentContextPublicationReceipt,
+use crate::managed_context::package::{
+    apply_managed_context_package, ManagedContextImportedKernelContext,
+    ManagedContextPackageApplicationRequest, ManagedContextPackageBinding,
+    ManagedContextPackageImportReceipt,
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
@@ -15,7 +16,8 @@ use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::transport::relay_peer::{
     RelayManagedContextCapability, RelayManagedContextImportReceipt,
     RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
-    RelayManagedContextTransferStatus, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayManagedContextTransferStatus, RelayManagedKernelContextImportReceipt, RelayPeerResponse,
+    RELAY_PEER_PROTOCOL_VERSION,
 };
 
 use super::CommandRouter;
@@ -26,6 +28,7 @@ impl CommandRouter {
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
+        context_id: String,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,
@@ -54,6 +57,7 @@ impl CommandRouter {
         let armed = run_blocking(move || {
             store.arm(
                 ArmManagedContextTransfer {
+                    context_id,
                     target_environment_id,
                     target_kernel_id,
                     target_key_thumbprint,
@@ -173,26 +177,24 @@ impl CommandRouter {
             | ManagedContextImportClaim::Terminal(status) => return relay_status_response(status),
         };
 
-        let import_request = DevelopmentContextImportRequest {
-            archive_path: ready.archive_path,
-            expected_archive_sha256: ready.archive_sha256,
-            expected_project_id: ready.project_id,
-            destination_root: ready.destination_root,
-        };
-        let publication_id = ready.transfer_id;
-        let import_request_for_recovery = import_request.clone();
-        let publication_for_recovery = publication_id.clone();
+        let target_private_key = self.relay_private_key();
         let imported = run_blocking(move || {
-            match recover_development_context_publication(
-                &import_request_for_recovery,
-                &publication_for_recovery,
-            )? {
-                Some(receipt) => Ok(receipt),
-                None => import_development_context_with_publication(
-                    import_request_for_recovery,
-                    publication_for_recovery,
-                ),
-            }
+            apply_managed_context_package(ManagedContextPackageApplicationRequest {
+                transfer_id: ready.transfer_id,
+                package_path: ready.archive_path,
+                expected_package_sha256: ready.archive_sha256,
+                expected_binding: ManagedContextPackageBinding {
+                    context_id: ready.context_id,
+                    project_id: ready.project_id,
+                    target_environment_id: ready.target_environment_id,
+                    source_kernel_id: ready.source_kernel_id,
+                    source_key_thumbprint: ready.source_key_thumbprint,
+                    target_kernel_id: ready.target_kernel_id,
+                    target_key_thumbprint: ready.target_key_thumbprint,
+                },
+                development_destination_root: ready.destination_root,
+                target_private_key,
+            })
         })
         .await;
         let receipt = match imported {
@@ -321,7 +323,7 @@ fn relay_status_response(
         status.import_receipt_sha256.as_deref(),
     ) {
         (Some(json), Some(receipt_sha256)) => {
-            let receipt = serde_json::from_str::<DevelopmentContextPublicationReceipt>(json)
+            let receipt = serde_json::from_str::<ManagedContextPackageImportReceipt>(json)
                 .map_err(|_| managed_context_error("stored import receipt is invalid"))?;
             Some(relay_receipt(receipt, receipt_sha256)?)
         }
@@ -371,11 +373,12 @@ fn managed_context_failure_policy(error: &DaemonError) -> (&'static str, bool) {
 }
 
 fn relay_receipt(
-    receipt: DevelopmentContextPublicationReceipt,
+    receipt: ManagedContextPackageImportReceipt,
     receipt_sha256: &str,
 ) -> Result<RelayManagedContextImportReceipt, DaemonError> {
-    let destination_root = utf8_path(&receipt.destination_root)?;
+    let destination_root = utf8_path(&receipt.development.destination_root)?;
     let repositories = receipt
+        .development
         .repositories
         .into_iter()
         .map(|repository| {
@@ -389,12 +392,27 @@ fn relay_receipt(
         })
         .collect::<Result<Vec<_>, DaemonError>>()?;
     Ok(RelayManagedContextImportReceipt {
-        transfer_id: receipt.publication_id,
-        archive_sha256: receipt.archive_sha256,
+        transfer_id: receipt.transfer_id,
+        archive_sha256: receipt.package_sha256,
         project_id: receipt.project_id,
         destination_root,
-        primary_repository_id: receipt.primary_repository_id,
+        primary_repository_id: receipt.development.primary_repository_id,
         repositories,
+        kernel_context: match receipt.kernel_context {
+            ManagedContextImportedKernelContext::Empty => {
+                RelayManagedKernelContextImportReceipt::Empty
+            }
+            ManagedContextImportedKernelContext::FromKernel { receipt } => {
+                RelayManagedKernelContextImportReceipt::FromKernel {
+                    context_id: receipt.context_id,
+                    source_kernel_id: receipt.source_kernel_id,
+                    source_key_thumbprint: receipt.source_key_thumbprint,
+                    snapshot_sha256: receipt.snapshot_sha256,
+                    extension_count: receipt.extension_count,
+                    dependency_count: receipt.dependency_count,
+                }
+            }
+        },
         receipt_sha256: receipt_sha256.to_string(),
     })
 }

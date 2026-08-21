@@ -5,7 +5,7 @@ use super::support::*;
 fn provider_account_materialization_peer_shape_is_versioned_and_debug_redacted() {
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        19
+        20
     );
     let mut materialization = crate::account_profile::ProviderAccountMaterialization {
         profile: crate::account_profile::ProviderAccountReplicaMetadata {
@@ -53,12 +53,12 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     use crate::transport::relay_peer::{
         RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextImportReceipt,
         RelayManagedContextImportedRepository, RelayManagedContextTransferPhase,
-        RelayManagedContextTransferStatus,
+        RelayManagedContextTransferStatus, RelayManagedKernelContextImportReceipt,
     };
 
     assert_eq!(
         crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION,
-        19
+        20
     );
     let request = RelayPeerRequest::UploadManagedContextChunk {
         transfer_id: "ctx_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string(),
@@ -78,6 +78,20 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     assert_eq!(
         value.pointer("/capability"),
         Some(&serde_json::json!("capability-canary"))
+    );
+    let arm = serde_json::to_value(RelayPeerRequest::ArmManagedContextImport {
+        context_id: "context-1".to_string(),
+        target_environment_id: "environment-1".to_string(),
+        target_kernel_id: "target-kernel-1".to_string(),
+        target_key_thumbprint: "d".repeat(64),
+        project_id: "project-1".to_string(),
+        archive_sha256: "e".repeat(64),
+        archive_size_bytes: 42,
+    })
+    .expect("managed context arm should serialize");
+    assert_eq!(
+        arm.pointer("/context_id"),
+        Some(&serde_json::json!("context-1"))
     );
 
     let response = RelayPeerResponse::ManagedContextImportStatus {
@@ -100,6 +114,7 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
                     destination_path: "/managed/context/primary".to_string(),
                     head_sha: "b".repeat(40),
                 }],
+                kernel_context: RelayManagedKernelContextImportReceipt::Empty,
                 receipt_sha256: "c".repeat(64),
             }),
         },
@@ -112,6 +127,10 @@ fn managed_context_peer_shape_is_versioned_and_debug_redacts_bearer_material() {
     assert_eq!(
         value.pointer("/status/receipt/repositories/0/role"),
         Some(&serde_json::json!("primary"))
+    );
+    assert_eq!(
+        value.pointer("/status/receipt/kernel_context/kind"),
+        Some(&serde_json::json!("empty"))
     );
     let failure = serde_json::to_value(RelayPeerResponse::ManagedContextImportFailed {
         code: "invalid_managed_context".to_string(),

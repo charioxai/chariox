@@ -49,9 +49,9 @@ impl std::fmt::Debug for RelayManagedContextChunk {
     }
 }
 
-/// Version 19 adds resumable one-time managed-context import over the existing
-/// encrypted kernel-to-kernel peer channel.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 19;
+/// Version 20 binds resumable managed-context packages to an explicit context
+/// and reports whether the target imported Empty or source-kernel context.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -80,7 +80,22 @@ pub struct RelayManagedContextImportReceipt {
     pub destination_root: String,
     pub primary_repository_id: String,
     pub repositories: Vec<RelayManagedContextImportedRepository>,
+    pub kernel_context: RelayManagedKernelContextImportReceipt,
     pub receipt_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum RelayManagedKernelContextImportReceipt {
+    Empty,
+    FromKernel {
+        context_id: String,
+        source_kernel_id: String,
+        source_key_thumbprint: String,
+        snapshot_sha256: String,
+        extension_count: usize,
+        dependency_count: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -528,6 +543,7 @@ pub enum RelayPeerRequest {
         required_mcps: Vec<RequiredRemoteMcp>,
     },
     ArmManagedContextImport {
+        context_id: String,
         target_environment_id: String,
         target_kernel_id: String,
         target_key_thumbprint: String,

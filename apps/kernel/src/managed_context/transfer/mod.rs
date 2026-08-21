@@ -25,20 +25,21 @@ use policy::{
 use storage::{
     create_or_validate_empty_archive, ensure_private_directory, open_private_archive,
     read_private_state_file, remove_archive_if_present, sha256_file, transfer_io_error,
-    write_private_state_file,
+    write_private_state_file, MAX_STATE_FILE_BYTES,
 };
 
-const TRANSFER_STATE_SCHEMA_VERSION: u32 = 1;
+const TRANSFER_STATE_SCHEMA_VERSION: u32 = 2;
 const MAX_ACTIVE_TRANSFERS: usize = 64;
 const MAX_TRANSFER_RECORDS: usize = 256;
-const MAX_ARCHIVE_BYTES: u64 = 1024 * 1024 * 1024;
+const MAX_ARCHIVE_BYTES: u64 = crate::managed_context::package::MAX_MANAGED_CONTEXT_PACKAGE_BYTES;
 pub(crate) const MAX_TRANSFER_CHUNK_BYTES: usize = 512 * 1024;
 const MAX_IDENTIFIER_BYTES: usize = 4096;
 const MAX_DESTINATION_BYTES: usize = 16 * 1024;
 const MAX_TRANSFER_TTL_MS: u64 = 30 * 60 * 1_000;
-const MAX_IMPORT_RECOVERY_MS: u64 = 6 * 60 * 60 * 1_000;
 const COMPLETED_TRANSFER_RETENTION_MS: u64 = 24 * 60 * 60 * 1_000;
-const MAX_IMPORT_RECEIPT_BYTES: usize = 64 * 1024;
+const MAX_IMPORT_RECEIPT_BYTES: usize = 128 * 1024;
+const MAX_PERSISTED_RECEIPT_BYTES: usize = MAX_IMPORT_RECEIPT_BYTES * 2 + 512;
+const STATE_CAPACITY_MARGIN_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedTransferState {
@@ -58,6 +59,8 @@ impl Default for PersistedTransferState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PersistedTransfer {
     capability_sha256: String,
+    #[serde(default)]
+    context_id: String,
     target_environment_id: String,
     target_kernel_id: String,
     target_key_thumbprint: String,
@@ -103,18 +106,21 @@ impl ManagedContextTransferStore {
             }
             None => PersistedTransferState::default(),
         };
-        if state.schema_version != TRANSFER_STATE_SCHEMA_VERSION {
+        if !matches!(state.schema_version, 1 | TRANSFER_STATE_SCHEMA_VERSION) {
             return Err(transfer_error(format!(
                 "unsupported managed context transfer state version {}",
                 state.schema_version
             )));
         }
-        validate_persisted_state(&state)?;
         let store = Self {
             root,
             state: Arc::new(Mutex::new(state)),
             active_imports: Arc::new(Mutex::new(HashSet::new())),
         };
+        if store.lock_state().schema_version == 1 {
+            store.migrate_v1_state()?;
+        }
+        validate_persisted_state(&store.lock_state())?;
         store.cleanup_failed_transfers()?;
         store.prune_expired_transfers(current_time_ms())?;
         store.cleanup_interrupted_import_staging()?;
@@ -159,6 +165,7 @@ impl ManagedContextTransferStore {
             transfer_id.clone(),
             PersistedTransfer {
                 capability_sha256: sha256_bytes(capability.as_bytes()),
+                context_id: request.context_id,
                 target_environment_id: request.target_environment_id,
                 target_kernel_id: request.target_kernel_id,
                 target_key_thumbprint: request.target_key_thumbprint,
@@ -180,6 +187,10 @@ impl ManagedContextTransferStore {
                 failure_code: None,
             },
         );
+        if let Err(error) = ensure_state_capacity_with_receipt_reservations(&state) {
+            state.entries.remove(&transfer_id);
+            return Err(error);
+        }
         if let Err(error) = self.persist_locked(&state) {
             state.entries.remove(&transfer_id);
             return Err(error);
@@ -320,16 +331,23 @@ impl ManagedContextTransferStore {
         now_ms: u64,
     ) -> Result<ManagedContextImportClaim, DaemonError> {
         let mut state = self.lock_state();
-        let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
-        if matches!(
-            entry.phase,
-            ManagedContextTransferPhase::Failed | ManagedContextTransferPhase::Consumed
-        ) {
-            return Ok(ManagedContextImportClaim::Terminal(status(
-                transfer_id,
-                entry,
-            )));
+        {
+            let entry = authorize_entry(&mut state, transfer_id, capability, caller, now_ms)?;
+            if matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Failed | ManagedContextTransferPhase::Consumed
+            ) {
+                return Ok(ManagedContextImportClaim::Terminal(status(
+                    transfer_id,
+                    entry,
+                )));
+            }
         }
+        ensure_state_capacity_with_receipt_reservations(&state)?;
+        let entry = state
+            .entries
+            .get_mut(transfer_id)
+            .ok_or_else(|| transfer_error("managed context transfer disappeared"))?;
         let mut active_imports = self.lock_active_imports();
         if entry.phase == ManagedContextTransferPhase::Importing {
             if active_imports.contains(transfer_id) {
@@ -423,7 +441,11 @@ impl ManagedContextTransferStore {
             &destination_root,
             transfer_id,
         )?;
-        remove_archive_if_present(&self.archive_path(transfer_id))
+        crate::managed_context::development::cleanup_development_context_publication(
+            &destination_root,
+            transfer_id,
+        )?;
+        self.cleanup_transfer_artifacts(transfer_id)
     }
 
     pub(crate) fn commit_import(
@@ -450,7 +472,7 @@ impl ManagedContextTransferStore {
                 && entry.import_receipt_json.as_deref() == Some(import_receipt_json)
             {
                 drop(state);
-                remove_archive_if_present(&self.archive_path(transfer_id))
+                self.cleanup_transfer_artifacts(transfer_id)
             } else {
                 Err(transfer_error(
                     "managed context import receipt conflicts with the consumed transfer",
@@ -477,7 +499,7 @@ impl ManagedContextTransferStore {
         }
         self.lock_active_imports().remove(transfer_id);
         drop(state);
-        remove_archive_if_present(&self.archive_path(transfer_id))
+        self.cleanup_transfer_artifacts(transfer_id)
     }
 
     pub(crate) fn get_status(
@@ -494,6 +516,89 @@ impl ManagedContextTransferStore {
 
     fn archive_path(&self, transfer_id: &str) -> PathBuf {
         self.root.join(format!("{transfer_id}.archive"))
+    }
+
+    fn cleanup_transfer_artifacts(&self, transfer_id: &str) -> Result<(), DaemonError> {
+        let archive_path = self.archive_path(transfer_id);
+        crate::managed_context::package::cleanup_package_components(&archive_path)?;
+        remove_archive_if_present(&archive_path)
+    }
+
+    fn migrate_v1_state(&self) -> Result<(), DaemonError> {
+        use crate::managed_context::package::{
+            ManagedContextImportedKernelContext, ManagedContextPackageImportReceipt,
+        };
+
+        let mut state = self.lock_state();
+        if state.schema_version != 1 {
+            return Ok(());
+        }
+
+        for (transfer_id, entry) in &mut state.entries {
+            entry.context_id = format!("legacy-v1-{transfer_id}");
+        }
+        validate_persisted_state(&state)?;
+
+        let mut consumed = Vec::new();
+        for (transfer_id, mut entry) in std::mem::take(&mut state.entries) {
+            if entry.phase == ManagedContextTransferPhase::Consumed {
+                let migrated_receipt = entry
+                    .import_receipt_json
+                    .as_deref()
+                    .and_then(|json| serde_json::from_str(json).ok())
+                    .and_then(|development| {
+                        serde_json::to_string(&ManagedContextPackageImportReceipt {
+                            schema_version: 1,
+                            transfer_id: transfer_id.clone(),
+                            package_sha256: entry.archive_sha256.clone(),
+                            project_id: entry.project_id.clone(),
+                            development,
+                            kernel_context: ManagedContextImportedKernelContext::Empty,
+                        })
+                        .ok()
+                    });
+                if let Some(receipt_json) = migrated_receipt {
+                    if receipt_json.len() <= MAX_IMPORT_RECEIPT_BYTES {
+                        entry.import_receipt_sha256 = Some(sha256_bytes(receipt_json.as_bytes()));
+                        entry.import_receipt_json = Some(receipt_json);
+                        consumed.push((transfer_id.clone(), entry));
+                    }
+                }
+                self.cleanup_transfer_artifacts(&transfer_id)?;
+                continue;
+            }
+
+            crate::managed_context::development::cleanup_development_context_publication_staging(
+                &entry.destination_root,
+                &transfer_id,
+            )?;
+            if matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
+            ) {
+                crate::managed_context::development::cleanup_development_context_publication(
+                    &entry.destination_root,
+                    &transfer_id,
+                )?;
+            }
+            self.cleanup_transfer_artifacts(&transfer_id)?;
+        }
+        state.schema_version = TRANSFER_STATE_SCHEMA_VERSION;
+        consumed.sort_by(|left, right| {
+            right
+                .1
+                .completed_at_ms
+                .cmp(&left.1.completed_at_ms)
+                .then_with(|| left.0.cmp(&right.0))
+        });
+        for (transfer_id, entry) in consumed {
+            state.entries.insert(transfer_id.clone(), entry);
+            if persisted_state_size(&state)? > MAX_STATE_FILE_BYTES as usize {
+                state.entries.remove(&transfer_id);
+            }
+        }
+        validate_persisted_state(&state)?;
+        self.persist_locked(&state)
     }
 
     fn persist_locked(&self, state: &PersistedTransferState) -> Result<(), DaemonError> {
@@ -583,6 +688,9 @@ impl ManagedContextTransferStore {
         let state = self.lock_state();
         for (transfer_id, entry) in &state.entries {
             if entry.phase == ManagedContextTransferPhase::Importing {
+                crate::managed_context::package::cleanup_package_components(
+                    &self.archive_path(transfer_id),
+                )?;
                 crate::managed_context::development::cleanup_development_context_publication_staging(
                     &entry.destination_root,
                     transfer_id,
@@ -596,7 +704,7 @@ impl ManagedContextTransferStore {
         let state = self.lock_state();
         for (transfer_id, entry) in &state.entries {
             if entry.phase == ManagedContextTransferPhase::Consumed {
-                remove_archive_if_present(&self.archive_path(transfer_id))?;
+                self.cleanup_transfer_artifacts(transfer_id)?;
             }
         }
         Ok(())
@@ -617,7 +725,11 @@ impl ManagedContextTransferStore {
                 &destination_root,
                 &transfer_id,
             )?;
-            remove_archive_if_present(&self.archive_path(&transfer_id))?;
+            crate::managed_context::development::cleanup_development_context_publication(
+                &destination_root,
+                &transfer_id,
+            )?;
+            self.cleanup_transfer_artifacts(&transfer_id)?;
         }
         Ok(())
     }
@@ -625,18 +737,13 @@ impl ManagedContextTransferStore {
     fn prune_expired_transfers(&self, now_ms: u64) -> Result<(), DaemonError> {
         let mut state = self.lock_state();
         let state_before_prune = state.clone();
-        let active_imports = self.lock_active_imports();
-        let expired = prune_expired(&mut state, &active_imports, now_ms);
-        drop(active_imports);
+        let expired = prune_expired(&mut state, now_ms);
         if expired.is_empty() {
             return Ok(());
         }
         for expired_id in expired {
             if let Some(entry) = state_before_prune.entries.get(&expired_id) {
-                if matches!(
-                    entry.phase,
-                    ManagedContextTransferPhase::Importing | ManagedContextTransferPhase::Failed
-                ) {
+                if entry.phase == ManagedContextTransferPhase::Failed {
                     if let Err(error) = crate::managed_context::development::cleanup_development_context_publication_staging(
                         &entry.destination_root,
                         &expired_id,
@@ -644,9 +751,18 @@ impl ManagedContextTransferStore {
                         *state = state_before_prune;
                         return Err(error);
                     }
+                    if let Err(error) =
+                        crate::managed_context::development::cleanup_development_context_publication(
+                            &entry.destination_root,
+                            &expired_id,
+                        )
+                    {
+                        *state = state_before_prune;
+                        return Err(error);
+                    }
                 }
             }
-            if let Err(error) = remove_archive_if_present(&self.archive_path(&expired_id)) {
+            if let Err(error) = self.cleanup_transfer_artifacts(&expired_id) {
                 *state = state_before_prune;
                 return Err(error);
             }
@@ -671,6 +787,41 @@ impl ManagedContextTransferStore {
     }
 }
 
+fn persisted_state_size(state: &PersistedTransferState) -> Result<usize, DaemonError> {
+    serde_json::to_vec(state)
+        .map(|bytes| bytes.len())
+        .map_err(|error| {
+            transfer_error(format!(
+                "serialize managed context transfer state for capacity check: {error}"
+            ))
+        })
+}
+
+fn ensure_state_capacity_with_receipt_reservations(
+    state: &PersistedTransferState,
+) -> Result<(), DaemonError> {
+    let future_receipts = state
+        .entries
+        .values()
+        .filter(|entry| {
+            !matches!(
+                entry.phase,
+                ManagedContextTransferPhase::Consumed | ManagedContextTransferPhase::Failed
+            )
+        })
+        .count()
+        .saturating_mul(MAX_PERSISTED_RECEIPT_BYTES);
+    let required = persisted_state_size(state)?
+        .saturating_add(future_receipts)
+        .saturating_add(STATE_CAPACITY_MARGIN_BYTES);
+    if required > MAX_STATE_FILE_BYTES as usize {
+        return Err(transfer_error(
+            "managed context transfer state has no capacity for another import receipt",
+        ));
+    }
+    Ok(())
+}
+
 fn ready_import(
     archive_path: &std::path::Path,
     transfer_id: &str,
@@ -679,9 +830,15 @@ fn ready_import(
     ReadyManagedContextImport {
         transfer_id: transfer_id.to_string(),
         archive_path: archive_path.to_path_buf(),
+        context_id: entry.context_id.clone(),
         project_id: entry.project_id.clone(),
         archive_sha256: entry.archive_sha256.clone(),
         destination_root: entry.destination_root.clone(),
+        target_environment_id: entry.target_environment_id.clone(),
+        target_kernel_id: entry.target_kernel_id.clone(),
+        target_key_thumbprint: entry.target_key_thumbprint.clone(),
+        source_kernel_id: entry.source_kernel_id.clone(),
+        source_key_thumbprint: entry.source_key_thumbprint.clone(),
     }
 }
 

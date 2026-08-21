@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArmManagedContextTransfer {
+    pub context_id: String,
     pub target_environment_id: String,
     pub target_kernel_id: String,
     pub target_key_thumbprint: String,
@@ -63,9 +64,15 @@ pub(crate) struct ManagedContextTransferStatus {
 pub(crate) struct ReadyManagedContextImport {
     pub transfer_id: String,
     pub archive_path: PathBuf,
+    pub context_id: String,
     pub project_id: String,
     pub archive_sha256: String,
     pub destination_root: PathBuf,
+    pub target_environment_id: String,
+    pub target_kernel_id: String,
+    pub target_key_thumbprint: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

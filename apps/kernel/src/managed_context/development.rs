@@ -17,7 +17,7 @@ const MAX_OVERLAY_FILES_PER_REPOSITORY: usize = 20_000;
 const MAX_OVERLAY_FILE_BYTES: u64 = 16 * 1024 * 1024;
 const MAX_OVERLAY_BYTES_PER_REPOSITORY: u64 = 256 * 1024 * 1024;
 const MAX_BUNDLE_BYTES_PER_REPOSITORY: u64 = 512 * 1024 * 1024;
-const MAX_PACKAGE_BYTES: u64 = 1024 * 1024 * 1024;
+pub(crate) const MAX_PACKAGE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_DECOMPRESSED_ARCHIVE_BYTES: u64 =
     MAX_PACKAGE_BYTES + MAX_MANIFEST_BYTES as u64 + 256 * 1024 * 1024;
 const MAX_ARCHIVE_PATH_BYTES: usize = 4096;
@@ -186,11 +186,10 @@ mod import;
 mod import_archive;
 mod import_materialize;
 mod overlay;
+pub(crate) use export::publish_archive_no_clobber;
 
 use archive::write_archive;
 pub use export::export_development_context;
-#[cfg(test)]
-use export::publish_archive_no_clobber;
 use git::{
     charge_overlay_materialization, create_git_bundle, ensure_worktree_root, git_blob_size,
     git_bytes, git_bytes_isolated, git_optional_text, git_output, git_output_isolated, git_text,
@@ -200,8 +199,8 @@ use git::{
 };
 pub use import::import_development_context;
 pub(crate) use import::{
-    cleanup_development_context_publication_staging, import_development_context_with_publication,
-    recover_development_context_publication,
+    cleanup_development_context_publication, cleanup_development_context_publication_staging,
+    import_development_context_with_publication, recover_development_context_publication,
 };
 use import_archive::{extract_and_verify_archive, validate_git_oid};
 use import_materialize::{materialize_prepared_repository, prepare_repository};

@@ -29,6 +29,25 @@ pub use vault::{
     TransferredVaultSourceBinding, VaultUnlockLease,
 };
 
+#[cfg(test)]
+pub(crate) fn set_chariox_encrypted_vault_secret_for_test(
+    path: impl Into<PathBuf>,
+    service: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), DaemonError> {
+    vault::CharioxEncryptedCredentialVaultStore::new(path.into()).set_secret(service, key, value)
+}
+
+#[cfg(test)]
+pub(crate) fn get_chariox_encrypted_vault_secret_for_test(
+    path: impl Into<PathBuf>,
+    service: &str,
+    key: &str,
+) -> Result<String, DaemonError> {
+    vault::CharioxEncryptedCredentialVaultStore::new(path.into()).get_secret(service, key)
+}
+
 type HmacSha256 = Hmac<Sha256>;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

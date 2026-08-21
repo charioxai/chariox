@@ -62,6 +62,53 @@ pub(crate) fn recover_development_context_publication(
     Ok(Some(receipt))
 }
 
+pub(crate) fn cleanup_development_context_publication(
+    destination_root: &Path,
+    publication_id: &str,
+) -> Result<(), DaemonError> {
+    validate_publication_id(publication_id)?;
+    let metadata = match fs::symlink_metadata(destination_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(context_io_error(
+                "inspect failed development context publication",
+                error,
+            ))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(context_error(
+            "failed development context publication is not a real directory",
+        ));
+    }
+    let canonical_destination = fs::canonicalize(destination_root).map_err(|error| {
+        context_io_error("resolve failed development context publication", error)
+    })?;
+    let receipt = read_publication_receipt(&canonical_destination.join(PUBLICATION_RECEIPT_FILE))?
+        .ok_or_else(|| {
+            context_error("refusing to remove a development context publication without a receipt")
+        })?;
+    if receipt.publication_id != publication_id || receipt.destination_root != canonical_destination
+    {
+        return Err(context_error(
+            "refusing to remove a different development context publication",
+        ));
+    }
+    fs::remove_dir_all(&canonical_destination).map_err(|error| {
+        context_io_error("remove failed development context publication", error)
+    })?;
+    #[cfg(unix)]
+    if let Some(parent) = canonical_destination.parent() {
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                context_io_error("sync failed development context publication parent", error)
+            })?;
+    }
+    Ok(())
+}
+
 pub(super) fn import_development_context_with_budgets(
     request: DevelopmentContextImportRequest,
     maximum_project_checkout_bytes: u64,

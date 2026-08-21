@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -12,8 +11,7 @@ use super::{
     ArmManagedContextTransfer, ManagedContextTransferCaller, ManagedContextTransferPhase,
     ManagedContextTransferStatus, PersistedTransfer, PersistedTransferState,
     COMPLETED_TRANSFER_RETENTION_MS, MAX_ARCHIVE_BYTES, MAX_DESTINATION_BYTES,
-    MAX_IDENTIFIER_BYTES, MAX_IMPORT_RECEIPT_BYTES, MAX_IMPORT_RECOVERY_MS, MAX_TRANSFER_RECORDS,
-    MAX_TRANSFER_TTL_MS,
+    MAX_IDENTIFIER_BYTES, MAX_IMPORT_RECEIPT_BYTES, MAX_TRANSFER_RECORDS, MAX_TRANSFER_TTL_MS,
 };
 
 pub(super) fn authorize_entry<'a>(
@@ -27,10 +25,7 @@ pub(super) fn authorize_entry<'a>(
         authorization_error("managed context transfer is unavailable or unauthorized")
     })?;
     let expired = match entry.phase {
-        ManagedContextTransferPhase::Importing => entry
-            .import_started_at_ms
-            .map(|started_at_ms| started_at_ms.saturating_add(MAX_IMPORT_RECOVERY_MS) <= now_ms)
-            .unwrap_or(true),
+        ManagedContextTransferPhase::Importing => false,
         ManagedContextTransferPhase::Failed | ManagedContextTransferPhase::Consumed => entry
             .completed_at_ms
             .map(|completed_at_ms| {
@@ -74,6 +69,7 @@ pub(super) fn validate_arm_request(
     now_ms: u64,
 ) -> Result<(), DaemonError> {
     for (label, value) in [
+        ("context", request.context_id.as_str()),
         ("target environment", request.target_environment_id.as_str()),
         ("target kernel", request.target_kernel_id.as_str()),
         ("target key", request.target_key_thumbprint.as_str()),
@@ -115,6 +111,7 @@ pub(super) fn validate_persisted_state(state: &PersistedTransferState) -> Result
             ));
         }
         for (label, value) in [
+            ("context", entry.context_id.as_str()),
             ("target environment", entry.target_environment_id.as_str()),
             ("target kernel", entry.target_kernel_id.as_str()),
             ("source kernel", entry.source_kernel_id.as_str()),
@@ -254,24 +251,12 @@ pub(super) fn validate_sha256(value: &str, label: &str) -> Result<(), DaemonErro
     Ok(())
 }
 
-pub(super) fn prune_expired(
-    state: &mut PersistedTransferState,
-    active_imports: &HashSet<String>,
-    now_ms: u64,
-) -> Vec<String> {
+pub(super) fn prune_expired(state: &mut PersistedTransferState, now_ms: u64) -> Vec<String> {
     let expired = state
         .entries
         .iter()
-        .filter(|(transfer_id, entry)| match entry.phase {
-            ManagedContextTransferPhase::Importing => {
-                !active_imports.contains(*transfer_id)
-                    && entry
-                        .import_started_at_ms
-                        .map(|started_at_ms| {
-                            started_at_ms.saturating_add(MAX_IMPORT_RECOVERY_MS) <= now_ms
-                        })
-                        .unwrap_or(true)
-            }
+        .filter(|(_, entry)| match entry.phase {
+            ManagedContextTransferPhase::Importing => false,
             ManagedContextTransferPhase::Failed | ManagedContextTransferPhase::Consumed => entry
                 .completed_at_ms
                 .map(|completed_at_ms| {

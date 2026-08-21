@@ -9,7 +9,7 @@ use crate::error::DaemonError;
 
 use super::policy::transfer_error;
 
-const MAX_STATE_FILE_BYTES: u64 = 16 * 1024 * 1024;
+pub(super) const MAX_STATE_FILE_BYTES: u64 = 16 * 1024 * 1024;
 
 pub(super) fn write_private_state_file(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
     if bytes.len() as u64 > MAX_STATE_FILE_BYTES {

@@ -16,7 +16,7 @@ const MAX_PACKAGE_ENTRIES: usize = 2_048;
 const MAX_DIRECTORY_DEPTH: usize = 64;
 pub(super) const MAX_FILE_BYTES: u64 = 16 * 1024 * 1024;
 pub(super) const MAX_PACKAGE_BYTES: u64 = 32 * 1024 * 1024;
-pub(super) const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
+pub(crate) const MAX_SNAPSHOT_BYTES: usize = 128 * 1024 * 1024;
 pub(super) const MAX_SNAPSHOT_FILES: usize = 16_384;
 
 struct SnapshotMemoryBudget {

@@ -157,6 +157,86 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
 }
 
 #[test]
+fn combined_receipt_can_wrap_a_near_limit_development_receipt() {
+    let root = test_root("combined-receipt-limit");
+    let archive = b"context archive";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let armed = store.arm(request, now).expect("arm transfer");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload archive");
+    claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim import"),
+    );
+    let combined_receipt = serde_json::json!({
+        "schemaVersion": 1,
+        "development": { "padding": "d".repeat(96 * 1024) },
+        "kernelContext": { "kind": "from_kernel" }
+    })
+    .to_string();
+    assert!(combined_receipt.len() > 64 * 1024);
+    assert!(combined_receipt.len() <= MAX_IMPORT_RECEIPT_BYTES);
+    store
+        .commit_import(&armed.transfer_id, &combined_receipt, now + 4)
+        .expect("commit bounded combined receipt");
+    assert_eq!(
+        store
+            .get_status(&armed.transfer_id, &armed.capability, &caller, now + 5)
+            .expect("combined receipt status")
+            .import_receipt_json
+            .as_deref(),
+        Some(combined_receipt.as_str())
+    );
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn arming_reserves_aggregate_state_capacity_for_combined_receipts() {
+    let root = test_root("combined-receipt-reservation");
+    let now = current_time_ms();
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let mut armed_count = 0;
+    for sequence in 0..MAX_ACTIVE_TRANSFERS {
+        let mut request = arm_request(b"x", now + 10_000);
+        request.context_id = format!("context-{sequence}");
+        request.destination_parent = root.join("destinations");
+        match store.arm(request, now) {
+            Ok(_) => armed_count += 1,
+            Err(DaemonError::ManagedContext {
+                code: "invalid_request",
+                ..
+            }) => break,
+            Err(error) => panic!("unexpected reservation error: {error}"),
+        }
+    }
+    assert!(armed_count > 0);
+    assert!(armed_count < MAX_ACTIVE_TRANSFERS);
+    let state = store.lock_state();
+    ensure_state_capacity_with_receipt_reservations(&state)
+        .expect("accepted transfers retain receipt capacity");
+    assert!(persisted_state_size(&state).expect("measure state") <= MAX_STATE_FILE_BYTES as usize);
+    drop(state);
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
 fn transfer_rejects_wrong_bindings_conflicts_expiry_and_oversize_chunks() {
     let root = test_root("authorization");
     let archive = b"archive";
@@ -456,12 +536,28 @@ fn nonretryable_import_retirement_retains_replay_but_removes_artifacts_and_capac
         ));
     fs::create_dir(&staging).expect("create failed import staging");
     fs::write(staging.join("partial"), b"partial").expect("write failed import artifact");
+    let component_staging = ready
+        .archive_path
+        .parent()
+        .expect("archive parent")
+        .join(format!(
+            "{}.components",
+            ready
+                .archive_path
+                .file_name()
+                .expect("archive name")
+                .to_string_lossy()
+        ));
+    fs::create_dir(&component_staging).expect("create package component staging");
+    fs::write(component_staging.join("partial"), b"partial")
+        .expect("write package component artifact");
 
     store
         .retire_import(&armed.transfer_id, "invalid_managed_context", now + 5)
         .expect("retire deterministic failure");
     assert!(!ready.archive_path.exists());
     assert!(!staging.exists());
+    assert!(!component_staging.exists());
     let failed = store
         .get_status(&armed.transfer_id, &armed.capability, &caller, now + 6)
         .expect("replay failed transfer status");
@@ -486,8 +582,8 @@ fn nonretryable_import_retirement_retains_replay_but_removes_artifacts_and_capac
 }
 
 #[test]
-fn abandoned_import_is_pruned_after_the_bounded_recovery_window() {
-    let root = test_root("abandoned-import");
+fn interrupted_import_remains_recoverable_after_upload_and_restart_expiry() {
+    let root = test_root("durable-import-recovery");
     let archive = b"context archive";
     let now = current_time_ms();
     let mut request = arm_request(archive, now + 10_000);
@@ -523,27 +619,189 @@ fn abandoned_import_is_pruned_after_the_bounded_recovery_window() {
             armed.transfer_id
         ));
     fs::create_dir(&staging).expect("create abandoned staging");
-    let prune_now = now + 4 + MAX_IMPORT_RECOVERY_MS + 1;
-    let mut while_active = arm_request(b"while active", prune_now + 10_000);
+    let recovery_now = now + 7 * 24 * 60 * 60 * 1_000;
+    let mut while_active = arm_request(b"while active", recovery_now + 10_000);
     while_active.destination_parent = root.join("destinations");
     store
-        .arm(while_active, prune_now)
-        .expect("active import survives recovery deadline");
+        .arm(while_active, recovery_now)
+        .expect("active import survives long recovery interval");
     assert!(ready.archive_path.exists());
     assert!(staging.exists());
     store
         .release_import(&armed.transfer_id)
         .expect("simulate crash");
-    let mut after_crash = arm_request(b"after crash", prune_now + 10_001);
+    drop(store);
+    let store =
+        ManagedContextTransferStore::open(root.clone()).expect("restart with interrupted import");
+    assert!(!staging.exists());
+    let mut after_crash = arm_request(b"after crash", recovery_now + 10_001);
     after_crash.destination_parent = root.join("destinations");
     store
-        .arm(after_crash, prune_now + 1)
-        .expect("prune abandoned import");
-    assert!(!ready.archive_path.exists());
+        .arm(after_crash, recovery_now + 1)
+        .expect("unrelated pruning retains interrupted import");
+    assert!(ready.archive_path.exists());
     assert!(!staging.exists());
-    assert!(store
-        .get_status(&armed.transfer_id, &armed.capability, &caller, prune_now,)
-        .is_err());
+    assert_eq!(
+        store
+            .get_status(
+                &armed.transfer_id,
+                &armed.capability,
+                &caller,
+                recovery_now + 1,
+            )
+            .expect("interrupted import remains authorized")
+            .phase,
+        ManagedContextTransferPhase::Importing
+    );
+    assert!(matches!(
+        store
+            .prepare_and_claim_import(
+                &armed.transfer_id,
+                &armed.capability,
+                &caller,
+                recovery_now + 2,
+            )
+            .expect("reclaim interrupted import"),
+        ManagedContextImportClaim::Claimed(_)
+    ));
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
+    let root = test_root("schema-v1-active");
+    let archive = b"legacy development archive";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let armed = store.arm(request, now).expect("arm transfer");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload archive");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim legacy import"),
+    );
+    fs::create_dir_all(&ready.destination_root).expect("create legacy publication");
+    fs::write(
+        ready
+            .destination_root
+            .join(".chariox-managed-import-receipt.json"),
+        serde_json::json!({
+            "schemaVersion": 1,
+            "publicationId": armed.transfer_id,
+            "archiveSha256": sha256_bytes(archive),
+            "projectId": "project-1",
+            "destinationRoot": ready.destination_root,
+            "primaryRepositoryId": "repository-1",
+            "repositories": []
+        })
+        .to_string(),
+    )
+    .expect("write legacy publication receipt");
+    drop(store);
+    rewrite_state_as_v1(&root.join("state.json"));
+
+    let reopened = ManagedContextTransferStore::open(root.clone())
+        .expect("schema-v1 active transfer cannot block startup");
+    assert!(reopened.lock_state().entries.is_empty());
+    assert!(!ready.archive_path.exists());
+    assert!(!ready.destination_root.exists());
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(
+            &fs::read(root.join("state.json")).expect("read migrated state")
+        )
+        .expect("parse migrated state")["schema_version"],
+        2
+    );
+    fs::remove_dir_all(root).expect("remove transfer root");
+}
+
+#[test]
+fn schema_v1_consumed_receipt_migrates_to_explicit_empty_kernel_context() {
+    let root = test_root("schema-v1-consumed");
+    let archive = b"legacy development archive";
+    let now = current_time_ms();
+    let mut request = arm_request(archive, now + 10_000);
+    request.destination_parent = root.join("destinations");
+    let store = ManagedContextTransferStore::open(root.clone()).expect("open transfer store");
+    let armed = store.arm(request, now).expect("arm transfer");
+    let caller = caller(&sha256_bytes(b"source-key"));
+    store
+        .begin(&armed.transfer_id, &armed.capability, &caller, now + 1)
+        .expect("begin transfer");
+    store
+        .upload_chunk(
+            &armed.transfer_id,
+            &armed.capability,
+            &caller,
+            0,
+            archive,
+            &sha256_bytes(archive),
+            now + 2,
+        )
+        .expect("upload archive");
+    let ready = claimed(
+        store
+            .prepare_and_claim_import(&armed.transfer_id, &armed.capability, &caller, now + 3)
+            .expect("claim legacy import"),
+    );
+    let development_receipt = serde_json::json!({
+        "schemaVersion": 1,
+        "publicationId": armed.transfer_id,
+        "archiveSha256": sha256_bytes(archive),
+        "projectId": "project-1",
+        "destinationRoot": ready.destination_root,
+        "primaryRepositoryId": "p".repeat(60 * 1024),
+        "repositories": [{
+            "repositoryId": "repository-1",
+            "role": "primary",
+            "targetDirectory": "repository",
+            "destinationPath": ready.destination_root.join("repository"),
+            "headSha": "a".repeat(40)
+        }]
+    })
+    .to_string();
+    assert!(development_receipt.len() > 60 * 1024);
+    assert!(development_receipt.len() <= 64 * 1024);
+    store
+        .commit_import(&armed.transfer_id, &development_receipt, now + 4)
+        .expect("consume legacy transfer");
+    drop(store);
+    rewrite_state_as_v1(&root.join("state.json"));
+
+    let reopened = ManagedContextTransferStore::open(root.clone())
+        .expect("schema-v1 consumed transfer cannot block startup");
+    let status = reopened
+        .get_status(&armed.transfer_id, &armed.capability, &caller, now + 5)
+        .expect("migrated consumed status");
+    let receipt: crate::managed_context::package::ManagedContextPackageImportReceipt =
+        serde_json::from_str(
+            status
+                .import_receipt_json
+                .as_deref()
+                .expect("migrated receipt"),
+        )
+        .expect("parse migrated package receipt");
+    assert!(matches!(
+        receipt.kernel_context,
+        crate::managed_context::package::ManagedContextImportedKernelContext::Empty
+    ));
+    assert_eq!(receipt.development.project_id, "project-1");
     fs::remove_dir_all(root).expect("remove transfer root");
 }
 
@@ -678,6 +936,29 @@ fn startup_accepts_a_missing_workspace_parent_for_interrupted_and_failed_imports
     }
 }
 
+fn rewrite_state_as_v1(path: &std::path::Path) {
+    let mut state: serde_json::Value = serde_json::from_slice(
+        &fs::read(path).expect("read current transfer state before v1 rewrite"),
+    )
+    .expect("parse current transfer state before v1 rewrite");
+    state["schema_version"] = serde_json::json!(1);
+    for entry in state["entries"]
+        .as_object_mut()
+        .expect("transfer entries")
+        .values_mut()
+    {
+        entry
+            .as_object_mut()
+            .expect("transfer entry")
+            .remove("context_id");
+    }
+    fs::write(
+        path,
+        serde_json::to_vec(&state).expect("serialize v1 state"),
+    )
+    .expect("write v1 transfer state");
+}
+
 fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
     match claim {
         ManagedContextImportClaim::Claimed(ready) => ready,
@@ -687,6 +968,7 @@ fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
 
 fn arm_request(archive: &[u8], expires_at_ms: u64) -> ArmManagedContextTransfer {
     ArmManagedContextTransfer {
+        context_id: "context-1".to_string(),
         target_environment_id: "environment-1".to_string(),
         target_kernel_id: "kernel-target".to_string(),
         target_key_thumbprint: sha256_bytes(b"target-key"),

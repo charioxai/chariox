@@ -997,6 +997,16 @@ fn configured_absolute_path(name: &str, label: &str) -> Result<PathBuf, DaemonEr
     Ok(path)
 }
 
+pub(crate) fn configured_managed_kernel_context_paths() -> Result<(PathBuf, PathBuf), DaemonError> {
+    Ok((
+        configured_absolute_path(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            "managed capability isolation root",
+        )?,
+        configured_absolute_path("CHARIOX_MANAGED_VAULT_PATH", "managed Vault path")?,
+    ))
+}
+
 fn acquire_import_lock(parent: &Path) -> Result<ImportLock, DaemonError> {
     let path = parent.join(".kernel-context-import.lock");
     let mut options = OpenOptions::new();

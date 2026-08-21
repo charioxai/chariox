@@ -133,7 +133,7 @@ pub fn export_development_context(
     })
 }
 
-pub(super) fn publish_archive_no_clobber(
+pub(crate) fn publish_archive_no_clobber(
     temporary: &Path,
     destination: &Path,
     destination_parent: &Path,

@@ -910,6 +910,7 @@ pub(super) async fn handle_daemon_peer_request(
             }
         }
         RelayPeerRequest::ArmManagedContextImport {
+            context_id,
             target_environment_id,
             target_kernel_id,
             target_key_thumbprint,
@@ -922,6 +923,7 @@ pub(super) async fn handle_daemon_peer_request(
                     managed_context_identity
                         .clone()
                         .expect("managed context identity checked before dispatch"),
+                    context_id,
                     target_environment_id,
                     target_kernel_id,
                     target_key_thumbprint,
@@ -1133,7 +1135,18 @@ mod tests {
         export_development_context, DevelopmentContextExportRequest, DevelopmentRepositoryRole,
         DevelopmentRepositorySelection,
     };
+    use crate::managed_context::kernel::{
+        KernelContextCompatibility, KernelContextPayload, KernelContextSnapshot,
+    };
+    use crate::managed_context::package::{
+        export_managed_context_package, ManagedContextPackageExportRequest,
+        ManagedContextPackageKernel,
+    };
     use crate::runtime::terminal_pairings::public_key_thumbprint;
+    use crate::secret::{
+        export_transferred_vault_snapshot, lock_chariox_encrypted_vault,
+        unlock_chariox_encrypted_vault, VaultUnlockLease,
+    };
     use crate::transport::relay_peer::{
         RelayManagedContextCapability, RelayManagedContextChunk, RelayManagedContextTransferPhase,
     };
@@ -1204,6 +1217,7 @@ mod tests {
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         let request = RelayPeerRequest::ArmManagedContextImport {
+            context_id: "context-1".to_string(),
             target_environment_id: "environment-1".to_string(),
             target_kernel_id: "target-kernel-1".to_string(),
             target_key_thumbprint: "a".repeat(64),
@@ -1261,8 +1275,9 @@ mod tests {
         assert!(!serialized.contains("git stderr canary"));
     }
 
-    #[tokio::test]
-    async fn encrypted_managed_context_peer_transfer_imports_a_real_repository() {
+    #[tokio::test(flavor = "current_thread")]
+    async fn encrypted_managed_context_peer_transfer_imports_repository_kernel_context_and_vault() {
+        let _env_guard = crate::env_lock::lock();
         let root = std::env::temp_dir().join(format!(
             "chariox-managed-peer-import-{}-{}",
             std::process::id(),
@@ -1279,7 +1294,7 @@ mod tests {
         fs::write(repository.join("tracked.txt"), "managed context\n").expect("write source file");
         git(&repository, &["add", "tracked.txt"]);
         git(&repository, &["commit", "-m", "initial"]);
-        let archive_path = root.join("context.tar.gz");
+        let archive_path = root.join("development.tar.gz");
         let exported = export_development_context(DevelopmentContextExportRequest {
             project_id: "project-managed-peer".to_string(),
             repositories: vec![DevelopmentRepositorySelection {
@@ -1323,8 +1338,78 @@ mod tests {
         let source_public_key =
             relay_crypto::public_key_from_private_key_base64(&source_private_key)
                 .expect("source public key");
-        let identity =
-            scoped_kernel_identity(Some(public_key_thumbprint(&source_public_key)), u64::MAX);
+        let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+        let identity = scoped_kernel_identity(Some(source_key_thumbprint.clone()), u64::MAX);
+        let context_id = "context-managed-peer".to_string();
+        let source_vault_path = root.join("source-vault.json");
+        let target_vault_path = root.join("target-vault.json");
+        let capability_root = root.join("target-capabilities");
+        let _capability_env = ScopedEnv::set(
+            "CHARIOX_CAPABILITY_ISOLATION_ROOT",
+            capability_root.as_os_str(),
+        );
+        let _vault_env =
+            ScopedEnv::set("CHARIOX_MANAGED_VAULT_PATH", target_vault_path.as_os_str());
+        unlock_chariox_encrypted_vault(
+            &source_vault_path,
+            "managed-peer-passphrase",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("unlock source Vault");
+        crate::secret::set_chariox_encrypted_vault_secret_for_test(
+            source_vault_path.clone(),
+            "managed-peer",
+            "token",
+            "managed-peer-secret-canary",
+        )
+        .expect("store source Vault canary");
+        let transferred_vault = export_transferred_vault_snapshot(
+            &source_vault_path,
+            &context_id,
+            &identity.subject,
+            &source_private_key,
+            &target_kernel_id,
+            &target_public_key,
+        )
+        .expect("export transferred Vault");
+        let payload = KernelContextPayload {
+            schema_version: 1,
+            context_id: context_id.clone(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint: source_key_thumbprint.clone(),
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            compatibility: KernelContextCompatibility {
+                source_kernel_version: env!("CARGO_PKG_VERSION").to_string(),
+                local_daemon_protocol_version: crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+                relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            },
+            extensions: Vec::new(),
+            dependencies: Vec::new(),
+            vault: transferred_vault,
+        };
+        let snapshot_sha256 = format!(
+            "{:x}",
+            Sha256::digest(serde_json::to_vec(&payload).expect("serialize kernel payload"))
+        );
+        let kernel_context = KernelContextSnapshot {
+            payload,
+            snapshot_sha256: snapshot_sha256.clone(),
+        };
+        let package = export_managed_context_package(ManagedContextPackageExportRequest {
+            context_id: context_id.clone(),
+            project_id: "project-managed-peer".to_string(),
+            target_environment_id: "environment-managed-1".to_string(),
+            source_kernel_id: identity.subject.clone(),
+            source_key_thumbprint,
+            target_kernel_id: target_kernel_id.clone(),
+            target_key_thumbprint: target_key_thumbprint.clone(),
+            development_archive_path: archive_path,
+            development_archive_sha256: exported.archive_sha256,
+            kernel_context: ManagedContextPackageKernel::FromKernel(kernel_context),
+            package_path: root.join("context.chariox"),
+        })
+        .expect("compose managed context package");
 
         let armed = send_managed_peer_request(
             &router,
@@ -1334,12 +1419,13 @@ mod tests {
             &source_private_key,
             &target_public_key,
             RelayPeerRequest::ArmManagedContextImport {
+                context_id,
                 target_environment_id: "environment-managed-1".to_string(),
                 target_kernel_id,
                 target_key_thumbprint,
                 project_id: "project-managed-peer".to_string(),
-                archive_sha256: exported.archive_sha256.clone(),
-                archive_size_bytes: exported.archive_size_bytes,
+                archive_sha256: package.package_sha256.clone(),
+                archive_size_bytes: package.package_size_bytes,
             },
         )
         .await;
@@ -1369,7 +1455,7 @@ mod tests {
             },
         )
         .await;
-        let archive = fs::read(&archive_path).expect("read exported archive");
+        let archive = fs::read(&package.package_path).expect("read exported package");
         let mut offset = 0_u64;
         for chunk in archive.chunks(max_chunk_bytes) {
             send_managed_peer_request(
@@ -1416,6 +1502,25 @@ mod tests {
         assert_eq!(receipt.transfer_id, transfer_id);
         assert_eq!(receipt.project_id, "project-managed-peer");
         assert_eq!(receipt.repositories.len(), 1);
+        assert!(matches!(
+            receipt.kernel_context,
+            crate::transport::relay_peer::RelayManagedKernelContextImportReceipt::FromKernel {
+                snapshot_sha256: ref imported_snapshot_sha256,
+                extension_count: 0,
+                dependency_count: 0,
+                ..
+            } if imported_snapshot_sha256 == &snapshot_sha256
+        ));
+        assert!(capability_root.join("kernel-context-import.json").is_file());
+        assert_eq!(
+            crate::secret::get_chariox_encrypted_vault_secret_for_test(
+                target_vault_path.clone(),
+                "managed-peer",
+                "token",
+            )
+            .expect("read imported Vault canary"),
+            "managed-peer-secret-canary"
+        );
         assert_eq!(
             fs::read_to_string(
                 std::path::Path::new(&receipt.repositories[0].destination_path).join("tracked.txt")
@@ -1446,7 +1551,31 @@ mod tests {
             }
         ));
         drop(router);
+        lock_chariox_encrypted_vault(&source_vault_path).expect("lock source Vault");
+        lock_chariox_encrypted_vault(&target_vault_path).expect("lock target Vault");
         fs::remove_dir_all(root).expect("remove managed peer fixture");
+    }
+
+    struct ScopedEnv {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl ScopedEnv {
+        fn set(name: &'static str, value: &std::ffi::OsStr) -> Self {
+            let previous = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, previous }
+        }
+    }
+
+    impl Drop for ScopedEnv {
+        fn drop(&mut self) {
+            match self.previous.take() {
+                Some(value) => std::env::set_var(self.name, value),
+                None => std::env::remove_var(self.name),
+            }
+        }
     }
 
     async fn send_managed_peer_request(
