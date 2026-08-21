@@ -68,6 +68,87 @@ fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
         "permission_mode": "bypassPermissions",
         "tool_name": "Bash",
     })));
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "permission_mode": "bypassPermissions",
+        "tool_name": "Bash",
+    })));
+}
+
+#[test]
+fn yolo_rendered_permission_is_confirmed_without_user_interaction() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-yolo-permission-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("context.json");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-yolo",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-yolo")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+    let mut run = RuntimeProviderRun::new(
+        "provider-run-yolo",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-yolo-permission".to_string(),
+            pty_target: Some("test-claude-yolo-permission".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec!["-lc".to_string(), "cat".to_string()],
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    let bridge = RecordingPermissionBridge::default();
+    let bridge_ref: std::sync::Arc<dyn ProviderNativeInteractionBridge> =
+        std::sync::Arc::new(bridge.clone());
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .process_terminal_output(
+            "session-yolo",
+            run.id(),
+            &run,
+            Some(bridge_ref),
+            "Bash command\necho test\nDo you want to proceed?\n1. Yes\n3. No",
+        )
+        .expect("yolo permission should be confirmed");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(
+        bridge
+            .interaction_ids
+            .lock()
+            .expect("permission interaction recorder should not be poisoned")
+            .is_empty(),
+        "yolo permission must not create a user interaction"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+    app.pty
+        .remove_process(run.id())
+        .expect("test provider PTY should stop");
+    let _ = fs::remove_dir_all(root);
 }
 
 #[test]
@@ -91,7 +172,8 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
         "default",
         "claude-sonnet",
     )
-    .with_agent_id("agent-1");
+    .with_agent_id("agent-1")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Required);
     let run = RuntimeProviderRun::new(
         "provider-run-1",
         &request,

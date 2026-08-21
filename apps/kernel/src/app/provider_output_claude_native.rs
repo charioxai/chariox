@@ -696,12 +696,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
         rendered: &str,
     ) -> Result<(), DaemonError> {
-        let Some(bridge) = native_interaction_bridge else {
-            return Ok(());
-        };
-        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
-            return Ok(());
-        };
         let Some(context_file) = provider_run.pty_env().get("CHARIOX_CLAUDE_NATIVE_CONTEXT") else {
             return Ok(());
         };
@@ -762,6 +756,19 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             clear_claude_permission_recent(context_file);
             return Ok(());
         }
+        if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
+            append_claude_headless_debug(context_file, "auto_confirm", "yolo_permission");
+            self.app
+                .write_provider_pty_input_for_runtime(provider_run_id, b"\r")?;
+            clear_claude_permission_recent(context_file);
+            return Ok(());
+        }
+        let Some(bridge) = native_interaction_bridge else {
+            return Ok(());
+        };
+        let Some(agent_id) = provider_run.agent_instance_id().map(str::to_string) else {
+            return Ok(());
+        };
         let interaction_id = format!(
             "claude-rendered-permission-{provider_run_id}-{}",
             timestamp_millis()

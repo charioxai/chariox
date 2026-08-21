@@ -86,7 +86,8 @@ pub(super) fn prepare_claude_native_tui_files(
             "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "Stop": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
-            "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }]
+            "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
+            "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }]
         }
     });
     let settings =
@@ -218,7 +219,18 @@ if (eventName === "UserPromptSubmit") {
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
   const toolName = String(input.tool_name ?? "")
   const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
-  if (isCharioxRuntimeTool || (eventName === "PreToolUse" && input.permission_mode === "bypassPermissions")) {
+  if (isCharioxRuntimeTool || input.permission_mode === "bypassPermissions") {
+    if (eventName === "PermissionRequest") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          permissionDecision: "allow",
+          permissionDecisionReason: isCharioxRuntimeTool
+            ? "Allowed Chariox runtime tool."
+            : "Allowed by the agent's yolo permission mode."
+        }
+      }))
+    }
     process.exit(0)
   }
   if (!toolName) {
@@ -330,13 +342,95 @@ mod tests {
     };
 
     #[test]
-    fn hook_does_not_block_bypass_or_chariox_runtime_pre_tool_use() {
+    fn hook_auto_allows_bypass_and_chariox_runtime_permission_requests() {
         let handler = claude_native_hook_handler();
 
-        assert!(handler.contains("input.permission_mode === \"bypassPermissions\""));
+        assert!(handler
+            .contains("isCharioxRuntimeTool || input.permission_mode === \"bypassPermissions\""));
+        assert!(handler.contains("permissionDecision: \"allow\""));
+        assert!(handler.contains("Allowed by the agent's yolo permission mode."));
         assert!(handler.contains("toolName.startsWith(\"mcp__chariox__\")"));
         assert!(handler.contains("toolName.startsWith(\"chariox.\")"));
         assert!(handler.contains("process.exit(0)"));
+    }
+
+    #[test]
+    fn yolo_permission_request_hook_returns_an_allow_decision() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-yolo-hook",
+            "claude",
+            "claude-headless",
+            "default",
+            "opus",
+        )
+        .with_permission_level(AgentPermissionLevel::Yolo);
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let hook_handler = native
+            .events_file
+            .parent()
+            .expect("events file should have a root")
+            .join("hook-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(hook_handler)
+            .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+            .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                &native.context_response_dir,
+            )
+            .env(
+                "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                &native.permission_response_dir,
+            )
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("hook handler should start");
+        child
+            .stdin
+            .take()
+            .expect("hook stdin should be piped")
+            .write_all(
+                br#"{"hook_event_name":"PermissionRequest","permission_mode":"bypassPermissions","tool_name":"Bash","tool_input":{"command":"true"}}"#,
+            )
+            .expect("hook input should write");
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while child
+            .try_wait()
+            .expect("hook process status should be readable")
+            .is_none()
+        {
+            if std::time::Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("yolo PermissionRequest hook blocked instead of allowing immediately");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let output = child
+            .wait_with_output()
+            .expect("hook handler should finish");
+        assert!(
+            output.status.success(),
+            "hook handler failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let response: serde_json::Value =
+            serde_json::from_slice(&output.stdout).expect("hook response should be JSON");
+        assert_eq!(
+            response["hookSpecificOutput"]["hookEventName"],
+            "PermissionRequest"
+        );
+        assert_eq!(
+            response["hookSpecificOutput"]["permissionDecision"],
+            "allow"
+        );
     }
 
     #[test]
@@ -459,5 +553,9 @@ mod tests {
         assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_CONTEXT="));
         assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES="));
         assert!(yolo_hook.contains("CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES="));
+        assert_eq!(
+            yolo_settings["hooks"]["PermissionRequest"][0]["matcher"],
+            "*"
+        );
     }
 }

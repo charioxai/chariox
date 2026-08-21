@@ -100,6 +100,7 @@ type ClaudePermissionPayload = {
 
 function shouldBridgeClaudePermission(payload: ClaudePermissionPayload): boolean {
   if (payload.hook_event_name !== "PreToolUse" && payload.hook_event_name !== "PermissionRequest") return false
+  if (payload.permission_mode === "bypassPermissions") return false
   const toolName = typeof payload.tool_name === "string" ? payload.tool_name : ""
   return new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]).has(toolName)
 }

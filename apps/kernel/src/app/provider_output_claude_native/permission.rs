@@ -301,8 +301,7 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     if tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.") {
         return false;
     }
-    !(event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
-        && event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions"))
+    event.get("permission_mode").and_then(Value::as_str) != Some("bypassPermissions")
 }
 
 pub(super) fn format_claude_permission_message(event: &Value) -> String {

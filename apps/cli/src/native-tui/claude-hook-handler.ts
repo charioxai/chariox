@@ -56,27 +56,39 @@ if (eventName === "UserPromptSubmit") {
     }
   }))
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  const bridgeUrl = process.env.CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL
-  if (bridgeUrl) {
-    try {
-      const response = await fetch(new URL("/permission", bridgeUrl), {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(input)
-      })
-      if (response.ok) {
-        const decision = await response.json()
-        if (decision?.handled && decision.permissionDecision) {
-          process.stdout.write(JSON.stringify({
-            hookSpecificOutput: {
-              hookEventName: eventName,
-              permissionDecision: decision.permissionDecision,
-              permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
-            }
-          }))
+  if (input.permission_mode === "bypassPermissions") {
+    if (eventName === "PermissionRequest") {
+      process.stdout.write(JSON.stringify({
+        hookSpecificOutput: {
+          hookEventName: "PermissionRequest",
+          permissionDecision: "allow",
+          permissionDecisionReason: "Allowed by the agent's yolo permission mode."
         }
-      }
-    } catch {}
+      }))
+    }
+  } else {
+    const bridgeUrl = process.env.CHARIOX_CLAUDE_NATIVE_HOOK_BRIDGE_URL
+    if (bridgeUrl) {
+      try {
+        const response = await fetch(new URL("/permission", bridgeUrl), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(input)
+        })
+        if (response.ok) {
+          const decision = await response.json()
+          if (decision?.handled && decision.permissionDecision) {
+            process.stdout.write(JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: eventName,
+                permissionDecision: decision.permissionDecision,
+                permissionDecisionReason: decision.permissionDecisionReason ?? "Resolved through Chariox."
+              }
+            }))
+          }
+        }
+      } catch {}
+    }
   }
 }
 `, "utf8")
