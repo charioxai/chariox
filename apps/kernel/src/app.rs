@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -145,6 +146,8 @@ pub struct DaemonApp {
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
     managed_kernel_registration:
         Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     legacy_workflow_history: LegacyWorkflowHistoryStore,
@@ -234,17 +237,21 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
-        let managed_context_transfer_root = config
+        let managed_context_root = config
             .durable_state_path()
             .parent()
-            .map(|root| root.join("managed-context-transfers"))
+            .map(Path::to_path_buf)
             .ok_or_else(|| DaemonError::LocalTransport {
                 operation: "open managed context transfer store",
                 message: "durable state path has no parent directory".to_string(),
             })?;
         let managed_context_transfers =
             crate::managed_context::transfer::ManagedContextTransferStore::open(
-                managed_context_transfer_root,
+                managed_context_root.join("managed-context-transfers"),
+            )?;
+        let managed_context_outbound =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
+                managed_context_root.join("managed-context-outbound"),
             )?;
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
@@ -286,6 +293,7 @@ impl DaemonApp {
             operational_history,
             durable_state,
             managed_context_transfers,
+            managed_context_outbound,
             managed_kernel_registration,
             legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             provider_account_profiles,
@@ -408,6 +416,12 @@ impl DaemonApp {
         &self,
     ) -> crate::managed_context::transfer::ManagedContextTransferStore {
         self.managed_context_transfers.clone()
+    }
+
+    pub(crate) fn managed_context_outbound_operation_store(
+        &self,
+    ) -> crate::managed_context::outbound_service::ManagedContextOutboundOperationStore {
+        self.managed_context_outbound.clone()
     }
 
     pub(crate) fn managed_kernel_registration(

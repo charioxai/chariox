@@ -117,6 +117,8 @@ pub enum LocalDaemonRequest {
     GetCredentialVaultStatus(GetCredentialVaultStatusRequest),
     LockCredentialVault(LockCredentialVaultRequest),
     ManageCredentialVault(ManageCredentialVaultRequest),
+    StartManagedContextTransfer(StartManagedContextTransferRequest),
+    GetManagedContextTransferStatus(GetManagedContextTransferStatusRequest),
     ListSlices(ListSlicesRequest),
     CreateSlice(CreateSliceRequest),
     GetSlice(SliceRefRequest),

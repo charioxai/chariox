@@ -23,7 +23,7 @@ const MAX_GIT_CREDENTIALS: usize = 16;
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct ManagedKernelContextPlan {
+pub struct ManagedKernelContextPlan {
     schema_version: u32,
     context_id: String,
     plan_digest: String,
@@ -169,6 +169,7 @@ impl ManagedKernelContextPlan {
             .as_ref()
             .map(|source| ManagedKernelContextSourceBinding {
                 relay_realm_id: &source.relay_realm_id,
+                machine_id: &source.machine_id,
                 kernel_id: &source.kernel_id,
                 key_thumbprint: &source.key_thumbprint,
             })
@@ -387,6 +388,7 @@ impl ManagedKernelContextPlan {
 
 pub(crate) struct ManagedKernelContextSourceBinding<'a> {
     pub(crate) relay_realm_id: &'a str,
+    pub(crate) machine_id: &'a str,
     pub(crate) kernel_id: &'a str,
     pub(crate) key_thumbprint: &'a str,
 }

@@ -20,7 +20,7 @@ use cloud::{
     BootstrapCloudClient, ConfirmRequest, ExchangeRequest, HttpBootstrapCloudClient,
     ManagedCloudRelayProfile,
 };
-pub(crate) use context_plan::ManagedKernelContextPlan;
+pub use context_plan::ManagedKernelContextPlan;
 use release::{verify_release, VerifiedRelease};
 use state::{
     remove_envelope, valid_identifier, valid_secret, BootstrapConfig, BootstrapEnvelope,

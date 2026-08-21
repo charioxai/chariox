@@ -2,6 +2,8 @@
 
 use crate::error::DaemonError;
 
+const CLOUD_API_REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
 pub(crate) fn normalize_cloud_api_url(api_url: &str) -> Result<String, DaemonError> {
     let normalized = api_url.trim().trim_end_matches('/').to_string();
     if normalized.is_empty() {
@@ -65,8 +67,22 @@ fn post_cloud_json_blocking<T>(
 where
     T: serde::de::DeserializeOwned,
 {
+    post_cloud_json_blocking_with_timeout(api_url, path, body, CLOUD_API_REQUEST_TIMEOUT)
+}
+
+fn post_cloud_json_blocking_with_timeout<T>(
+    api_url: String,
+    path: &str,
+    body: serde_json::Value,
+    timeout: std::time::Duration,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let url = format!("{api_url}{path}");
-    let response = ureq::post(&url)
+    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let response = agent
+        .post(&url)
         .set("content-type", "application/json")
         .send_string(&body.to_string())
         .map_err(cloud_transport_error)?;
@@ -87,7 +103,10 @@ where
     T: serde::de::DeserializeOwned,
 {
     let url = format!("{api_url}{path}");
-    let response = ureq::get(&url).call().map_err(cloud_transport_error)?;
+    let agent = ureq::AgentBuilder::new()
+        .timeout(CLOUD_API_REQUEST_TIMEOUT)
+        .build();
+    let response = agent.get(&url).call().map_err(cloud_transport_error)?;
     let payload = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
@@ -142,6 +161,15 @@ fn cloud_api_error_code(body: &str) -> Option<String> {
                 .and_then(|code| code.as_str())
                 .map(str::to_string)
         })
+}
+
+pub(crate) fn cloud_error_code(error: &DaemonError) -> Option<&str> {
+    let message = match error {
+        DaemonError::LocalTransport { message, .. } => message,
+        _ => return None,
+    };
+    let code = message.split_once("cloud_api_code=")?.1;
+    Some(code.split(':').next().unwrap_or(code))
 }
 
 pub(crate) fn is_stale_cloud_link_error(error: &DaemonError) -> bool {
@@ -204,5 +232,46 @@ mod tests {
             operation: "cloud relay request",
             message: "network timeout".to_string(),
         }));
+    }
+
+    #[test]
+    fn cloud_error_code_preserves_structured_api_failures() {
+        let error = DaemonError::LocalTransport {
+            operation: "cloud relay request",
+            message: "cloud relay request failed with 409: cloud_api_code=identity_conflict: body"
+                .to_string(),
+        };
+        assert_eq!(cloud_error_code(&error), Some("identity_conflict"));
+        assert_eq!(
+            cloud_error_code(&DaemonError::LocalTransport {
+                operation: "cloud relay request",
+                message: "network timeout".to_string(),
+            }),
+            None
+        );
+    }
+
+    #[test]
+    fn cloud_post_has_a_total_response_deadline() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind stalled Cloud fixture");
+        let address = listener
+            .local_addr()
+            .expect("stalled Cloud fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (_stream, _) = listener.accept().expect("accept stalled Cloud request");
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        });
+        let started = std::time::Instant::now();
+        let result = post_cloud_json_blocking_with_timeout::<serde_json::Value>(
+            format!("http://{address}"),
+            "/stalled",
+            serde_json::json!({}),
+            std::time::Duration::from_millis(50),
+        );
+        assert!(result.is_err());
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        fixture.join().expect("stalled Cloud fixture");
     }
 }

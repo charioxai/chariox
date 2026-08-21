@@ -163,6 +163,8 @@ pub(super) struct RouterProjectionStores {
     pub(super) credential_enrollment_control: CredentialEnrollmentControl,
     pub(super) managed_context_transfers:
         crate::managed_context::transfer::ManagedContextTransferStore,
+    pub(super) managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
     pub(super) managed_kernel_registration:
         Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
 }
@@ -205,6 +207,7 @@ pub(super) fn router_projection_stores(app: &Arc<Mutex<DaemonApp>>) -> RouterPro
         prompt_id_allocator: app.prompt_id_allocator(),
         credential_enrollment_control: app.credential_enrollment_control(),
         managed_context_transfers: app.managed_context_transfer_store(),
+        managed_context_outbound: app.managed_context_outbound_operation_store(),
         managed_kernel_registration: app.managed_kernel_registration(),
     }
 }
@@ -274,6 +277,7 @@ pub(super) fn compose_command_router(
         prompt_id_allocator,
         credential_enrollment_control,
         managed_context_transfers,
+        managed_context_outbound,
         managed_kernel_registration,
     } = router_projection_stores(&app);
     let runtime_state = KernelRuntimeState::new_with_owned_state_and_lanes(
@@ -361,6 +365,7 @@ pub(super) fn compose_command_router(
         provider_process_projection,
         credential_enrollment_control,
         managed_context_transfers,
+        managed_context_outbound,
         managed_kernel_registration,
         active_turns,
         remote_relay_inventory_projection,

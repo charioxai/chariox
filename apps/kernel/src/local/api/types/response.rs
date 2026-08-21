@@ -132,6 +132,8 @@ pub enum LocalDaemonResponse {
     CredentialVaultStatus { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultLocked { status: crate::secret::CharioxVaultUnlockStatus, },
     CredentialVaultManaged { status: crate::secret::CharioxVaultUnlockStatus, action: String, },
+    ManagedContextTransferStarted { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
+    ManagedContextTransferStatus { status: crate::managed_context::outbound_service::ManagedContextOutboundOperationStatus, },
     SlicesListed { slices: Vec<SliceRecord>, },
     SliceCreated { slice: SliceRecord, },
     Slice { slice: SliceRecord, },

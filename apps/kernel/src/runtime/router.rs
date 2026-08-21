@@ -62,6 +62,8 @@ pub(crate) struct CommandRouter {
     provider_process_projection: ProviderProcessProjectionStore,
     credential_enrollment_control: CredentialEnrollmentControl,
     managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
     managed_kernel_registration:
         Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     #[allow(dead_code)]

@@ -8,6 +8,7 @@ use crate::local::{
 mod core;
 mod credential_enrollment;
 mod event_publication;
+mod managed_context;
 mod native_spawn_slice;
 mod prompt_settings;
 mod provider_usage_activity;
