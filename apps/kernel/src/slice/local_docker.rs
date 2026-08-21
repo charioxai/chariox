@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -706,7 +707,47 @@ fn configure_local_docker_slice_command(
     if let Some(workspace_mount) = record.workspace_mount.as_deref() {
         command.env("CHARIOX_SLICE_WORKSPACE", workspace_mount);
     }
+    if let Some(publication) = record.development_publication.as_ref() {
+        let destination_root = Path::new(&publication.destination_root);
+        if !destination_root.is_absolute() || publication.repository_paths.is_empty() {
+            return Err(local_docker_error(
+                "slice development publication has no safe repository mounts",
+            ));
+        }
+        let mut unique_paths = BTreeSet::new();
+        for (index, repository_path) in publication.repository_paths.iter().enumerate() {
+            let repository_path = Path::new(repository_path);
+            if !repository_path.is_absolute()
+                || repository_path.parent() != Some(destination_root)
+                || !unique_paths.insert(repository_path)
+            {
+                return Err(local_docker_error(
+                    "slice development repository mount escaped its publication",
+                ));
+            }
+            command.env(
+                format!("CHARIOX_SLICE_DEVELOPMENT_MOUNT_{index}"),
+                repository_path,
+            );
+        }
+        if !unique_paths.contains(Path::new(&publication.primary_repository_path)) {
+            return Err(local_docker_error(
+                "slice primary repository is not in its development mounts",
+            ));
+        }
+        command.env(
+            "CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT",
+            publication.repository_paths.len().to_string(),
+        );
+    }
     Ok(())
+}
+
+fn local_docker_error(message: impl Into<String>) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "slice.local_docker",
+        message: message.into(),
+    }
 }
 
 fn write_cloud_relay_config_file(

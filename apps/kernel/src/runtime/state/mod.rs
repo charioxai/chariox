@@ -253,6 +253,7 @@ mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod slice_development_runtime_state;
 mod slice_runtime_state;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;

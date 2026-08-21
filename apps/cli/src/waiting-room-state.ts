@@ -111,6 +111,8 @@ export function normalizeWaitingRoomState(
   const placement = normalizeWaitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
+    projectSelectionId: state.projectSelectionId,
+    repositoryMode: state.managedRepositoryMode,
     selectedMachineRef: placement.selectedMachineRef,
     selectedKernelRef: placement.selectedKernelRef,
   })

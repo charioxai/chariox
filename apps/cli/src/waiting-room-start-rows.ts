@@ -79,6 +79,8 @@ export function waitingRoomStartRows(
       workspacePath: options.targets?.workspacePath,
       worktreeSelectionId: state.worktreeSelectionId,
       worktreePath: options.targets?.worktreePath,
+      projectSelectionId: state.projectSelectionId,
+      repositoryMode: state.managedRepositoryMode,
       selectedMachineRef: state.selectedMachineRef,
       selectedKernelRef: state.selectedKernelRef,
     }),

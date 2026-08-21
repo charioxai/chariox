@@ -38,6 +38,7 @@ import {
   createWaitingRoomActivationController,
   type WaitingRoomPreparedManagedLaunch,
 } from "./waiting-room-activation-controller.js"
+import { cliWaitingRoomSliceApiOptions } from "./waiting-room-slice-api-options.js"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
 import {
   createManagedEnvironment,
@@ -625,14 +626,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         return (session.kernel_id ?? session.host_daemon_id) === kernelId
       }).length
     },
-    createSlice: (options) => createSlice(deps.client, {
-      name: options.name,
-      displayMode: options.displayMode,
-      workspaceId: options.workspaceId,
-      worktreeId: options.worktreeId,
-      workspaceMount: options.workspaceMount,
-      ...(options.workerKernelRef !== undefined ? { workerKernelRef: options.workerKernelRef } : {}),
-    }),
+    createSlice: (options) => createSlice(deps.client, cliWaitingRoomSliceApiOptions(options)),
     startSlice: (sliceRef) => startSlice(deps.client, sliceRef),
     updateSlices: (slice) => {
       deps.setSlicesState((current: any[] = []) => [

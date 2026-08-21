@@ -43,6 +43,7 @@ SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
+SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
@@ -96,6 +97,9 @@ fail() {
 
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
   fail "slice account owner/profile contains an unsafe path component"
+fi
+if [[ ! "$SLICE_DEVELOPMENT_MOUNT_COUNT" =~ ^[0-9]+$ || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 128 ]]; then
+  fail "slice development mount count is invalid"
 fi
 
 run_with_timeout() {
@@ -470,7 +474,14 @@ ensure_container() {
     if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
       docker_create_args+=(--security-opt seccomp=unconfined)
     fi
-    if [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
+    if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
+      for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
+        mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
+        development_mount="${!mount_variable:-}"
+        [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
+        docker_create_args+=(-v "$development_mount:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE")
+      done
+    elif [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
       docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
     fi
     if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then

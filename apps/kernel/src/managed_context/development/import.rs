@@ -58,7 +58,14 @@ pub(crate) fn recover_development_context_publication(
         .ok_or_else(|| {
             context_error("occupied development context destination has no publication receipt")
         })?;
-    validate_publication_receipt(&receipt, request, publication_id, &canonical_destination)?;
+    validate_publication_receipt(
+        &receipt,
+        request,
+        publication_id,
+        &canonical_destination,
+        true,
+        true,
+    )?;
     Ok(Some(receipt))
 }
 
@@ -66,6 +73,50 @@ pub(crate) fn recover_pruned_development_context_publication(
     destination_parent: &Path,
     expected_project_id: &str,
     expected_repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    recover_pruned_development_context_publication_with_head_policy(
+        destination_parent,
+        expected_project_id,
+        expected_repositories,
+        true,
+        true,
+    )
+}
+
+pub(crate) fn recover_pruned_mutable_development_context_publication(
+    destination_parent: &Path,
+    expected_project_id: &str,
+    expected_repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    recover_pruned_development_context_publication_with_head_policy(
+        destination_parent,
+        expected_project_id,
+        expected_repositories,
+        false,
+        true,
+    )
+}
+
+pub(crate) fn recover_pruned_development_context_publication_for_cleanup(
+    destination_parent: &Path,
+    expected_project_id: &str,
+    expected_repositories: &[DevelopmentSourceRepositoryBinding],
+) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
+    recover_pruned_development_context_publication_with_head_policy(
+        destination_parent,
+        expected_project_id,
+        expected_repositories,
+        false,
+        false,
+    )
+}
+
+fn recover_pruned_development_context_publication_with_head_policy(
+    destination_parent: &Path,
+    expected_project_id: &str,
+    expected_repositories: &[DevelopmentSourceRepositoryBinding],
+    require_original_head: bool,
+    require_repository_directories: bool,
 ) -> Result<Option<DevelopmentContextPublicationReceipt>, DaemonError> {
     let expected_binding_sha256s = expected_repositories
         .iter()
@@ -155,7 +206,14 @@ pub(crate) fn recover_pruned_development_context_publication(
             expected_source_repositories: Some(expected_repositories.to_vec()),
             destination_root: destination.clone(),
         };
-        validate_publication_receipt(&receipt, &validation_request, &publication_id, &destination)?;
+        validate_publication_receipt(
+            &receipt,
+            &validation_request,
+            &publication_id,
+            &destination,
+            require_original_head,
+            require_repository_directories,
+        )?;
         if matching.replace(receipt).is_some() {
             return Err(context_error(
                 "managed context publication recovery is ambiguous",
@@ -618,6 +676,8 @@ fn validate_publication_receipt(
     request: &DevelopmentContextImportRequest,
     publication_id: &str,
     canonical_destination: &Path,
+    require_original_head: bool,
+    require_repository_directories: bool,
 ) -> Result<(), DaemonError> {
     if receipt.schema_version != PUBLICATION_RECEIPT_SCHEMA_VERSION
         || receipt.publication_id != publication_id
@@ -671,19 +731,24 @@ fn validate_publication_receipt(
                 "development context publication receipt has invalid repository mappings",
             ));
         }
-        let repository_metadata = fs::symlink_metadata(&repository.destination_path)
-            .map_err(|error| context_io_error("inspect published repository destination", error))?;
-        if repository_metadata.file_type().is_symlink() || !repository_metadata.is_dir() {
-            return Err(context_error(
-                "published repository destination must be a real directory",
-            ));
-        }
-        if git_text_isolated(&repository.destination_path, &["rev-parse", "HEAD"])?
-            != repository.head_sha
-        {
-            return Err(context_error(
-                "published repository head does not match its receipt",
-            ));
+        if require_repository_directories {
+            let repository_metadata =
+                fs::symlink_metadata(&repository.destination_path).map_err(|error| {
+                    context_io_error("inspect published repository destination", error)
+                })?;
+            if repository_metadata.file_type().is_symlink() || !repository_metadata.is_dir() {
+                return Err(context_error(
+                    "published repository destination must be a real directory",
+                ));
+            }
+            if require_original_head
+                && git_text_isolated(&repository.destination_path, &["rev-parse", "HEAD"])?
+                    != repository.head_sha
+            {
+                return Err(context_error(
+                    "published repository head does not match its receipt",
+                ));
+            }
         }
         if repository.role == DevelopmentRepositoryRole::Primary {
             primary_ids.push(repository.repository_id.as_str());

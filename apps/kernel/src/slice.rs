@@ -21,9 +21,10 @@ use local_docker::{
 };
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
-    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
-    SliceLocalDockerPorts, SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart,
-    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    SliceDevelopmentPublication, SliceDisplayEndpoint, SliceDisplayEndpointAccess,
+    SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts, SliceLogEntry,
+    SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
+    SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
@@ -47,6 +48,7 @@ mod tests {
             workspace_id: None,
             worktree_id: None,
             workspace_mount: Some("/repo".to_string()),
+            development: None,
             worker_kernel_ref: None,
             display_url: Some("http://127.0.0.1:6080".to_string()),
             provider_auth: Vec::new(),

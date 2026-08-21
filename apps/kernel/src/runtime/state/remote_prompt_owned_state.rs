@@ -653,6 +653,7 @@ mod tests {
                     workspace_id: Some("workspace-stopped-slice".to_string()),
                     worktree_id: Some("worktree-stopped-slice".to_string()),
                     workspace_mount: None,
+                    development: None,
                     worker_kernel_ref: Some("slice:stopped-slice".to_string()),
                     display_url: None,
                     provider_auth: Vec::new(),

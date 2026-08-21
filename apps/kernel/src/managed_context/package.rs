@@ -1564,42 +1564,7 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
         .strip_prefix("sha256:")
         .ok_or_else(|| package_error("managed context plan digest is invalid"))?;
     validate_sha256(digest, "plan digest")?;
-    match &plan.development {
-        ManagedContextDevelopmentSelection::Empty => {}
-        ManagedContextDevelopmentSelection::SourceProject {
-            project_id,
-            repositories,
-        } => {
-            validate_identifier(project_id, "project id")?;
-            if repositories.is_empty() || repositories.len() > 32 {
-                return Err(package_error(
-                    "managed context repository selection is invalid",
-                ));
-            }
-            let mut primary = 0;
-            let mut seen = std::collections::HashSet::new();
-            for repository in repositories {
-                primary += usize::from(repository.role == DevelopmentRepositoryRole::Primary);
-                validate_reference(&repository.workspace_id, "Workspace id")?;
-                if let Some(worktree_id) = repository.worktree_id.as_deref() {
-                    validate_reference(worktree_id, "worktree id")?;
-                }
-                if !seen.insert((
-                    repository.workspace_id.as_str(),
-                    repository.worktree_id.as_deref(),
-                )) {
-                    return Err(package_error(
-                        "managed context repository selection contains duplicates",
-                    ));
-                }
-            }
-            if primary != 1 {
-                return Err(package_error(
-                    "managed context repository selection must have one primary",
-                ));
-            }
-        }
-    }
+    validate_development_selection(&plan.development)?;
     match &plan.provider_accounts {
         ManagedContextProviderAccountSelection::None => {}
         ManagedContextProviderAccountSelection::Selected { accounts } => {
@@ -1639,6 +1604,48 @@ pub(crate) fn validate_plan_binding(plan: &ManagedContextPlanBinding) -> Result<
                     ));
                 }
                 previous = Some(credential_id);
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_development_selection(
+    development: &ManagedContextDevelopmentSelection,
+) -> Result<(), DaemonError> {
+    match development {
+        ManagedContextDevelopmentSelection::Empty => {}
+        ManagedContextDevelopmentSelection::SourceProject {
+            project_id,
+            repositories,
+        } => {
+            validate_identifier(project_id, "project id")?;
+            if repositories.is_empty() || repositories.len() > 32 {
+                return Err(package_error(
+                    "managed context repository selection is invalid",
+                ));
+            }
+            let mut primary = 0;
+            let mut seen = std::collections::HashSet::new();
+            for repository in repositories {
+                primary += usize::from(repository.role == DevelopmentRepositoryRole::Primary);
+                validate_reference(&repository.workspace_id, "Workspace id")?;
+                if let Some(worktree_id) = repository.worktree_id.as_deref() {
+                    validate_reference(worktree_id, "worktree id")?;
+                }
+                if !seen.insert((
+                    repository.workspace_id.as_str(),
+                    repository.worktree_id.as_deref(),
+                )) {
+                    return Err(package_error(
+                        "managed context repository selection contains duplicates",
+                    ));
+                }
+            }
+            if primary != 1 {
+                return Err(package_error(
+                    "managed context repository selection must have one primary",
+                ));
             }
         }
     }

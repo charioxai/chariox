@@ -308,25 +308,12 @@ export function managedEnvironmentContextPlanInput(
     || state.managedProviderAccountSource === "selected_account"
     || state.managedGitCredentialSource === "selected"
   const project = selectedManagedProject(state, remote)
-  const primaryWorkspaceId = remote.workspaceId ?? ""
-  const workspaceIds = project
-    ? project.workspace_ids?.length ? project.workspace_ids : [project.workspace_id]
-    : []
-  const repositories = state.managedDevelopmentMode === "current_project" && project
-    ? [primaryWorkspaceId, ...workspaceIds.filter((workspaceId) => workspaceId !== primaryWorkspaceId)]
-      .filter((workspaceId, index, values) => workspaceId && values.indexOf(workspaceId) === index)
-      .filter((_, index) => state.managedRepositoryMode === "project_defaults" || index === 0)
-      .map((workspaceId, index) => ({
-        role: index === 0 ? "primary" as const : "supporting" as const,
-        workspaceId,
-        worktreeId: index === 0 ? remote.worktreeId ?? null : null,
-      }))
-    : []
+  const developmentSetup = waitingRoomProjectDevelopmentSetup(state, remote)
   return {
     sourceTargetId: sourceRequired ? state.managedContextSourceTargetId ?? null : null,
     kernelContext: state.managedKernelContext ?? "empty",
     developmentSetup: state.managedDevelopmentMode === "current_project" && project
-      ? { kind: "source_project", projectId: project.id, repositories }
+      ? developmentSetup ?? { kind: "empty" }
       : { kind: "empty" },
     providerAccounts: state.managedProviderAccountSource === "selected_account"
       ? {
@@ -343,8 +330,30 @@ export function managedEnvironmentContextPlanInput(
   }
 }
 
+export function waitingRoomProjectDevelopmentSetup(
+  state: Pick<WaitingRoomState, "projectSelectionId" | "managedRepositoryMode">,
+  remote: WaitingRoomRemoteState,
+): ManagedEnvironmentContextPlanInput["developmentSetup"] | null {
+  const project = selectedManagedProject(state, remote)
+  if (!project) return null
+  const primaryWorkspaceId = remote.workspaceId ?? ""
+  const workspaceIds = project.workspace_ids?.length ? project.workspace_ids : [project.workspace_id]
+  const repositories = [
+    primaryWorkspaceId,
+    ...workspaceIds.filter((workspaceId) => workspaceId !== primaryWorkspaceId),
+  ]
+    .filter((workspaceId, index, values) => workspaceId && values.indexOf(workspaceId) === index)
+    .filter((_, index) => state.managedRepositoryMode === "primary_only" ? index === 0 : true)
+    .map((workspaceId, index) => ({
+      role: index === 0 ? "primary" as const : "supporting" as const,
+      workspaceId,
+      worktreeId: index === 0 ? remote.worktreeId ?? null : null,
+    }))
+  return { kind: "source_project", projectId: project.id, repositories }
+}
+
 function selectedManagedProject(
-  state: WaitingRoomState,
+  state: Pick<WaitingRoomState, "projectSelectionId">,
   remote: WaitingRoomRemoteState,
 ): WaitingRoomProjectSummary | null {
   const selection = projectSelectionFromId(state.projectSelectionId ?? "default")

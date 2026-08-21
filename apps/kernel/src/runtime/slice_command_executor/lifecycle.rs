@@ -331,6 +331,16 @@ pub(super) async fn execute_start_slice_request(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
+    let materialization_state = runtime_state.clone();
+    let materialization_slice = initial_record.clone();
+    let initial_record = tokio::task::spawn_blocking(move || {
+        materialization_state.materialize_slice_development_context(&materialization_slice)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.start",
+        message: format!("slice development materialization task failed: {error}"),
+    })??;
     let relaunch_manifests =
         runtime_state.slice_agent_relaunch_manifests(&initial_record, "slice.start")?;
     runtime_state
@@ -550,6 +560,27 @@ pub(super) async fn execute_delete_slice_request(
             );
             return Err(error);
         }
+    }
+    let cleanup_state = runtime_state.clone();
+    let cleanup_slice = deleting_slice.clone();
+    let cleanup_result = tokio::task::spawn_blocking(move || {
+        cleanup_state.cleanup_slice_development_context(&cleanup_slice)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.delete",
+        message: format!("slice development cleanup task failed: {error}"),
+    })?;
+    if let Err(error) = cleanup_result {
+        let _ = runtime_state.mark_slice_delete_failed(&request.slice_ref, &error);
+        let _ = runtime_state.record_slice_audit_event(
+            &deleting_slice,
+            "delete",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
     }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
     runtime_state
@@ -787,6 +818,9 @@ mod tests {
             workspace_id: Some("workspace".to_string()),
             worktree_id: Some("worktree".to_string()),
             workspace_mount: Some("worktree".to_string()),
+            development: None,
+            development_storage_root: None,
+            development_publication: None,
             worker_kernel_ref: "slice:dev".to_string(),
             worker_kernel_id: Some("worker-1".to_string()),
             worker_machine_id: Some("machine-slice-1".to_string()),

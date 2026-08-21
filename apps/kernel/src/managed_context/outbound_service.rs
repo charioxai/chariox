@@ -1152,7 +1152,7 @@ pub(crate) fn validate_ticket(
     Ok(())
 }
 
-fn resolve_repository_selection(
+pub(crate) fn resolve_repository_selection(
     binding: &crate::managed_context::development::DevelopmentSourceRepositoryBinding,
 ) -> Result<DevelopmentRepositorySelection, DaemonError> {
     let worktree_path = match binding.worktree_id.as_deref() {

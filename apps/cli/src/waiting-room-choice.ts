@@ -54,6 +54,8 @@ export function waitingRoomChoice(
   const placement = waitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
+    projectSelectionId: state.projectSelectionId,
+    repositoryMode: state.managedRepositoryMode,
     selectedMachineRef: placement.machineRef,
     selectedKernelRef: placement.kernelRef,
   })

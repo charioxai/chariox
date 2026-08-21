@@ -6,6 +6,7 @@ import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
   createWaitingRoomActivationController,
+  type WaitingRoomActivationControllerDeps,
   type WaitingRoomCreateSessionLaunch,
   type WaitingRoomPreparedManagedLaunch,
 } from "./waiting-room-activation-controller.js"
@@ -173,6 +174,52 @@ test("waiting room activation creates and starts new headed slices before sessio
     "attachBinding",
     "flash:info:created session Review in /worktree · slice slice-created · workspace live sync config default",
   ])
+})
+
+test("waiting room activation sends the selected multi-repository Project to a new slice", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      projectSelectionId: "existing:project-1",
+      managedRepositoryMode: "project_defaults",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
+    kind: "source_project",
+    projectId: "project-1",
+    repositories: [
+      { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
+      { role: "supporting", workspaceId: "/supporting", worktreeId: null },
+    ],
+  })
 })
 
 test("waiting room activation reports explicit created-session live sync mode", async () => {
@@ -590,6 +637,7 @@ function createHarness(options: {
     launch: WaitingRoomLaunchConfig,
   ) => Promise<WaitingRoomPreparedManagedLaunch>
   waitingRoomState?: Partial<WaitingRoomState>
+  remoteState?: WaitingRoomRemoteState
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -607,6 +655,7 @@ function createHarness(options: {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    developmentSetup?: NonNullable<Parameters<NonNullable<WaitingRoomActivationControllerDeps["createSlice"]>>[0]["developmentSetup"]>
   }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
   const deletedSessions: Array<{ sessionId: string; workspacePath: string }> = []
@@ -620,7 +669,7 @@ function createHarness(options: {
       calls.push("connectKernel")
     },
     getWaitingRoomState: () => (options.waitingRoomState ?? {}) as WaitingRoomState,
-    getRemoteState: () => ({} as WaitingRoomRemoteState),
+    getRemoteState: () => options.remoteState ?? ({} as WaitingRoomRemoteState),
     getWorkspaceTarget: () => workspaceTarget,
     getWorktreeTarget: () => worktreeTarget,
     getAvailableSessions: () => [],
@@ -683,6 +732,7 @@ function createHarness(options: {
         workspaceId: slice.workspaceId,
         worktreeId: slice.worktreeId,
         workspaceMount: slice.workspaceMount,
+        ...(slice.developmentSetup ? { developmentSetup: slice.developmentSetup } : {}),
       })
       return sliceRecord("slice-created", slice.displayMode)
     },

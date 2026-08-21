@@ -144,6 +144,9 @@ export type SliceRecord = {
   workspace_id?: string | null
   worktree_id?: string | null
   workspace_mount?: string | null
+  development?: SliceDevelopmentSelection | null
+  development_storage_root?: string | null
+  development_publication?: SliceDevelopmentPublication | null
   worker_kernel_ref: string
   worker_kernel_id?: string | null
   worker_machine_id?: string | null
@@ -157,6 +160,25 @@ export type SliceRecord = {
   display_endpoint?: SliceDisplayEndpoint | null
   created_at_ms: number
   updated_at_ms: number
+}
+
+export type SliceDevelopmentSelection =
+  | { kind: "empty" }
+  | {
+      kind: "source_project"
+      project_id: string
+      repositories: Array<{
+        role: "primary" | "supporting"
+        workspaceId: string
+        worktreeId?: string | null
+      }>
+    }
+
+export type SliceDevelopmentPublication = {
+  publicationId: string
+  destinationRoot: string
+  primaryRepositoryPath: string
+  repositoryPaths?: string[]
 }
 
 export type SliceSavedStateRecord = {

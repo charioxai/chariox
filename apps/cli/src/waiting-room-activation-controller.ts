@@ -19,6 +19,8 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
+import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-managed-environments.js"
 import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
@@ -73,6 +75,7 @@ export type WaitingRoomActivationControllerDeps = {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
@@ -350,12 +353,21 @@ export function createWaitingRoomActivationController(
     }
     const worktreePath = deps.getWorktreeTarget()
     const workspacePath = deps.getWorkspaceTarget()
+    const developmentSetup = waitingRoomProjectDevelopmentSetup(
+      deps.getWaitingRoomState(),
+      {
+        ...deps.getRemoteState(),
+        workspaceId: workspacePath,
+        worktreeId: worktreePath,
+      },
+    )
     const slice = await deps.createSlice({
       name: defaultSliceName(worktreePath),
       displayMode: launch.sliceCreate.displayMode,
       workspaceId: workspacePath,
       worktreeId: worktreePath,
       workspaceMount: worktreePath,
+      ...(developmentSetup ? { developmentSetup } : {}),
       ...(launch.workerKernelRef && launch.workerKernelRef !== "local" ? { workerKernelRef: launch.workerKernelRef } : {}),
     })
     deps.updateSlices?.(slice)

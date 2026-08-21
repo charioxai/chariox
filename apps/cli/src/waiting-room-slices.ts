@@ -5,8 +5,10 @@ import {
   formatSliceRelayLabel,
   sliceProviderAuthCoverage,
 } from "@chariox/kernel-client/slice-format"
-import type { WaitingRoomState } from "./waiting-room-types.js"
+import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { selectedWaitingRoomWorktreePath } from "./waiting-room-worktrees.js"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomSliceScope = {
   workspacePath?: string | null | undefined
@@ -14,15 +16,34 @@ export type WaitingRoomSliceScope = {
   worktreePath?: string | null | undefined
   selectedMachineRef?: string | null | undefined
   selectedKernelRef?: string | null | undefined
+  projectSelectionId?: string | null | undefined
+  repositoryMode?: WaitingRoomState["managedRepositoryMode"]
 }
 
 export function waitingRoomSlices(
-  remote: { slices?: SliceRecord[] } = {},
+  remote: WaitingRoomRemoteState = {},
   scope: WaitingRoomSliceScope = {},
 ) {
   const worktreePath = selectedWaitingRoomWorktreePath(scope.worktreeSelectionId, scope.worktreePath)
+  const workspaceId = scope.workspacePath || remote.workspaceId
+  const worktreeId = worktreePath || remote.worktreeId
+  const expectedDevelopment = waitingRoomProjectDevelopmentSetup({
+    ...(scope.projectSelectionId ? { projectSelectionId: scope.projectSelectionId } : {}),
+    ...(scope.repositoryMode ? { managedRepositoryMode: scope.repositoryMode } : {}),
+  }, {
+    ...remote,
+    ...(workspaceId ? { workspaceId } : {}),
+    ...(worktreeId ? { worktreeId } : {}),
+  })
   return (remote.slices ?? [])
-    .filter((slice) => sliceCompatibleWithScope(slice, scope.workspacePath, worktreePath, scope.selectedMachineRef, scope.selectedKernelRef))
+    .filter((slice) => sliceCompatibleWithScope(
+      slice,
+      scope.workspacePath,
+      worktreePath,
+      scope.selectedMachineRef,
+      scope.selectedKernelRef,
+      expectedDevelopment,
+    ))
     .slice()
     .sort((left, right) => formatWaitingRoomSliceLabel(left).localeCompare(formatWaitingRoomSliceLabel(right)))
 }
@@ -203,12 +224,16 @@ function sliceCompatibleWithScope(
   worktreePath: string,
   machineRef: string | null | undefined,
   kernelRef: string | null | undefined,
+  expectedDevelopment: ManagedEnvironmentDevelopmentSetup | null,
 ) {
   if (slice.workspace_id && workspacePath && slice.workspace_id !== workspacePath) {
     return false
   }
   const sliceWorktree = slice.worktree_id || slice.workspace_mount || ""
   if (sliceWorktree && worktreePath && sliceWorktree !== worktreePath) {
+    return false
+  }
+  if (expectedDevelopment && !sliceDevelopmentMatches(slice, expectedDevelopment)) {
     return false
   }
   const selectedKernelRef = kernelRef?.trim()
@@ -220,6 +245,23 @@ function sliceCompatibleWithScope(
     return slice.worker_machine_id === selectedMachineRef
   }
   return true
+}
+
+function sliceDevelopmentMatches(
+  slice: SliceRecord,
+  expected: ManagedEnvironmentDevelopmentSetup,
+): boolean {
+  if (expected.kind === "empty") return slice.development?.kind === "empty"
+  const actual = slice.development
+  return actual?.kind === "source_project"
+    && actual.project_id === expected.projectId
+    && actual.repositories.length === expected.repositories.length
+    && actual.repositories.every((repository, index) => {
+      const expectedRepository = expected.repositories[index]
+      return repository.role === expectedRepository?.role
+        && repository.workspaceId === expectedRepository.workspaceId
+        && (repository.worktreeId ?? null) === expectedRepository.worktreeId
+    })
 }
 
 function modulo(value: number, size: number) {

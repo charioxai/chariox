@@ -736,6 +736,7 @@ mod tests {
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),
+                        development: None,
                         worker_kernel_ref: None,
                         display_url: Some("http://127.0.0.1:6080".to_string()),
                         provider_auth: Vec::new(),

@@ -475,6 +475,7 @@ async fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_c
                 workspace_id: Some(session.workspace_id().to_string()),
                 worktree_id: Some(session.worktree_id().to_string()),
                 workspace_mount: Some(session.worktree_id().to_string()),
+                development: None,
                 worker_kernel_ref: Some(daemon_id.clone()),
                 display_url: None,
                 provider_auth: Vec::new(),

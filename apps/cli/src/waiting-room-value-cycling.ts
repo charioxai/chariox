@@ -180,6 +180,8 @@ export function cycleWaitingRoomFocusedValue(
       state,
       waitingRoomSlices(remote, {
         worktreeSelectionId: state.worktreeSelectionId,
+        projectSelectionId: state.projectSelectionId,
+        repositoryMode: state.managedRepositoryMode,
         selectedMachineRef: state.selectedMachineRef,
         selectedKernelRef: state.selectedKernelRef,
       }),
