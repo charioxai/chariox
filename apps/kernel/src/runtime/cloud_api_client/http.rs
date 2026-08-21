@@ -59,6 +59,43 @@ where
         })?
 }
 
+pub(crate) async fn get_cloud_json_authenticated<T>(
+    api_url: String,
+    path: String,
+    bearer_token: String,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        get_cloud_json_authenticated_blocking(api_url, &path, &bearer_token)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "get authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
+pub(crate) async fn post_cloud_json_authenticated<T>(
+    api_url: String,
+    path: String,
+    bearer_token: String,
+    body: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    tokio::task::spawn_blocking(move || {
+        post_cloud_json_authenticated_blocking(api_url, &path, &bearer_token, body)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "post authenticated cloud json",
+        message: error.to_string(),
+    })?
+}
+
 fn post_cloud_json_blocking<T>(
     api_url: String,
     path: &str,
@@ -107,6 +144,64 @@ where
         .timeout(CLOUD_API_REQUEST_TIMEOUT)
         .build();
     let response = agent.get(&url).call().map_err(cloud_transport_error)?;
+    let payload = response
+        .into_string()
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "read cloud relay response",
+            message: error.to_string(),
+        })?;
+    serde_json::from_str::<T>(&payload).map_err(|error| DaemonError::LocalTransport {
+        operation: "decode cloud relay response",
+        message: error.to_string(),
+    })
+}
+
+fn get_cloud_json_authenticated_blocking<T>(
+    api_url: String,
+    path: &str,
+    bearer_token: &str,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let url = format!("{api_url}{path}");
+    let agent = ureq::AgentBuilder::new()
+        .timeout(CLOUD_API_REQUEST_TIMEOUT)
+        .build();
+    let response = agent
+        .get(&url)
+        .set("authorization", &format!("Bearer {bearer_token}"))
+        .call()
+        .map_err(cloud_transport_error)?;
+    decode_cloud_response(response)
+}
+
+fn post_cloud_json_authenticated_blocking<T>(
+    api_url: String,
+    path: &str,
+    bearer_token: &str,
+    body: serde_json::Value,
+) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
+    let url = format!("{api_url}{path}");
+    let agent = ureq::AgentBuilder::new()
+        .timeout(CLOUD_API_REQUEST_TIMEOUT)
+        .build();
+    let response = agent
+        .post(&url)
+        .set("authorization", &format!("Bearer {bearer_token}"))
+        .set("content-type", "application/json")
+        .send_string(&body.to_string())
+        .map_err(cloud_transport_error)?;
+    decode_cloud_response(response)
+}
+
+fn decode_cloud_response<T>(response: ureq::Response) -> Result<T, DaemonError>
+where
+    T: serde::de::DeserializeOwned,
+{
     let payload = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {

@@ -126,6 +126,18 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
                 .session(&request.session_id)
                 .optional_agent(request.agent_id.as_deref())
         }
+        LocalDaemonRequest::ListManagedEnvironmentCatalog(_) => {
+            LocalRequestMetadata::new("managed_environment.catalog", Normal)
+        }
+        LocalDaemonRequest::GetManagedEnvironment(_) => {
+            LocalRequestMetadata::new("managed_environment.get", Normal)
+        }
+        LocalDaemonRequest::CreateManagedEnvironment(_) => {
+            LocalRequestMetadata::new("managed_environment.create", Interactive)
+        }
+        LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_) => {
+            LocalRequestMetadata::new("managed_environment.lifecycle", Interactive)
+        }
         LocalDaemonRequest::StartManagedContextTransfer(_) => {
             LocalRequestMetadata::new("managed_context.transfer.start", Background)
         }
@@ -781,6 +793,10 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         | LocalDaemonRequest::DeleteKernel(_)
         | LocalDaemonRequest::GetDaemonHealth(_)
         | LocalDaemonRequest::ExportDebugBundle(_)
+        | LocalDaemonRequest::ListManagedEnvironmentCatalog(_)
+        | LocalDaemonRequest::GetManagedEnvironment(_)
+        | LocalDaemonRequest::CreateManagedEnvironment(_)
+        | LocalDaemonRequest::RequestManagedEnvironmentLifecycle(_)
         | LocalDaemonRequest::StartManagedContextTransfer(_)
         | LocalDaemonRequest::GetManagedContextTransferStatus(_)
         | LocalDaemonRequest::GetSessionHistoryOutline(_)

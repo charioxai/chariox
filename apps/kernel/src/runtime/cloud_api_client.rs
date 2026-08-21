@@ -7,8 +7,9 @@ use crate::runtime::cloud_relay_control::CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS;
 
 mod http;
 pub(crate) use http::{
-    cloud_error_is_retryable, cloud_url_component, get_cloud_json, is_stale_cloud_link_error,
-    normalize_cloud_api_url, post_cloud_json, post_cloud_json_dynamic,
+    cloud_error_is_retryable, cloud_url_component, get_cloud_json, get_cloud_json_authenticated,
+    is_stale_cloud_link_error, normalize_cloud_api_url, post_cloud_json,
+    post_cloud_json_authenticated, post_cloud_json_dynamic,
 };
 mod session_collaboration;
 pub(crate) use session_collaboration::{
