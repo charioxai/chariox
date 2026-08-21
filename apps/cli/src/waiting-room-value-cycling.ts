@@ -23,6 +23,18 @@ import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { cycleWaitingRoomProjectSelectionId } from "./waiting-room-projects.js"
+import {
+  cycleManagedAutoStopPreset,
+  cycleManagedComputeClass,
+  cycleManagedCustomIdle,
+  cycleManagedCustomMinimum,
+  cycleManagedDevelopment,
+  cycleManagedGitCredentials,
+  cycleManagedKernelContext,
+  cycleManagedProviderAccounts,
+  cycleManagedRegion,
+  cycleManagedRepositoryMode,
+} from "./waiting-room-managed-environments.js"
 
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
@@ -109,6 +121,36 @@ export function cycleWaitingRoomFocusedValue(
   }
   if (state.focus === "launch-kernel") {
     return context.normalizeState(cycleWaitingRoomLaunchKernel(state, remote, delta))
+  }
+  if (state.focus === "managed-compute") {
+    return context.normalizeState(cycleManagedComputeClass(state, remote, delta))
+  }
+  if (state.focus === "managed-region") {
+    return context.normalizeState(cycleManagedRegion(state, remote, delta))
+  }
+  if (state.focus === "managed-kernel-context") {
+    return context.normalizeState(cycleManagedKernelContext(state, remote, delta))
+  }
+  if (state.focus === "managed-development") {
+    return context.normalizeState(cycleManagedDevelopment(state))
+  }
+  if (state.focus === "managed-repositories") {
+    return context.normalizeState(cycleManagedRepositoryMode(state))
+  }
+  if (state.focus === "managed-provider-accounts") {
+    return context.normalizeState(cycleManagedProviderAccounts(state))
+  }
+  if (state.focus === "managed-git-credentials") {
+    return context.normalizeState(cycleManagedGitCredentials(state))
+  }
+  if (state.focus === "managed-auto-stop") {
+    return context.normalizeState(cycleManagedAutoStopPreset(state, delta))
+  }
+  if (state.focus === "managed-custom-minimum") {
+    return context.normalizeState(cycleManagedCustomMinimum(state, delta))
+  }
+  if (state.focus === "managed-custom-idle") {
+    return context.normalizeState(cycleManagedCustomIdle(state, delta))
   }
   if (state.focus === "project") {
     return {

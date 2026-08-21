@@ -19,6 +19,7 @@ import {
 import type { SessionListEntry } from "./sessions.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import { NEW_MANAGED_MACHINE_REF } from "./waiting-room-managed-environments.js"
 import {
   __setWaitingRoomWorktreeInventoryForTest,
   resolvePendingWaitingRoomWorktreePath,
@@ -421,6 +422,46 @@ test("deriveWaitingRoomActivationDecision returns join and error decisions for s
     action: "error",
     message: "no session available to join",
   })
+})
+
+test("managed draft errors do not block joins or unattached-agent actions", () => {
+  const invalidManagedDraft = {
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    managedComputeClass: "retired-class",
+    managedRegion: "retired-region",
+  } satisfies Partial<WaitingRoomState>
+  const sessions = [session("session-1")]
+  const join = deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ ...invalidManagedDraft, focus: "session" }),
+    sessions,
+    catalog: catalog(),
+    currentProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+  })
+  assert.equal(join.action, "join")
+  if (join.action === "join") {
+    assert.equal(join.launch.managedEnvironment, undefined)
+  }
+
+  assert.deepEqual(deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ ...invalidManagedDraft, focus: "external-session" }),
+    sessions: [],
+    catalog: catalog(),
+    currentProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+    remote: { externalProviderSessions: [externalSession("codex:thread-1")] },
+  }), {
+    action: "import-external-session",
+    externalSessionId: "codex:thread-1",
+  })
+
+  assert.deepEqual(deriveWaitingRoomActivationDecision({
+    state: waitingRoomState({ ...invalidManagedDraft, focus: "join-sessions" }),
+    sessions,
+    catalog: catalog(),
+    currentProvider: "opencode",
+    currentModel: "opencode/gpt-5.4",
+  }), { action: "none" })
 })
 
 test("deriveWaitingRoomControlActivationDecision stages workspace and worktree commands", () => {

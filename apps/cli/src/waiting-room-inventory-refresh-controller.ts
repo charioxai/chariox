@@ -14,6 +14,7 @@ import type {
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 type WaitingRoomInventoryStatus = "loading" | "ready" | "error"
 const maximumTrackedKernelInventories = 64
@@ -45,6 +46,9 @@ type WaitingRoomInventoryRefreshControllerOptions = {
   setTerminals: (terminals: TerminalView[]) => void
   setSlices: (slices: SliceRecord[]) => void
   setProviderAccounts?: (profiles: ProviderAccountProfile[]) => void
+  setManagedEnvironmentCatalog?: (catalog: ManagedEnvironmentCatalog | undefined) => void
+  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
+  setLaunchTarget?: (target: WaitingRoomInventory["launchTarget"]) => void
   setExternalProviderSessions?: (sessions: ExternalProviderSessionRecord[]) => void
   setExternalProviderSessionsPage?: (page: { hasMore: boolean; nextCursor: string | null }) => void
   reconcileWaitingRoom: (state: WaitingRoomState) => void
@@ -70,6 +74,7 @@ export function createWaitingRoomInventoryRefreshController(
   const formatError = options.formatError ?? ((error: unknown) => error instanceof Error ? error.message : String(error))
   let inventoryVersion: string | null = null
   let activeKernelId: string | null = null
+  let managedEnvironmentCatalogScope: string | null = null
   let inventoryInvalidated = false
   const inventoriesByKernel = new Map(
     (options.cachedInventories ?? []).map((inventory) => [inventory.kernelId, inventory]),
@@ -153,6 +158,16 @@ export function createWaitingRoomInventoryRefreshController(
     options.setTerminals(snapshot.terminals)
     options.setSlices(snapshot.slices)
     options.setProviderAccounts?.(snapshot.providerAccounts ?? [])
+    const nextManagedEnvironmentCatalogScope = options.getManagedEnvironmentCatalogScope?.(snapshot)
+      ?? snapshot.kernelId
+    if (snapshot.managedEnvironmentCatalog !== undefined) {
+      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
+      options.setManagedEnvironmentCatalog?.(snapshot.managedEnvironmentCatalog)
+    } else if (managedEnvironmentCatalogScope !== nextManagedEnvironmentCatalogScope) {
+      managedEnvironmentCatalogScope = nextManagedEnvironmentCatalogScope
+      options.setManagedEnvironmentCatalog?.(undefined)
+    }
+    options.setLaunchTarget?.(snapshot.launchTarget)
     options.setProjects?.(snapshot.projects ?? [])
     const externalProviderSessionsPage = {
       ...(snapshot.externalProviderSessions !== undefined ? { externalProviderSessions: snapshot.externalProviderSessions } : {}),

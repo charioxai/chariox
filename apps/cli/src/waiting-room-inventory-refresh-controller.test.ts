@@ -15,6 +15,7 @@ import type {
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 test("waiting room inventory refresh is idle while kernel is disconnected", async () => {
   const harness = createHarness({ connected: false })
@@ -42,6 +43,89 @@ test("waiting room inventory refresh applies snapshots and filters hidden inacti
   assert.equal(harness.inventoryStatus(), "ready")
   assert.deepEqual(harness.remoteKernels().map((kernel) => kernel.kernel_id), ["kernel-busy", "kernel-visible"])
   assert.equal(harness.reconcileCount(), 1)
+})
+
+test("waiting room inventory refresh applies managed catalog and exact launch target", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [inventory("v1", {
+      managedEnvironmentCatalog,
+      launchTarget: { workspaceId: "workspace-1", worktreeId: "worktree-1" },
+    })],
+  })
+
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+  assert.deepEqual(harness.launchTarget(), {
+    workspaceId: "workspace-1",
+    worktreeId: "worktree-1",
+  })
+})
+
+test("waiting room inventory refresh preserves the last managed catalog on transient omission", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { managedEnvironmentCatalog }),
+      inventory("v2"),
+    ],
+  })
+
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+})
+
+test("waiting room inventory refresh clears retained managed catalog across kernel scope", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v2", { kernelId: "kernel-b" }),
+    ],
+  })
+
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), undefined)
+})
+
+test("waiting room inventory refresh clears retained managed catalog across Cloud account scope", async () => {
+  let scope = "kernel-a:account-a"
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v2", { kernelId: "kernel-a" }),
+    ],
+    getManagedEnvironmentCatalogScope: () => scope,
+  })
+
+  await harness.controller.refreshNow()
+  scope = "kernel-a:account-b"
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), undefined)
 })
 
 test("waiting room inventory refresh reconciles unchanged versions without replacing state", async () => {
@@ -302,6 +386,7 @@ function createHarness(options: {
   snapshots?: WaitingRoomInventory[]
   getInventory?: () => Promise<WaitingRoomInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
+  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
 } = {}) {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
@@ -314,6 +399,8 @@ function createHarness(options: {
   let projects: WaitingRoomProjectSummary[] = []
   let externalProviderSessions: ExternalProviderSessionRecord[] = []
   let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
+  let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let launchTarget: WaitingRoomInventory["launchTarget"]
   let inventoryCalls = 0
   let reconcileCount = 0
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
@@ -353,6 +440,15 @@ function createHarness(options: {
     },
     setTerminals: () => {},
     setSlices: () => {},
+    setManagedEnvironmentCatalog: (catalog) => {
+      managedEnvironmentCatalog = catalog
+    },
+    ...(options.getManagedEnvironmentCatalogScope
+      ? { getManagedEnvironmentCatalogScope: options.getManagedEnvironmentCatalogScope }
+      : {}),
+    setLaunchTarget: (target) => {
+      launchTarget = target
+    },
     setExternalProviderSessions: (sessions) => {
       externalProviderSessions = sessions
     },
@@ -380,6 +476,8 @@ function createHarness(options: {
     projects: () => projects,
     externalProviderSessions: () => externalProviderSessions,
     externalProviderSessionsPage: () => externalProviderSessionsPage,
+    managedEnvironmentCatalog: () => managedEnvironmentCatalog,
+    launchTarget: () => launchTarget,
     reconcileCount: () => reconcileCount,
     warnings: () => warnings,
   }

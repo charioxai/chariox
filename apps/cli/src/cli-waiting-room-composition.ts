@@ -46,6 +46,7 @@ import {
   renameProject,
   restoreProject,
 } from "./project-api.js"
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 type AnyFn = (...args: any[]) => any
 
@@ -126,13 +127,27 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const waitingRoomInventoryCache = createWaitingRoomInventoryCache()
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
   let providerCatalogSelectionRevision = 0
+  let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let sourceLaunchTarget: { workspaceId: string; worktreeId: string } | null | undefined
+  const managedWaitingRoomRemote = () => ({
+    ...(sourceLaunchTarget
+      ? { workspaceId: sourceLaunchTarget.workspaceId, worktreeId: sourceLaunchTarget.worktreeId }
+      : {}),
+    ...(managedEnvironmentCatalog
+      ? {
+          managedComputeClasses: managedEnvironmentCatalog.computeClasses,
+          managedContextSources: managedEnvironmentCatalog.contextSources,
+          managedEnvironments: managedEnvironmentCatalog.environments,
+        }
+      : {}),
+  })
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
-      workspaceId: deps.pendingWorkspaceTarget(),
+      ...managedWaitingRoomRemote(),
       cloudNotice: deps.waitingRoomCloudNotice(),
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
@@ -215,6 +230,22 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setRemoteMachines: deps.setRemoteMachinesState,
     setRemoteKernels: deps.setRemoteKernelsState,
     setProviderAccounts: deps.setProviderAccountsState,
+    setManagedEnvironmentCatalog: (catalog) => {
+      managedEnvironmentCatalog = catalog
+    },
+    getManagedEnvironmentCatalogScope: (inventory) => {
+      const profile = relayCloudProfile(deps.preferencesState())
+      return JSON.stringify([
+        inventory.kernelId,
+        profile?.apiUrl ?? null,
+        profile?.accountId ?? null,
+        profile?.userId ?? null,
+        profile?.realmId ?? null,
+      ])
+    },
+    setLaunchTarget: (target) => {
+      sourceLaunchTarget = target
+    },
     setTerminals: deps.setTerminalsState,
     setSlices: deps.setSlicesState,
     setExternalProviderSessions: deps.setExternalProviderSessionsState,
@@ -298,7 +329,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     connectKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
-      workspaceId: deps.pendingWorkspaceTarget(),
+      ...managedWaitingRoomRemote(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),
@@ -391,7 +422,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     connectDetachedKernel: () => connectDetachedKernelFromWaitingRoom(),
     getWaitingRoomState: deps.waitingRoomState,
     getRemoteState: () => ({
-      workspaceId: deps.pendingWorkspaceTarget(),
+      ...managedWaitingRoomRemote(),
       cloudNotice: deps.waitingRoomCloudNotice(),
       collaborationBackend: relayCloudProfile(deps.preferencesState()) ? "cloud" : deps.relayStatusState()?.configured ? "relay" : "local",
       inventoryStatus: deps.waitingRoomInventoryStatus(),
@@ -490,6 +521,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const waitingRoomTargets = () => ({
     workspacePath: deps.pendingWorkspaceTarget(),
     worktreePath: deps.pendingWorktreeTarget(),
+    workspaceId: sourceLaunchTarget?.workspaceId,
+    worktreeId: sourceLaunchTarget?.worktreeId,
+    managedEnvironmentCatalog,
   })
 
   return {

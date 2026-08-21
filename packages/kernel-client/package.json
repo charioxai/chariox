@@ -8,6 +8,7 @@
     "./ipc": "./dist/ipc.js",
     "./ipc-requests": "./dist/ipc-requests.js",
     "./ipc-managed-context-requests": "./dist/ipc-managed-context-requests.js",
+    "./ipc-managed-environment-requests": "./dist/ipc-managed-environment-requests.js",
     "./extension-grant-placement": "./dist/extension-grant-placement.js",
     "./agent-activity": "./dist/agent-activity.js",
     "./agent-pane-state": "./dist/agent-pane-state.js",

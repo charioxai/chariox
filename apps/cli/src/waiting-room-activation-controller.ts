@@ -246,6 +246,9 @@ export function createWaitingRoomActivationController(
   }
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
+    if (launch.managedEnvironment) {
+      throw new Error("managed session launch orchestration is unavailable in this build")
+    }
     await deps.prepareSessionOwnerClient?.(launch)
     const sliceRef = await prepareSliceForLaunch(launch)
     const session = await deps.createSession(

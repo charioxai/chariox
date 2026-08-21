@@ -10,6 +10,7 @@ import { waitingRoomAllSlices } from "./waiting-room-slice-rows.js"
 import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomFocusTarget = {
   focus: WaitingRoomFocus
@@ -77,7 +78,7 @@ export function moveWaitingRoomFocus(
 export function waitingRoomFocusTargets(
   sessions: SessionListEntry[],
   remote: WaitingRoomRemoteState = {},
-  state?: Pick<WaitingRoomState, "showArchivedProjects">,
+  state?: Pick<WaitingRoomState, "showArchivedProjects" | "selectedMachineRef" | "managedAutoStopPreset">,
 ): WaitingRoomFocusTarget[] {
   const visibleSessions = waitingRoomSessions(sessions)
   const previewSessions = waitingRoomPreviewSessions(sessions)
@@ -88,10 +89,29 @@ export function waitingRoomFocusTargets(
   const externalSessions = externalProviderSessionPageSessions(remote)
   const projects = waitingRoomProjectsForNavigation(remote.projects, Boolean(state?.showArchivedProjects))
   const archivedProjectCount = (remote.projects ?? []).filter((project) => project.status === "archived").length
+  const managedConfiguration = waitingRoomConfiguresNewManagedMachine(state?.selectedMachineRef)
   return [
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
     { focus: "launch-kernel" as const, sessionIndex: 0 },
+    ...(managedConfiguration
+      ? [
+          { focus: "managed-compute" as const, sessionIndex: 0 },
+          { focus: "managed-region" as const, sessionIndex: 0 },
+          { focus: "managed-kernel-context" as const, sessionIndex: 0 },
+          { focus: "managed-development" as const, sessionIndex: 0 },
+          { focus: "managed-repositories" as const, sessionIndex: 0 },
+          { focus: "managed-provider-accounts" as const, sessionIndex: 0 },
+          { focus: "managed-git-credentials" as const, sessionIndex: 0 },
+          { focus: "managed-auto-stop" as const, sessionIndex: 0 },
+          ...(state?.managedAutoStopPreset === "custom"
+            ? [
+                { focus: "managed-custom-minimum" as const, sessionIndex: 0 },
+                { focus: "managed-custom-idle" as const, sessionIndex: 0 },
+              ]
+            : []),
+        ]
+      : []),
     ...(remote.projects !== undefined ? [{ focus: "project" as const, sessionIndex: 0 }] : []),
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "account" as const, sessionIndex: 0 },

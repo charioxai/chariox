@@ -333,6 +333,41 @@ test("waiting room activation reports activation failures", async () => {
   ])
 })
 
+test("waiting room activation never falls back to a local session for managed launches", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "medium",
+        managedEnvironment: {
+          kind: "new",
+          computeClass: "agent-small",
+          region: "hel1",
+          autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+          contextPlan: {
+            sourceTargetId: null,
+            kernelContext: "empty",
+            developmentSetup: { kind: "empty" },
+            providerAccounts: { kind: "none" },
+            gitCredentials: { kind: "none" },
+          },
+        },
+      },
+    },
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.createdLaunches, [])
+  assert.deepEqual(harness.calls.slice(-2), [
+    "warn",
+    "flash:error:managed session launch orchestration is unavailable in this build",
+  ])
+})
+
 function createHarness(options: {
   kernelConnected?: boolean
   controlDecision: WaitingRoomControlActivationDecision

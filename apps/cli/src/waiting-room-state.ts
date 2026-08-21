@@ -38,6 +38,10 @@ import {
   normalizeWaitingRoomProjectSelectionId,
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import {
+  normalizeWaitingRoomManagedDraft,
+  waitingRoomConfiguresNewManagedMachine,
+} from "./waiting-room-managed-environments.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -62,6 +66,14 @@ export function createWaitingRoomState(
       workspaceLiveSyncMode: "off",
       selectedMachineRef: "local",
       selectedKernelRef: "local",
+      managedKernelContext: "empty",
+      managedDevelopmentMode: "empty",
+      managedRepositoryMode: "project_defaults",
+      managedProviderAccountSource: "none",
+      managedGitCredentialSource: "none",
+      managedAutoStopPreset: "idle_15m",
+      managedCustomMinimumRuntimeSeconds: 0,
+      managedCustomIdleDelaySeconds: 900,
       sliceSelectionId: "none",
       sliceDisplayMode: "headless",
       providerId,
@@ -115,7 +127,10 @@ export function normalizeWaitingRoomState(
     state.sliceDisplayMode,
     slices,
   )
-  const focus = (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
+  const focus = (state.focus.startsWith("managed-")
+    && !waitingRoomConfiguresNewManagedMachine(placement.selectedMachineRef))
+    ? "launch-machine"
+    : (visibleSessions.length === 0 && (state.focus === "session" || state.focus === "join-sessions"))
     ? "new"
     : previewSessions.length === 0 && state.focus === "session"
       ? "join-sessions"
@@ -136,7 +151,7 @@ export function normalizeWaitingRoomState(
         : state.focus === "slice-display"
           ? "slice"
           : state.focus
-  return {
+  return normalizeWaitingRoomManagedDraft({
     ...state,
     focus,
     providerId,
@@ -171,7 +186,7 @@ export function normalizeWaitingRoomState(
     executionMode: waitingRoomExecutionMode(state),
     permissionLevel: waitingRoomPermissionLevel(state),
     themeId: normalizeThemeName(state.themeId, themeRegistry),
-  }
+  }, remote)
 }
 
 export function waitingRoomExecutionMode(
