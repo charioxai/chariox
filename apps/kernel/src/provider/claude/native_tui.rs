@@ -20,15 +20,28 @@ pub(crate) fn ensure_claude_native_hidden_context_fits(
     provider_run_id: &str,
     hidden_context: &str,
 ) -> Result<(), DaemonError> {
-    if hidden_context.len() <= CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES {
+    let mut chunk_count = usize::from(!hidden_context.is_empty());
+    let mut chunk_bytes = 0usize;
+    for scalar in hidden_context.chars() {
+        let scalar_bytes = scalar.len_utf8();
+        if chunk_bytes > 0 && chunk_bytes + scalar_bytes > CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES {
+            chunk_count += 1;
+            chunk_bytes = 0;
+        }
+        chunk_bytes += scalar_bytes;
+    }
+    if chunk_count <= CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS {
         return Ok(());
     }
     Err(DaemonError::ProviderProtocol {
         provider_run_id: provider_run_id.to_string(),
         operation: "claude_hidden_context_size",
         message: format!(
-            "hidden context is {} bytes; Claude native delivery supports at most {} bytes",
+            "hidden context is {} bytes and requires {} UTF-8-safe chunks; Claude native delivery supports {} chunks of at most {} bytes ({} bytes theoretical maximum)",
             hidden_context.len(),
+            chunk_count,
+            CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS,
+            CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES,
             CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
         ),
     })
@@ -177,7 +190,7 @@ fn claude_native_hook_command(
 
 fn claude_native_hook_handler() -> &'static str {
     r#"#!/usr/bin/env node
-import { appendFileSync, existsSync, readFileSync, unlinkSync } from "node:fs"
+import { appendFileSync, existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { setTimeout as setCallbackTimeout } from "node:timers"
 import { setTimeout as sleep } from "node:timers/promises"
@@ -272,6 +285,7 @@ if (eventName === "UserPromptSubmit") {
     while (Date.now() < deadline) {
       if (existsSync(responseFile)) {
         additionalContext = readFileSync(responseFile, "utf8")
+        writeFileSync(process.env.CHARIOX_CLAUDE_NATIVE_CONTEXT, additionalContext)
         try { unlinkSync(responseFile) } catch {}
         break
       }
@@ -301,6 +315,8 @@ if (eventName === "UserPromptSubmit") {
   const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
   if (isCharioxRuntimeTool || input.permission_mode === "bypassPermissions") {
     if (eventName === "PermissionRequest") {
+      // PermissionRequestHookSpecificOutput nests the PermissionResult under
+      // `decision`. PreToolUse uses a separate event-specific output shape.
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
           hookEventName: "PermissionRequest",
@@ -440,7 +456,7 @@ mod tests {
     }
 
     #[test]
-    fn permission_request_hook_matches_shared_immediate_decision_contract() {
+    fn permission_request_hook_uses_permission_request_specific_decision_contract() {
         if Command::new("node").arg("--version").output().is_err() {
             return;
         }
@@ -661,6 +677,96 @@ mod tests {
             waiting_response["hookSpecificOutput"]["additionalContext"].as_str(),
             Some(context_chunks[1].as_str())
         );
+
+        fs::write(&native.context_file, "").expect("context should clear");
+        fs::write(&native.events_file, "").expect("events should clear");
+        let spawn_context_hook = |chunk_index: usize| {
+            let mut child = Command::new("node")
+                .arg(&hook_handler)
+                .env("CHARIOX_CLAUDE_NATIVE_EVENTS", &native.events_file)
+                .env("CHARIOX_CLAUDE_NATIVE_CONTEXT", &native.context_file)
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
+                    &native.context_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+                    &native.permission_response_dir,
+                )
+                .env(
+                    "CHARIOX_CLAUDE_NATIVE_CONTEXT_CHUNK",
+                    chunk_index.to_string(),
+                )
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("context hook should start");
+            child
+                .stdin
+                .take()
+                .expect("hook stdin should be piped")
+                .write_all(br#"{"hook_event_name":"UserPromptSubmit","prompt":"dynamic context"}"#)
+                .expect("hook input should write");
+            child
+        };
+        let response_hook = spawn_context_hook(0);
+        let response_deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let request_id = loop {
+            if let Some(request_id) =
+                fs::read_to_string(&native.events_file)
+                    .ok()
+                    .and_then(|events| {
+                        events.lines().find_map(|line| {
+                            serde_json::from_str::<serde_json::Value>(line)
+                                .ok()?
+                                .get("hook_context_request_id")?
+                                .as_str()
+                                .map(str::to_string)
+                        })
+                    })
+            {
+                break request_id;
+            }
+            assert!(
+                std::time::Instant::now() < response_deadline,
+                "primary hook should publish its response request id"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        let sibling_hook = spawn_context_hook(1);
+        fs::write(
+            native
+                .context_response_dir
+                .join(format!("{request_id}.txt")),
+            &context,
+        )
+        .expect("dynamic context response should publish");
+        let response_output = response_hook
+            .wait_with_output()
+            .expect("primary response hook should finish");
+        let sibling_output = sibling_hook
+            .wait_with_output()
+            .expect("sibling response hook should finish");
+        assert!(response_output.status.success());
+        assert!(sibling_output.status.success());
+        let response: serde_json::Value = serde_json::from_slice(&response_output.stdout)
+            .expect("primary response should be JSON");
+        let sibling: serde_json::Value = serde_json::from_slice(&sibling_output.stdout)
+            .expect("sibling response should be JSON");
+        assert_eq!(
+            response["hookSpecificOutput"]["additionalContext"].as_str(),
+            Some(context_chunks[0].as_str())
+        );
+        assert_eq!(
+            sibling["hookSpecificOutput"]["additionalContext"].as_str(),
+            Some(context_chunks[1].as_str())
+        );
+        assert_eq!(
+            fs::read_to_string(&native.context_file).expect("context file should read"),
+            context,
+            "the primary response hook must publish the full context for sibling chunks"
+        );
     }
 
     #[test]
@@ -668,6 +774,30 @@ mod tests {
         let exact = "x".repeat(CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES);
         ensure_claude_native_hidden_context_fits("run-exact", &exact)
             .expect("the exact transport ceiling should be accepted");
+
+        let mut multibyte_boundary_spill = "x".repeat(5_999);
+        for _ in 0..3 {
+            multibyte_boundary_spill.push('🦀');
+            multibyte_boundary_spill.push_str(&"x".repeat(5_995));
+        }
+        multibyte_boundary_spill.push('🦀');
+        assert_eq!(
+            multibyte_boundary_spill.len(),
+            CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
+        );
+        let error = ensure_claude_native_hidden_context_fits(
+            "run-multibyte-boundary-spill",
+            &multibyte_boundary_spill,
+        )
+        .expect_err("UTF-8 boundary spill requiring a fifth chunk must fail closed");
+        assert!(matches!(
+            error,
+            DaemonError::ProviderProtocol {
+                provider_run_id,
+                operation: "claude_hidden_context_size",
+                ..
+            } if provider_run_id == "run-multibyte-boundary-spill"
+        ));
 
         let oversized = format!("{exact}x");
         let error = ensure_claude_native_hidden_context_fits("run-oversized", &oversized)
