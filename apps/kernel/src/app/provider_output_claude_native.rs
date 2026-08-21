@@ -681,10 +681,6 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                 &message_id,
                 unix_epoch_ms(),
             );
-            crate::transport::flow_control::mark_prompt_completion_recorded(
-                self.app,
-                provider_run_id,
-            );
         }
         Ok(())
     }

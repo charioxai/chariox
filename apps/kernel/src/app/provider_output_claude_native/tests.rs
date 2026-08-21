@@ -443,15 +443,29 @@ fn rendered_permission_resolution_does_not_reinject_native_prompt() {
 
 #[test]
 fn headless_stop_stays_active_until_deferred_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude-headless");
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        false,
+    );
 }
 
 #[test]
 fn native_stop_stays_active_until_deferred_semantic_transcript_drain_finishes() {
-    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude");
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes("claude", false);
 }
 
-fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(provider: &str) {
+#[test]
+fn late_claude_transcript_drain_does_not_complete_the_next_prompt() {
+    assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+        "claude-headless",
+        true,
+    );
+}
+
+fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(
+    provider: &str,
+    advance_next_prompt_before_late_drain: bool,
+) {
     use std::io::Write as _;
 
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
@@ -557,6 +571,24 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         other => panic!("unexpected prompt outcome: {other:?}"),
     };
     write_claude_native_marker(&context_file, &format!("injected:{}", prompt.id()));
+    let queued_prompt = if advance_next_prompt_before_late_drain {
+        match app
+            .record_native_prompt_started_with_attachments(
+                session.id(),
+                attachment.id(),
+                attachment.id(),
+                agent.id(),
+                "next headless prompt",
+                Vec::new(),
+            )
+            .expect("next native prompt should be queued")
+        {
+            crate::session::PromptSubmissionOutcome::Queued { prompt } => Some(prompt),
+            other => panic!("unexpected next prompt outcome: {other:?}"),
+        }
+    } else {
+        None
+    };
 
     let outcome = ProviderOutputClaudeNativeBridge::new(&mut app)
         .process(session.id(), run.id(), &run, None)
@@ -571,6 +603,25 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .as_deref()
         .is_some_and(|marker| marker.starts_with(CLAUDE_TRANSCRIPT_STOP_DRAIN_MARKER_PREFIX)));
 
+    let next_active_prompt_id = if let Some(queued_prompt) = queued_prompt {
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("stopped prompt should complete");
+        let next_prompt_id = app.sessions_mut().reserve_prompt_id();
+        let next = app
+            .prompt_owner_activate_next_queued_prompt_with_prompt_id(
+                session.id(),
+                agent.id(),
+                Some(queued_prompt.id()),
+                next_prompt_id,
+            )
+            .expect("next prompt activation should succeed")
+            .expect("next prompt should activate");
+        crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+        Some(next.id().to_string())
+    } else {
+        None
+    };
+
     std::fs::OpenOptions::new()
         .append(true)
         .open(&transcript_file)
@@ -579,13 +630,29 @@ fn assert_claude_stop_stays_active_until_deferred_transcript_drain_finishes(prov
         .expect("late transcript output should finish writing");
 
     ProviderOutputClaudeNativeBridge::new(&mut app)
+        .drain_known_claude_transcripts(session.id(), run.id(), &context_file)
+        .expect("late transcript output should drain");
+    assert!(
+        !crate::transport::flow_control::prompt_completion_recorded(&app, run.id()),
+        "Claude transcript completion must not compete with the prompt-bound Stop settlement",
+    );
+
+    ProviderOutputClaudeNativeBridge::new(&mut app)
         .finish_deferred_stop(session.id(), run.id(), &run)
         .expect("deferred transcript drain should finish");
 
-    assert!(app
+    let active_prompt = app
         .prompt_owner_active_prompt_for_agent(session.id(), agent.id())
-        .expect("settled prompt state should load")
-        .is_none());
+        .expect("settled prompt state should load");
+    if let Some(next_active_prompt_id) = next_active_prompt_id {
+        assert_eq!(
+            active_prompt.as_ref().map(|prompt| prompt.id()),
+            Some(next_active_prompt_id.as_str()),
+            "the stale Stop and transcript flush must not settle the next prompt",
+        );
+    } else {
+        assert!(active_prompt.is_none());
+    }
     let output = app
         .terminal()
         .output_records()

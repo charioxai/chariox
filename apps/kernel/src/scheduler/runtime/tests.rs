@@ -567,6 +567,65 @@ fn provider_completion_without_structured_output_schedules_a_correction_turn() {
 }
 
 #[test]
+fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-dispatch-boundary");
+    let (workflow_id, node_id) = create_workflow_node(
+        &mut app,
+        session.id(),
+        "wf-scheduler-dispatch-boundary",
+        &agent_id,
+    );
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
+        .expect("node completion setting should update");
+    let workflow_run = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
+    let provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("workflow provider should exist");
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let node_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should resolve")
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.node_id() == node_id)
+        .expect("workflow node run should resolve");
+    let dispatched_at_ms = node_run
+        .turn_envelope()
+        .and_then(|envelope| envelope.dispatched_at_ms())
+        .expect("workflow turn should be dispatched");
+    let mut prior_turn_output = crate::history::SessionHistoryEntry::provider_output(
+        session.id(),
+        provider_run.id(),
+        Some(&agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("prior-turn-output".to_string()),
+        r#"{"summary":"wrong turn","output":{"message":"prior review"}}"#,
+    );
+    prior_turn_output.timestamp_ms = dispatched_at_ms.saturating_sub(1);
+
+    let completion = super::completion::build_workflow_completion_snapshot_from_history(
+        &session_state,
+        vec![prior_turn_output],
+        session.id(),
+        workflow_run.id(),
+        node_run.id(),
+        provider_run.id(),
+    );
+
+    assert!(
+        completion.is_none(),
+        "output from the previous provider turn must not complete the newly dispatched workflow",
+    );
+}
+
+#[test]
 fn workflow_instruction_reference_is_written_under_kernel_state_root() {
     let _guard = crate::env_lock::lock();
     let config = DaemonConfig::for_tests();
