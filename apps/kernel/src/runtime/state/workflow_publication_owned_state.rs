@@ -380,10 +380,23 @@ impl KernelRuntimeOwnedState {
             })
             .cloned()
             .collect::<Vec<_>>();
+        let current_agents = self
+            .agent_store
+            .read()
+            .list_agents()
+            .into_iter()
+            .filter(|agent| agent.session_id() == request.session_id)
+            .collect::<Vec<_>>();
+        let extension_requirements =
+            crate::workflow_publication_requirements::capture_workflow_publication_requirements(
+                &snapshot.workflow,
+                &current_agents,
+            )?;
         let package_files = workflow_publication_package_files(
             &publication,
             &snapshot,
             &event_bindings,
+            &extension_requirements,
             request.kernel_url.as_deref(),
             request.agent_app.as_ref(),
             request.agent_app_assets_dir.as_deref(),

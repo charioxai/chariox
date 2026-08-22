@@ -536,7 +536,7 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
             package_files,
             ..
         } => {
-            assert_eq!(package_version, 3);
+            assert_eq!(package_version, 4);
             package_files
         }
         response => panic!("unexpected response: {response:?}"),

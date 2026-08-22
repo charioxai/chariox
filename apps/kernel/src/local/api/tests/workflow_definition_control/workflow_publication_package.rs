@@ -382,6 +382,273 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
 }
 
 #[test]
+fn publication_export_includes_only_extensions_that_are_installed_and_granted_at_export() {
+    let harness = LocalRouterTestHarness::new();
+    let workspace = std::env::temp_dir().join(format!(
+        "chariox-publication-extensions-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&workspace).expect("extension workspace should exist");
+    let workspace_id = workspace.to_string_lossy().to_string();
+    let graph = create_publication_test_graph_in_workspace(
+        &harness,
+        "exact-extensions",
+        &workspace_id,
+        &workspace_id,
+    );
+    let github = crate::mcp::CharioxMcpServerConfig {
+        name: "github-publication-test".to_string(),
+        transport: crate::mcp::CharioxMcpTransportConfig::StreamableHttp {
+            url: "https://api.github.com/mcp".to_string(),
+            bearer_token_env_var: None,
+            bearer_token_credential: Some("source-github-token".to_string()),
+            http_headers: std::collections::BTreeMap::new(),
+            credential_http_headers: std::collections::BTreeMap::new(),
+            env_http_headers: std::collections::BTreeMap::new(),
+        },
+        enabled: true,
+        required: true,
+        startup_timeout_sec: Some(15),
+        tool_timeout_sec: Some(60),
+        enabled_tools: Some(vec!["get_file_contents".to_string()]),
+        disabled_tools: None,
+        tools: std::collections::BTreeMap::new(),
+    };
+    let unrelated = crate::mcp::CharioxMcpServerConfig::streamable_http(
+        "unrelated-publication-test",
+        "https://unrelated.example/mcp",
+    );
+    let local_only = crate::mcp::CharioxMcpServerConfig::stdio(
+        "local-only-publication-test",
+        "node",
+        vec!["server.mjs".to_string()],
+    );
+    for config in [&github, &unrelated, &local_only] {
+        harness
+            .dispatch(LocalDaemonRequest::InstallMcpServer(
+                crate::local::InstallMcpServerRequest {
+                    workspace_id: Some(workspace_id.clone()),
+                    config: config.clone(),
+                },
+            ))
+            .expect("test MCP should install");
+    }
+    let unrelated_agent =
+        harness.spawn_workflow_test_agent(&graph.session_id, "unrelated-extension-agent");
+    harness
+        .dispatch(LocalDaemonRequest::UpdateAgentConfig(
+            UpdateAgentConfigRequest {
+                session_id: graph.session_id.clone(),
+                agent_id: unrelated_agent.id().to_string(),
+                execution_mode: None,
+                clear_execution_mode: false,
+                permission_level: None,
+                clear_permission_level: false,
+                workspace_id: Some(workspace_id.clone()),
+                clear_workspace_id: false,
+                worktree_id: Some(workspace_id.clone()),
+                clear_worktree_id: false,
+            },
+        ))
+        .expect("unrelated agent workspace should update");
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            crate::local::GrantAgentExtensionRequest {
+                workspace_id: Some(workspace_id.clone()),
+                agent_ref: unrelated_agent.id().to_string(),
+                kind: crate::local::ExtensionKind::Mcp,
+                name: unrelated.name.clone(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .expect("unrelated agent should receive its unrelated MCP grant");
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            crate::local::GrantAgentExtensionRequest {
+                workspace_id: Some(workspace_id.clone()),
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::Mcp,
+                name: github.name.clone(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .expect("workflow agent should receive the GitHub MCP grant");
+    harness
+        .dispatch(LocalDaemonRequest::GrantAgentExtension(
+            crate::local::GrantAgentExtensionRequest {
+                workspace_id: Some(workspace_id.clone()),
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::Mcp,
+                name: local_only.name.clone(),
+                environment: None,
+                credential: None,
+                max_safety: None,
+            },
+        ))
+        .expect("workflow agent should receive the local-only MCP grant");
+
+    let request = CreateWorkflowPublicationRequest {
+        session_id: graph.session_id.clone(),
+        workflow_ref: graph.workflow_id.clone(),
+        endpoint_ref: graph.endpoint_id.clone(),
+        expected_workflow_revision: None,
+        operation_key: Some("freeze-exact-extensions".to_string()),
+        queue_ref: Some("default".to_string()),
+        alias: Some("freeze-exact-extensions".to_string()),
+        kind: Some("ingress".to_string()),
+        route: Some("/extensions".to_string()),
+        methods: vec!["POST".to_string()],
+        transport: Some(serde_json::json!({ "kind": "human_http" })),
+        parser: None,
+        input_schema: None,
+        trace_exposure: None,
+        mode: Some("async".to_string()),
+        sync_timeout_ms: None,
+        poll_ms: None,
+    };
+    let publication = match harness
+        .dispatch(LocalDaemonRequest::CreateWorkflowPublication(request))
+        .expect("publication should be created")
+    {
+        LocalDaemonResponse::WorkflowPublicationCreated { publication, .. } => publication,
+        response => panic!("unexpected response: {response:?}"),
+    };
+
+    let export = || match harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect("publication should export")
+    {
+        LocalDaemonResponse::WorkflowPublicationPackageExported {
+            package_digest,
+            package_files,
+            ..
+        } => (package_digest, package_files),
+        response => panic!("unexpected response: {response:?}"),
+    };
+    let (installed_digest, files) = export();
+    let requirements = package_json_file(&files, "requirements.json");
+    assert_eq!(requirements["schema_version"], serde_json::json!(2));
+    assert_eq!(requirements["extensions"].as_array().map(Vec::len), Some(2));
+    let extension = requirements["extensions"]
+        .as_array()
+        .and_then(|extensions| {
+            extensions.iter().find(|extension| {
+                extension["id"] == serde_json::json!("mcp:github-publication-test")
+            })
+        })
+        .expect("GitHub MCP requirement should exist");
+    assert_eq!(
+        extension["id"],
+        serde_json::json!("mcp:github-publication-test")
+    );
+    assert_eq!(
+        extension["portability"]["classification"],
+        serde_json::json!("portable")
+    );
+    assert_eq!(
+        extension["uses"][0]["agent_id"],
+        serde_json::json!(graph.agent_id)
+    );
+    assert_eq!(
+        extension["uses"][0]["node_ids"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        extension["launch_definition"]["url"],
+        serde_json::json!("https://api.github.com/mcp")
+    );
+    assert_eq!(
+        requirements["credential_slots"].as_array().map(Vec::len),
+        Some(1)
+    );
+    let encoded_requirements = serde_json::to_string(&requirements).expect("requirements encode");
+    assert!(!encoded_requirements.contains("source-github-token"));
+    assert!(!encoded_requirements.contains("unrelated-publication-test"));
+    assert!(requirements["extensions"]
+        .as_array()
+        .is_some_and(|extensions| extensions.iter().any(|extension| {
+            extension["id"] == serde_json::json!("mcp:local-only-publication-test")
+                && extension["portability"]["classification"] == serde_json::json!("local_only")
+                && extension["portability"]["recommendation"]
+                    .as_str()
+                    .is_some_and(|value| value.contains("connected ingress"))
+        })));
+    let deployment_contract = package_json_file(&files, "deployment-contract.json");
+    let deployment_contract_schema: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../../../schema/workflow-publication-deployment-contract-v1.schema.json"
+    ))
+    .expect("deployment contract schema should parse");
+    let compiled_schema = jsonschema::JSONSchema::options()
+        .with_draft(jsonschema::Draft::Draft7)
+        .compile(&deployment_contract_schema)
+        .expect("deployment contract schema should compile");
+    assert!(
+        compiled_schema.is_valid(&deployment_contract),
+        "extension deployment contract should satisfy its schema"
+    );
+    assert_eq!(
+        deployment_contract["capabilities"]["extensions"],
+        requirements["extensions"]
+    );
+    assert!(deployment_contract["credential_slots"]
+        .as_array()
+        .is_some_and(|slots| slots.iter().any(|slot| {
+            slot["kind"] == serde_json::json!("integration")
+                && slot["integration"] == serde_json::json!("github-publication-test")
+        })));
+    assert!(
+        deployment_contract["capabilities"]["network"]["destinations"]
+            .as_array()
+            .is_some_and(|destinations| destinations.iter().any(|destination| {
+                destination["host"]["value"] == serde_json::json!("api.github.com")
+            }))
+    );
+
+    harness
+        .dispatch(LocalDaemonRequest::UninstallMcpServer(
+            crate::local::UninstallMcpServerRequest {
+                workspace_id: Some(workspace_id.clone()),
+                name: github.name.clone(),
+            },
+        ))
+        .expect("source MCP should uninstall before the next export");
+    let (removed_digest, removed_files) = export();
+    let removed_requirements = package_json_file(&removed_files, "requirements.json");
+    assert_eq!(
+        removed_requirements["extensions"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert_eq!(
+        removed_requirements["extensions"][0]["id"],
+        serde_json::json!("mcp:local-only-publication-test")
+    );
+    assert_eq!(
+        removed_requirements["credential_slots"],
+        serde_json::json!([])
+    );
+    assert_ne!(installed_digest, removed_digest);
+
+    let (repeated_removed_digest, repeated_removed_files) = export();
+    assert_eq!(repeated_removed_digest, removed_digest);
+    assert_eq!(repeated_removed_files, removed_files);
+
+    std::fs::remove_dir_all(workspace).expect("extension workspace should clean up");
+}
+
+#[test]
 fn local_request_api_exports_agent_app_publication_package() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
@@ -551,7 +818,7 @@ fn local_request_api_exports_agent_app_publication_package() {
             package_files,
             ..
         } => {
-            assert_eq!(package_version, 3);
+            assert_eq!(package_version, 4);
             (package_digest, package_archive_base64, package_files)
         }
         _ => panic!("unexpected local response"),
@@ -588,7 +855,7 @@ fn local_request_api_exports_agent_app_publication_package() {
         workflow_snapshot["agents"][0]["worktree_id"],
         serde_json::json!("/workspace")
     );
-    assert_eq!(publication_json["package_version"], serde_json::json!(3));
+    assert_eq!(publication_json["package_version"], serde_json::json!(4));
     assert_eq!(
         publication_json["deployment_contract"],
         serde_json::json!({
@@ -612,7 +879,7 @@ fn local_request_api_exports_agent_app_publication_package() {
     assert_eq!(deployment_contract["schema_version"], serde_json::json!(1));
     assert_eq!(
         deployment_contract["compatibility"]["package_version"],
-        serde_json::json!(3)
+        serde_json::json!(4)
     );
     assert_eq!(
         deployment_contract["compatibility"]["minimum_local_daemon_protocol_version"],
@@ -678,6 +945,10 @@ fn local_request_api_exports_agent_app_publication_package() {
                 "bundle_id": "dev-stub-v1",
             }],
         })
+    );
+    assert_eq!(
+        deployment_contract["capabilities"]["extensions"],
+        serde_json::json!([])
     );
     assert_eq!(
         deployment_contract["presentation"]["kind"],

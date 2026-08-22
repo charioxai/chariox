@@ -12,7 +12,7 @@ test("workflow publication binding edits enforce the immutable provider policy",
     const digest = `sha256:${"a".repeat(64)}`
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       default_bindings_path: "bindings.local.json",
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
     }))
@@ -38,7 +38,7 @@ test("workflow publication binding edits enforce the immutable provider policy",
         captured_at_ms: 1,
       },
       compatibility: {
-        package_version: 3,
+        package_version: 4,
         minimum_kernel_version: "0.1.0",
         minimum_local_daemon_protocol_version: 1,
       },
@@ -52,6 +52,7 @@ test("workflow publication binding edits enforce the immutable provider policy",
         captured: { provider: "codex" },
       }],
       capabilities: {
+        extensions: [],
         network: {
           policy_version: 1,
           default_action: "deny",

@@ -115,10 +115,10 @@ async function loadDeploymentContract(
   root: string,
   publicationPackage: Record<string, unknown>,
 ): Promise<WorkflowPublicationDeploymentContract | null> {
-  if (publicationPackage.package_version !== 3) return null
+  if (publicationPackage.package_version !== 4) return null
   const metadata = publicationPackage as WorkflowPublicationPackageContractMetadata
   const path = workflowPublicationDeploymentContractPath(metadata)
-  if (!path) throw new Error("publication package v3 is missing deployment_contract")
+  if (!path) throw new Error("publication package v4 is missing deployment_contract")
   const value = parseJsonObject(await readFile(resolvePath(root, path), "utf8"), path)
   return resolveWorkflowPublicationDeploymentContract(metadata, value).contract
 }
