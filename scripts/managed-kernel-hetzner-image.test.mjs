@@ -5,6 +5,7 @@ import { test } from "node:test"
 const scriptUrl = new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
+const runbookUrl = new URL("../docs/MANAGED_REMOTE_KERNEL_IMAGE.md", import.meta.url)
 
 test("Hetzner image preparation is pinned, guarded, and leaves no runtime identity", async () => {
   const script = await readFile(scriptUrl, "utf8")
@@ -73,4 +74,13 @@ test("managed image and publication runtimes pin the same provider releases", as
   for (const [name, version] of Object.entries(versions)) {
     assert.match(dockerfile, new RegExp(`ARG ${name}=${version.replaceAll(".", "\\.")}`))
   }
+})
+
+test("Hetzner snapshot labels preserve the complete release digest within provider limits", async () => {
+  const runbook = await readFile(runbookUrl, "utf8")
+
+  assert.match(runbook, /chariox\.dev\/runtime-release-a=<first 32 lowercase hex characters>/)
+  assert.match(runbook, /chariox\.dev\/runtime-release-b=<last 32 lowercase hex characters>/)
+  assert.match(runbook, /Concatenating `runtime-release-a` and\n`runtime-release-b` must reproduce/)
+  assert.doesNotMatch(runbook, /chariox\.dev\/runtime-release=<64 lowercase hex characters>/)
 })

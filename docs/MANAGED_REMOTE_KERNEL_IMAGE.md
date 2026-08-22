@@ -64,8 +64,14 @@ builder and wait for the action to finish. Create an independent snapshot with
 these labels:
 
 - `chariox.dev/managed-image=true`
-- `chariox.dev/runtime-release=<64 lowercase hex characters>`
+- `chariox.dev/runtime-release-a=<first 32 lowercase hex characters>`
+- `chariox.dev/runtime-release-b=<last 32 lowercase hex characters>`
 - `chariox.dev/source-revision=<40 lowercase hex characters>`
+
+Hetzner label values are limited to 63 characters, so the 64-character release
+digest is split across two ordered labels. Concatenating `runtime-release-a` and
+`runtime-release-b` must reproduce the hexadecimal portion of the signed
+`sha256:` release digest exactly.
 
 Wait for the image action to finish, record the numeric image ID and its x86
 architecture, then delete the builder, temporary firewall, and temporary SSH
