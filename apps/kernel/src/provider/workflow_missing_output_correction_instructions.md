@@ -1,1 +1,0 @@
-The previous workflow turn ended without the required validated structured output on attempt {{ATTEMPT}}/{{MAX_ATTEMPTS}}. Retry this same workflow invocation now. Follow the workflow runtime tool and fenced JSON requirements exactly. If this node completes the run, call `validate_and_submit_workflow_run_output`, and do not finish until the required output is accepted.

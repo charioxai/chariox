@@ -283,22 +283,15 @@ fn selected_edge_schema_validation_halts_or_warns_by_policy() {
             Some(completion_with_message(invalid.to_string())),
             None,
         )
-        .expect("halt policy should schedule bounded correction for invalid selected payload");
+        .expect("halt policy should fail the invalid selected payload");
     let failure = correction
         .handoff_validation_failure
         .as_ref()
         .expect("handoff validation failure should be reported");
     assert_eq!(failure.edge_id, halt_edge.id());
-    assert_eq!(failure.attempt, 1);
-    assert_eq!(failure.max_attempts, 3);
-    assert!(failure.retry_scheduled);
-    assert_eq!(correction.workflow_run.status(), WorkflowRunStatus::Waiting);
-    assert_eq!(correction.dispatches.len(), 1);
-    assert_eq!(
-        correction.dispatches[0].node_run.node_id(),
-        halt_router.id()
-    );
-    assert!(correction.dispatches[0].messages.is_empty());
+    assert!(!failure.message.is_empty());
+    assert_eq!(correction.workflow_run.status(), WorkflowRunStatus::Failed);
+    assert!(correction.dispatches.is_empty());
 
     let warn_workflow = service
         .create_workflow(session.id(), Some("warn-schema".to_string()))
@@ -365,7 +358,7 @@ fn selected_edge_schema_validation_halts_or_warns_by_policy() {
 }
 
 #[test]
-fn repeated_invalid_handoffs_fail_after_bounded_classifier_corrections() {
+fn invalid_handoff_fails_without_automatic_retry() {
     let mut service = SessionService::new(&test_config());
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
@@ -419,91 +412,43 @@ fn repeated_invalid_handoffs_fail_after_bounded_classifier_corrections() {
             Some("classify bounded task".to_string()),
         )
         .expect("workflow should invoke");
-    let mut node_run_id = run.node_runs()[0].id().to_string();
+    let node_run_id = run.node_runs()[0].id().to_string();
     service
         .start_workflow_node_run(session.id(), run.id(), &node_run_id)
         .expect("classifier should start");
 
-    for expected_attempt in 1..=3 {
-        let invalid = serde_json::json!({
-            "workflow_handoffs": [{
-                "edge_id": edge.id(),
-                "output": { "message": { "wrong": true } }
-            }]
-        });
-        let update = service
-            .complete_workflow_node_run(
-                session.id(),
-                run.id(),
-                &node_run_id,
-                Some(completion_with_message(invalid.to_string())),
-                None,
-            )
-            .expect("invalid handoff should produce a bounded correction update");
-        let failure = update
-            .handoff_validation_failure
-            .as_ref()
-            .expect("handoff validation failure should be reported");
-        assert_eq!(failure.attempt, expected_attempt);
-        assert_eq!(failure.max_attempts, 3);
-        assert_eq!(failure.retry_scheduled, expected_attempt < 3);
-        assert_eq!(
-            update
-                .workflow_run
-                .messages()
-                .iter()
-                .filter(|message| message.message_type() == "handoff")
-                .count(),
-            0
-        );
-        assert_eq!(
-            update
-                .workflow_run
-                .node_runs()
-                .iter()
-                .filter(|node_run| node_run.node_id() == specialist.id())
-                .count(),
-            0
-        );
-        service
-            .record_workflow_failure_event(
-                session.id(),
-                run.id(),
-                crate::session::WorkflowFailureEvent::new(
-                    crate::session::WorkflowFailureKind::OutputValidationFailed,
-                    node_run_id.clone(),
-                    vec![edge.id().to_string()],
-                    failure.message.clone(),
-                ),
-            )
-            .expect("handoff validation failure should be recorded");
-
-        if expected_attempt < 3 {
-            assert_eq!(update.workflow_run.status(), WorkflowRunStatus::Waiting);
-            assert_eq!(update.dispatches.len(), 1);
-            assert_eq!(update.dispatches[0].node_run.node_id(), classifier.id());
-            assert!(update.dispatches[0].messages.is_empty());
-            let correction_prompt = update.dispatches[0]
-                .endpoint_prompt
-                .as_deref()
-                .expect("correction should include a prompt");
-            assert_eq!(
-                correction_prompt.matches("classify bounded task").count(),
-                1
-            );
-            assert!(correction_prompt.contains(
-                "If the work is accepted and the workflow should finish, do not emit an outgoing handoff."
-            ));
-            assert!(correction_prompt.contains("validate_and_submit_workflow_run_output"));
-            node_run_id = update.dispatches[0].node_run.id().to_string();
-            service
-                .start_workflow_node_run(session.id(), run.id(), &node_run_id)
-                .expect("classifier correction should start");
-        } else {
-            assert_eq!(update.workflow_run.status(), WorkflowRunStatus::Failed);
-            assert!(update.dispatches.is_empty());
-        }
-    }
+    let invalid = serde_json::json!({
+        "workflow_handoffs": [{
+            "edge_id": edge.id(),
+            "output": { "message": { "wrong": true } }
+        }]
+    });
+    let update = service
+        .complete_workflow_node_run(
+            session.id(),
+            run.id(),
+            &node_run_id,
+            Some(completion_with_message(invalid.to_string())),
+            None,
+        )
+        .expect("invalid handoff should become a visible failure");
+    let failure = update
+        .handoff_validation_failure
+        .as_ref()
+        .expect("handoff validation failure should be reported");
+    assert!(!failure.message.is_empty());
+    assert_eq!(update.workflow_run.status(), WorkflowRunStatus::Failed);
+    assert!(update.dispatches.is_empty());
+    assert!(update
+        .workflow_run
+        .messages()
+        .iter()
+        .all(|message| { message.message_type() != "handoff" }));
+    assert!(update
+        .workflow_run
+        .node_runs()
+        .iter()
+        .all(|node_run| node_run.node_id() != specialist.id()));
 
     std::fs::remove_file(schema).ok();
 }

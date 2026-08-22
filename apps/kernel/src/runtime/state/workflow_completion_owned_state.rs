@@ -158,17 +158,10 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow handoff on edge `{}` failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}` after attempt {}/{}: {}",
-                        failure.edge_id, failure.attempt, failure.max_attempts, failure.message
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed handoff validation on edge `{}`: {}",
+                    failure.edge_id, failure.message
+                ),
             );
         }
         if let Some(failure) = update.run_output_validation_failure.as_ref() {
@@ -187,17 +180,10 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow run `{workflow_run_id}` final output failed validation on attempt {}/{}; a corrective turn was scheduled: {}",
-                        failure.attempt, failure.max_attempts, failure.message
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed final output validation after attempt {}/{}: {}",
-                        failure.attempt, failure.max_attempts, failure.message
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed final output validation: {}",
+                    failure.message
+                ),
             );
         }
         if let Some(failure) = update.missing_output_failure.as_ref() {
@@ -216,17 +202,9 @@ impl KernelRuntimeOwnedState {
                 provider_run_id,
                 self.attachment_store
                     .list_session_attachment_ids(session_id),
-                if failure.retry_scheduled {
-                    format!(
-                        "Workflow run `{workflow_run_id}` produced no structured output on attempt {}/{}; a corrective turn was scheduled.",
-                        failure.attempt, failure.max_attempts
-                    )
-                } else {
-                    format!(
-                        "Workflow run `{workflow_run_id}` failed after producing no structured output on attempt {}/{}.",
-                        failure.attempt, failure.max_attempts
-                    )
-                },
+                format!(
+                    "Workflow run `{workflow_run_id}` failed because the provider produced no structured output."
+                ),
             );
         }
         if update.validation_warnings.is_empty()

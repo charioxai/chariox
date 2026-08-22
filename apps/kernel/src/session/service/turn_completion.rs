@@ -1,6 +1,5 @@
 use super::*;
 
-const DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS: u32 = 3;
 const MISSING_WORKFLOW_OUTPUT_MESSAGE: &str =
     "provider completed workflow turn without a validated workflow output";
 
@@ -48,7 +47,7 @@ impl SessionService {
         workflow_node_run_id: &str,
         completion: Option<WorkflowCompletionSnapshot>,
         max_turns: Option<usize>,
-        retry_missing_output: bool,
+        fail_on_missing_output: bool,
     ) -> Result<WorkflowCompletionUpdate, DaemonError> {
         let context = self.load_workflow_completion_context(
             session_id,
@@ -88,38 +87,15 @@ impl SessionService {
                 Self::fallback_terminal_completion_as_final_output(&context, completion.as_ref())
             });
         let missing_output_failure =
-            (retry_missing_output && completion.is_none() && candidate_final_output.is_none())
-                .then(|| Self::workflow_missing_output_failure(&context, max_turns));
+            (fail_on_missing_output && completion.is_none() && candidate_final_output.is_none())
+                .then(Self::workflow_missing_output_failure);
         let run_output_validation_failure = candidate_final_output
             .as_ref()
             .filter(|submission| !submission.valid())
-            .map(|submission| {
-                Self::workflow_run_output_validation_failure(&context, submission, max_turns)
-            });
-        let handoff_validation_failure = handoff_validation_error.map(|(edge_id, message)| {
-            Self::workflow_handoff_validation_failure(&context, edge_id, message, max_turns)
-        });
-        let retry_prompt = handoff_validation_failure
-            .as_ref()
-            .filter(|failure| failure.retry_scheduled)
-            .map(|failure| Self::workflow_handoff_correction_prompt(&context, failure))
-            .or_else(|| {
-                missing_output_failure
-                    .as_ref()
-                    .filter(|failure| failure.retry_scheduled)
-                    .map(|failure| {
-                        Self::workflow_missing_output_correction_prompt(&context, failure)
-                    })
-            })
-            .or_else(|| {
-                run_output_validation_failure
-                    .as_ref()
-                    .filter(|failure| failure.retry_scheduled)
-                    .map(|failure| Self::workflow_run_output_correction_prompt(&context, failure))
-            });
-        let retry_dispatch =
-            retry_prompt.map(|prompt| self.workflow_correction_dispatch(&context, prompt));
-        let has_corrective_failure = handoff_validation_failure.is_some()
+            .map(|submission| Self::workflow_run_output_validation_failure(submission));
+        let handoff_validation_failure = handoff_validation_error
+            .map(|(edge_id, message)| Self::workflow_handoff_validation_failure(edge_id, message));
+        let has_terminal_validation_failure = handoff_validation_failure.is_some()
             || missing_output_failure.is_some()
             || run_output_validation_failure.is_some();
 
@@ -164,14 +140,14 @@ impl SessionService {
             pending_outputs.final_output = candidate_final_output;
         }
         Self::apply_workflow_node_completion(node_run, completion);
-        if has_corrective_failure {
+        if has_terminal_validation_failure {
             node_run.set_status(WorkflowNodeRunStatus::Failed);
             if let Some(envelope) = node_run.turn_envelope_mut() {
                 envelope.mark_failed();
             }
         }
         workflow_run.clear_active_node_run();
-        if has_corrective_failure {
+        if has_terminal_validation_failure {
             pending_outputs.final_output = None;
             Self::commit_pending_workflow_turn_outputs(
                 workflow_run,
@@ -181,23 +157,10 @@ impl SessionService {
             for message in emitted_messages {
                 workflow_run.add_message(message);
             }
-            let dispatches = retry_dispatch
-                .map(|dispatch| {
-                    let node_run = workflow_run.add_node_run(dispatch.node_run);
-                    workflow_run.set_status(WorkflowRunStatus::Waiting);
-                    vec![WorkflowDispatch {
-                        node_run,
-                        messages: dispatch.messages,
-                        endpoint_prompt: dispatch.endpoint_prompt,
-                    }]
-                })
-                .unwrap_or_else(|| {
-                    workflow_run.set_status(WorkflowRunStatus::Failed);
-                    Vec::new()
-                });
+            workflow_run.set_status(WorkflowRunStatus::Failed);
             return Ok(WorkflowCompletionUpdate {
                 workflow_run: workflow_run.clone(),
-                dispatches,
+                dispatches: Vec::new(),
                 validation_warnings,
                 handoff_validation_failure,
                 missing_output_failure,
@@ -632,226 +595,27 @@ impl SessionService {
     }
 
     fn workflow_run_output_validation_failure(
-        context: &WorkflowCompletionContext,
         submission: &WorkflowRunOutputSubmission,
-        max_turns: Option<usize>,
     ) -> WorkflowRunOutputValidationFailure {
-        let (attempt, max_attempts, retry_scheduled) =
-            Self::workflow_correction_retry_budget(context, max_turns);
         WorkflowRunOutputValidationFailure {
             message: submission
                 .warning()
                 .unwrap_or("workflow run output validation failed")
                 .to_string(),
-            attempt,
-            max_attempts,
-            retry_scheduled,
         }
     }
 
     fn workflow_handoff_validation_failure(
-        context: &WorkflowCompletionContext,
         edge_id: String,
         message: String,
-        max_turns: Option<usize>,
     ) -> WorkflowHandoffValidationFailure {
-        let (attempt, max_attempts, retry_scheduled) =
-            Self::workflow_correction_retry_budget(context, max_turns);
-        WorkflowHandoffValidationFailure {
-            edge_id,
-            message,
-            attempt,
-            max_attempts,
-            retry_scheduled,
-        }
+        WorkflowHandoffValidationFailure { edge_id, message }
     }
 
-    fn workflow_missing_output_failure(
-        context: &WorkflowCompletionContext,
-        max_turns: Option<usize>,
-    ) -> WorkflowMissingOutputFailure {
-        let (attempt, max_attempts, retry_scheduled) =
-            Self::workflow_correction_retry_budget(context, max_turns);
+    fn workflow_missing_output_failure() -> WorkflowMissingOutputFailure {
         WorkflowMissingOutputFailure {
             message: MISSING_WORKFLOW_OUTPUT_MESSAGE.to_string(),
-            attempt,
-            max_attempts,
-            retry_scheduled,
         }
-    }
-
-    fn workflow_correction_retry_budget(
-        context: &WorkflowCompletionContext,
-        max_turns: Option<usize>,
-    ) -> (u32, u32, bool) {
-        let source_node_id = context.source_node_run.node_id();
-        let source_node = context
-            .workflow
-            .node(source_node_id)
-            .expect("workflow completion context must contain its source node");
-        let max_attempts = source_node
-            .max_turns()
-            .unwrap_or(DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS)
-            .min(DEFAULT_WORKFLOW_RUN_OUTPUT_MAX_ATTEMPTS)
-            .max(1);
-        let prior_correction_failures = context
-            .workflow_run
-            .failure_events()
-            .iter()
-            .filter(|event| {
-                matches!(
-                    event.kind(),
-                    WorkflowFailureKind::MissingStructuredOutput
-                        | WorkflowFailureKind::OutputValidationFailed
-                        | WorkflowFailureKind::WorkflowRunOutputValidationFailed
-                )
-            })
-            .filter(|event| {
-                context
-                    .workflow_run
-                    .node_runs()
-                    .iter()
-                    .find(|node_run| node_run.id() == event.source_node_run_id())
-                    .is_some_and(|node_run| node_run.node_id() == source_node_id)
-            })
-            .count() as u32;
-        let attempt = prior_correction_failures.saturating_add(1);
-        let node_turns = context
-            .workflow_run
-            .node_runs()
-            .iter()
-            .filter(|node_run| node_run.node_id() == source_node_id)
-            .count() as u32;
-        let node_budget_allows_retry = source_node
-            .max_turns()
-            .is_none_or(|limit| node_turns < limit);
-        let workflow_budget_allows_retry = max_turns
-            .filter(|limit| *limit > 0)
-            .is_none_or(|limit| context.workflow_run.node_runs().len() < limit);
-        (
-            attempt,
-            max_attempts,
-            attempt < max_attempts && node_budget_allows_retry && workflow_budget_allows_retry,
-        )
-    }
-
-    fn workflow_correction_dispatch(
-        &mut self,
-        context: &WorkflowCompletionContext,
-        prompt: String,
-    ) -> WorkflowDispatch {
-        self.next_workflow_node_run_number += 1;
-        let node_run = WorkflowNodeRun::new(
-            format!("workflow-node-run-{}", self.next_workflow_node_run_number),
-            context.source_node_run.node_id().to_string(),
-            context.source_node_run.agent_id().to_string(),
-            context
-                .workflow_run
-                .node_runs()
-                .iter()
-                .filter(|node_run| node_run.node_id() == context.source_node_run.node_id())
-                .map(WorkflowNodeRun::iteration_index)
-                .max()
-                .unwrap_or(0)
-                + 1,
-            WorkflowNodeRunStatus::Ready,
-        );
-        WorkflowDispatch {
-            node_run,
-            messages: Vec::new(),
-            endpoint_prompt: Some(prompt),
-        }
-    }
-
-    fn workflow_run_output_correction_prompt(
-        context: &WorkflowCompletionContext,
-        failure: &WorkflowRunOutputValidationFailure,
-    ) -> String {
-        let invocation_prompt = context
-            .workflow_run
-            .invocation_prompt()
-            .map(str::trim)
-            .unwrap_or("");
-        format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/run-output-correction",
-                crate::prompt_assembly::bundled_workflow_run_output_correction_template(),
-                &[
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                    ("ERROR", &failure.message),
-                ],
-            )
-        )
-        .trim()
-        .to_string()
-    }
-
-    fn workflow_handoff_correction_prompt(
-        context: &WorkflowCompletionContext,
-        failure: &WorkflowHandoffValidationFailure,
-    ) -> String {
-        let invocation_prompt = context
-            .workflow_run
-            .invocation_prompt()
-            .map(str::trim)
-            .unwrap_or("");
-        let completion_guidance = context
-            .workflow
-            .node(context.source_node_run.node_id())
-            .filter(|node| node.can_complete_workflow_run())
-            .map(|_| {
-                format!(
-                    "\n\n{}",
-                    crate::prompt_assembly::render_configured_prompt(
-                        "workflow/handoff-completion-guidance",
-                        crate::prompt_assembly::bundled_workflow_handoff_completion_guidance_template(),
-                        &[],
-                    )
-                )
-            })
-            .unwrap_or_default();
-        format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/handoff-correction",
-                crate::prompt_assembly::bundled_workflow_handoff_correction_template(),
-                &[
-                    ("EDGE_ID", &failure.edge_id),
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                    ("ERROR", &failure.message),
-                    ("COMPLETION_GUIDANCE", &completion_guidance),
-                ],
-            )
-        )
-        .trim()
-        .to_string()
-    }
-
-    fn workflow_missing_output_correction_prompt(
-        context: &WorkflowCompletionContext,
-        failure: &WorkflowMissingOutputFailure,
-    ) -> String {
-        let invocation_prompt = context
-            .workflow_run
-            .invocation_prompt()
-            .map(str::trim)
-            .unwrap_or("");
-        format!(
-            "{invocation_prompt}\n\n{}",
-            crate::prompt_assembly::render_configured_prompt(
-                "workflow/missing-output-correction",
-                crate::prompt_assembly::bundled_workflow_missing_output_correction_template(),
-                &[
-                    ("ATTEMPT", &failure.attempt.to_string()),
-                    ("MAX_ATTEMPTS", &failure.max_attempts.to_string()),
-                ],
-            )
-        )
-        .trim()
-        .to_string()
     }
 
     fn apply_workflow_node_completion(

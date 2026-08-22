@@ -61,14 +61,6 @@ const WORKFLOW_RUN_COMPLETION: &str =
     include_str!("provider/workflow_run_completion_instructions.md");
 const WORKFLOW_RUN_INTERMEDIATE_OUTPUT: &str =
     include_str!("provider/workflow_run_intermediate_output_instructions.md");
-const WORKFLOW_RUN_OUTPUT_CORRECTION: &str =
-    include_str!("provider/workflow_run_output_correction_instructions.md");
-const WORKFLOW_HANDOFF_CORRECTION: &str =
-    include_str!("provider/workflow_handoff_correction_instructions.md");
-const WORKFLOW_HANDOFF_COMPLETION_GUIDANCE: &str =
-    include_str!("provider/workflow_handoff_completion_guidance_instructions.md");
-const WORKFLOW_MISSING_OUTPUT_CORRECTION: &str =
-    include_str!("provider/workflow_missing_output_correction_instructions.md");
 const WORKFLOW_CONTROL_MAILBOX: &str =
     include_str!("provider/workflow_control_mailbox_instructions.md");
 const WORKFLOW_EDGE_CONTRACTS: &str =
@@ -563,22 +555,6 @@ fn prompt_setting_metadata(template_id: &str) -> PromptSettingMetadata {
         "workflow/run-intermediate-output" => {
             ("Workflow progress output", "workflow", "workflow-agent")
         }
-        "workflow/run-output-correction" => {
-            ("Workflow output correction", "workflow", "workflow-agent")
-        }
-        "workflow/handoff-correction" => {
-            ("Workflow handoff correction", "workflow", "workflow-agent")
-        }
-        "workflow/handoff-completion-guidance" => (
-            "Workflow handoff completion guidance",
-            "workflow",
-            "workflow-agent",
-        ),
-        "workflow/missing-output-correction" => (
-            "Workflow missing-output correction",
-            "workflow",
-            "workflow-agent",
-        ),
         "workflow/control-mailbox" => ("Workflow control mailbox", "workflow", "workflow-agent"),
         "workflow/edge-contracts" => ("Workflow edge contracts", "workflow", "workflow-agent"),
         "workflow/node-turn-context" => {
@@ -969,22 +945,6 @@ pub(crate) fn bundled_workflow_run_intermediate_output_template() -> &'static st
     WORKFLOW_RUN_INTERMEDIATE_OUTPUT
 }
 
-pub(crate) fn bundled_workflow_run_output_correction_template() -> &'static str {
-    WORKFLOW_RUN_OUTPUT_CORRECTION
-}
-
-pub(crate) fn bundled_workflow_handoff_correction_template() -> &'static str {
-    WORKFLOW_HANDOFF_CORRECTION
-}
-
-pub(crate) fn bundled_workflow_handoff_completion_guidance_template() -> &'static str {
-    WORKFLOW_HANDOFF_COMPLETION_GUIDANCE
-}
-
-pub(crate) fn bundled_workflow_missing_output_correction_template() -> &'static str {
-    WORKFLOW_MISSING_OUTPUT_CORRECTION
-}
-
 pub(crate) fn render_bundled_prompt(template: &str, replacements: &[(&str, &str)]) -> String {
     replacements
         .iter()
@@ -1062,19 +1022,6 @@ fn bundled_templates() -> Vec<BundledPromptTemplate> {
         BundledPromptTemplate::new(
             "workflow/run-intermediate-output",
             WORKFLOW_RUN_INTERMEDIATE_OUTPUT,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/run-output-correction",
-            WORKFLOW_RUN_OUTPUT_CORRECTION,
-        ),
-        BundledPromptTemplate::new("workflow/handoff-correction", WORKFLOW_HANDOFF_CORRECTION),
-        BundledPromptTemplate::new(
-            "workflow/handoff-completion-guidance",
-            WORKFLOW_HANDOFF_COMPLETION_GUIDANCE,
-        ),
-        BundledPromptTemplate::new(
-            "workflow/missing-output-correction",
-            WORKFLOW_MISSING_OUTPUT_CORRECTION,
         ),
         BundledPromptTemplate::new("workflow/control-mailbox", WORKFLOW_CONTROL_MAILBOX),
         BundledPromptTemplate::new("workflow/edge-contracts", WORKFLOW_EDGE_CONTRACTS),
@@ -2109,53 +2056,6 @@ mod tests {
     }
 
     #[test]
-    fn workflow_completion_guidance_keeps_a_separator_after_materialization() {
-        let root = temp_prompt_root("workflow-completion-guidance-separator");
-        let registry = PromptTemplateRegistry::new(root);
-        registry
-            .materialize_bundled_defaults()
-            .expect("defaults should materialize");
-        let handoff = registry
-            .read_setting("workflow/handoff-correction")
-            .expect("handoff prompt should read");
-        let guidance = registry
-            .read_setting("workflow/handoff-completion-guidance")
-            .expect("guidance should read");
-        let replacement = format!("\n\n{}", guidance.current);
-        let rendered =
-            render_bundled_prompt(&handoff.current, &[("COMPLETION_GUIDANCE", &replacement)]);
-        assert!(rendered.contains("no warning.\n\nIf the work is accepted"));
-    }
-
-    #[test]
-    fn configured_correction_prompt_uses_user_override() {
-        let _guard = env_lock::lock();
-        let home = temp_prompt_root("configured-correction");
-        let root = home.join("prompts");
-        let registry = PromptTemplateRegistry::new(root.clone());
-        registry
-            .materialize_bundled_defaults()
-            .expect("defaults should materialize");
-        fs::write(
-            root.join("workflow").join("run-output-correction.md"),
-            "OVERRIDE {{ATTEMPT}} {{MAX_ATTEMPTS}} {{ERROR}}",
-        )
-        .expect("correction override should write");
-        let previous = std::env::var_os("CHARIOX_HOME");
-        std::env::set_var("CHARIOX_HOME", &home);
-        let rendered = render_configured_prompt(
-            "workflow/run-output-correction",
-            bundled_workflow_run_output_correction_template(),
-            &[("ATTEMPT", "1"), ("MAX_ATTEMPTS", "3"), ("ERROR", "bad")],
-        );
-        match previous {
-            Some(value) => std::env::set_var("CHARIOX_HOME", value),
-            None => std::env::remove_var("CHARIOX_HOME"),
-        }
-        assert_eq!(rendered, "OVERRIDE 1 3 bad");
-    }
-
-    #[test]
     fn scheduled_prompt_context_uses_the_markdown_catalog() {
         let _guard = env_lock::lock();
         let home = temp_prompt_root("configured-scheduled-prompt");
@@ -2192,19 +2092,19 @@ mod tests {
             .materialize_bundled_defaults()
             .expect("defaults should materialize");
         let default = registry
-            .read_setting("workflow/run-output-correction")
-            .expect("correction prompt should read")
+            .read_setting("workflow/turn")
+            .expect("workflow prompt should read")
             .default;
         let writer_registry = registry.clone();
         let reader_registry = registry.clone();
         let writer = std::thread::spawn(move || {
             for index in 0..40 {
                 let current = writer_registry
-                    .read_setting("workflow/run-output-correction")
+                    .read_setting("workflow/turn")
                     .expect("prompt should read");
                 writer_registry
                     .update_setting_if_version(
-                        "workflow/run-output-correction",
+                        "workflow/turn",
                         &format!("{default}\nmarker-{index}"),
                         current.revision,
                         &current.current_sha256,
@@ -2214,10 +2114,10 @@ mod tests {
         });
         for _ in 0..200 {
             let setting = reader_registry
-                .read_setting("workflow/run-output-correction")
+                .read_setting("workflow/turn")
                 .expect("concurrent prompt read should succeed");
             assert!(!setting.current.is_empty());
-            assert!(setting.current.contains("{{ERROR}}"));
+            assert!(setting.current.contains("{{DELIVERY_TOKEN}}"));
         }
         writer.join().expect("writer should finish");
     }
