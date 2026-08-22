@@ -67,6 +67,13 @@ impl ActivePromptState {
                 | "error"
                 | "failed"
                 | "declined"
+                | "aborted"
+                | "interrupted"
+                | "rejected"
+                | "skipped"
+                | "stopped"
+                | "timeout"
+                | "timed_out"
                 | "cancelled"
                 | "canceled"
         ) {
@@ -487,7 +494,7 @@ mod tests {
 
         activity.observe_provider_tool(
             Some("tool-1"),
-            br#"{"id":"tool-1","tool":"bash","status":"completed"}"#,
+            br#"{"id":"tool-1","tool":"bash","status":"timed_out"}"#,
         );
         assert!(!activity.has_active_provider_tools());
     }
