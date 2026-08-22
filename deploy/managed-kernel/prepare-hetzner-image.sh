@@ -104,6 +104,6 @@ apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed
-rm -f /etc/ssh/ssh_host_*
+rm -f /etc/ssh/ssh_host_* "$MARKER_PATH"
 sync
 echo "managed Hetzner image preparation passed"

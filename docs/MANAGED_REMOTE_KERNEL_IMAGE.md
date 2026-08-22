@@ -54,7 +54,8 @@ architecture. It installs Node.js 22, Git and GitHub tooling, the exact pinned
 Codex, OpenCode, and Claude Code releases, and the signed Chariox release. It
 enables the bootstrap service without starting it, rejects runtime state, then
 removes package caches, cloud-init identity, logs, SSH host keys, and the
-temporary root authorization directory.
+temporary root authorization directory. It also removes the disposable-builder
+marker before the snapshot is taken.
 
 ## Snapshot and cleanup
 

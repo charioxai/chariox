@@ -25,7 +25,7 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /systemctl is-active --quiet chariox-managed-bootstrap\.service/)
   assert.match(script, /managed runtime state entered the image/)
   assert.match(script, /cloud-init clean --logs --machine-id --seed/)
-  assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\*/)
+  assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\* "\$MARKER_PATH"/)
   assert.doesNotMatch(script, /systemctl (?:start|restart|enable --now) chariox-managed-bootstrap/)
   assert.doesNotMatch(script, /\.arroba/)
 })
