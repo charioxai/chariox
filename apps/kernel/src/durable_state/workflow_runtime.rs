@@ -3,9 +3,9 @@ use rusqlite::{params, OptionalExtension, Transaction};
 use crate::error::DaemonError;
 use crate::session::{
     DurableWorkflowHotState, RuntimeSession, WorkflowConsole, WorkflowDefinition,
-    WorkflowEventBinding, WorkflowEventDeliveryReceipt, WorkflowPromptQueueDefinition,
-    WorkflowPublicationDefinition, WorkflowPublicationSnapshot, WorkflowQueuedPrompt, WorkflowRun,
-    WorkflowScheduleDefinition,
+    WorkflowEndpointRuntimeInstance, WorkflowEventBinding, WorkflowEventDeliveryReceipt,
+    WorkflowPromptQueueDefinition, WorkflowPublicationDefinition, WorkflowPublicationSnapshot,
+    WorkflowQueuedPrompt, WorkflowRun, WorkflowScheduleDefinition,
 };
 
 use super::{
@@ -877,6 +877,14 @@ fn encode_workflow_hot_entities(
             &prompt,
         )?);
     }
+    for instance in state.workflow_runtime_instances {
+        entities.push(encode_workflow_hot_entity(
+            session_id,
+            "runtime_instance",
+            instance.id(),
+            &instance,
+        )?);
+    }
     for schedule in state.workflow_schedules {
         entities.push(encode_workflow_hot_entity(
             session_id,
@@ -964,6 +972,9 @@ fn decode_workflow_hot_entity(
         "queued_prompt" => state
             .workflow_queued_prompts
             .push_back(decode!(WorkflowQueuedPrompt)),
+        "runtime_instance" => state
+            .workflow_runtime_instances
+            .push(decode!(WorkflowEndpointRuntimeInstance)),
         "schedule" => state
             .workflow_schedules
             .push(decode!(WorkflowScheduleDefinition)),
@@ -1057,6 +1068,7 @@ fn storage_error(operation: &'static str, error: rusqlite::Error) -> DaemonError
 mod tests {
     use super::*;
     use crate::session::WorkflowRunStatus;
+    use std::collections::BTreeMap;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -1116,6 +1128,16 @@ mod tests {
             accepted_at_ms: unix_epoch_ms(),
             expires_at_ms: unix_epoch_ms().saturating_add(60_000),
         });
+        session.add_workflow_runtime_instance(WorkflowEndpointRuntimeInstance::new(
+            "instance-1",
+            "workflow-1",
+            "endpoint-1",
+            1,
+            1,
+            true,
+            BTreeMap::from([("node-1".to_string(), "agent-1".to_string())]),
+            "/workspace",
+        ));
         session
     }
 
@@ -1130,6 +1152,16 @@ mod tests {
         drop(store);
         let store = DurableKernelStateStore::open(path.clone())
             .expect("workflow runtime store should reopen after restart");
+
+        let hot_states = store
+            .load_workflow_hot_states("kernel-1")
+            .expect("workflow hot state should load");
+        assert_eq!(hot_states.len(), 1);
+        assert_eq!(hot_states[0].1.workflow_runtime_instances.len(), 1);
+        assert_eq!(
+            hot_states[0].1.workflow_runtime_instances[0].id(),
+            "instance-1"
+        );
 
         let active = store
             .load_active_workflow_runs("kernel-1")
@@ -1263,6 +1295,74 @@ mod tests {
             WorkflowRunStatus::Completed,
             "a delayed transition must snapshot current state after the newer commit",
         );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn normalized_active_runs_replace_stale_legacy_nonterminal_runs() {
+        let (store, path) = temp_store("workflow-runtime-active-replacement");
+        let mut stale_session = session_with_runs();
+        let mut settled_session = stale_session.clone();
+        settled_session
+            .workflow_run_mut("run-active")
+            .expect("active run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+        store
+            .persist_workflow_runtime_transition(&settled_session, "settled")
+            .expect("settled state should persist");
+
+        let normalized_active_runs = store
+            .load_active_workflow_runs("kernel-1")
+            .expect("active runs should load")
+            .into_iter()
+            .map(|(_, workflow_run)| workflow_run)
+            .collect();
+        stale_session.restore_active_workflow_runs(normalized_active_runs);
+
+        assert!(stale_session.workflow_run("run-active").is_none());
+        assert_eq!(
+            stale_session
+                .workflow_run("run-completed")
+                .expect("terminal run awaiting archival should remain")
+                .status(),
+            WorkflowRunStatus::Completed,
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_runtime_transition_deletes_removed_runtime_instances() {
+        let (store, path) = temp_store("workflow-runtime-instance-deletion");
+        let mut session = session_with_runs();
+        store
+            .persist_workflow_runtime_transition(&session, "instance_created")
+            .expect("runtime instance should persist");
+        assert_eq!(
+            store
+                .load_workflow_hot_states("kernel-1")
+                .expect("workflow hot state should load")[0]
+                .1
+                .workflow_runtime_instances
+                .len(),
+            1,
+        );
+
+        session
+            .remove_workflow_runtime_instance("instance-1")
+            .expect("runtime instance should exist");
+        store
+            .persist_workflow_runtime_transition(&session, "instance_removed")
+            .expect("runtime instance removal should persist");
+        assert!(store
+            .load_workflow_hot_states("kernel-1")
+            .expect("workflow hot state should load")[0]
+            .1
+            .workflow_runtime_instances
+            .is_empty());
 
         drop(store);
         let _ = std::fs::remove_file(path);

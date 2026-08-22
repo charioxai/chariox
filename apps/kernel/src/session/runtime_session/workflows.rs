@@ -590,6 +590,8 @@ impl RuntimeSession {
     }
 
     pub(crate) fn restore_active_workflow_runs(&mut self, workflow_runs: Vec<WorkflowRun>) {
+        self.workflow_runs
+            .retain(|workflow_run| workflow_run.status().is_terminal());
         for workflow_run in workflow_runs {
             if workflow_run.status().is_terminal() {
                 continue;
