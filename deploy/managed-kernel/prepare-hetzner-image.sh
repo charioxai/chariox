@@ -42,11 +42,17 @@ for version in "$codex_version" "$opencode_version" "$claude_version"; do
 done
 [ "$(uname -m)" = "x86_64" ] || fail "the managed staging image must use x86_64"
 
-if [ ! -f /etc/os-release ] || [ -L /etc/os-release ]; then
-  fail "the image builder has no regular os-release file"
+os_release=/etc/os-release
+if [ -L "$os_release" ]; then
+  [ "$(readlink "$os_release")" = "../usr/lib/os-release" ] \
+    || fail "the image builder has an unexpected os-release symlink"
+  os_release=/usr/lib/os-release
+fi
+if [ ! -f "$os_release" ] || [ -L "$os_release" ]; then
+  fail "the image builder has no trusted regular os-release file"
 fi
 # shellcheck disable=SC1091
-. /etc/os-release
+. "$os_release"
 [ "${ID:-}" = "ubuntu" ] || fail "the managed staging image must use Ubuntu"
 [ "${VERSION_ID:-}" = "26.04" ] || fail "the managed staging image must use Ubuntu 26.04"
 

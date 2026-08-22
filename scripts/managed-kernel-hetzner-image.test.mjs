@@ -11,6 +11,9 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
 
   assert.match(script, /MARKER_VALUE=managed-remote-kernels-image-builder-v1/)
   assert.match(script, /refusing to modify a host that is not marked as the disposable image builder/)
+  assert.match(script, /\[ "\$\(readlink "\$os_release"\)" = "\.\.\/usr\/lib\/os-release" \]/)
+  assert.match(script, /os_release=\/usr\/lib\/os-release/)
+  assert.match(script, /the image builder has no trusted regular os-release file/)
   assert.match(script, /\[ "\$\{ID:-\}" = "ubuntu" \]/)
   assert.match(script, /\[ "\$\{VERSION_ID:-\}" = "26\.04" \]/)
   assert.match(script, /\[ "\$node_major" -eq 22 \]/)
