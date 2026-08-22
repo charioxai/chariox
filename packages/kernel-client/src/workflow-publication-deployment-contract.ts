@@ -572,7 +572,8 @@ function validateDeploymentExtensionBindings(
       }
     }
     for (const destination of extension.network_destinations) {
-      if (JSON.stringify(contractDestinations.get(destination.id)) !== JSON.stringify(destination)) {
+      const contractDestination = contractDestinations.get(destination.id)
+      if (!contractDestination || !sameNetworkDestination(contractDestination, destination)) {
         throw new Error(`deployment contract extension ${extension.id} network destination does not match its egress ceiling`)
       }
       if (destination.credential_slot_ids.some((slotId) => !currentExtensionSlotIds.has(slotId))) {
@@ -585,6 +586,18 @@ function validateDeploymentExtensionBindings(
       throw new Error(`deployment contract integration credential slot ${slotId} has no extension requirement`)
     }
   }
+}
+
+function sameNetworkDestination(
+  left: WorkflowPublicationDeploymentNetworkDestination,
+  right: WorkflowPublicationDeploymentNetworkDestination,
+): boolean {
+  return left.id === right.id
+    && left.host.kind === right.host.kind
+    && left.host.value === right.host.value
+    && left.ports[0] === right.ports[0]
+    && left.protocols[0] === right.protocols[0]
+    && sameStrings(left.credential_slot_ids, right.credential_slot_ids)
 }
 
 function validateNetworkDestination(value: unknown, index: number): WorkflowPublicationDeploymentNetworkDestination {

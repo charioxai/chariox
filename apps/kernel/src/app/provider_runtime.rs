@@ -13,6 +13,27 @@ pub(crate) use super::provider_liveness::ProviderRunLivenessRuntime;
 pub(crate) use super::provider_processes::ProviderProcessTracker;
 
 impl DaemonApp {
+    pub(crate) fn end_provider_run_for_workflow_context_flush(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(run) = self.providers().get_run_for_agent(session_id, agent_id) else {
+            return Ok(());
+        };
+        if run.state() == crate::provider::ProviderRunState::Ended {
+            return Ok(());
+        }
+        let ended = self
+            .providers()
+            .terminate_run_provider_only(session_id, run.id())?
+            .into_run();
+        clear_active_provider_run_session_pointer(self, session_id, ended.id())?;
+        let _ = ProviderProcessTracker::new(self).remove_run(ended.id());
+        self.update_provider_run_projection(ended);
+        Ok(())
+    }
+
     pub(crate) fn start_provider_launch(
         &mut self,
         request: LaunchProviderRequest,

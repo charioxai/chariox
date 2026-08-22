@@ -190,10 +190,13 @@ fn dispatch_prepared_workflow_node_prompt(
     prompt: &str,
 ) -> Result<(), DaemonError> {
     let provider_run_id =
-        match ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id) {
-            Ok(provider_run_id) => provider_run_id,
-            Err(error) => return Err(error),
-        };
+        crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+            app,
+            session_id,
+            target_agent_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
     match app.acquire_workflow_node_workspace_claim(
         session_id,
         &provider_run_id,
@@ -316,7 +319,14 @@ fn retry_prepared_workflow_node_prompt(
     node_id: &str,
     prompt: &str,
 ) -> Result<(), DaemonError> {
-    let provider_run_id = ensure_workflow_provider_run_for_agent(app, session_id, target_agent_id)?;
+    let provider_run_id =
+        crate::app::workflow_runtime::ensure_workflow_provider_run_for_node_from_runtime(
+            app,
+            session_id,
+            target_agent_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
     match app.acquire_workflow_node_workspace_claim(
         session_id,
         &provider_run_id,
@@ -584,6 +594,26 @@ pub fn ensure_workflow_provider_run_for_agent_with_event_reply(
         event_reply_enabled,
         event_context_enabled,
         event_actions_enabled,
+        false,
+    )
+}
+
+pub fn ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    event_reply_enabled: bool,
+    event_context_enabled: bool,
+    event_actions_enabled: bool,
+) -> Result<String, DaemonError> {
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+        event_context_enabled,
+        event_actions_enabled,
+        true,
     )
 }
 

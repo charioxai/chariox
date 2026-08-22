@@ -170,7 +170,11 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
+    fresh_context: bool,
 ) -> Result<String, DaemonError> {
+    if fresh_context {
+        app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
+    }
     if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
         if run.workflow_tools_enabled()
             && run.workflow_event_reply_enabled() == event_reply_enabled
@@ -202,6 +206,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
         event_reply_enabled,
         event_context_enabled,
         event_actions_enabled,
+        fresh_context,
     )?;
     let provider_run = app.start_workflow_provider_launch(request)?;
     Ok(provider_run.id().to_string())
@@ -214,6 +219,7 @@ fn workflow_provider_request(
     event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
+    fresh_context: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
     let agent = app.agents().get_agent(agent_id)?;
     let provider = crate::provider::provider_id_for_launch(agent.provider());
@@ -234,6 +240,11 @@ fn workflow_provider_request(
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)
     .with_permission_level(effective_config.permission_level);
+    if fresh_context {
+        // `Some(empty)` explicitly suppresses the agent profile's durable resume state
+        // during launch preparation. It remains local to this workflow launch request.
+        request.resume_state = Some(crate::provider::ProviderResumeState::default());
+    }
     if let Some(working_directory) = app
         .providers()
         .get_run_for_agent(session_id, agent_id)

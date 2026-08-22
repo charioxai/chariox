@@ -381,6 +381,9 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
         .expect("workflow should exist")
         .id()
         .to_string();
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session.id(), &workflow_id, false)
+        .expect("preflight test should preserve provider context");
     let first_node_id = app
         .sessions_mut()
         .add_workflow_node(session.id(), &workflow_id, &first_agent_id)
