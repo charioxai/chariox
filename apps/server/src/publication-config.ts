@@ -26,6 +26,7 @@ import {
   type ProviderModelBindingPrompt,
 } from "./publication-bindings.js"
 import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
+import { activatePublicationEventBindings } from "./publication-event-bindings.js"
 import { validatePublicationRequirements } from "./publication-requirements.js"
 import { ensurePublicationRuntimeAttached } from "./publication-runtime-pump.js"
 import type {
@@ -142,7 +143,14 @@ export async function loadPublicationPackageConfig(
       : 1
     const materializedConfigs: WorkflowPublicationConfig[] = []
     for (let index = 0; index < replicaCount; index += 1) {
-      materializedConfigs.push(await materializePublicationConfig(config, materializationSnapshot, ownedClient))
+      const materialized = await materializePublicationConfig(config, materializationSnapshot, ownedClient)
+      await activatePublicationEventBindings({
+        client: ownedClient,
+        packageRoot: root,
+        publicationPackage,
+        runtimeSessionId: materialized.session_id,
+      })
+      materializedConfigs.push(materialized)
     }
     const materializedConfig = {
       ...materializedConfigs[0],

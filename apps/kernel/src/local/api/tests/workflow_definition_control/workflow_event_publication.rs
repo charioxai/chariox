@@ -553,6 +553,8 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
     .unwrap();
     assert!(binding_template.contains("\"requested_scope\": \"tenant:local\""));
     assert!(binding_template.contains("\"connection_id\": null"));
+    assert!(binding_template.contains("\"reply_mode\": \"disabled\""));
+    assert!(binding_template.contains("\"action_ids\": []"));
     assert!(!binding_template.contains("connection-local"));
     let publication_json = package_json_file(&package_files, "publication.json");
     assert_eq!(

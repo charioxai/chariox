@@ -50,6 +50,7 @@ test("gateway materializes exported publication packages through the kernel", as
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
+      event_bindings_path: "event-bindings.local.json",
       deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
       hooks: [{
         id: "hook-1",
@@ -107,6 +108,33 @@ test("gateway materializes exported publication packages through the kernel", as
         replacement: { provider: "opencode", model: "gpt-5", effort: "medium" },
       }],
     }))
+    await writeFile(join(root, "event-bindings.local.json"), JSON.stringify({
+      schema_version: 1,
+      publication_id: "pub-1",
+      destination_environment_id: "environment-1",
+      secrets_included: false,
+      bindings: [{
+        source_binding_id: "source-binding-1",
+        generator_id: "dev.chariox.github",
+        generator_version: "1.0.0",
+        manifest_digest: "sha256:manifest",
+        event_type: "pull_request.synchronize",
+        event_type_version: 1,
+        filter: { repository: "charioxai/drill" },
+        requested_scope: "repository:charioxai/drill",
+        endpoint_id: "endpoint-1",
+        queue_ref: "default",
+        reply_mode: "disabled",
+        action_ids: [],
+        source_environment_id: "source-environment",
+        source_revision: 1,
+        activation: {
+          connection_id: "connection-1",
+          environment_id: "environment-1",
+          mode: "authorized",
+        },
+      }],
+    }))
     await writeFile(join(root, "requirements.json"), JSON.stringify({
       schema_version: 1,
       mcps: [{ name: "playwright" }],
@@ -131,6 +159,9 @@ test("gateway materializes exported publication packages through the kernel", as
           if ("ListScripts" in request) return { ScriptsListed: { scripts: [{ name: "deploy" }] } }
           if ("ListConnectors" in request) return { ConnectorsListed: { connectors: [{ name: "github" }] } }
           if ("ListCredentials" in request) return { CredentialsListed: { credentials: [{ id: "github-token" }] } }
+          if ("CreateWorkflowEventBinding" in request) {
+            return { WorkflowEventBindingCreated: { binding: { id: "runtime-binding-1" } } }
+          }
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
@@ -150,6 +181,7 @@ test("gateway materializes exported publication packages through the kernel", as
       "ListConnectors",
       "ListCredentials",
       "MaterializeWorkflowPublication",
+      "CreateWorkflowEventBinding",
       "AttachToSession",
     ])
     assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: runtimeWorkspace } })

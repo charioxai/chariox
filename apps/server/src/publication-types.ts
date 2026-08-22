@@ -83,6 +83,7 @@ export type WorkflowPublicationPackage = {
   source_session_id?: string
   workflow_id: string
   default_bindings_path?: string
+  event_bindings_path?: string
   deployment_contract?: {
     path?: string
     schema_version?: number

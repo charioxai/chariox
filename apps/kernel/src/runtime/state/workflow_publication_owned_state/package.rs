@@ -353,6 +353,8 @@ fn workflow_publication_event_bindings_json(
                 "requested_scope": binding.connection_scope,
                 "endpoint_id": binding.endpoint_id,
                 "queue_ref": binding.queue_ref,
+                "reply_mode": binding.reply_mode,
+                "action_ids": binding.action_ids,
                 "source_environment_id": binding.environment_id,
                 "source_revision": binding.revision,
                 "activation": {
