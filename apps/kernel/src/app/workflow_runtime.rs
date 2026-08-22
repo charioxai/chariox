@@ -37,6 +37,21 @@ impl WorkflowProgression {
         workflow: &WorkflowDefinition,
     ) -> Result<(), DaemonError> {
         if workflow.flush_agent_context_before_run() {
+            let mut seen_agents = BTreeSet::new();
+            for node in workflow.nodes() {
+                if !seen_agents.insert(node.agent_id().to_string()) {
+                    continue;
+                }
+                let agent = app.agents().get_agent(node.agent_id())?;
+                if agent.remote_execution().is_some()
+                    || app
+                        .prompt_owner_active_prompt_for_agent(session_id, node.agent_id())?
+                        .is_some()
+                {
+                    continue;
+                }
+                app.end_provider_run_for_workflow_context_flush(session_id, node.agent_id())?;
+            }
             return Ok(());
         }
         let mut seen_agents = BTreeSet::new();
@@ -728,18 +743,14 @@ mod tests {
                 ),
             )
             .expect("stale provider context should be recorded");
+        let stale_run_id =
+            ensure_ordinary_workflow_provider_run(&mut app, session.id(), agent.id())
+                .expect("stale workflow provider run should launch");
         let stale_run = app
-            .launch_provider(
-                crate::provider::LaunchProviderRequest::new(
-                    session.id(),
-                    "dev-stub",
-                    "dev-stub",
-                    "default",
-                    "test-model",
-                )
-                .with_agent_id(agent.id()),
-            )
-            .expect("stale provider run should launch");
+            .providers()
+            .get_run(&stale_run_id)
+            .expect("stale workflow provider run should resolve");
+        assert!(stale_run.workflow_tools_enabled());
         assert_eq!(
             stale_run.resume_state().opencode_session_id(),
             Some("stale-workflow-session")
