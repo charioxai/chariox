@@ -396,7 +396,7 @@ function parsePackageExport(response: Record<string, unknown>): {
   readonly packageFiles: WorkflowPublicationPackageFile[]
 } {
   const payload = variant(response, "WorkflowPublicationPackageExported")
-  if (payload.package_version !== 3) throw new Error("kernel publication export must use package version 3")
+  if (payload.package_version !== 4) throw new Error("kernel publication export must use package version 4")
   const packageDigest = requiredSha256(payload.package_digest, "kernel publication package digest")
   if (!Array.isArray(payload.package_files)) throw new Error("kernel did not return publication package files")
   const packageFiles = payload.package_files.map((candidate) => {

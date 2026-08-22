@@ -222,7 +222,7 @@ async function setupFixture(options: {
       case "ExportWorkflowPublicationPackage": return {
         WorkflowPublicationPackageExported: {
           publication,
-          package_version: 3,
+          package_version: 4,
           package_digest: prepared.packageDigest,
           package_archive_base64: prepared.artifact.archiveBase64,
           package_files: packageFiles,
@@ -381,7 +381,7 @@ class FakeDeploymentCloud {
         status: "verified",
         packageId: body?.packageId,
         packageDigest: body?.packageDigest,
-        packageVersion: 3,
+        packageVersion: 4,
         createdAt: timestamp,
         updatedAt: timestamp,
       } }, 201, { "x-request-id": "release-request" })
