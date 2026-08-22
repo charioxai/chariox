@@ -63,8 +63,10 @@ async function validateExactExtensionRequirements(
     requireArray(record.extensions, "publication requirements extensions"),
   )
   const credentialSlots = requireArray(record.credential_slots, "publication requirements credential_slots")
-  const expectedCredentialSlots = extensions.flatMap((extension) => extension.credential_slots)
-  if (!isDeepStrictEqual(credentialSlots, expectedCredentialSlots)) {
+  const expectedCredentialSlots = extensions
+    .flatMap((extension) => extension.credential_slots)
+    .sort(compareCredentialSlotIds)
+  if (!isDeepStrictEqual([...credentialSlots].sort(compareCredentialSlotIds), expectedCredentialSlots)) {
     throw new Error("publication requirements credential_slots do not match the exact extension requirements")
   }
   const networkDestinations = requireArray(record.network_destinations, "publication requirements network_destinations")
@@ -121,10 +123,20 @@ function compareRequirementIds(left: unknown, right: unknown) {
   return requirementId(left).localeCompare(requirementId(right))
 }
 
+function compareCredentialSlotIds(left: unknown, right: unknown) {
+  return credentialSlotId(left).localeCompare(credentialSlotId(right))
+}
+
 function requirementId(value: unknown) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return ""
   const id = (value as Record<string, unknown>).id
   return typeof id === "string" ? id : ""
+}
+
+function credentialSlotId(value: unknown) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return ""
+  const slotId = (value as Record<string, unknown>).slot_id
+  return typeof slotId === "string" ? slotId : ""
 }
 
 async function missingNamedRequirements(
