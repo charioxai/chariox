@@ -68,14 +68,12 @@ pub(in crate::provider) fn drain_opencode_events(
                     && info.role == "assistant"
                     && state.message_belongs_to_active_prompt(&info.id)
                     && info.time.completed.is_some()
-                    && !info.is_tool_call_only_completion()
+                    && info.is_terminal_assistant_completion()
                     && state
                         .completed_assistant_message_ids
                         .insert(info.id.clone())
                 {
-                    if state.active_user_message_id.is_some()
-                        && info.is_terminal_assistant_completion()
-                    {
+                    if state.active_user_message_id.is_some() {
                         state.active_terminal_assistant_message_id = Some(info.id.clone());
                     }
                     completions.push(OpenCodeAssistantCompletion {

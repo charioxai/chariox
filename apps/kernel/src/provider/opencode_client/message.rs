@@ -37,10 +37,6 @@ pub struct OpenCodeMessageInfo {
 }
 
 impl OpenCodeMessageInfo {
-    pub fn is_tool_call_only_completion(&self) -> bool {
-        self.finish.as_deref() == Some("tool-calls")
-    }
-
     pub fn is_terminal_assistant_completion(&self) -> bool {
         if self.error.is_some() {
             return true;
