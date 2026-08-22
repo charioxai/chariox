@@ -283,8 +283,14 @@ fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
         )
         .expect("workflow should launch");
 
-    assert_eq!(dispatches.retiring_provider_runs, vec![old_provider_run_id]);
     assert_eq!(dispatches.starting_provider_runs.len(), 1);
+    assert_eq!(
+        dispatches.provider_run_retirements,
+        std::collections::BTreeMap::from([(
+            dispatches.starting_provider_runs[0].clone(),
+            vec![old_provider_run_id],
+        )])
+    );
     let new_provider_run = runtime
         .owned
         .provider_store

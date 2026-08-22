@@ -586,8 +586,7 @@ impl KernelRuntimeState {
         let mut dispatches = WorkflowPromptDispatches::default();
         if let Some(retired_provider_run_id) = retired_provider_run_id {
             dispatches
-                .retiring_provider_runs
-                .push(retired_provider_run_id);
+                .retire_provider_before_launch(provider_run_id.clone(), retired_provider_run_id);
         }
         match provider_run.state() {
             crate::provider::ProviderRunState::Starting => {

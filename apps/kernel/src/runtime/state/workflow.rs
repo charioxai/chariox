@@ -312,9 +312,10 @@ impl KernelRuntimeOwnedState {
                 fresh_context,
             )?;
             if let Some(retired_provider_run_id) = retired_provider_run_id {
-                dispatches
-                    .retiring_provider_runs
-                    .push(retired_provider_run_id);
+                dispatches.retire_provider_before_launch(
+                    provider_run_id.clone(),
+                    retired_provider_run_id,
+                );
             }
             Some(provider_run_id)
         } else {

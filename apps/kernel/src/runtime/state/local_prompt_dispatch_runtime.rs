@@ -2968,18 +2968,22 @@ impl KernelRuntimeState {
                 }
             });
         }
-        let retiring_provider_runs = dispatches.retiring_provider_runs;
-        let mut starting_provider_runs = dispatches.starting_provider_runs.into_iter();
-        if let Some(provider_run_id) = starting_provider_runs.next() {
-            self.spawn_detached_workflow_provider_launch_after_retiring(
-                provider_run_id,
-                retiring_provider_runs,
-            );
-        } else {
-            self.spawn_retired_workflow_provider_cleanup(retiring_provider_runs);
+        let mut provider_run_retirements = dispatches.provider_run_retirements;
+        for provider_run_id in dispatches.starting_provider_runs {
+            let retired_provider_run_ids = provider_run_retirements
+                .remove(&provider_run_id)
+                .unwrap_or_default();
+            if retired_provider_run_ids.is_empty() {
+                self.spawn_detached_workflow_provider_launch(provider_run_id);
+            } else {
+                self.spawn_detached_workflow_provider_launch_after_retiring(
+                    provider_run_id,
+                    retired_provider_run_ids,
+                );
+            }
         }
-        for provider_run_id in starting_provider_runs {
-            self.spawn_detached_workflow_provider_launch(provider_run_id);
+        for retired_provider_run_ids in provider_run_retirements.into_values() {
+            self.spawn_retired_workflow_provider_cleanup(retired_provider_run_ids);
         }
         for dispatch in dispatches.local {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
