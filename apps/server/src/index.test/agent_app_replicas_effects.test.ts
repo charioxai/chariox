@@ -125,7 +125,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
   await writeFile(join(root, "app", "index.html"), "<!doctype html><main>secure app</main>")
   await writeFile(join(root, "publication.json"), JSON.stringify({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: "pub-caller-claims",
     source_session_id: "session-1",
     workflow_id: "workflow-1",
@@ -148,7 +148,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: 1,
     },
@@ -157,6 +157,7 @@ test("managed agent app runtime verifies caller claims before affinity and role 
     credential_slots: [],
     configuration: [],
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",

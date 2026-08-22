@@ -494,7 +494,7 @@ test("gateway can load publication config from kernel lookup", async () => {
 test("gateway maps exported publication packages to runtime config", async () => {
   const config = publicationConfigFromPackage({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: "pub-1",
     source_session_id: "session-1",
     workflow_id: "workflow-1",
@@ -549,7 +549,7 @@ test("gateway loads publication package directories", async () => {
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -611,12 +611,12 @@ test("gateway loads publication package directories", async () => {
   }
 })
 
-test("gateway requires a valid deployment contract for package v3", async () => {
+test("gateway requires a valid deployment contract for package v4", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-contract-"))
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -662,7 +662,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
         captured_at_ms: 1,
       },
       compatibility: {
-        package_version: 3,
+        package_version: 4,
         minimum_kernel_version: "0.1.0",
         minimum_local_daemon_protocol_version: LOCAL_DAEMON_PROTOCOL_VERSION,
       },
@@ -671,6 +671,7 @@ test("gateway requires a valid deployment contract for package v3", async () => 
       credential_slots: [],
       configuration: [],
       capabilities: {
+        extensions: [],
         network: {
           policy_version: 1,
           default_action: "deny",

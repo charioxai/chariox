@@ -46,7 +46,7 @@ test("gateway materializes exported publication packages through the kernel", as
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -191,7 +191,7 @@ test("gateway materializes Agent App replica sessions from package config", asyn
     await writeFile(join(root, "app", "index.html"), "<!doctype html><main>shop</main>")
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-agent-app",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -293,7 +293,7 @@ test("gateway remaps portable package workspace paths before local materializati
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-portable",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -392,7 +392,7 @@ test("gateway prompts for unavailable provider/model bindings and persists the r
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -501,7 +501,7 @@ test("gateway accepts provider-prefixed captured models when the provider matche
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -599,7 +599,7 @@ test("gateway fails before materialization when provider/model bindings cannot b
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",
@@ -679,7 +679,7 @@ test("gateway fails package materialization before runtime creation when require
   try {
     await writeFile(join(root, "publication.json"), JSON.stringify({
       schema_version: 1,
-      package_version: 3,
+      package_version: 4,
       publication_id: "pub-1",
       source_session_id: "session-1",
       workflow_id: "workflow-1",

@@ -158,7 +158,7 @@ function providerPolicyContract(): WorkflowPublicationDeploymentContract {
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: 1,
     },
@@ -172,6 +172,7 @@ function providerPolicyContract(): WorkflowPublicationDeploymentContract {
       captured: { provider: "codex" },
     }],
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",

@@ -106,7 +106,7 @@ export async function writeDeploymentContractFixture(
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: LOCAL_DAEMON_PROTOCOL_VERSION,
     },
@@ -126,6 +126,7 @@ export async function writeDeploymentContractFixture(
       captured: { provider: profile.capturedProvider },
     })),
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",
@@ -184,7 +185,7 @@ export function publishedHttpConfig(
 ): WorkflowPublicationConfig {
   return publicationConfigFromPackage({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: `pub-${id}`,
     source_session_id: "session-1",
     workflow_id: "workflow-1",
