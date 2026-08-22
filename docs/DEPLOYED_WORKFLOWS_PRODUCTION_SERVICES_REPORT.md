@@ -170,8 +170,8 @@ fallback. Database-backed package failure follows database failure behavior.
 **Registration decision:** **Required before first external production as a capability.**
 A production PostgreSQL resource must be designated. A new database vendor account is not
 required if the existing operator-controlled managed PostgreSQL or a production-qualified
-self-hosted PostgreSQL instance satisfies the criteria. The currently documented Scalingo
-addon is a staging resource and is not production evidence by itself.
+self-hosted PostgreSQL instance satisfies the criteria. The current OpenShip-dedicated
+PostgreSQL service is a staging resource and is not production evidence by itself.
 
 **Why and abstraction status:**
 [`packages/db/src/index.ts`](https://github.com/charioxai/chariox-cloud/blob/main/packages/db/src/index.ts)

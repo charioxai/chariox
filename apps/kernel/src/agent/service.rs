@@ -477,6 +477,21 @@ impl AgentService {
         )
     }
 
+    pub(crate) fn set_agent_provider_resume_state(
+        &mut self,
+        agent_id: &str,
+        resume_state: ProviderResumeState,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_provider_resume_state(resume_state);
+        Ok(agent.clone())
+    }
+
     pub fn set_agent_runtime_profile_with_account_profile(
         &mut self,
         agent_id: &str,

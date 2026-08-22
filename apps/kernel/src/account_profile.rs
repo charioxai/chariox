@@ -437,6 +437,18 @@ struct StoredProviderAccountProfile {
     materialized_replica: bool,
 }
 
+impl StoredProviderAccountProfile {
+    fn environment(&self) -> BTreeMap<String, String> {
+        if self.public.provider == "claude"
+            && self.public.origin == ProviderAccountProfileOrigin::Default
+            && !self.materialized_replica
+        {
+            return BTreeMap::new();
+        }
+        self.locator.environment()
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RegistryDocument {
     version: u32,
@@ -691,11 +703,7 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<BTreeMap<String, String>, DaemonError> {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
-        Ok(
-            resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
-                .locator
-                .environment(),
-        )
+        Ok(resolve_stored_profile(&document, owner_user_id, provider, profile_id)?.environment())
     }
 
     pub fn create_managed(
@@ -1813,6 +1821,49 @@ mod tests {
         assert_eq!(second.len(), 3);
         assert!(first.iter().all(|profile| profile.profile_id == "default"));
         assert!(first.iter().all(|profile| profile.is_default));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn default_claude_profile_inherits_the_host_environment() {
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+
+        assert!(!environment.contains_key("CLAUDE_CONFIG_DIR"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_claude_profiles_select_their_config_directories() {
+        let (root, registry) = fixture();
+        let managed = registry
+            .create_managed("owner-a", "claude", "Managed")
+            .unwrap();
+        let linked_root = root.join("linked-claude");
+        fs::create_dir_all(&linked_root).unwrap();
+        set_private_dir_permissions(&linked_root).unwrap();
+        let linked = registry
+            .link_existing("owner-a", "claude", "Linked", &linked_root)
+            .unwrap();
+
+        let managed_environment = registry
+            .resolve_environment("owner-a", "claude", &managed.profile_id)
+            .unwrap();
+        let linked_environment = registry
+            .resolve_environment("owner-a", "claude", &linked.profile_id)
+            .unwrap();
+
+        assert!(managed_environment["CLAUDE_CONFIG_DIR"].contains(&managed.profile_id));
+        assert_eq!(
+            Path::new(&linked_environment["CLAUDE_CONFIG_DIR"]),
+            linked_root.canonicalize().unwrap()
+        );
         let _ = fs::remove_dir_all(root);
     }
 

@@ -79,8 +79,16 @@ export async function writeDeploymentContractFixture(
   root: string,
   publicationId: string,
   routeId = "hook-1",
+  providerProfiles: readonly {
+    readonly agentId: string
+    readonly capturedProvider: string
+    readonly allowedProviders?: readonly string[]
+  }[] = [],
 ): Promise<void> {
   const digest = `sha256:${"a".repeat(64)}`
+  const requiredProviders = [...new Set(providerProfiles.flatMap((profile) =>
+    profile.allowedProviders ?? [profile.capturedProvider]
+  ))]
   await writeFile(join(root, "deployment-contract.json"), JSON.stringify({
     schema_version: 1,
     package_id: digest,
@@ -98,20 +106,36 @@ export async function writeDeploymentContractFixture(
       captured_at_ms: 1,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: LOCAL_DAEMON_PROTOCOL_VERSION,
     },
     routes: [{ id: routeId }],
-    provider_requirements: [],
-    credential_slots: [],
-    configuration: [],
+    provider_requirements: requiredProviders.map((provider) => ({
+      slot_id: `provider:${provider}`,
+      provider,
+    })),
+    credential_slots: requiredProviders.map((provider) => ({
+      slot_id: `provider:${provider}`,
+      allowed_destination_ids: [],
+    })),
+    configuration: providerProfiles.map((profile) => ({
+      kind: "provider_profile",
+      agent_id: profile.agentId,
+      allowed_providers: profile.allowedProviders ?? [profile.capturedProvider],
+      captured: { provider: profile.capturedProvider },
+    })),
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",
         destinations: [],
-        provider_access: [],
+        provider_access: requiredProviders.map((provider) => ({
+          slot_id: `provider:${provider}`,
+          bundle_kind: "platform_managed",
+          bundle_id: `${provider}-test-v1`,
+        })),
       },
     },
     resources: {},
@@ -161,7 +185,7 @@ export function publishedHttpConfig(
 ): WorkflowPublicationConfig {
   return publicationConfigFromPackage({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: `pub-${id}`,
     source_session_id: "session-1",
     workflow_id: "workflow-1",

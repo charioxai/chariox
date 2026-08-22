@@ -21,6 +21,7 @@ mod prompt_state_owner;
 mod provider_activation;
 mod provider_first_output_watchdog;
 mod provider_focus;
+mod provider_launch_failure_retry;
 mod provider_launch_policy;
 mod provider_launch_request;
 mod provider_liveness;
@@ -113,6 +114,10 @@ pub(crate) use provider_first_output_watchdog::{
     ProviderFirstOutputTimeoutCandidate, ProviderInactivityTimeoutCandidate,
     PROVIDER_OUTPUT_TIMEOUT_MS,
 };
+pub(crate) use provider_launch_failure_retry::{
+    ProviderLaunchFailureRetry, ProviderLaunchFailureRetryScheduleOutcome,
+    ProviderLaunchFailureRetryStore,
+};
 pub(crate) use provider_launch_policy::{
     apply_metaagent_launch_policy, failed_provider_resume_state_replacement,
     failed_provider_resume_state_replacement_from_message, generate_runtime_mcp_auth_token,
@@ -134,6 +139,7 @@ pub struct DaemonApp {
     pub(crate) providers: ProviderProcessServiceStore,
     pub(crate) provider_catalog_cache: ProviderCatalogCacheStore,
     pub(crate) provider_process_tracking: ProviderProcessTrackingStore,
+    provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     pub(crate) active_turns: ActiveTurnStore,
@@ -249,6 +255,7 @@ impl DaemonApp {
             providers: ProviderProcessServiceStore::new(ProviderProcessService::new()),
             provider_catalog_cache: ProviderCatalogCacheStore::default(),
             provider_process_tracking: ProviderProcessTrackingStore::default(),
+            provider_launch_failure_retries: ProviderLaunchFailureRetryStore::default(),
             external_provider_sessions: ExternalProviderSessionIndexStore::default(),
             attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore::default(),
             active_turns: ActiveTurnStore::default(),
@@ -422,6 +429,10 @@ impl DaemonApp {
 
     pub(crate) fn provider_process_tracking_store(&self) -> ProviderProcessTrackingStore {
         self.provider_process_tracking.clone()
+    }
+
+    pub(crate) fn provider_launch_failure_retry_store(&self) -> ProviderLaunchFailureRetryStore {
+        self.provider_launch_failure_retries.clone()
     }
 
     pub(crate) fn external_provider_session_index_store(

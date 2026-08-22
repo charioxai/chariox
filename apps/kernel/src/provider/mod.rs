@@ -24,6 +24,7 @@ mod types;
 mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
+pub(crate) use claude::ensure_claude_native_hidden_context_fits;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub use codex::{
@@ -67,7 +68,8 @@ pub use opencode_client::{
 };
 pub use process_info::{ProviderProcessInfo, ProviderProcessStatus};
 pub(crate) use prompt_signals::{
-    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_text,
+    classify_provider_substitutable_failure_text, classify_provider_terminal_failure_output_text,
+    classify_provider_terminal_failure_text,
 };
 pub use prompt_signals::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
@@ -148,8 +150,7 @@ pub(crate) fn provider_run_refreshes_selection_on_read(run: &RuntimeProviderRun)
 pub(crate) fn provider_run_waits_for_workflow_publication_completion(
     run: &RuntimeProviderRun,
 ) -> bool {
-    run.adapter_key() == "codex"
-        || (run.adapter_key() == "claude" && provider_run_uses_structured_prompt_io(run))
+    matches!(run.adapter_key(), "codex" | "claude")
 }
 
 pub(crate) fn provider_run_reuses_run_for_mcp_continuation_reload(
@@ -317,14 +318,22 @@ mod tests {
     fn workflow_publication_completion_wait_is_provider_policy() {
         let structured_claude = provider_run("claude", "claude");
         let headless_claude = provider_run("claude", "claude-headless");
+        let native_claude = provider_run_with_client_interface(
+            "claude",
+            "claude",
+            ProviderClientInterface::NativeTui,
+        );
         let codex = provider_run("codex", "codex");
         let opencode = provider_run("opencode", "opencode");
 
         assert!(provider_run_waits_for_workflow_publication_completion(
             &structured_claude
         ));
-        assert!(!provider_run_waits_for_workflow_publication_completion(
+        assert!(provider_run_waits_for_workflow_publication_completion(
             &headless_claude
+        ));
+        assert!(provider_run_waits_for_workflow_publication_completion(
+            &native_claude
         ));
         assert!(provider_run_waits_for_workflow_publication_completion(
             &codex

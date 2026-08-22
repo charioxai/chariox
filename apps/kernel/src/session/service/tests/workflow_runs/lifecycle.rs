@@ -1,6 +1,25 @@
 use super::*;
 
 #[test]
+fn workflow_run_ids_are_unique_lowercase_128_bit_hex() {
+    let mut service = SessionService::new(&test_config());
+    let ids = (0..1_024)
+        .map(|_| service.next_workflow_run_id())
+        .collect::<Vec<_>>();
+
+    assert!(ids.iter().all(|id| {
+        id.len() == 32
+            && id
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }));
+    assert_eq!(
+        ids.iter().collect::<std::collections::BTreeSet<_>>().len(),
+        ids.len()
+    );
+}
+
+#[test]
 fn creates_lists_resolves_and_cancels_workflow_runs() {
     let mut service = SessionService::new(&test_config());
     let session = service

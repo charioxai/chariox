@@ -7,6 +7,12 @@ use super::*;
 
 const PROMPT_SETTLEMENT_RECHECK_DELAY: std::time::Duration = std::time::Duration::from_millis(50);
 
+enum FailedPromptResumePreparation {
+    NotRequired,
+    Cleared(crate::runtime::prompt_state::PromptDeliverySettlementClaim),
+    Superseded,
+}
+
 impl KernelRuntimeOwnedState {
     pub(super) fn prompt_completion_recorded(&self, provider_run_id: &str) -> bool {
         self.prompt_activity
@@ -53,6 +59,7 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .drain_finished_structured_prompt_submit_jobs()
         {
+            let settlement_retry_attempt = finished.settlement_retry_attempt;
             match finished.result {
                 Ok(acknowledgement) => {
                     if let Err(error) = self.finish_structured_prompt_delivery(
@@ -66,19 +73,86 @@ impl KernelRuntimeOwnedState {
                             "daemon.prompt_delivery",
                             "failed to persist structured prompt acknowledgement",
                             serde_json::json!({
-                                "session_id": finished.session_id,
-                                "agent_id": finished.agent_id,
-                                "prompt_id": finished.prompt_id,
-                                "provider_run_id": finished.provider_run_id,
+                                "session_id": &finished.session_id,
+                                "agent_id": &finished.agent_id,
+                                "prompt_id": &finished.prompt_id,
+                                "provider_run_id": &finished.provider_run_id,
                                 "error": error.to_string(),
                             }),
                         );
+                        if crate::durable_state::is_retryable_durable_write_error(&error) {
+                            self.provider_store
+                                .schedule_finished_structured_prompt_submit_retry(
+                                    crate::provider::FinishedProviderPromptSubmitJob {
+                                        session_id: finished.session_id,
+                                        provider_run_id: finished.provider_run_id,
+                                        agent_id: finished.agent_id,
+                                        prompt_id: finished.prompt_id,
+                                        result: Ok(acknowledgement),
+                                        settlement_retry_attempt,
+                                    },
+                                );
+                        }
                     }
                 }
                 Err(error) => {
                     let provider_run = self.provider_store.get_run(&finished.provider_run_id).ok();
+                    let mut _settlement_claim = None;
                     if let Some(provider_run) = provider_run.as_ref() {
-                        self.clear_failed_provider_resume_state(provider_run, &error);
+                        match self.prepare_failed_prompt_resume_invalidation(
+                            &finished.session_id,
+                            &finished.agent_id,
+                            &finished.prompt_id,
+                            provider_run,
+                            &error,
+                        ) {
+                            Ok(FailedPromptResumePreparation::NotRequired) => {}
+                            Ok(FailedPromptResumePreparation::Cleared(claim)) => {
+                                _settlement_claim = Some(claim);
+                            }
+                            Ok(FailedPromptResumePreparation::Superseded) => {
+                                crate::logging::warn_with_fields(
+                                    "daemon.prompt_delivery",
+                                    "structured prompt failure was superseded by newer delivery state",
+                                    serde_json::json!({
+                                        "session_id": &finished.session_id,
+                                        "agent_id": &finished.agent_id,
+                                        "prompt_id": &finished.prompt_id,
+                                        "provider_run_id": &finished.provider_run_id,
+                                    }),
+                                );
+                                continue;
+                            }
+                            Err(clear_error) => {
+                                crate::logging::warn_with_fields(
+                                    "durable_state.recovery",
+                                    "failed to durably invalidate provider resume after prompt dispatch failure",
+                                    serde_json::json!({
+                                        "session_id": &finished.session_id,
+                                        "agent_id": &finished.agent_id,
+                                        "prompt_id": &finished.prompt_id,
+                                        "provider_run_id": &finished.provider_run_id,
+                                        "error": clear_error.to_string(),
+                                    }),
+                                );
+                                if crate::durable_state::is_retryable_durable_write_error(
+                                    &clear_error,
+                                ) {
+                                    self.provider_store
+                                        .schedule_finished_structured_prompt_submit_retry(
+                                            crate::provider::FinishedProviderPromptSubmitJob {
+                                                session_id: finished.session_id,
+                                                provider_run_id: finished.provider_run_id,
+                                                agent_id: finished.agent_id,
+                                                prompt_id: finished.prompt_id,
+                                                result: Err(error),
+                                                settlement_retry_attempt,
+                                            },
+                                        );
+                                }
+                                continue;
+                            }
+                        }
                         if let Ok(outcome) = self.provider_store.terminate_run_provider_only(
                             &finished.session_id,
                             &finished.provider_run_id,
@@ -206,55 +280,93 @@ impl KernelRuntimeOwnedState {
         }
     }
 
-    fn clear_failed_provider_resume_state(
+    fn prepare_failed_prompt_resume_invalidation(
         &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
         provider_run: &crate::provider::RuntimeProviderRun,
         error: &DaemonError,
-    ) {
-        let Some(replacement_resume_state) =
-            crate::app::failed_provider_resume_state_replacement(provider_run, error)
-        else {
-            return;
-        };
-        let Some(agent_id) = provider_run.agent_instance_id() else {
-            return;
-        };
+    ) -> Result<FailedPromptResumePreparation, DaemonError> {
+        if crate::app::failed_provider_resume_state_replacement(provider_run, error).is_none() {
+            return Ok(FailedPromptResumePreparation::NotRequired);
+        }
         let provider = provider_run.adapter_key();
-        let Some(stale_provider_session_id) = provider_run
-            .resume_state()
-            .provider_session_id(provider)
+        let session = self.session_store.get_session(session_id)?;
+        let Some(settlement_claim) = self
+            .prompt_state_owner
+            .try_claim_active_prompt_delivery_settlement(
+                &session,
+                agent_id,
+                prompt_id,
+                provider_run.id(),
+            )
+        else {
+            return Ok(FailedPromptResumePreparation::Superseded);
+        };
+        let Some(active_prompt) = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+        else {
+            return Ok(FailedPromptResumePreparation::Superseded);
+        };
+        let Some(stale_provider_session_id) = active_prompt
+            .durable_delivery_provider_session_id()
             .map(str::to_string)
         else {
-            return;
+            return Err(DaemonError::LocalTransport {
+                operation: "invalidate provider resume after prompt delivery failure",
+                message: format!(
+                    "prompt `{prompt_id}` has no durable provider session identity for run `{}`",
+                    provider_run.id()
+                ),
+            });
         };
-        let Ok(current) = self.agent_store.get_agent(agent_id) else {
-            return;
-        };
-        if current
-            .provider_resume_state()
-            .provider_session_id(provider)
-            != Some(stale_provider_session_id.as_str())
+        if self
+            .compare_and_mark_active_prompt_delivery_failure(
+                session_id,
+                agent_id,
+                prompt_id,
+                provider_run.id(),
+                &stale_provider_session_id,
+                (
+                    active_prompt.status(),
+                    crate::session::PromptStatus::Cancelling,
+                ),
+            )?
+            .is_none()
         {
-            return;
+            return Ok(FailedPromptResumePreparation::Superseded);
         }
-        let Ok(agent) = self.agent_store.set_agent_runtime_profile(
-            agent_id,
-            provider_run.provider(),
-            Some(provider_run.model().to_string()),
-            provider_run.variant().map(str::to_string),
-            replacement_resume_state,
-        ) else {
-            return;
-        };
-        let _ = self.durable_state_store.append_event(
-            "agent.runtime_profile_updated",
-            Some(agent.id().to_string()),
-            serde_json::json!({
-                "agent": &agent,
-                "provider_run_id": provider_run.id(),
-                "reason": "failed_provider_resume_state_cleared",
-            }),
-        );
+        let cleared = self
+            .agent_store
+            .clear_provider_resume_state_durably_if_matches(
+                &self.durable_state_store,
+                agent_id,
+                provider,
+                &stale_provider_session_id,
+                provider_run.id(),
+                "failed_provider_resume_state_cleared",
+            )?;
+        match cleared {
+            crate::agent::ProviderResumeClearOutcome::Cleared => {}
+            crate::agent::ProviderResumeClearOutcome::AlreadyAbsent => {
+                return Ok(FailedPromptResumePreparation::Cleared(settlement_claim));
+            }
+            crate::agent::ProviderResumeClearOutcome::Superseded {
+                current_provider_session_id,
+            } => {
+                self.restore_active_prompt_after_resume_superseded(
+                    session_id,
+                    agent_id,
+                    prompt_id,
+                    provider_run.id(),
+                    &stale_provider_session_id,
+                    &current_provider_session_id,
+                )?;
+                return Ok(FailedPromptResumePreparation::Superseded);
+            }
+        }
         self.record_notice(
             provider_run.session_id(),
             Some(provider_run.id()),
@@ -267,6 +379,7 @@ impl KernelRuntimeOwnedState {
                     )
                 }),
         );
+        Ok(FailedPromptResumePreparation::Cleared(settlement_claim))
     }
 
     fn finish_structured_prompt_delivery(
@@ -277,30 +390,35 @@ impl KernelRuntimeOwnedState {
         provider_run_id: &str,
         acknowledgement: &crate::provider::ProviderPromptSubmitAcknowledgement,
     ) -> Result<(), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some(_settlement_claim) = self
+            .prompt_state_owner
+            .try_claim_active_prompt_delivery_settlement(
+                &session,
+                agent_id,
+                prompt_id,
+                provider_run_id,
+            )
+        else {
+            return Ok(());
+        };
+        let run = self.provider_store.get_run(provider_run_id)?;
+        if let Some(run_agent_id) = run.agent_instance_id() {
+            self.agent_store.set_agent_runtime_profile_durably(
+                &self.durable_state_store,
+                run_agent_id,
+                run.provider(),
+                Some(run.model().to_string()),
+                run.variant().map(str::to_string),
+                Some(run.account_profile().to_string()),
+                acknowledgement.resume_state.clone(),
+                Some(run.id()),
+                Some("prompt_delivery_acknowledged"),
+            )?;
+        }
         let run = self
             .provider_store
             .apply_prompt_submit_acknowledgement(provider_run_id, acknowledgement)?;
-        if let Some(run_agent_id) = run.agent_instance_id() {
-            let agent = self
-                .agent_store
-                .set_agent_runtime_profile_with_account_profile(
-                    run_agent_id,
-                    run.provider(),
-                    Some(run.model().to_string()),
-                    run.variant().map(str::to_string),
-                    Some(run.account_profile().to_string()),
-                    run.resume_state().clone(),
-                )?;
-            self.durable_state_store.append_event(
-                "agent.runtime_profile_updated",
-                Some(agent.id().to_string()),
-                serde_json::json!({
-                    "agent": &agent,
-                    "provider_run_id": run.id(),
-                    "reason": "prompt_delivery_acknowledged",
-                }),
-            )?;
-        }
         self.provider_run_projection.update(run.clone());
         self.mark_active_prompt_delivery(
             session_id,
@@ -405,6 +523,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: false,
                 completion_recorded: false,
                 settlement_requested: false,
+                active_tool_ids: std::collections::BTreeSet::new(),
             },
         );
         let active_turn = self
@@ -478,6 +597,17 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn note_prompt_tool_output(
+        &self,
+        provider_run_id: &str,
+        merge_key: Option<&str>,
+        bytes: &[u8],
+    ) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.observe_provider_tool(merge_key, bytes);
+        }
+    }
+
     pub(super) fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
         self.active_turns.mark_settling(provider_run_id);
         self.prompt_activity
@@ -491,6 +621,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
+                active_tool_ids: std::collections::BTreeSet::new(),
             });
         self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }

@@ -18,6 +18,7 @@ import {
   getDeploymentAudience,
   getDeploymentEnvironmentCredentials,
   getDeploymentProject,
+  getPublicationCallerClaimsVerifier,
   listDeploymentProjects,
   promoteDeploymentRelease,
   setDeploymentAudiencePolicy,
@@ -271,6 +272,10 @@ async function bindSetupRuntime(
   runtime: AttachedDeploymentSetupRuntime,
 ): Promise<{ readonly operationalDeploymentId: string; readonly state: "running" | "waiting_for_relay" }> {
   const promoted = await promoteSetup(profile, setup, setup.operationKeys.runtime)
+  const verifier = await getPublicationCallerClaimsVerifier(profile)
+  if (verifier.algorithm !== "Ed25519") {
+    throw new Error("Cloud publication caller-claims verifier must use Ed25519")
+  }
   const deploymentId = requiredText(promoted.operationalDeploymentId, "operational deployment ID")
   const response = await runtime.sendDeploymentSetupKernelRequest(bindWorkflowPublicationDeploymentRequest(
     setup.sourceSessionId,
@@ -279,9 +284,14 @@ async function bindSetupRuntime(
       setupId: setup.id,
       operationKey: setup.operationKeys.runtime,
       deploymentId,
+      environmentId: requiredText(setup.environmentId, "deployment environment ID"),
       releaseId: requiredText(setup.releaseId, "deployment release ID"),
       packageDigest: requiredSha256(setup.packageDigest, "deployment package digest"),
       desiredRevision: promoted.desiredRevision,
+      callerClaimsPublicKeyPem: requiredCallerClaimsPublicKeyPem(
+        verifier.publicKeyPem,
+        "publication caller-claims public key",
+      ),
     },
   ))
   const payload = variant(response, "WorkflowPublicationDeploymentBound")
@@ -386,7 +396,7 @@ function parsePackageExport(response: Record<string, unknown>): {
   readonly packageFiles: WorkflowPublicationPackageFile[]
 } {
   const payload = variant(response, "WorkflowPublicationPackageExported")
-  if (payload.package_version !== 3) throw new Error("kernel publication export must use package version 3")
+  if (payload.package_version !== 4) throw new Error("kernel publication export must use package version 4")
   const packageDigest = requiredSha256(payload.package_digest, "kernel publication package digest")
   if (!Array.isArray(payload.package_files)) throw new Error("kernel did not return publication package files")
   const packageFiles = payload.package_files.map((candidate) => {
@@ -422,6 +432,10 @@ function requiredSha256(value: unknown, label: string): string {
 function requiredText(value: unknown, label: string): string {
   if (typeof value !== "string" || !value.trim()) throw new Error(`${label} is unavailable`)
   return value.trim()
+}
+
+function requiredCallerClaimsPublicKeyPem(value: unknown, label: string): string {
+  return `${requiredText(value, label)}\n`
 }
 
 function variant(response: Record<string, unknown>, name: string): Record<string, unknown> {

@@ -290,6 +290,7 @@ fn session_snapshot_projection_marks_settling_prompt_as_working() {
             saw_response_content: true,
             completion_recorded: true,
             settlement_requested: true,
+            active_tool_ids: std::collections::BTreeSet::new(),
         },
     );
     let active_turns = app.active_turn_store();
@@ -988,6 +989,7 @@ fn session_snapshot_projection_ignores_prompt_activity_without_active_turn() {
             saw_response_content: true,
             completion_recorded: false,
             settlement_requested: true,
+            active_tool_ids: std::collections::BTreeSet::new(),
         },
     );
 

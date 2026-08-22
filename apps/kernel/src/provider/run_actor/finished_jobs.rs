@@ -15,6 +15,7 @@ pub(crate) struct FinishedProviderPromptSubmitJob {
     pub(crate) agent_id: String,
     pub(crate) prompt_id: String,
     pub(crate) result: Result<ProviderPromptSubmitAcknowledgement, DaemonError>,
+    pub(crate) settlement_retry_attempt: u32,
 }
 
 pub(crate) struct FinishedProviderPromptAbortJob {
@@ -31,6 +32,7 @@ pub(crate) struct FinishedProviderRunSelectionSyncJob {
 pub(crate) struct FinishedProviderOutputPollJob {
     pub(crate) provider_run_id: String,
     pub(crate) result: Result<Option<ProviderPromptSignalBatch>, DaemonError>,
+    pub(crate) settlement_retry_attempt: u32,
 }
 
 pub(super) fn push_finished_submit(

@@ -189,7 +189,7 @@ Use this after touching Chariox Cloud device login, cloud relay pairing, hosted 
 node apps/cli/scripts/live-hosted-cloud-relay-drill.mjs
 ```
 
-By default the drill targets `https://chariox-cloud-staging.osc-fr1.scalingo.io`, whose hosted relay URL is the Caddy-fronted `wss://195.201.123.115.sslip.io` endpoint. Set `CHARIOX_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
+By default the drill targets `https://staging.chariox.com`, whose hosted relay URL is the Caddy-fronted `wss://195.201.123.115.sslip.io` endpoint. Set `CHARIOX_CLOUD_HOSTED_API_URL` to use another cloud API. The single-user path validates local CLI to local kernel login, cloud client pairing, machine pairing, machine relay connect, client relay-token issuance, and remote client session create/list through the hosted relay. Local/self-hosted relay drills intentionally keep using `ws://127.0.0.1:<port>`.
 
 For non-interactive staging drills, set `CHARIOX_CLOUD_DEV_AUTH_SECRET` to the matching staging secret. The cloud API must have its guarded dev device approval endpoint enabled. This still starts device login and polls through the kernel; only the browser/Auth0 approval step is replaced by a synthetic verified user.
 

@@ -170,57 +170,46 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
+    fresh_context: bool,
 ) -> Result<String, DaemonError> {
-    match app.ensure_prompt_provider_run_for_agent(session_id, agent_id) {
-        Ok(provider_run_id) => {
-            let Some(run) = app.providers().get_run(&provider_run_id).ok() else {
-                return Err(DaemonError::NoActiveProviderRun {
-                    session_id: session_id.to_string(),
-                });
-            };
-            if run.workflow_tools_enabled()
-                && run.workflow_event_reply_enabled() == event_reply_enabled
-                && run.workflow_event_context_enabled() == event_context_enabled
-                && run.workflow_event_actions_enabled() == event_actions_enabled
-            {
-                app.sessions_mut()
-                    .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
-                return Ok(provider_run_id);
-            }
-            // An ordinary provider may already have cached the reduced MCP tool
-            // list. Replace it before the workflow prompt is dispatched so the
-            // provider discovers the workflow-only actions at startup; flipping
-            // a flag on a running process is too late (tools/list is not dynamic).
-            if run.state() == crate::provider::ProviderRunState::Running
-                && app.provider_run_has_active_prompt(session_id, &run)?
-            {
-                return Ok(provider_run_id);
-            }
-            let request = workflow_provider_request(
-                app,
-                session_id,
-                agent_id,
-                event_reply_enabled,
-                event_context_enabled,
-                event_actions_enabled,
-            )?;
-            let provider_run = app.start_workflow_provider_launch(request)?;
-            Ok(provider_run.id().to_string())
-        }
-        Err(DaemonError::NoActiveProviderRun { .. }) => {
-            let request = workflow_provider_request(
-                app,
-                session_id,
-                agent_id,
-                event_reply_enabled,
-                event_context_enabled,
-                event_actions_enabled,
-            )?;
-            let provider_run = app.start_workflow_provider_launch(request)?;
-            Ok(provider_run.id().to_string())
-        }
-        Err(error) => Err(error),
+    if fresh_context {
+        app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
     }
+    if let Some(run) = app.providers().get_run_for_agent(session_id, agent_id) {
+        if run.workflow_tools_enabled()
+            && run.workflow_event_reply_enabled() == event_reply_enabled
+            && run.workflow_event_context_enabled() == event_context_enabled
+            && run.workflow_event_actions_enabled() == event_actions_enabled
+        {
+            let provider_run_id = app.ensure_prompt_provider_run_for_agent(session_id, agent_id)?;
+            app.sessions_mut()
+                .set_active_provider_run(session_id, Some(provider_run_id.clone()))?;
+            return Ok(provider_run_id);
+        }
+        // An ordinary provider may already have cached the reduced MCP tool
+        // list. Replace it before the workflow prompt is dispatched so the
+        // provider discovers the workflow-only actions at startup; flipping
+        // a flag on a running process is too late (tools/list is not dynamic).
+        if run.state() == crate::provider::ProviderRunState::Running
+            && app.provider_run_has_active_prompt(session_id, &run)?
+        {
+            return Ok(run.id().to_string());
+        }
+    }
+    // Cold workflow admission must launch the workflow-capable process directly.
+    // Starting an ordinary process first and replacing it below leaves two live
+    // provider processes for the same workflow agent.
+    let request = workflow_provider_request(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+        event_context_enabled,
+        event_actions_enabled,
+        fresh_context,
+    )?;
+    let provider_run = app.start_workflow_provider_launch(request)?;
+    Ok(provider_run.id().to_string())
 }
 
 fn workflow_provider_request(
@@ -230,6 +219,7 @@ fn workflow_provider_request(
     event_reply_enabled: bool,
     event_context_enabled: bool,
     event_actions_enabled: bool,
+    fresh_context: bool,
 ) -> Result<LaunchProviderRequest, DaemonError> {
     let agent = app.agents().get_agent(agent_id)?;
     let provider = crate::provider::provider_id_for_launch(agent.provider());
@@ -250,6 +240,11 @@ fn workflow_provider_request(
     .with_variant(agent.effort().map(str::to_string))
     .with_execution_mode(effective_config.mode)
     .with_permission_level(effective_config.permission_level);
+    if fresh_context {
+        // `Some(empty)` explicitly suppresses the agent profile's durable resume state
+        // during launch preparation. It remains local to this workflow launch request.
+        request.resume_state = Some(crate::provider::ProviderResumeState::default());
+    }
     if let Some(working_directory) = app
         .providers()
         .get_run_for_agent(session_id, agent_id)

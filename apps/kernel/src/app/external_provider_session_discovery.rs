@@ -242,8 +242,8 @@ pub(crate) fn read_external_provider_observed_turns_for_profile(
             .collect::<Vec<_>>(),
         "claude" => roots
             .iter()
-            .flat_map(|root| read_claude_observed_turns(root, provider_session_id))
-            .collect::<Vec<_>>(),
+            .find_map(|root| find_claude_observed_turns(root, provider_session_id))
+            .unwrap_or_default(),
         "opencode" => roots
             .iter()
             .flat_map(|root| read_opencode_observed_turns(root, provider_session_id))
@@ -263,9 +263,7 @@ pub(crate) fn discover_external_provider_sessions(
         }
     }
     if provider_matches(provider_filter, "claude") {
-        for root in claude_roots() {
-            sessions.extend(discover_claude_external_sessions(&root));
-        }
+        sessions.extend(discover_claude_external_sessions_by_root_precedence());
     }
     if provider_matches(provider_filter, "opencode") {
         for root in opencode_roots() {
@@ -326,8 +324,8 @@ pub(crate) fn read_external_provider_observed_turns(
             .collect::<Vec<_>>(),
         "claude" => claude_roots()
             .into_iter()
-            .flat_map(|root| read_claude_observed_turns(&root, provider_session_id))
-            .collect::<Vec<_>>(),
+            .find_map(|root| find_claude_observed_turns(&root, provider_session_id))
+            .unwrap_or_default(),
         "opencode" => opencode_roots()
             .into_iter()
             .flat_map(|root| read_opencode_observed_turns(&root, provider_session_id))
@@ -464,11 +462,29 @@ fn codex_roots() -> Vec<PathBuf> {
 }
 
 fn claude_roots() -> Vec<PathBuf> {
-    env::var_os("CLAUDE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| home_dir().map(|home| home.join(".claude")))
-        .into_iter()
-        .collect()
+    let mut roots = Vec::new();
+    if let Some(root) = env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from) {
+        roots.push(root);
+    }
+    if let Some(root) = env::var_os("CLAUDE_HOME").map(PathBuf::from) {
+        roots.push(root);
+    }
+    if let Some(home) = home_dir() {
+        roots.push(home.join(".claude"));
+    }
+    deduplicate_paths(roots)
+}
+
+fn discover_claude_external_sessions_by_root_precedence() -> Vec<ExternalProviderSessionRecord> {
+    let mut by_id = BTreeMap::<String, ExternalProviderSessionRecord>::new();
+    for root in claude_roots() {
+        for session in deduplicate_external_sessions(discover_claude_external_sessions(&root)) {
+            by_id
+                .entry(session.external_session_id.clone())
+                .or_insert(session);
+        }
+    }
+    by_id.into_values().collect()
 }
 
 fn opencode_roots() -> Vec<PathBuf> {

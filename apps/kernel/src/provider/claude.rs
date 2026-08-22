@@ -22,6 +22,7 @@ use launch_args::claude_launch_args;
 #[cfg(test)]
 pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
+pub(crate) use native_tui::ensure_claude_native_hidden_context_fits;
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";

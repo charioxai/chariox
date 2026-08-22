@@ -41,6 +41,14 @@ impl StructuredOutputRecordStore {
     }
 
     pub(crate) fn poll_due(&self, provider_run_id: &str, now_ms: u64) -> bool {
+        if self
+            .in_flight_prompt_ids
+            .lock()
+            .expect("structured output poll prompt map poisoned")
+            .contains_key(provider_run_id)
+        {
+            return false;
+        }
         self.next_poll_due_at_ms
             .lock()
             .expect("structured output poll schedule poisoned")
@@ -177,7 +185,10 @@ mod tests {
 
         store.mark_poll_enqueued("provider-run-1", Some("prompt-1".to_string()));
 
-        assert!(store.poll_due("provider-run-1", 1_501));
+        assert!(
+            !store.poll_due("provider-run-1", 1_501),
+            "an in-flight poll must suppress duplicate provider requests"
+        );
         assert_eq!(store.poll_due_at_ms("provider-run-1"), None);
         assert_eq!(
             store.take_in_flight_prompt_id("provider-run-1").as_deref(),

@@ -72,7 +72,7 @@ test('classifies Docker slice image build failures as test harness failures', ()
 })
 
 test('classifies cloud deployment runtime failures', () => {
-  const text = 'deployment did not become ready: {"status":"FAILED","lastError":"Scalingo 503 service unavailable"}'
+  const text = 'deployment did not become ready: {"status":"FAILED","lastError":"OpenShip 503 service unavailable"}'
 
   assert.equal(classifyDrillChildFailure(text), 'cloud-runtime')
   assert.match(

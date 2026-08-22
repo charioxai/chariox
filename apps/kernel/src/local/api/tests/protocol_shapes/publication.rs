@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 268);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -118,9 +118,11 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             setup_id: "setup-1".to_string(),
             operation_key: "deployment-setup:setup-1:runtime".to_string(),
             deployment_id: "deployment-1".to_string(),
+            environment_id: "environment-1".to_string(),
             release_id: "release-1".to_string(),
             package_digest: "sha256:abc123".to_string(),
             desired_revision: 7,
+            caller_claims_public_key_pem: "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n".to_string(),
         },
     );
     let mut workflow =
@@ -581,6 +583,14 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some(&serde_json::json!(7))
     );
     assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/environment_id"),
+        Some(&serde_json::json!("environment-1"))
+    );
+    assert_eq!(
+        snapshot.pointer("/18/BindWorkflowPublicationDeployment/caller_claims_public_key_pem"),
+        Some(&serde_json::json!("-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"))
+    );
+    assert_eq!(
         snapshot.pointer("/19/WorkflowPublicationDeploymentBound/tunnel_url"),
         Some(&serde_json::json!(
             "https://relay.example.test/display/publication-1/"
@@ -608,13 +618,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "512308bc1f2b4f3f26eab5c87e04dfe733913b458d829c0cf7e0ebb0e648784e"
+        "5baf61c7575fd731efb8b71d4e8240130c47d79d84908e6b2c4d2296a36981b0"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 268);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

@@ -18,6 +18,7 @@ import type {
 import type { RelayCloudProfile } from "./preferences.js"
 
 const sourceDigest = `sha256:${"a".repeat(64)}`
+const callerClaimsPublicKeyPem = "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA/pMgE2dD4Y9eL57S6f9+lve+T2A4M0ueD5GmOZfHjkI=\n-----END PUBLIC KEY-----\n"
 
 test("TUI deployment setup publishes a draft and binds a local runtime", async () => {
   const fixture = await setupFixture({ mode: "local_runtime", bindStates: ["running"] })
@@ -47,6 +48,18 @@ test("TUI deployment setup publishes a draft and binds a local runtime", async (
     assert.deepEqual(fixture.cloud.setup?.configuration.publication.parser, { kind: "query_params" })
     assert.equal(fixture.cloud.promotionKeys[0], fixture.cloud.setup?.operationKeys.runtime)
     assert.equal(fixture.cloud.checkpoints.at(-1)?.kind, "runtime_bound")
+    assert.deepEqual(fixture.bindInputs, [{
+      session_id: "session-1",
+      publication_ref: "publication-1",
+      setup_id: "setup-1",
+      operation_key: "setup-1:runtime",
+      deployment_id: "deployment-1",
+      environment_id: "environment-1",
+      release_id: "release-1",
+      package_digest: fixture.cloud.setup?.packageDigest,
+      desired_revision: 1,
+      caller_claims_public_key_pem: callerClaimsPublicKeyPem,
+    }])
   } finally {
     await fixture.cleanup()
   }
@@ -197,6 +210,7 @@ async function setupFixture(options: {
 
   const cloud = new FakeDeploymentCloud(options.mode, options.credentialsReady ?? true)
   const kernelVariants: string[] = []
+  const bindInputs: Record<string, unknown>[] = []
   const bindStates = [...(options.bindStates ?? ["running"])]
   const publication = publicationFixture()
   const sendKernelRequest = async (request: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -208,7 +222,7 @@ async function setupFixture(options: {
       case "ExportWorkflowPublicationPackage": return {
         WorkflowPublicationPackageExported: {
           publication,
-          package_version: 3,
+          package_version: 4,
           package_digest: prepared.packageDigest,
           package_archive_base64: prepared.artifact.archiveBase64,
           package_files: packageFiles,
@@ -216,6 +230,7 @@ async function setupFixture(options: {
       }
       case "BindWorkflowPublicationDeployment": {
         const input = request.BindWorkflowPublicationDeployment as Record<string, unknown>
+        bindInputs.push(input)
         return {
           WorkflowPublicationDeploymentBound: {
             ...input,
@@ -236,6 +251,7 @@ async function setupFixture(options: {
   globalThis.fetch = cloud.fetch
   return {
     cloud,
+    bindInputs,
     kernelVariants,
     runtime,
     cleanup: async () => {
@@ -319,6 +335,9 @@ class FakeDeploymentCloud {
     if (url.pathname === "/deployment-projects" && method === "GET") {
       return jsonResponse({ projects: [], portfolio: [] })
     }
+    if (url.pathname === "/publication-caller-claims/verifier" && method === "GET") {
+      return jsonResponse({ algorithm: "Ed25519", publicKeyPem: callerClaimsPublicKeyPem })
+    }
     if (url.pathname === "/deployment-projects" && method === "POST") {
       return jsonResponse({ state: projectState(this.requiredSetup()) }, 201)
     }
@@ -362,7 +381,7 @@ class FakeDeploymentCloud {
         status: "verified",
         packageId: body?.packageId,
         packageDigest: body?.packageDigest,
-        packageVersion: 3,
+        packageVersion: 4,
         createdAt: timestamp,
         updatedAt: timestamp,
       } }, 201, { "x-request-id": "release-request" })
@@ -528,7 +547,7 @@ function environment(mode: "local_runtime" | "hosted_container") {
     desiredRevision: 1,
     observedRevision: 0,
     operationalDeploymentId: "deployment-1",
-    publicUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io/deployments/demo",
+    publicUrl: "https://staging.chariox.com/deployments/demo",
     createdAt: timestamp,
     updatedAt: timestamp,
   }
@@ -592,9 +611,9 @@ function jsonResponse(value: unknown, status = 200, headers?: HeadersInit): Resp
 }
 
 const profile: RelayCloudProfile = {
-  apiUrl: "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+  apiUrl: "https://staging.chariox.com",
   email: "user@example.test",
-  relayUrl: "wss://relay.scalingo.test",
+  relayUrl: "wss://relay.chariox.test",
   accountId: "account-1",
   userId: "user-1",
   accountSlug: "account",

@@ -17,7 +17,7 @@ use crate::agent::AgentServiceStore;
 use crate::app::{
     ActiveTurnStore, AttachedProviderTranscriptCursorStore, DaemonApp,
     ExternalProviderSessionIndexStore, PromptActivityStore, PromptWorkspaceClaimStore,
-    ProviderProcessTrackingStore, WorkflowDesignEventStore,
+    ProviderLaunchFailureRetryStore, ProviderProcessTrackingStore, WorkflowDesignEventStore,
 };
 use crate::attachment::AttachmentServiceStore;
 use crate::durable_state::DurableKernelStateStore;
@@ -51,6 +51,7 @@ mod provider_run_read_state;
 pub(crate) struct KernelRuntimeState {
     app: Arc<Mutex<DaemonApp>>,
     provider_runtime_lanes: ProviderRunOperationLanes,
+    detached_workflow_provider_launches: Arc<std::sync::Mutex<BTreeSet<String>>>,
     owned: KernelRuntimeOwnedState,
 }
 
@@ -61,7 +62,9 @@ struct KernelRuntimeOwnedState {
     agent_store: AgentServiceStore,
     attachment_store: AttachmentServiceStore,
     provider_store: ProviderProcessServiceStore,
+    workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     provider_process_tracking: ProviderProcessTrackingStore,
+    provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
@@ -414,6 +417,7 @@ impl KernelRuntimeState {
         let (
             completed_git_turn_snapshots,
             provider_process_projection,
+            provider_launch_failure_retries,
             relay_state,
             legacy_workflow_history,
         ) = {
@@ -423,6 +427,7 @@ impl KernelRuntimeState {
                     break (
                         app.completed_git_turn_snapshot_store(),
                         app.provider_process_projection_store(),
+                        app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
                     );
@@ -452,13 +457,16 @@ impl KernelRuntimeState {
         Self {
             app,
             provider_runtime_lanes,
+            detached_workflow_provider_launches: Arc::new(std::sync::Mutex::new(BTreeSet::new())),
             owned: KernelRuntimeOwnedState {
                 config_projection,
                 session_store,
                 agent_store,
                 attachment_store,
                 provider_store,
+                workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 provider_process_tracking,
+                provider_launch_failure_retries,
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,

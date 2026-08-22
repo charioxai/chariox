@@ -1,4 +1,4 @@
-import { createHmac, timingSafeEqual } from "node:crypto"
+import { createHmac, createPublicKey, timingSafeEqual, verify } from "node:crypto"
 import {
   closeSync,
   constants as fsConstants,
@@ -31,14 +31,17 @@ type RequestHeaders = Record<string, string | string[] | undefined>
 export type PublicationCallerClaimsRuntimeConfig = {
   readonly deploymentId: string
   readonly environmentId: string
-  readonly secret: string | Uint8Array
+  readonly secret?: string | Uint8Array
+  readonly publicKeyPem?: string
   readonly now?: () => Date
 }
 
 type NormalizedPublicationCallerClaimsRuntimeConfig = {
   readonly deploymentId: string
   readonly environmentId: string
-  readonly secret: Buffer
+  readonly verifier:
+    | { readonly kind: "hmac"; readonly secret: Buffer }
+    | { readonly kind: "ed25519"; readonly publicKey: ReturnType<typeof createPublicKey> }
   readonly now: () => Date
 }
 
@@ -165,16 +168,18 @@ export function verifyPublicationCallerClaims(
     throw new PublicationCallerClaimsError("Publication caller claims are malformed")
   }
   const [encodedHeader, encodedPayload, suppliedSignature] = segments as [string, string, string]
-  const expectedSignature = signature(`${encodedHeader}.${encodedPayload}`, config.secret)
+  const unsigned = `${encodedHeader}.${encodedPayload}`
   const supplied = decodeBase64Url(suppliedSignature, "signature")
-  const expected = Buffer.from(expectedSignature, "base64url")
-  if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+  const header = jsonObject(encodedHeader)
+  const validSignature = config.verifier.kind === "ed25519"
+    ? header.alg === "EdDSA" && verify(null, Buffer.from(unsigned), config.verifier.publicKey, supplied)
+    : header.alg === "HS256" && validHmacSignature(unsigned, supplied, config.verifier.secret)
+  if (!validSignature) {
     throw new PublicationCallerClaimsError("Publication caller claims signature is invalid")
   }
 
-  const header = jsonObject(encodedHeader)
   const payload = jsonObject(encodedPayload)
-  if (header.alg !== "HS256" || header.typ !== "JWT" || payload.iss !== PUBLICATION_CLAIMS_ISSUER) {
+  if (header.typ !== "JWT" || payload.iss !== PUBLICATION_CLAIMS_ISSUER) {
     throw new PublicationCallerClaimsError("Publication caller claims header is invalid")
   }
 
@@ -256,21 +261,29 @@ export function readPrivatePublicationCallerClaimsConfigFile(
     throw new Error("publication caller claims config file must contain an object")
   }
   const config = parsed as Record<string, unknown>
-  const expectedKeys = new Set(["schema_version", "deployment_id", "environment_id", "secret"])
+  const expectedKeys = new Set([
+    "schema_version",
+    "deployment_id",
+    "environment_id",
+    "secret",
+    "public_key_pem",
+  ])
   if (Object.keys(config).some((key) => !expectedKeys.has(key)) || config.schema_version !== 1) {
     throw new Error("publication caller claims config file schema is invalid")
   }
   if (
     typeof config.deployment_id !== "string"
     || typeof config.environment_id !== "string"
-    || typeof config.secret !== "string"
+    || (typeof config.secret === "string") === (typeof config.public_key_pem === "string")
   ) {
     throw new Error("publication caller claims config file fields are invalid")
   }
   return {
     deploymentId: config.deployment_id,
     environmentId: config.environment_id,
-    secret: config.secret,
+    ...(typeof config.secret === "string"
+      ? { secret: config.secret }
+      : { publicKeyPem: config.public_key_pem as string }),
   }
 }
 
@@ -302,20 +315,46 @@ function normalizeRuntimeConfig(
   if (!deploymentId || !environmentId || deploymentId.length > 320 || environmentId.length > 320) {
     throw new Error("publication caller claims runtime identities are invalid")
   }
-  const secret = typeof config.secret === "string"
-    ? Buffer.from(config.secret, "utf8")
-    : Buffer.from(config.secret)
-  if (secret.length < MIN_CALLER_CLAIMS_SECRET_BYTES || secret.length > MAX_CALLER_CLAIMS_SECRET_BYTES) {
+  if ((config.secret !== undefined) === (config.publicKeyPem !== undefined)) {
+    throw new Error("publication caller claims runtime requires exactly one verifier")
+  }
+  const verifier = config.publicKeyPem !== undefined
+    ? { kind: "ed25519" as const, publicKey: canonicalEd25519PublicKey(config.publicKeyPem) }
+    : { kind: "hmac" as const, secret: normalizedCallerClaimsSecret(config.secret!) }
+  return {
+    deploymentId,
+    environmentId,
+    verifier,
+    now: config.now ?? (() => new Date()),
+  }
+}
+
+function normalizedCallerClaimsSecret(secret: string | Uint8Array): Buffer {
+  const value = typeof secret === "string" ? Buffer.from(secret, "utf8") : Buffer.from(secret)
+  if (value.length < MIN_CALLER_CLAIMS_SECRET_BYTES || value.length > MAX_CALLER_CLAIMS_SECRET_BYTES) {
     throw new Error(
       `publication caller claims secret must be between ${MIN_CALLER_CLAIMS_SECRET_BYTES} and ${MAX_CALLER_CLAIMS_SECRET_BYTES} bytes`,
     )
   }
-  return {
-    deploymentId,
-    environmentId,
-    secret,
-    now: config.now ?? (() => new Date()),
+  return value
+}
+
+function canonicalEd25519PublicKey(publicKeyPem: string) {
+  try {
+    const key = createPublicKey(publicKeyPem)
+    if (key.asymmetricKeyType !== "ed25519") throw new Error("not Ed25519")
+    if (key.export({ type: "spki", format: "pem" }).toString() !== publicKeyPem) {
+      throw new Error("non-canonical key")
+    }
+    return key
+  } catch {
+    throw new Error("publication caller claims public key must be canonical Ed25519 SPKI PEM")
   }
+}
+
+function validHmacSignature(value: string, supplied: Buffer, secret: Buffer): boolean {
+  const expected = Buffer.from(signature(value, secret), "base64url")
+  return supplied.length === expected.length && timingSafeEqual(supplied, expected)
 }
 
 function requirePublicationCallerRole(

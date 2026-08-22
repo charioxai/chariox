@@ -46,7 +46,6 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
-    pub(super) active_prompt_observed_non_idle_status: bool,
 }
 
 impl OpenCodeRuntimeState {
@@ -71,7 +70,6 @@ impl OpenCodeRuntimeState {
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
-            active_prompt_observed_non_idle_status: false,
         }
     }
 
@@ -90,7 +88,6 @@ impl OpenCodeRuntimeState {
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
-        self.active_prompt_observed_non_idle_status = false;
     }
 
     pub(in crate::provider) fn baseline_existing_messages(&mut self, messages: &[OpenCodeMessage]) {
@@ -129,7 +126,6 @@ impl OpenCodeRuntimeState {
         self.completed_assistant_message_ids.clear();
         self.active_user_message_id = None;
         self.active_terminal_assistant_message_id = None;
-        self.active_prompt_observed_non_idle_status = false;
         self.last_status_kind = Some("idle".to_string());
     }
 

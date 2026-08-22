@@ -1,0 +1,32 @@
+[
+  {
+    "name": "yolo permission request",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "bypassPermissions",
+      "tool_name": "Bash",
+      "tool_input": { "command": "true" }
+    },
+    "behavior": "allow"
+  },
+  {
+    "name": "Chariox MCP runtime tool",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "default",
+      "tool_name": "mcp__chariox__workflow_status",
+      "tool_input": {}
+    },
+    "behavior": "allow"
+  },
+  {
+    "name": "Chariox dotted runtime tool",
+    "input": {
+      "hook_event_name": "PermissionRequest",
+      "permission_mode": "default",
+      "tool_name": "chariox.workflow_status",
+      "tool_input": {}
+    },
+    "behavior": "allow"
+  }
+]

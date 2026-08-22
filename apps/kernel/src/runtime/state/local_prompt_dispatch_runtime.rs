@@ -7,10 +7,53 @@ use super::*;
 
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
+struct DetachedWorkflowProviderLaunchClaim {
+    provider_run_id: String,
+    claims: Arc<std::sync::Mutex<BTreeSet<String>>>,
+}
+
+impl Drop for DetachedWorkflowProviderLaunchClaim {
+    fn drop(&mut self) {
+        self.claims
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.provider_run_id);
+    }
+}
+
 fn claude_native_dispatch_terminal_failure(
     provider_run: &crate::provider::RuntimeProviderRun,
 ) -> Option<String> {
     crate::app::claude_native_recent_terminal_failure(provider_run)
+}
+
+fn claude_headless_dispatch_failure_requires_provider_retirement(
+    provider_run: &crate::provider::RuntimeProviderRun,
+    error: &DaemonError,
+) -> bool {
+    if !crate::provider::provider_run_is_claude_headless(provider_run) {
+        return false;
+    }
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "submit Claude headless prompt",
+            ..
+        } | DaemonError::ProviderProtocol {
+            operation: "submit Claude headless prompt",
+            ..
+        }
+    )
+}
+
+fn claude_headless_dispatch_failure_invalidates_resume(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "submit Claude headless prompt",
+            message,
+        } if message.contains("did not acknowledge prompt")
+    )
 }
 
 impl KernelRuntimeOwnedState {
@@ -235,6 +278,289 @@ mod tests {
             metaagent_events,
             workspace_coordinator,
         )
+    }
+
+    #[tokio::test]
+    async fn concurrent_workflow_provider_admission_creates_one_starting_run() {
+        const INVOCATION_COUNT: usize = 32;
+
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-concurrent-workflow-provider",
+                "worktree-concurrent-workflow-provider",
+            ))
+            .expect("session should create");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("concurrent-workflow-provider"),
+            )
+            .expect("workflow agent should create");
+        let session_id = session.id().to_string();
+        let agent_id = workflow_agent.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let barrier = Arc::new(std::sync::Barrier::new(INVOCATION_COUNT));
+        let mut handles = Vec::with_capacity(INVOCATION_COUNT);
+
+        for index in 0..INVOCATION_COUNT {
+            let owned = runtime.owned.clone();
+            let barrier = Arc::clone(&barrier);
+            let session_id = session_id.clone();
+            let agent_id = agent_id.clone();
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("workflow-provider-admission-{index}"))
+                    .spawn(move || {
+                        barrier.wait();
+                        owned
+                            .workflow_ensure_provider_run(
+                                &session_id,
+                                &agent_id,
+                                false,
+                                false,
+                                false,
+                                false,
+                            )
+                            .map(|(provider_run_id, _)| provider_run_id)
+                    })
+                    .expect("workflow provider admission thread should spawn"),
+            );
+        }
+
+        let run_ids = handles
+            .into_iter()
+            .map(|handle| {
+                handle
+                    .join()
+                    .unwrap_or_else(|payload| std::panic::resume_unwind(payload))
+                    .expect("concurrent workflow provider admission should succeed")
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(run_ids.len(), 1, "one workflow agent must own one run");
+        let run_id = run_ids.iter().next().expect("run id should resolve");
+        let run = runtime
+            .owned
+            .provider_store
+            .get_run(run_id)
+            .expect("admitted workflow provider should resolve");
+        assert_eq!(run.state(), crate::provider::ProviderRunState::Starting);
+        assert!(run.workflow_tools_enabled());
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .list_runs()
+                .into_iter()
+                .filter(|candidate| {
+                    candidate.session_id() == session_id
+                        && candidate.agent_instance_id() == Some(agent_id.as_str())
+                        && candidate.state() != crate::provider::ProviderRunState::Ended
+                })
+                .count(),
+            1
+        );
+
+        runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+        runtime.spawn_detached_workflow_provider_launch(run_id.clone());
+        assert_eq!(
+            runtime
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .iter()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![run_id.clone()],
+            "duplicate detached launch must not acquire a second lifecycle claim"
+        );
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if runtime
+                    .owned
+                    .provider_store
+                    .get_run(run_id)
+                    .is_ok_and(|run| run.state() == crate::provider::ProviderRunState::Running)
+                {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the single detached provider launch should finish");
+        assert!(runtime
+            .detached_workflow_provider_launches
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty());
+        let tracking = runtime.owned.provider_process_tracking.snapshot();
+        assert_eq!(tracking.run_processes.len(), 1);
+        assert_eq!(tracking.processes.len(), 1);
+
+        let cleanup_run_id = run_id.clone();
+        runtime
+            .with_app_side_effect(move |app| {
+                crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&cleanup_run_id)
+            })
+            .await
+            .expect("managed provider process should clean up");
+    }
+
+    #[tokio::test]
+    async fn workflow_prompt_stays_bound_to_the_replacement_provider_run() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, _default_agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-workflow-provider-binding",
+                "worktree-workflow-provider-binding",
+            ))
+            .expect("session should create");
+        let workflow_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("workflow-provider-binding"),
+            )
+            .expect("workflow agent should create");
+        let other_agent = KernelSessionService::new(&mut app)
+            .spawn_agent(
+                CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("other-provider-binding"),
+            )
+            .expect("other agent should create");
+
+        let old_running_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(workflow_agent.id()),
+            )
+            .expect("old target run should launch");
+        app.update_provider_run_projection(old_running_run.clone());
+        let other_running_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "claude-code",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(other_agent.id()),
+            )
+            .expect("other agent run should own the session pointer");
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(other_running_run.id().to_string()))
+            .expect("other agent run should become the session pointer");
+        app.update_provider_run_projection(other_running_run);
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("provider-binding".to_string()))
+            .expect("workflow should create");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), workflow_agent.id())
+            .expect("workflow node should create");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should create");
+        let workflow_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review exact head".to_string()),
+            )
+            .expect("workflow run should create");
+        let node_run_id = workflow_run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                workflow_run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "review exact head".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+
+        let session_id = session.id().to_string();
+        let agent_id = workflow_agent.id().to_string();
+        let run_id = workflow_run.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let dispatches = runtime
+            .owned
+            .workflow_submit_prepared_prompt(
+                crate::app::KernelPreparedPromptSubmission {
+                    session_id: session_id.clone(),
+                    prompt: PromptQueueItem::new(
+                        "pending-workflow-provider-binding",
+                        crate::scheduler::runtime::workflow_prompt_source_attachment_id(&run_id),
+                        &agent_id,
+                        "review exact head",
+                        PromptStatus::Queued,
+                    )
+                    .with_workflow_context(&run_id, &node_run_id),
+                    force_queue: false,
+                    refresh_projection: true,
+                },
+                &run_id,
+                &node_run_id,
+            )
+            .expect("workflow prompt should bind to its replacement run");
+
+        assert!(dispatches.local.is_empty());
+        assert_eq!(dispatches.starting_provider_runs.len(), 1);
+        assert_ne!(dispatches.starting_provider_runs[0], old_running_run.id());
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(old_running_run.id())
+                .expect("old target run should remain represented")
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+        let replacement = runtime
+            .owned
+            .provider_store
+            .get_run(&dispatches.starting_provider_runs[0])
+            .expect("replacement run should resolve");
+        assert_eq!(replacement.agent_instance_id(), Some(agent_id.as_str()));
+        assert_eq!(
+            replacement.state(),
+            crate::provider::ProviderRunState::Starting
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should resolve");
+        let (active, queued) = runtime
+            .owned
+            .prompt_state_owner
+            .state_parts(&session, &agent_id);
+        assert!(active.is_none());
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].workflow_run_id(), Some(run_id.as_str()));
     }
 
     #[tokio::test]
@@ -741,6 +1067,133 @@ mod tests {
         )
     }
 
+    async fn runtime_with_claude_headless_active_prompt() -> (
+        KernelRuntimeState,
+        String,
+        String,
+        String,
+        crate::provider::RuntimeProviderRun,
+        crate::app::KernelPromptDispatch,
+    ) {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+        let (session, agent) = KernelSessionService::new(&mut app)
+            .create_session(CreateSessionRequest::new(
+                "workspace-claude-ack-failure",
+                "worktree-claude-ack-failure",
+            ))
+            .expect("session should create");
+        let source = KernelSessionService::new(&mut app)
+            .attach(AttachRequest::new(
+                session.id(),
+                "attachment-claude-ack-failure",
+                ClientCapabilityLevel::FullTerminal,
+            ))
+            .expect("source attachment should attach");
+        let resume_state =
+            crate::provider::ProviderResumeState::from_claude_session_id("claude-session-poisoned");
+        let configured_agent = app
+            .agents_mut()
+            .set_agent_runtime_profile(
+                agent.id(),
+                "claude-headless",
+                Some("claude-opus-5".to_string()),
+                None,
+                resume_state.clone(),
+            )
+            .expect("Claude resume state should be configured");
+        app.durable_state_store()
+            .append_event(
+                "agent.runtime_profile_updated",
+                Some(configured_agent.id().to_string()),
+                serde_json::json!({
+                    "agent": &configured_agent,
+                    "reason": "test_claude_resume_seeded",
+                }),
+            )
+            .expect("Claude resume state should persist");
+        let provider_run = app
+            .providers()
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    session.id(),
+                    "claude",
+                    "claude-headless",
+                    "default",
+                    "claude-opus-5",
+                )
+                .with_agent_id(agent.id())
+                .with_resume_state(resume_state),
+            )
+            .expect("Claude headless run should launch");
+        app.sessions_mut()
+            .set_active_provider_run(session.id(), Some(provider_run.id().to_string()))
+            .expect("Claude headless run should become active");
+        app.update_provider_run_projection(provider_run.clone());
+        let process_key = format!("test-process-{}", provider_run.id());
+        {
+            let tracking_store = app.provider_process_tracking_store();
+            let mut tracking = tracking_store.write();
+            tracking
+                .run_processes
+                .insert(provider_run.id().to_string(), process_key.clone());
+            tracking.processes.insert(
+                process_key,
+                crate::app::TrackedProviderProcess {
+                    process_id: "managed:claude:test-process".to_string(),
+                    pid: None,
+                    endpoint_mode: provider_run.endpoint_mode(),
+                    process_label: provider_run.process_label().to_string(),
+                    started_at_ms: provider_run.started_at_ms(),
+                    owner_provider_run_ids: vec![provider_run.id().to_string()],
+                },
+            );
+        }
+        let prompt = PromptQueueItem::new(
+            app.sessions_mut().reserve_prompt_id(),
+            source.id(),
+            agent.id(),
+            "review exact head",
+            PromptStatus::Queued,
+        );
+        let PromptSubmissionOutcome::Started { prompt } = app
+            .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+            .expect("prompt should start")
+        else {
+            panic!("prompt should be active");
+        };
+        let prompt_dispatch = dispatch(
+            session.id(),
+            agent.id(),
+            source.id(),
+            provider_run.id(),
+            prompt.id(),
+            prompt.prompt(),
+            None,
+            false,
+        );
+        app.mark_active_prompt_delivery(
+            session.id(),
+            agent.id(),
+            prompt.id(),
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            Some(provider_run.id().to_string()),
+            Some("claude-session-poisoned".to_string()),
+        )
+        .expect("dispatch-time Claude resume identity should persist");
+        let session_id = session.id().to_string();
+        let agent_id = agent.id().to_string();
+        let source_id = source.id().to_string();
+        let app = Arc::new(Mutex::new(app));
+        (
+            owned_runtime_state(&app).await,
+            session_id,
+            agent_id,
+            source_id,
+            provider_run,
+            prompt_dispatch,
+        )
+    }
+
     fn dispatch(
         session_id: &str,
         agent_id: &str,
@@ -1058,6 +1511,689 @@ mod tests {
         );
         assert_eq!(completions[0].provider_run_id, provider_run_id);
         assert_eq!(completions[0].agent_id.as_deref(), Some(agent_id.as_str()));
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(&provider_run_id)
+                .expect("unrelated dispatch failure should retain provider run")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_headless_ack_failure_retires_poisoned_provider_run() {
+        let (runtime, session_id, agent_id, source_id, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let PromptSubmissionOutcome::Queued {
+            prompt: queued_prompt,
+        } = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "queued-after-poisoned-provider",
+                    &source_id,
+                    &agent_id,
+                    "continue review on a fresh provider",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("replacement prompt should queue")
+            .outcome
+        else {
+            panic!("replacement prompt should remain queued until failure settlement");
+        };
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await
+            .expect_err("acknowledgement failure should remain observable");
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("poisoned provider run should remain represented")
+                .state(),
+            crate::provider::ProviderRunState::Ended,
+        );
+        let replacement_run = runtime
+            .owned
+            .provider_store
+            .get_run_for_agent(&session_id, &agent_id)
+            .expect("queued prompt should launch a replacement provider");
+        assert_ne!(replacement_run.id(), provider_run.id());
+        assert_eq!(
+            replacement_run.state(),
+            crate::provider::ProviderRunState::Running
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should resolve");
+        assert_eq!(session.active_provider_run_id(), Some(replacement_run.id()));
+        let active_prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("queued prompt should become active");
+        assert_eq!(active_prompt.prompt(), queued_prompt.prompt());
+        let agent = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("agent should remain available");
+        assert_eq!(
+            agent.provider_resume_state().claude_session_id(),
+            None,
+            "the replacement must not reuse an unresponsive Claude resume session",
+        );
+        assert_eq!(
+            replacement_run.resume_state().claude_session_id(),
+            None,
+            "the queued replacement must launch without the poisoned Claude session",
+        );
+        let tracking = runtime.owned.provider_process_tracking.snapshot();
+        assert!(!tracking.run_processes.contains_key(provider_run.id()));
+        assert!(tracking.processes.values().all(|process| !process
+            .owner_provider_run_ids
+            .iter()
+            .any(|id| id == provider_run.id())));
+    }
+
+    #[tokio::test]
+    async fn claude_headless_ack_failure_intent_finishes_resume_clear_after_restart() {
+        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
+        let connection = rusqlite::Connection::open(&durable_path)
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_claude_resume_clear
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'agent.runtime_profile_updated'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected Claude resume clear persistence failure');
+                 END;",
+            )
+            .expect("failure trigger should install");
+
+        let result = runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await;
+
+        connection
+            .execute_batch("DROP TRIGGER fail_claude_resume_clear;")
+            .expect("failure trigger should be removed");
+        let error = result.expect_err("durable failure must stop replacement admission");
+        assert!(
+            error
+                .to_string()
+                .contains("injected Claude resume clear persistence failure"),
+            "{error}"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .provider_resume_state()
+                .claude_session_id(),
+            Some("claude-session-poisoned"),
+            "failed persistence must roll the in-memory resume clear back",
+        );
+        let durable_events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events(&agent_id, 20)
+            .expect("durable agent state should remain readable");
+        assert_eq!(
+            durable_events
+                .last()
+                .and_then(|event| event
+                    .payload
+                    .pointer("/agent/provider_resume_state/claude_session_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("claude-session-poisoned"),
+            "failed persistence must leave the prior durable resume state authoritative",
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("provider run should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+            "replacement admission must not retire the provider after a non-durable clear",
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("the durable failure intent should retain the active prompt");
+        assert_eq!(prompt.status(), crate::session::PromptStatus::Cancelling);
+        assert!(
+            prompt.durable_delivery_failure_pending(),
+            "restart must be able to identify the exact failed delivery",
+        );
+
+        runtime
+            .finalize_cancelled_local_prompt_after_restart(&session_id, &agent_id, &prompt)
+            .await
+            .expect("restart recovery should finish the durable failure intent");
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .provider_resume_state()
+                .claude_session_id(),
+            None,
+            "restart recovery must clear the poisoned resume before advancing",
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("failed provider run should remain auditable")
+                .state(),
+            crate::provider::ProviderRunState::Ended,
+            "restart recovery must retire the poisoned provider run",
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_headless_ack_failure_does_not_clear_resume_without_durable_intent() {
+        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let durable_path = runtime.owned.durable_state_store.path().to_path_buf();
+        let connection = rusqlite::Connection::open(&durable_path)
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_claude_prompt_cancellation
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'session.prompt_state.updated'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected prompt cancellation persistence failure');
+                 END;",
+            )
+            .expect("failure trigger should install");
+
+        let result = runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await;
+
+        connection
+            .execute_batch("DROP TRIGGER fail_claude_prompt_cancellation;")
+            .expect("failure trigger should be removed");
+        let error = result.expect_err("non-durable cancellation must stop provider retirement");
+        assert!(
+            error
+                .to_string()
+                .contains("injected prompt cancellation persistence failure"),
+            "{error}"
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("agent should remain available")
+                .provider_resume_state()
+                .claude_session_id(),
+            Some("claude-session-poisoned"),
+            "resume invalidation must not begin before the failure intent is durable",
+        );
+        let durable_agent_events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events(&agent_id, 20)
+            .expect("durable agent state should remain readable");
+        assert_eq!(
+            durable_agent_events
+                .last()
+                .and_then(|event| {
+                    event
+                        .payload
+                        .pointer("/agent/provider_resume_state/claude_session_id")
+                })
+                .and_then(serde_json::Value::as_str),
+            Some("claude-session-poisoned"),
+            "the failed intent write must leave the prior durable resume authoritative",
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("failed cancellation should leave the prompt retryable");
+        assert_ne!(prompt.status(), crate::session::PromptStatus::Cancelling);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("provider should not retire before cancellation is durable")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+        let durable_prompt_events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events(&session_id, 20)
+            .expect("durable prompt state should remain readable");
+        assert_eq!(
+            durable_prompt_events
+                .iter()
+                .rev()
+                .find(|event| {
+                    event.kind == crate::durable_prompt_state::DURABLE_PROMPT_STATE_EVENT_KIND
+                })
+                .and_then(|event| event.payload.pointer("/private_states/0/delivery_phase"))
+                .and_then(serde_json::Value::as_str),
+            Some("dispatching"),
+            "restart must recover a dispatching prompt with the poisoned resume already cleared",
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_headless_late_resume_update_wins_before_delivery_phase_commit() {
+        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let current_resume_state =
+            crate::provider::ProviderResumeState::from_claude_session_id("claude-session-current");
+        runtime
+            .owned
+            .provider_store
+            .apply_prompt_submit_acknowledgement(
+                provider_run.id(),
+                &crate::provider::ProviderPromptSubmitAcknowledgement {
+                    resume_state: current_resume_state.clone(),
+                },
+            )
+            .expect("late provider acknowledgement should update the run");
+        runtime
+            .owned
+            .agent_store
+            .set_agent_runtime_profile_durably(
+                &runtime.owned.durable_state_store,
+                &agent_id,
+                "claude-headless",
+                Some("claude-opus-5".to_string()),
+                None,
+                None,
+                current_resume_state,
+                Some(provider_run.id()),
+                Some("prompt_delivery_acknowledged"),
+            )
+            .expect("late provider acknowledgement should persist atomically");
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await
+            .expect_err("the stale timeout should remain observable");
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("current provider should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("current agent should remain available")
+                .provider_resume_state()
+                .claude_session_id(),
+            Some("claude-session-current"),
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let prompt = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("the same active prompt must survive a superseded timeout");
+        assert_eq!(prompt.status(), crate::session::PromptStatus::Dispatching);
+        assert_eq!(
+            prompt.durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Dispatching),
+        );
+        assert_eq!(
+            prompt.durable_delivery_provider_session_id(),
+            Some("claude-session-current"),
+        );
+        assert!(!prompt.durable_delivery_failure_pending());
+        let durable_events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events(&agent_id, 20)
+            .expect("durable agent state should load");
+        assert_eq!(
+            durable_events
+                .last()
+                .and_then(|event| event
+                    .payload
+                    .pointer("/agent/provider_resume_state/claude_session_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("claude-session-current"),
+            "memory and the last durable event must agree after the late acknowledgement",
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_headless_delivered_phase_wins_over_late_timeout() {
+        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                &dispatch.prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run.id().to_string()),
+                Some("claude-session-poisoned".to_string()),
+            )
+            .expect("late delivery acknowledgement should commit");
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await
+            .expect_err("the stale timeout should remain observable");
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("delivered provider should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .expect("delivered prompt should remain active")
+                .durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        );
+    }
+
+    #[tokio::test]
+    async fn claude_headless_delivery_settlement_claim_blocks_timeout_retirement() {
+        let (runtime, session_id, agent_id, _, provider_run, dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let acknowledgement_claim = runtime
+            .owned
+            .prompt_state_owner
+            .try_claim_active_prompt_delivery_settlement(
+                &session,
+                &agent_id,
+                &dispatch.prompt_id,
+                provider_run.id(),
+            )
+            .expect("acknowledgement should claim the dispatch settlement");
+        let prompt_id = dispatch.prompt_id.clone();
+
+        runtime
+            .fail_prompt_dispatch(
+                dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await
+            .expect_err("the losing timeout should remain observable");
+
+        runtime
+            .owned
+            .mark_active_prompt_delivery(
+                &session_id,
+                &agent_id,
+                &prompt_id,
+                crate::session::DurablePromptDeliveryPhase::Delivered,
+                Some(provider_run.id().to_string()),
+                Some("claude-session-poisoned".to_string()),
+            )
+            .expect("the acknowledgement claim owner should commit delivery");
+        drop(acknowledgement_claim);
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("acknowledged provider should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .agent_store
+                .get_agent(&agent_id)
+                .expect("acknowledged agent should remain available")
+                .provider_resume_state()
+                .claude_session_id(),
+            Some("claude-session-poisoned"),
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        assert_eq!(
+            runtime
+                .owned
+                .prompt_state_owner
+                .active_prompt_for_agent(&session, &agent_id)
+                .expect("acknowledged prompt should remain active")
+                .durable_delivery_phase(),
+            Some(crate::session::DurablePromptDeliveryPhase::Delivered),
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_claude_headless_ack_failure_preserves_replacement_prompt_and_provider() {
+        let (runtime, session_id, agent_id, source_id, provider_run, stale_dispatch) =
+            runtime_with_claude_headless_active_prompt().await;
+        runtime
+            .owned
+            .complete_local_prompt_without_advance(&session_id, &agent_id, Some(provider_run.id()))
+            .expect("original prompt should settle");
+        let replacement = runtime
+            .submit_prepared_prompt(crate::app::KernelPreparedPromptSubmission {
+                session_id: session_id.clone(),
+                prompt: PromptQueueItem::new(
+                    "replacement-after-stale-claude-dispatch",
+                    &source_id,
+                    &agent_id,
+                    "replacement prompt",
+                    PromptStatus::Queued,
+                ),
+                force_queue: false,
+                refresh_projection: true,
+            })
+            .await
+            .expect("replacement prompt should be admitted");
+        let PromptSubmissionOutcome::Started { prompt } = replacement.outcome else {
+            panic!("replacement prompt should start");
+        };
+        let replacement_resume_state =
+            crate::provider::ProviderResumeState::from_claude_session_id("claude-session-current");
+        runtime
+            .owned
+            .provider_store
+            .apply_prompt_submit_acknowledgement(
+                provider_run.id(),
+                &crate::provider::ProviderPromptSubmitAcknowledgement {
+                    resume_state: replacement_resume_state.clone(),
+                },
+            )
+            .expect("replacement provider resume state should update");
+        runtime
+            .owned
+            .agent_store
+            .set_agent_runtime_profile_durably(
+                &runtime.owned.durable_state_store,
+                &agent_id,
+                "claude-headless",
+                Some("claude-opus-5".to_string()),
+                None,
+                None,
+                replacement_resume_state,
+                Some(provider_run.id()),
+                Some("prompt_delivery_acknowledged"),
+            )
+            .expect("replacement resume state should persist atomically");
+
+        runtime
+            .fail_prompt_dispatch(
+                stale_dispatch,
+                DaemonError::LocalTransport {
+                    operation: "submit Claude headless prompt",
+                    message: "provider did not acknowledge prompt after PTY injection".to_string(),
+                },
+            )
+            .await
+            .expect_err("stale failure should remain observable");
+
+        assert_eq!(
+            runtime
+                .owned
+                .provider_store
+                .get_run(provider_run.id())
+                .expect("replacement prompt provider should remain available")
+                .state(),
+            crate::provider::ProviderRunState::Running,
+        );
+        let session = runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .expect("session should remain available");
+        let active = runtime
+            .owned
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, &agent_id)
+            .expect("replacement prompt should remain active");
+        assert_eq!(active.id(), prompt.id());
+        let current_run = runtime
+            .owned
+            .provider_store
+            .get_run(provider_run.id())
+            .expect("replacement prompt provider should remain available");
+        assert_eq!(
+            current_run.resume_state().claude_session_id(),
+            Some("claude-session-current"),
+        );
+        let current_agent = runtime
+            .owned
+            .agent_store
+            .get_agent(&agent_id)
+            .expect("replacement agent should remain available");
+        assert_eq!(
+            current_agent.provider_resume_state().claude_session_id(),
+            Some("claude-session-current"),
+        );
+        let durable_events = runtime
+            .owned
+            .durable_state_store
+            .load_subject_events(&agent_id, 20)
+            .expect("replacement durable state should load");
+        assert_eq!(
+            durable_events
+                .last()
+                .and_then(|event| event
+                    .payload
+                    .pointer("/agent/provider_resume_state/claude_session_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("claude-session-current"),
+            "a stale acknowledgement failure must not replace the durable current session",
+        );
+        assert!(runtime
+            .owned
+            .provider_process_tracking
+            .snapshot()
+            .run_processes
+            .contains_key(provider_run.id()));
     }
 
     #[tokio::test]
@@ -1363,6 +2499,18 @@ impl KernelRuntimeState {
         }
         if !has_managed_process {
             if !dispatch.steering {
+                let session = owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(_settlement_claim) = owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Ok(());
+                };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
                     &dispatch.session_id,
@@ -1449,6 +2597,18 @@ impl KernelRuntimeState {
                 &provider_run,
             );
             if !dispatch.steering {
+                let session = owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(_settlement_claim) = owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Ok(());
+                };
                 owned.note_prompt_started(&dispatch.provider_run_id);
                 owned.mark_active_prompt_delivery(
                     &dispatch.session_id,
@@ -1486,6 +2646,18 @@ impl KernelRuntimeState {
             &provider_run,
         );
         if !dispatch.steering {
+            let session = owned.session_store.get_session(&dispatch.session_id)?;
+            let Some(_settlement_claim) = owned
+                .prompt_state_owner
+                .try_claim_active_prompt_delivery_settlement(
+                    &session,
+                    &dispatch.agent_id,
+                    &dispatch.prompt_id,
+                    &dispatch.provider_run_id,
+                )
+            else {
+                return Ok(());
+            };
             owned.note_prompt_started(&dispatch.provider_run_id);
             owned.mark_active_prompt_delivery(
                 &dispatch.session_id,
@@ -1505,6 +2677,117 @@ impl KernelRuntimeState {
         error: DaemonError,
     ) -> Result<(), DaemonError> {
         let mut next_dispatch = None;
+        let dispatch_owns_active_prompt = self
+            .owned
+            .prompt_dispatch_matches_active_prompt(&dispatch)?;
+        let failed_provider_run = dispatch_owns_active_prompt
+            .then(|| {
+                self.owned
+                    .provider_store
+                    .get_run(&dispatch.provider_run_id)
+                    .ok()
+            })
+            .flatten()
+            .filter(|run| {
+                claude_headless_dispatch_failure_requires_provider_retirement(run, &error)
+            });
+        let retire_failed_provider = failed_provider_run.is_some();
+        let mut _delivery_settlement_claim = None;
+        if retire_failed_provider {
+            if let Some(provider_run) = failed_provider_run
+                .as_ref()
+                .filter(|_| claude_headless_dispatch_failure_invalidates_resume(&error))
+            {
+                let session = self.owned.session_store.get_session(&dispatch.session_id)?;
+                let Some(settlement_claim) = self
+                    .owned
+                    .prompt_state_owner
+                    .try_claim_active_prompt_delivery_settlement(
+                        &session,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                    )
+                else {
+                    return Err(error);
+                };
+                let Some(active_prompt) = self
+                    .owned
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, &dispatch.agent_id)
+                else {
+                    return Err(error);
+                };
+                let Some(expected_provider_session_id) = active_prompt
+                    .durable_delivery_provider_session_id()
+                    .map(str::to_string)
+                else {
+                    return Err(error);
+                };
+                let dispatching_status = active_prompt.status();
+                if self
+                    .owned
+                    .compare_and_mark_active_prompt_delivery_failure(
+                        &dispatch.session_id,
+                        &dispatch.agent_id,
+                        &dispatch.prompt_id,
+                        &dispatch.provider_run_id,
+                        &expected_provider_session_id,
+                        (dispatching_status, crate::session::PromptStatus::Cancelling),
+                    )?
+                    .is_none()
+                {
+                    return Err(error);
+                }
+                match self.clear_unresponsive_provider_resume_state(
+                    provider_run,
+                    &expected_provider_session_id,
+                ) {
+                    Ok(
+                        crate::agent::ProviderResumeClearOutcome::Cleared
+                        | crate::agent::ProviderResumeClearOutcome::AlreadyAbsent,
+                    ) => {}
+                    Ok(crate::agent::ProviderResumeClearOutcome::Superseded {
+                        current_provider_session_id,
+                    }) => {
+                        self.owned.restore_active_prompt_after_resume_superseded(
+                            &dispatch.session_id,
+                            &dispatch.agent_id,
+                            &dispatch.prompt_id,
+                            &dispatch.provider_run_id,
+                            &expected_provider_session_id,
+                            &current_provider_session_id,
+                        )?;
+                        return Err(error);
+                    }
+                    Err(clear_error) => return Err(clear_error),
+                }
+                _delivery_settlement_claim = Some(settlement_claim);
+            }
+            if let Ok(outcome) = self
+                .owned
+                .provider_store
+                .terminate_run_provider_only(&dispatch.session_id, &dispatch.provider_run_id)
+            {
+                let _ = self.owned.clear_active_provider_run_session_pointer(
+                    &dispatch.session_id,
+                    outcome.run().id(),
+                );
+                self.owned
+                    .provider_run_projection
+                    .update(outcome.into_run());
+            }
+            let provider_run_id = dispatch.provider_run_id.clone();
+            let (_, process_key) = self
+                .with_app_side_effect(move |app| {
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(&provider_run_id)
+                })
+                .await
+                .unwrap_or((false, None));
+            self.owned
+                .remove_provider_process_tracking_for_run(&dispatch.provider_run_id, process_key);
+        }
+        let mut restart_provider_for_queued_prompt = false;
         {
             let owned = &self.owned;
             owned.update_metaagent_event_prompt_delivery_for_prompt(
@@ -1579,7 +2862,15 @@ impl KernelRuntimeState {
                     (cancelled, released_claim)
                 }
             };
-            if should_advance {
+            if should_advance && retire_failed_provider {
+                restart_provider_for_queued_prompt = owned
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(
+                        &owned.session_store.get_session(&dispatch.session_id)?,
+                        &dispatch.agent_id,
+                    )
+                    .is_some();
+            } else if should_advance {
                 match owned.advance_next_queued_prompt_dispatch(
                     &dispatch.session_id,
                     &dispatch.agent_id,
@@ -1617,6 +2908,25 @@ impl KernelRuntimeState {
         }
         if let Some(next_dispatch) = next_dispatch {
             self.spawn_prompt_dispatch(next_dispatch, self.provider_runtime_lanes.clone());
+        }
+        if restart_provider_for_queued_prompt {
+            let session_id = dispatch.session_id.clone();
+            let agent_id = dispatch.agent_id.clone();
+            let replacement_provider_run_id = self
+                .with_app_side_effect(move |app| {
+                    app.ensure_prompt_provider_run_for_agent(&session_id, &agent_id)
+                })
+                .await?;
+            if let Some(replacement_dispatch) = self.owned.advance_next_queued_prompt_dispatch(
+                &dispatch.session_id,
+                &dispatch.agent_id,
+                &replacement_provider_run_id,
+            )? {
+                self.spawn_prompt_dispatch(
+                    replacement_dispatch,
+                    self.provider_runtime_lanes.clone(),
+                );
+            }
         }
         Err(error)
     }
@@ -1658,8 +2968,22 @@ impl KernelRuntimeState {
                 }
             });
         }
+        let mut provider_run_retirements = dispatches.provider_run_retirements;
         for provider_run_id in dispatches.starting_provider_runs {
-            self.spawn_detached_workflow_provider_launch(provider_run_id);
+            let retired_provider_run_ids = provider_run_retirements
+                .remove(&provider_run_id)
+                .unwrap_or_default();
+            if retired_provider_run_ids.is_empty() {
+                self.spawn_detached_workflow_provider_launch(provider_run_id);
+            } else {
+                self.spawn_detached_workflow_provider_launch_after_retiring(
+                    provider_run_id,
+                    retired_provider_run_ids,
+                );
+            }
+        }
+        for retired_provider_run_ids in provider_run_retirements.into_values() {
+            self.spawn_retired_workflow_provider_cleanup(retired_provider_run_ids);
         }
         for dispatch in dispatches.local {
             self.spawn_prompt_dispatch(dispatch, self.provider_runtime_lanes.clone());
@@ -1731,8 +3055,77 @@ impl KernelRuntimeState {
     }
 
     fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
+        self.spawn_detached_workflow_provider_launch_after_retiring(provider_run_id, Vec::new());
+    }
+
+    fn spawn_retired_workflow_provider_cleanup(&self, retired_provider_run_ids: Vec<String>) {
+        if retired_provider_run_ids.is_empty() {
+            return;
+        }
         let state = self.clone();
         tokio::spawn(async move {
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    fn spawn_detached_workflow_provider_launch_after_retiring(
+        &self,
+        provider_run_id: String,
+        retired_provider_run_ids: Vec<String>,
+    ) {
+        let claim = {
+            let mut claims = self
+                .detached_workflow_provider_launches
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if !claims.insert(provider_run_id.clone()) {
+                return;
+            }
+            DetachedWorkflowProviderLaunchClaim {
+                provider_run_id: provider_run_id.clone(),
+                claims: Arc::clone(&self.detached_workflow_provider_launches),
+            }
+        };
+        let state = self.clone();
+        tokio::spawn(async move {
+            let _claim = claim;
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
             let run = match state.owned.provider_store.get_run(&provider_run_id) {
                 Ok(run) if run.state() == crate::provider::ProviderRunState::Starting => run,
                 _ => return,

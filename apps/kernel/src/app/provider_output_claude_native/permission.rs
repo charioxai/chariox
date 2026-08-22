@@ -6,6 +6,7 @@ use serde_json::Value;
 use crate::session::unix_epoch_ms;
 
 const CLAUDE_HOOK_PERMISSION_TOMBSTONE_TTL_MS: u64 = 30_000;
+const CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS: u64 = 2_500;
 const CLAUDE_HEADLESS_BYPASS_SELECTION_MARKER: &str = "startup-bypass-selection";
 
 pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
@@ -19,6 +20,57 @@ pub(super) fn claude_native_marker(context_file: &str) -> Option<String> {
 pub(super) fn write_claude_native_marker(context_file: &str, value: &str) {
     let marker = std::path::Path::new(context_file).with_file_name("active-prompt-id");
     let _ = fs::write(marker, value);
+}
+
+fn claude_yolo_rendered_permission_marker_path(context_file: &str) -> Option<PathBuf> {
+    std::path::Path::new(context_file)
+        .parent()
+        .map(|root| root.join("yolo-rendered-permission-confirmed"))
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+struct ClaudeYoloRenderedPermissionConfirmation {
+    confirmed_at_ms: u64,
+    rendered_prompt: String,
+}
+
+pub(super) fn mark_claude_yolo_rendered_permission_confirmed(
+    context_file: &str,
+    rendered_prompt: &str,
+) {
+    let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) else {
+        return;
+    };
+    let confirmation = ClaudeYoloRenderedPermissionConfirmation {
+        confirmed_at_ms: unix_epoch_ms(),
+        rendered_prompt: normalize_claude_rendered_permission_text(rendered_prompt),
+    };
+    if let Ok(raw) = serde_json::to_string(&confirmation) {
+        let _ = fs::write(path, raw);
+    }
+}
+
+pub(super) fn claude_yolo_rendered_permission_confirmation_pending(
+    context_file: &str,
+    rendered_prompt: &str,
+) -> bool {
+    claude_yolo_rendered_permission_marker_path(context_file)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .and_then(|value| {
+            serde_json::from_str::<ClaudeYoloRenderedPermissionConfirmation>(&value).ok()
+        })
+        .is_some_and(|confirmation| {
+            confirmation.rendered_prompt
+                == normalize_claude_rendered_permission_text(rendered_prompt)
+                && unix_epoch_ms().saturating_sub(confirmation.confirmed_at_ms)
+                    < CLAUDE_YOLO_RENDERED_PERMISSION_SUPPRESSION_MS
+        })
+}
+
+pub(super) fn clear_claude_yolo_rendered_permission_confirmation(context_file: &str) {
+    if let Some(path) = claude_yolo_rendered_permission_marker_path(context_file) {
+        let _ = fs::remove_file(path);
+    }
 }
 
 pub(super) fn claude_headless_submit_retry_path(context_file: &str) -> Option<PathBuf> {
@@ -227,8 +279,8 @@ pub(super) fn write_claude_permission_response(
     let dir = root.join("permission-responses");
     let _ = fs::create_dir_all(&dir);
     let payload = serde_json::json!({
-        "permissionDecision": if allowed { "allow" } else { "deny" },
-        "permissionDecisionReason": reason,
+        "behavior": if allowed { "allow" } else { "deny" },
+        "message": reason,
     });
     let _ = fs::write(dir.join(format!("{request_id}.json")), payload.to_string());
 }
@@ -301,8 +353,7 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     if tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.") {
         return false;
     }
-    !(event.get("hook_event_name").and_then(Value::as_str) == Some("PreToolUse")
-        && event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions"))
+    event.get("permission_mode").and_then(Value::as_str) != Some("bypassPermissions")
 }
 
 pub(super) fn format_claude_permission_message(event: &Value) -> String {
@@ -465,12 +516,17 @@ pub(super) fn claude_headless_composer_visible(text: &str) -> bool {
     let normalized = normalize_claude_rendered_permission_text(text);
     let normalized_lower = normalized.to_ascii_lowercase();
     let compact = normalized_lower.replace(' ', "");
+    let modern_idle_composer = compact.split('❯').skip(1).any(|after_prompt_glyph| {
+        let footer = after_prompt_glyph.chars().take(256).collect::<String>();
+        footer.contains("⏵⏵") && footer.contains("shift+tabtocycle")
+    });
     (normalized_lower.contains("try \"write a test for")
         || compact.contains("try\"writeatestfor")
         || normalized_lower.contains("bypass permissions on")
         || compact.contains("bypasspermissionson")
         || normalized_lower.contains("for shortcuts")
-        || compact.contains("forshortcuts"))
+        || compact.contains("forshortcuts")
+        || modern_idle_composer)
         && !(claude_headless_workspace_trust_visible(&normalized)
             || claude_headless_bypass_confirmation_visible(&normalized))
 }

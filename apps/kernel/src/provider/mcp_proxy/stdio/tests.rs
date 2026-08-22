@@ -192,13 +192,18 @@ process.stdin.resume()
         &config,
     );
     let pid_deadline = Instant::now() + Duration::from_secs(2);
-    while !pid_file.exists() && Instant::now() < pid_deadline {
+    let child_pid = loop {
+        if let Ok(contents) = std::fs::read_to_string(&pid_file) {
+            if let Ok(pid) = contents.parse::<u32>() {
+                break pid;
+            }
+        }
+        assert!(
+            Instant::now() < pid_deadline,
+            "stdio child should write a complete PID before the deadline"
+        );
         std::thread::sleep(Duration::from_millis(10));
-    }
-    let child_pid = std::fs::read_to_string(&pid_file)
-        .expect("stdio child should write its PID")
-        .parse::<u32>()
-        .expect("PID should parse");
+    };
     let dispatch_process = Arc::clone(&process);
     let (result_tx, result_rx) = mpsc::channel();
     let started = Instant::now();

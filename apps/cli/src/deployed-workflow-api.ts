@@ -47,6 +47,13 @@ export async function listDeploymentProjects(
   return getJson(profile, "/deployment-projects", { accountId: profile.accountId })
 }
 
+export function getPublicationCallerClaimsVerifier(profile: RelayCloudProfile): Promise<{
+  readonly algorithm: "Ed25519"
+  readonly publicKeyPem: string
+}> {
+  return getJson(profile, "/publication-caller-claims/verifier", {})
+}
+
 export async function getDeploymentProject(
   profile: RelayCloudProfile,
   projectId: string,
@@ -251,7 +258,10 @@ export async function reviewDeploymentClaim(
   profile: RelayCloudProfile,
   claimToken: string,
 ): Promise<DeploymentClaimResult> {
-  return postJson(profile, "/deployment-claims/review", { claimToken })
+  return postJson(profile, "/deployment-claims/review", {
+    accountId: profile.accountId,
+    claimToken,
+  })
 }
 
 export async function acceptDeploymentClaim(

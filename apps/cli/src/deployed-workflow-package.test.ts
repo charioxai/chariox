@@ -12,7 +12,7 @@ test("deployed workflow package preflight produces deterministic verified digest
     const first = await preparePublicationReleasePackage(root)
     const second = await preparePublicationReleasePackage(join(root, "publication.json"))
 
-    assert.equal(first.packageVersion, 3)
+    assert.equal(first.packageVersion, 4)
     assert.equal(first.contractVersion, 1)
     assert.equal(first.packageId, first.contract.package_id)
     assert.notEqual(first.packageDigest, first.packageId)

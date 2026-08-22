@@ -376,9 +376,19 @@ fn native_interaction_subscription_routers(
     )
 }
 
-#[tokio::test]
-async fn dispatched_native_provider_interaction_updates_subscription_projection() {
-    Box::pin(run_dispatched_native_provider_interaction_scenario()).await;
+#[test]
+fn dispatched_native_provider_interaction_updates_subscription_projection() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("native interaction projection test runtime should build")
+        .block_on(async {
+            tokio::spawn(run_dispatched_native_provider_interaction_scenario())
+                .await
+                .expect("native interaction projection test should join");
+        });
 }
 
 async fn run_dispatched_native_provider_interaction_scenario() {
@@ -481,11 +491,21 @@ async fn run_dispatched_native_provider_interaction_scenario() {
         .expect("request should resolve");
 }
 
-#[tokio::test]
-async fn native_provider_interaction_wakes_subscription_projection_across_routers() {
-    tokio::spawn(native_provider_interaction_wakes_subscription_projection_across_routers_impl())
-        .await
-        .expect("cross-router native interaction test should join");
+#[test]
+fn native_provider_interaction_wakes_subscription_projection_across_routers() {
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .thread_stack_size(8 * 1024 * 1024)
+        .enable_all()
+        .build()
+        .expect("cross-router native interaction test runtime should build")
+        .block_on(async {
+            tokio::spawn(
+                native_provider_interaction_wakes_subscription_projection_across_routers_impl(),
+            )
+            .await
+            .expect("cross-router native interaction test should join");
+        });
 }
 
 async fn native_provider_interaction_wakes_subscription_projection_across_routers_impl() {

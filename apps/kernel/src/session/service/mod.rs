@@ -228,25 +228,16 @@ pub struct WorkflowHandoffValidationWarning {
 pub struct WorkflowHandoffValidationFailure {
     pub edge_id: String,
     pub message: String,
-    pub attempt: u32,
-    pub max_attempts: u32,
-    pub retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowRunOutputValidationFailure {
     pub message: String,
-    pub attempt: u32,
-    pub max_attempts: u32,
-    pub retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowMissingOutputFailure {
     pub message: String,
-    pub attempt: u32,
-    pub max_attempts: u32,
-    pub retry_scheduled: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -298,7 +289,6 @@ pub struct SessionService {
     next_workflow_endpoint_number: u64,
     next_workflow_node_number: u64,
     next_workflow_edge_number: u64,
-    next_workflow_run_number: u64,
     next_workflow_node_run_number: u64,
     next_workflow_message_number: u64,
     next_workflow_watchdog_number: u64,

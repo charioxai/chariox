@@ -6,7 +6,7 @@ use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::provider::LaunchProviderRequest;
 use crate::session::{
     CreateSessionRequest, PromptSubmissionOutcome, RuntimeSession, WorkflowHandoffValidationPolicy,
-    WorkflowMessage, WorkflowRun, WorkflowRunStatus,
+    WorkflowMessage, WorkflowNodeRunStatus, WorkflowRun, WorkflowRunStatus,
 };
 use crate::{DaemonApp, DaemonConfig};
 
@@ -381,6 +381,9 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
         .expect("workflow should exist")
         .id()
         .to_string();
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session.id(), &workflow_id, false)
+        .expect("preflight test should preserve provider context");
     let first_node_id = app
         .sessions_mut()
         .add_workflow_node(session.id(), &workflow_id, &first_agent_id)
@@ -431,6 +434,23 @@ fn workflow_start_preflights_local_provider_runs_for_all_nodes() {
         .get_run_for_agent(session.id(), &second_agent_id)
         .expect("downstream agent provider should be preflighted");
     assert_ne!(first_provider_run.id(), second_provider_run.id());
+    assert!(first_provider_run.workflow_tools_enabled());
+    assert!(second_provider_run.workflow_tools_enabled());
+    assert_eq!(
+        app.providers()
+            .list_runs()
+            .into_iter()
+            .filter(|run| {
+                run.session_id() == session.id()
+                    && matches!(
+                        run.agent_instance_id(),
+                        Some(id) if id == first_agent_id || id == second_agent_id
+                    )
+            })
+            .count(),
+        2,
+        "cold workflow admission must create exactly one provider run per agent"
+    );
     assert_eq!(
         app.sessions()
             .get_session(session.id())
@@ -471,7 +491,7 @@ fn workflow_notice_uses_current_run_after_dispatch_failure() {
 }
 
 #[test]
-fn provider_completion_without_structured_output_schedules_a_correction_turn() {
+fn provider_completion_without_structured_output_fails_without_automatic_retry() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent_id) =
         create_scheduler_session_and_agent(&mut app, "client-scheduler-missing-output");
@@ -498,7 +518,7 @@ fn provider_completion_without_structured_output_schedules_a_correction_turn() {
             session.id(),
             &workflow_id,
             "entry",
-            Some("return challenge SCHEDULER-RETRY".to_string()),
+            Some("return challenge SCHEDULER-FAILURE".to_string()),
         )
         .expect("workflow should invoke");
     super::schedule_workflow_run_entry_node(&mut app, session.id(), &workflow_run)
@@ -509,43 +529,163 @@ fn provider_completion_without_structured_output_schedules_a_correction_turn() {
         .expect("entry prompt should complete without advancing");
 
     super::on_workflow_prompt_completed(&mut app, session.id(), &completed_prompt, None)
-        .expect("missing structured output should schedule a correction");
+        .expect("missing structured output should become a visible failure");
 
     let session_state = app
         .sessions()
         .get_session(session.id())
         .expect("session should resolve");
-    let resolved_run = session_state
-        .workflow_run(workflow_run.id())
-        .expect("workflow run should resolve");
-    assert_eq!(resolved_run.node_runs().len(), 2);
+    assert!(session_state.workflow_run(workflow_run.id()).is_none());
+    let resolved_run = app
+        .durable_state_store()
+        .resolve_workflow_run(session.host_daemon_id(), session.id(), workflow_run.id())
+        .expect("durable workflow run should load")
+        .expect("failed workflow run should be archived");
+    assert_eq!(resolved_run.status(), WorkflowRunStatus::Failed);
+    assert_eq!(resolved_run.node_runs().len(), 1);
     assert_eq!(
         resolved_run.node_runs()[0].status(),
         crate::session::WorkflowNodeRunStatus::Failed
     );
-    let correction_node_run = &resolved_run.node_runs()[1];
-    assert_eq!(
-        correction_node_run.status(),
-        crate::session::WorkflowNodeRunStatus::Running
-    );
-    let correction_prompt = correction_node_run
-        .turn_envelope()
-        .and_then(|envelope| envelope.rendered_prompt())
-        .expect("correction prompt should be rendered");
-    assert!(correction_prompt.contains("return challenge SCHEDULER-RETRY"));
-    assert!(correction_prompt.contains(
-        "The previous workflow turn ended without the required validated structured output"
-    ));
     assert!(resolved_run.failure_events().iter().any(|event| {
         event.kind() == crate::session::WorkflowFailureKind::MissingStructuredOutput
             && event.source_node_run_id() == first_node_run_id
     }));
-    let active_prompt = session_state
-        .active_prompt_for_agent(&agent_id)
-        .expect("correction prompt should be active");
+    assert!(session_state.active_prompt_for_agent(&agent_id).is_none());
+}
+
+#[test]
+fn terminal_provider_completion_releases_claim_and_retries_blocked_workflow() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (failed_session, failed_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-terminal-provider-failure");
+    let (failed_workflow_id, failed_node_id) = create_workflow_node(
+        &mut app,
+        failed_session.id(),
+        "wf-terminal-provider-failure",
+        &failed_agent_id,
+    );
+    let _failed_run = invoke_workflow_node(
+        &mut app,
+        failed_session.id(),
+        &failed_workflow_id,
+        &failed_node_id,
+    );
+    let failed_provider_run_id = app
+        .providers()
+        .get_run_for_agent(failed_session.id(), &failed_agent_id)
+        .expect("failed workflow provider should exist")
+        .id()
+        .to_string();
+
+    let (blocked_session, blocked_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-blocked-after-provider-failure");
+    let (blocked_workflow_id, blocked_node_id) = create_workflow_node(
+        &mut app,
+        blocked_session.id(),
+        "wf-blocked-after-provider-failure",
+        &blocked_agent_id,
+    );
+    let blocked_run = invoke_workflow_node(
+        &mut app,
+        blocked_session.id(),
+        &blocked_workflow_id,
+        &blocked_node_id,
+    );
+    let blocked_before_failure = app
+        .sessions()
+        .resolve_workflow_run_ref(blocked_session.id(), blocked_run.id())
+        .expect("blocked workflow should resolve");
+    assert_eq!(blocked_before_failure.status(), WorkflowRunStatus::Waiting);
     assert_eq!(
-        active_prompt.workflow_node_run_id(),
-        Some(correction_node_run.id())
+        blocked_before_failure.node_runs()[0].status(),
+        WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+    );
+
+    app.providers()
+        .record_terminal_diagnostic(
+            &failed_provider_run_id,
+            "Provider reported a resource limit".to_string(),
+        )
+        .expect("terminal diagnostic should be recorded");
+    let completed_prompt = app
+        .prompt_owner_complete_active_prompt_only(failed_session.id(), &failed_agent_id)
+        .expect("failed workflow prompt should settle");
+    super::on_workflow_prompt_completed(
+        &mut app,
+        failed_session.id(),
+        &completed_prompt,
+        Some(&failed_provider_run_id),
+    )
+    .expect("terminal provider completion should settle the workflow");
+
+    let retried_run = app
+        .sessions()
+        .resolve_workflow_run_ref(blocked_session.id(), blocked_run.id())
+        .expect("blocked workflow should resolve after claim release");
+    assert_eq!(retried_run.status(), WorkflowRunStatus::Running);
+    assert_eq!(
+        retried_run.node_runs()[0].status(),
+        WorkflowNodeRunStatus::Running,
+    );
+}
+
+#[test]
+fn workflow_completion_ignores_provider_output_recorded_before_prompt_dispatch() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (session, agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-scheduler-dispatch-boundary");
+    let (workflow_id, node_id) = create_workflow_node(
+        &mut app,
+        session.id(),
+        "wf-scheduler-dispatch-boundary",
+        &agent_id,
+    );
+    app.sessions_mut()
+        .set_workflow_node_can_complete_run(session.id(), &workflow_id, &node_id, true)
+        .expect("node completion setting should update");
+    let workflow_run = invoke_workflow_node(&mut app, session.id(), &workflow_id, &node_id);
+    let provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &agent_id)
+        .expect("workflow provider should exist");
+    let session_state = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    let node_run = session_state
+        .workflow_run(workflow_run.id())
+        .expect("workflow run should resolve")
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.node_id() == node_id)
+        .expect("workflow node run should resolve");
+    let dispatched_at_ms = node_run
+        .turn_envelope()
+        .and_then(|envelope| envelope.dispatched_at_ms())
+        .expect("workflow turn should be dispatched");
+    let mut prior_turn_output = crate::history::SessionHistoryEntry::provider_output(
+        session.id(),
+        provider_run.id(),
+        Some(&agent_id),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("prior-turn-output".to_string()),
+        r#"{"summary":"wrong turn","output":{"message":"prior review"}}"#,
+    );
+    prior_turn_output.timestamp_ms = dispatched_at_ms.saturating_sub(1);
+
+    let completion = super::completion::build_workflow_completion_snapshot_from_history(
+        &session_state,
+        vec![prior_turn_output],
+        session.id(),
+        workflow_run.id(),
+        node_run.id(),
+        provider_run.id(),
+    );
+
+    assert!(
+        completion.is_none(),
+        "output from the previous provider turn must not complete the newly dispatched workflow",
     );
 }
 

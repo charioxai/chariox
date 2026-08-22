@@ -77,7 +77,7 @@ pub(super) fn collect_new_completed_assistant_messages(
             && message.info.role == "assistant"
             && state.message_belongs_to_active_prompt(&message.info.id)
             && message.info.time.completed.is_some()
-            && !message.info.is_tool_call_only_completion()
+            && message.info.is_terminal_assistant_completion()
             && !state
                 .completed_assistant_message_ids
                 .contains(message.info.id.as_str());
@@ -87,8 +87,7 @@ pub(super) fn collect_new_completed_assistant_messages(
         state
             .completed_assistant_message_ids
             .insert(message.info.id.clone());
-        if state.active_user_message_id.is_some() && message.info.is_terminal_assistant_completion()
-        {
+        if state.active_user_message_id.is_some() {
             state.active_terminal_assistant_message_id = Some(message.info.id.clone());
         }
         completions.push(OpenCodeAssistantCompletion {

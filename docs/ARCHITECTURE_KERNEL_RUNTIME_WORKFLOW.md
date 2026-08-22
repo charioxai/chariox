@@ -249,16 +249,16 @@ Execution and deployment modes:
   kernel, hidden deployed session, selected triggers, gateway when HTTP is
   selected, snapshot, requirements, scripts, and assets on a runner host
 
-For v1 Cloud deployment, Scalingo-hosted Chariox Cloud remains the control plane
+For v1 Cloud deployment, OpenShip-hosted Chariox Cloud remains the control plane
 only. It owns account auth, deployment records, runner registration, deployment
 commands, status/log metadata, and the web UI. Runtime publication traffic MUST
-NOT be proxied through the Scalingo Cloud API/web process. A dedicated Hetzner
+NOT be proxied through the Chariox Cloud API/web process. A dedicated Chariox
 publication ingress exposes public workflow URLs and routes to either a
-local-runtime connector or a hosted publication container on the Hetzner
+local-runtime connector or a hosted publication container on an eligible
 publication runner.
 
 The public URL is represented as `public_base_url`. In staging this may be a
-path under the Hetzner publication ingress host; later product DNS may map the
+path under the publication ingress host; later product DNS may map the
 same contract to `https://<slug>.chariox.run/`. Callers should not need to know
 whether the backend is local-runtime ingress or a hosted container.
 

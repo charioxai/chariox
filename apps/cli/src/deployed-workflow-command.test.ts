@@ -925,7 +925,7 @@ function projectState() {
       status: "available",
       packageId: `sha256:${"a".repeat(64)}`,
       packageDigest: `sha256:${"b".repeat(64)}`,
-      packageVersion: 3,
+      packageVersion: 4,
       contractVersion: 1,
       verifiedAt: "2026-01-01T00:00:00.000Z",
       createdAt: "2026-01-01T00:00:00.000Z",

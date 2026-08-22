@@ -27,6 +27,42 @@ pub struct DurableKernelStateStore {
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
 const DURABLE_WRITE_BATCH_LIMIT: usize = 256;
 const DURABLE_WRITE_BATCH_WINDOW: Duration = Duration::from_millis(5);
+const DURABLE_SETTLEMENT_RETRY_BASE_MS: u64 = 100;
+const DURABLE_SETTLEMENT_RETRY_MAX_MS: u64 = 5_000;
+
+pub(crate) fn durable_settlement_retry_delay_ms(attempt: u32) -> u64 {
+    let exponent = attempt.saturating_sub(1).min(6);
+    DURABLE_SETTLEMENT_RETRY_BASE_MS
+        .saturating_mul(1_u64 << exponent)
+        .min(DURABLE_SETTLEMENT_RETRY_MAX_MS)
+}
+
+pub(crate) fn is_retryable_durable_write_error(error: &DaemonError) -> bool {
+    matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "durable_state.lock_writer"
+                | "durable_state.enqueue_write"
+                | "durable_state.await_write"
+                | "durable_state.commit_write",
+            ..
+        }
+    )
+}
+
+#[cfg(test)]
+mod settlement_retry_tests {
+    use super::durable_settlement_retry_delay_ms;
+
+    #[test]
+    fn durable_settlement_retry_delay_backs_off_and_caps() {
+        assert_eq!(durable_settlement_retry_delay_ms(1), 100);
+        assert_eq!(durable_settlement_retry_delay_ms(2), 200);
+        assert_eq!(durable_settlement_retry_delay_ms(3), 400);
+        assert_eq!(durable_settlement_retry_delay_ms(7), 5_000);
+        assert_eq!(durable_settlement_retry_delay_ms(u32::MAX), 5_000);
+    }
+}
 
 #[derive(Debug)]
 struct DurableStateWriter {
@@ -396,6 +432,17 @@ impl DurableKernelStateStore {
                        WHERE latest.sequence > ?1
                          AND latest.subject_id = event.subject_id
                          AND latest.kind = 'session.updated'
+                     )
+                   )
+                   AND (
+                     event.kind <> 'agent.runtime_profile_updated'
+                     OR event.subject_id IS NULL
+                     OR event.sequence = (
+                       SELECT MAX(latest.sequence)
+                       FROM durable_state_events latest
+                       WHERE latest.sequence > ?1
+                         AND latest.subject_id = event.subject_id
+                         AND latest.kind = 'agent.runtime_profile_updated'
                      )
                    )
                  ORDER BY event.sequence ASC
@@ -2408,7 +2455,7 @@ mod tests {
     }
 
     #[test]
-    fn restore_event_loading_skips_superseded_full_session_snapshots() {
+    fn restore_event_loading_skips_superseded_full_state_snapshots() {
         let path = std::env::temp_dir().join(format!(
             "chariox-durable-state-restore-compaction-{}-{}.db",
             std::process::id(),
@@ -2436,13 +2483,28 @@ mod tests {
                 serde_json::json!({"revision": 2}),
             )
             .expect("latest session snapshot should append");
+        store
+            .append_event(
+                "agent.runtime_profile_updated",
+                Some("agent-1".to_string()),
+                serde_json::json!({"revision": 1, "payload": "x".repeat(1_000_000)}),
+            )
+            .expect("first agent runtime profile should append");
+        let latest_agent_profile = store
+            .append_event(
+                "agent.runtime_profile_updated",
+                Some("agent-1".to_string()),
+                serde_json::json!({"revision": 2}),
+            )
+            .expect("latest agent runtime profile should append");
 
         let restored = store
             .load_restore_events_after_batch(0, 10)
             .expect("restore events should load");
-        assert_eq!(restored.len(), 2);
+        assert_eq!(restored.len(), 3);
         assert_eq!(restored[0].kind, "session.updated");
         assert_eq!(restored[1], unrelated);
+        assert_eq!(restored[2], latest_agent_profile);
 
         drop(store);
         let _ = std::fs::remove_file(&path);

@@ -65,7 +65,7 @@ impl KernelRuntimeState {
         else {
             return Ok(());
         };
-        owned.workflow_fail_provider_prompt(
+        let dispatches = owned.workflow_fail_provider_prompt(
             &context.home_session_id,
             &active_prompt,
             Some("remote-provider-run-failed"),
@@ -77,6 +77,7 @@ impl KernelRuntimeState {
             "remote-provider-run-failed",
             None,
         );
+        self.spawn_workflow_prompt_dispatches(dispatches);
         Ok(())
     }
 }

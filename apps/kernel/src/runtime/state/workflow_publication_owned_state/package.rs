@@ -10,6 +10,7 @@ pub(super) fn workflow_publication_package_files(
     publication: &crate::session::WorkflowPublicationDefinition,
     snapshot: &crate::session::WorkflowPublicationSnapshot,
     event_bindings: &[crate::session::WorkflowEventBinding],
+    extension_requirements: &serde_json::Value,
     kernel_url: Option<&str>,
     agent_app: Option<&serde_json::Value>,
     agent_app_assets_dir: Option<&str>,
@@ -27,7 +28,7 @@ pub(super) fn workflow_publication_package_files(
         })?;
     let publication_package =
         workflow_publication_package_json(publication, &publication_value, agent_app);
-    let requirements = workflow_publication_requirements_json(&snapshot.agents);
+    let requirements = extension_requirements.clone();
     let bindings = workflow_publication_bindings_json(snapshot);
     let event_bindings = workflow_publication_event_bindings_json(publication, event_bindings);
     let config =
@@ -207,7 +208,7 @@ fn workflow_publication_package_json(
 }
 
 pub(super) fn workflow_publication_package_version(_agent_app: Option<&serde_json::Value>) -> u32 {
-    3
+    4
 }
 
 fn workflow_publication_agent_app_json(agent_app: Option<&serde_json::Value>) -> serde_json::Value {
@@ -300,52 +301,6 @@ fn collect_agent_app_asset_files(
         ));
     }
     Ok(())
-}
-
-fn workflow_publication_requirements_json(
-    agents: &[crate::agent::AgentInstance],
-) -> serde_json::Value {
-    let grants = agents
-        .iter()
-        .flat_map(|agent| agent.extension_grants().iter())
-        .collect::<Vec<_>>();
-    serde_json::json!({
-        "schema_version": 1,
-        "mcps": extension_requirements_json(&grants, crate::extension::ExtensionKind::Mcp),
-        "skills": extension_requirements_json(&grants, crate::extension::ExtensionKind::Skill),
-        "scripts": extension_requirements_json(&grants, crate::extension::ExtensionKind::Script),
-        "connectors": extension_requirements_json(&grants, crate::extension::ExtensionKind::Connector),
-        "credentials": credential_requirements_json(&grants),
-    })
-}
-
-fn extension_requirements_json(
-    grants: &[&crate::extension::ExtensionGrant],
-    kind: crate::extension::ExtensionKind,
-) -> Vec<serde_json::Value> {
-    let mut seen = std::collections::BTreeSet::new();
-    grants
-        .iter()
-        .filter(|grant| grant.kind == kind)
-        .filter(|grant| seen.insert(grant.name.clone()))
-        .map(|grant| serde_json::json!({ "name": grant.name }))
-        .collect()
-}
-
-fn credential_requirements_json(
-    grants: &[&crate::extension::ExtensionGrant],
-) -> Vec<serde_json::Value> {
-    let mut seen = std::collections::BTreeSet::new();
-    grants
-        .iter()
-        .filter_map(|grant| {
-            let credential = grant.credential.as_deref()?.trim();
-            if credential.is_empty() || !seen.insert(credential.to_string()) {
-                return None;
-            }
-            Some(serde_json::json!({ "name": credential, "used_by": grant.name }))
-        })
-        .collect()
 }
 
 fn workflow_publication_bindings_json(
@@ -543,7 +498,7 @@ fn workflow_publication_readme(
         route.to_string()
     };
     let mut readme = format!(
-        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: required extensions and credential handles\n- `bindings.example.json`: provider/model override template\n- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n",
+        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n",
         publication.alias().unwrap_or(publication.id())
     );
     if uses_http_ingress {

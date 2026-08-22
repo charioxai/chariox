@@ -314,11 +314,27 @@ impl RuntimeSession {
         workflow_run
     }
 
+    fn workflow_run_ids_with_owned_prompts(&self) -> BTreeSet<String> {
+        self.prompt_runtime
+            .prompt_states()
+            .values()
+            .flat_map(|state| {
+                state
+                    .active_prompt()
+                    .into_iter()
+                    .chain(state.queued_prompts())
+            })
+            .filter_map(|prompt| prompt.workflow_run_id().map(str::to_string))
+            .collect()
+    }
+
     pub(crate) fn durable_runtime_snapshot(&self) -> Self {
+        let workflow_run_ids_with_owned_prompts = self.workflow_run_ids_with_owned_prompts();
         let mut snapshot = self.clone();
-        snapshot
-            .workflow_runs
-            .retain(|workflow_run| !workflow_run.status().is_terminal());
+        snapshot.workflow_runs.retain(|workflow_run| {
+            !workflow_run.status().is_terminal()
+                || workflow_run_ids_with_owned_prompts.contains(workflow_run.id())
+        });
         snapshot
             .workflow_publication_state
             .workflow_event_delivery_receipts
@@ -327,10 +343,13 @@ impl RuntimeSession {
     }
 
     pub(crate) fn archive_terminal_workflow_runs(&mut self) -> Vec<WorkflowRun> {
+        let workflow_run_ids_with_owned_prompts = self.workflow_run_ids_with_owned_prompts();
         let mut active = Vec::with_capacity(self.workflow_runs.len());
         let mut archived = Vec::new();
         for workflow_run in self.workflow_runs.drain(..) {
-            if workflow_run.status().is_terminal() {
+            if workflow_run.status().is_terminal()
+                && !workflow_run_ids_with_owned_prompts.contains(workflow_run.id())
+            {
                 archived.push(workflow_run);
             } else {
                 active.push(workflow_run);

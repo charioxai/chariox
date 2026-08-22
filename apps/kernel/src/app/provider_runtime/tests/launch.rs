@@ -92,6 +92,296 @@ fn prompt_auto_launch_failure_does_not_leave_running_provider_run() {
 }
 
 #[test]
+fn detached_provider_launch_profile_persistence_failure_cleans_up_runtime() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            CreateSessionRequest::new("workspace-profile-failure", "worktree-profile-failure")
+                .with_agent_defaults(
+                    SessionAgentDefaults::new("dev-stub").with_model("native-tui-idle"),
+                ),
+        )
+        .expect("session create should succeed");
+    let agent_before_launch = app
+        .agents
+        .get_agent(agent.id())
+        .expect("agent should exist before launch");
+    let connection = rusqlite::Connection::open(app.durable_state_store().path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_detached_launch_profile_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'agent.runtime_profile_updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected detached launch profile persistence failure');
+             END;",
+        )
+        .expect("profile failure trigger should install");
+
+    let error = app
+        .launch_provider_detached(
+            LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "native-tui-idle",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect_err("durable profile failure should fail detached launch");
+
+    connection
+        .execute_batch("DROP TRIGGER fail_detached_launch_profile_append;")
+        .expect("profile failure trigger should be removed");
+    assert!(error
+        .to_string()
+        .contains("injected detached launch profile persistence failure"));
+    let run = app
+        .providers()
+        .get_latest_run_for_agent(session.id(), agent.id())
+        .expect("failed launch should retain an ended run record");
+    assert_eq!(run.state(), ProviderRunState::Ended);
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should resolve")
+            .active_provider_run_id(),
+        None,
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should remain available"),
+        agent_before_launch,
+        "the failed durable profile write must restore the prior agent state",
+    );
+    assert!(app
+        .list_provider_processes(None)
+        .expect("provider processes should list")
+        .is_empty());
+    let tracking = app.provider_process_tracking.snapshot();
+    assert!(tracking.processes.is_empty());
+    assert!(tracking.run_processes.is_empty());
+}
+
+#[tokio::test]
+async fn provider_launch_failure_retries_durable_resume_invalidation_automatically() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-resume-clear-failure",
+            "worktree-resume-clear-failure",
+        ))
+        .expect("session create should succeed");
+    let stale_resume = ProviderResumeState::from_codex_thread_id("stale-thread");
+    app.agents
+        .set_agent_runtime_profile_durably(
+            &app.durable_state,
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            Some("default".to_string()),
+            Some("default".to_string()),
+            stale_resume.clone(),
+            None,
+            Some("test_resume_seeded"),
+        )
+        .expect("stale resume should persist");
+    let request = LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5")
+        .with_agent_id(agent.id())
+        .with_resume_state(stale_resume);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-resume-clear-failure",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("provider run should become active");
+    let started = StartedProviderLaunch {
+        run: run.clone(),
+        previous_active_run_id: None,
+    };
+    let resume_error = DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "thread/resume",
+        message: "no rollout found for thread".to_string(),
+    };
+    let connection = rusqlite::Connection::open(app.durable_state_store().path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_launch_resume_clear_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'agent.runtime_profile_updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected launch resume clear persistence failure');
+             END;",
+        )
+        .expect("resume clear failure trigger should install");
+
+    app.fail_provider_launch(&started, &resume_error);
+
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("provider run should remain available")
+            .state(),
+        ProviderRunState::Running,
+        "the provider must remain recoverable until invalidation is durable",
+    );
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        Some(run.id()),
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .codex_thread_id(),
+        Some("stale-thread"),
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_launch_resume_clear_append;")
+        .expect("resume clear failure trigger should be removed");
+    let app = std::sync::Arc::new(tokio::sync::Mutex::new(app));
+    let router = crate::runtime::router::CommandRouter::with_interactive_capacity(
+        std::sync::Arc::clone(&app),
+        1,
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    router.pump_transport_runtime().await;
+    let app = app.lock().await;
+
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("provider run should remain addressable")
+            .state(),
+        ProviderRunState::Ended,
+    );
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        None,
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .codex_thread_id(),
+        None,
+    );
+}
+
+#[test]
+fn provider_launch_failure_cleans_failed_run_after_resume_was_superseded() {
+    let mut app =
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(CreateSessionRequest::new(
+            "workspace-superseded-resume",
+            "worktree-superseded-resume",
+        ))
+        .expect("session create should succeed");
+    let stale_resume = ProviderResumeState::from_codex_thread_id("stale-thread");
+    let request = LaunchProviderRequest::new(session.id(), "codex", "codex", "default", "gpt-5.5")
+        .with_agent_id(agent.id())
+        .with_resume_state(stale_resume);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-superseded-resume",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: Default::default(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("provider run should become active");
+    app.agents
+        .set_agent_runtime_profile_durably(
+            &app.durable_state,
+            agent.id(),
+            "codex",
+            Some("gpt-5.5".to_string()),
+            Some("default".to_string()),
+            Some("default".to_string()),
+            ProviderResumeState::from_codex_thread_id("newer-thread"),
+            Some("provider-run-newer-resume"),
+            Some("test_resume_superseded"),
+        )
+        .expect("newer resume should persist");
+    let started = StartedProviderLaunch {
+        run: run.clone(),
+        previous_active_run_id: None,
+    };
+    let resume_error = DaemonError::ProviderProtocol {
+        provider_run_id: run.id().to_string(),
+        operation: "thread/resume",
+        message: "no rollout found for thread".to_string(),
+    };
+
+    app.fail_provider_launch(&started, &resume_error);
+
+    assert_eq!(
+        app.providers()
+            .get_run(run.id())
+            .expect("failed provider run should remain addressable")
+            .state(),
+        ProviderRunState::Ended,
+    );
+    assert_eq!(
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .active_provider_run_id(),
+        None,
+    );
+    assert_eq!(
+        app.agents
+            .get_agent(agent.id())
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .codex_thread_id(),
+        Some("newer-thread"),
+    );
+}
+
+#[test]
 fn provider_launch_failure_preserves_durable_active_prompt_for_retry() {
     let mut app =
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon bootstrap should succeed");

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::paths::{default_config_dir, default_state_dir};
 use crate::error::DaemonError;
 
-const HOSTED_STAGING_API_URL: &str = "https://chariox-cloud-staging.osc-fr1.scalingo.io";
+const HOSTED_STAGING_API_URL: &str = "https://staging.chariox.com";
 pub(super) const HOSTED_STAGING_RELAY_URL: &str = "wss://195.201.123.115.sslip.io";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]

@@ -126,9 +126,11 @@ export function bindWorkflowPublicationDeploymentRequest(
     setupId: string
     operationKey: string
     deploymentId: string
+    environmentId: string
     releaseId: string
     packageDigest: string
     desiredRevision: number
+    callerClaimsPublicKeyPem: string
   },
 ) {
   return {
@@ -138,9 +140,11 @@ export function bindWorkflowPublicationDeploymentRequest(
       setup_id: input.setupId,
       operation_key: input.operationKey,
       deployment_id: input.deploymentId,
+      environment_id: input.environmentId,
       release_id: input.releaseId,
       package_digest: input.packageDigest,
       desired_revision: input.desiredRevision,
+      caller_claims_public_key_pem: input.callerClaimsPublicKeyPem,
     },
   }
 }

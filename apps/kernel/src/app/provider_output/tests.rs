@@ -106,6 +106,94 @@ fn exited_pty_is_drained_before_liveness_settlement() {
 }
 
 #[test]
+fn raw_provider_output_does_not_promote_framed_reviewer_prose_to_a_terminal_error() {
+    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-reviewer-prose",
+            "worktree-reviewer-prose",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-reviewer-prose",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.4",
+    )
+    .with_agent_id(agent.id())
+    .with_client_interface(crate::provider::ProviderClientInterface::NativeTui);
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-reviewer-prose",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-reviewer-prose".to_string(),
+            pty_target: Some("test-reviewer-prose".to_string()),
+            pty_program: Some("/bin/sh".to_string()),
+            pty_args: vec![
+                "-lc".to_string(),
+                "printf '%s\\n' 'Error: this classifier is under review.' 'The phrase unsupported model is reviewer prose.'; exit 0".to_string(),
+            ],
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    run.mark_running();
+    app.pty
+        .spawn_for_run(&run)
+        .expect("test provider PTY should start");
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "review the classifier",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+
+    for _ in 0..50 {
+        if matches!(
+            app.pty.poll_process_state(run.id()),
+            Ok(crate::pty::PtyProcessState::Exited)
+        ) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    ProviderOutputPump::new(&mut app)
+        .pump_provider_output(ProviderOutputPumpRequest {
+            session_id: session.id(),
+            provider_run_id: run.id(),
+            recipient_attachment_ids: vec![attachment.id().to_string()],
+            initial_liveness_already_checked: false,
+        })
+        .expect("reviewer output should remain ordinary provider output");
+
+    let run = app
+        .providers()
+        .get_run(run.id())
+        .expect("provider run should remain available");
+    assert!(run.terminal_diagnostic().is_none());
+}
+
+#[test]
 fn idle_claude_native_tui_projects_startup_terminal_output() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -182,9 +270,14 @@ fn idle_claude_native_tui_projects_startup_terminal_output() {
         .remove_process(run.id())
         .expect("test provider PTY should stop");
 
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].kind, TerminalOutputKind::ProviderTerminal);
-    let output = String::from_utf8_lossy(&records[0].bytes);
+    assert!(records
+        .iter()
+        .all(|record| record.kind == TerminalOutputKind::ProviderTerminal));
+    let output = records
+        .iter()
+        .flat_map(|record| record.bytes.iter().copied())
+        .collect::<Vec<_>>();
+    let output = String::from_utf8_lossy(&output);
     assert!(output.contains("Claude Code"));
     assert!(output.contains("\u{1b}[?2004h"));
 }
@@ -377,6 +470,89 @@ fn ended_structured_run_drains_completed_pending_output() {
 }
 
 #[test]
+fn active_prompt_belongs_only_to_its_durable_delivery_provider_run() {
+    let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-run-bound-prompt",
+            "worktree-run-bound-prompt",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-run-bound-prompt",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let launch = || {
+        crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "test-model",
+        )
+        .with_agent_id(agent.id())
+    };
+    let stale = app
+        .launch_provider(launch())
+        .expect("first provider should launch");
+    let current = app
+        .launch_provider(launch())
+        .expect("replacement provider should launch");
+    assert_eq!(stale.state(), crate::provider::ProviderRunState::Running);
+    assert_eq!(
+        app.providers()
+            .get_run(stale.id())
+            .expect("stale provider should remain addressable")
+            .state(),
+        crate::provider::ProviderRunState::Parked
+    );
+
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "review this exact revision",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start")
+    else {
+        panic!("prompt should become active");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(current.id().to_string()),
+        None,
+    )
+    .expect("prompt delivery should bind to the replacement provider");
+
+    assert!(!app
+        .provider_run_has_active_prompt(
+            session.id(),
+            &app.providers()
+                .get_run(stale.id())
+                .expect("stale provider should resolve")
+        )
+        .expect("stale prompt ownership should resolve"));
+    assert!(app
+        .provider_run_has_active_prompt(
+            session.id(),
+            &app.providers()
+                .get_run(current.id())
+                .expect("current provider should resolve")
+        )
+        .expect("current prompt ownership should resolve"));
+}
+
+#[test]
 fn pump_active_prompt_outputs_ignores_projected_remote_active_run() {
     let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -558,6 +734,141 @@ fn app_side_structured_pump_defers_empty_poll_reenqueue() {
         store.poll_due_at_ms(&provider_run_id),
         Some(first_due_at),
         "second app-side pump before due time must not alter the poll schedule"
+    );
+}
+
+#[test]
+fn app_side_structured_resume_retries_without_advancing_run_ahead_of_storage() {
+    let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
+    let initial_resume = crate::provider::ProviderResumeState::from_opencode_session_id(
+        "opencode-session-output-s1",
+    );
+    app.providers_mut()
+        .apply_structured_output_metadata(
+            &provider_run_id,
+            &crate::provider::ProviderPromptSignalBatch {
+                resolved_resume_state: Some(initial_resume.clone()),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .expect("initial provider resume should apply");
+    let run = app
+        .providers()
+        .get_run(&provider_run_id)
+        .expect("provider run should remain available");
+    let agent_id = run
+        .agent_instance_id()
+        .expect("provider run should belong to an agent")
+        .to_string();
+    let durable_state_store = app.durable_state_store();
+    app.agents
+        .set_agent_runtime_profile_durably(
+            &durable_state_store,
+            &agent_id,
+            run.provider(),
+            Some(run.model().to_string()),
+            run.variant().map(str::to_string),
+            None,
+            initial_resume,
+            Some(run.id()),
+            None,
+        )
+        .expect("initial agent resume should persist");
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        &attachment_id,
+        &agent_id,
+        "persist the app-side output resume",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(&session_id, prompt, false)
+        .expect("prompt should start");
+    let prompt_id = app
+        .prompt_owner_active_prompt_for_agent_snapshot(&session_id, &agent_id)
+        .expect("prompt state should load")
+        .expect("prompt should be active")
+        .id()
+        .to_string();
+    app.mark_active_prompt_delivery(
+        &session_id,
+        &agent_id,
+        &prompt_id,
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(provider_run_id.clone()),
+        Some("opencode-session-output-s1".to_string()),
+    )
+    .expect("prompt delivery should persist");
+    app.prompt_owner_mark_active_prompt_running(&session_id, &agent_id)
+        .expect("acknowledged prompt should be running");
+    app.structured_output_record_store()
+        .mark_poll_enqueued(&provider_run_id, Some(prompt_id));
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            provider_run_id.clone(),
+            Ok(Some(crate::provider::ProviderPromptSignalBatch {
+                resolved_resume_state: Some(
+                    crate::provider::ProviderResumeState::from_opencode_session_id(
+                        "opencode-session-output-s2",
+                    ),
+                ),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            })),
+        );
+    let connection = rusqlite::Connection::open(app.durable_state_store().path())
+        .expect("durable database should open for failure injection");
+    connection
+        .execute_batch(
+            "CREATE TRIGGER fail_app_output_resume_append
+             BEFORE INSERT ON durable_state_events
+             WHEN NEW.kind = 'agent.runtime_profile_updated'
+             BEGIN
+               SELECT RAISE(FAIL, 'injected app output resume persistence failure');
+             END;",
+        )
+        .expect("output resume failure trigger should install");
+
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+    assert_eq!(
+        app.agents
+            .get_agent(&agent_id)
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s1"),
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should remain available")
+            .resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s1"),
+        "the process-local run must not advance beyond the durable agent profile",
+    );
+
+    connection
+        .execute_batch("DROP TRIGGER fail_app_output_resume_append;")
+        .expect("output resume failure trigger should be removed");
+    std::thread::sleep(std::time::Duration::from_millis(225));
+    pump_structured_test_run(&mut app, &session_id, &attachment_id, &provider_run_id);
+
+    assert_eq!(
+        app.agents
+            .get_agent(&agent_id)
+            .expect("agent should remain available")
+            .provider_resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s2"),
+    );
+    assert_eq!(
+        app.providers()
+            .get_run(&provider_run_id)
+            .expect("provider run should remain available")
+            .resume_state()
+            .opencode_session_id(),
+        Some("opencode-session-output-s2"),
+        "the exact drained batch must be retried after storage recovers",
     );
 }
 

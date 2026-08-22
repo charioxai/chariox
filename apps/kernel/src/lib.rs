@@ -42,6 +42,7 @@ pub mod slice_provider_auth;
 pub mod terminal;
 pub mod transport;
 pub mod workflow_code;
+pub(crate) mod workflow_publication_requirements;
 pub(crate) mod workspace_live_sync_ignore;
 pub(crate) mod workspace_live_sync_journal;
 

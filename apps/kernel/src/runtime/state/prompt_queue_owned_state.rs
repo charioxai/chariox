@@ -111,6 +111,12 @@ impl KernelRuntimeOwnedState {
         provider_session_id: Option<String>,
     ) -> Result<crate::session::PromptQueueItem, DaemonError> {
         let session = self.session_store.get_session(session_id)?;
+        let previous = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
         let prompt = self.prompt_state_owner.mark_active_prompt_delivery(
             &session,
             agent_id,
@@ -121,8 +127,174 @@ impl KernelRuntimeOwnedState {
         )?;
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
-        self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        if let Err(error) = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        ) {
+            let _ = self
+                .prompt_state_owner
+                .replace_active_prompt_if_matches(&session, agent_id, &prompt, previous);
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            return Err(error);
+        }
         Ok(prompt)
+    }
+
+    pub(super) fn compare_and_mark_active_prompt_delivery_failure(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        provider_session_id: &str,
+        status_transition: (crate::session::PromptStatus, crate::session::PromptStatus),
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .compare_and_mark_active_prompt_delivery_failure(
+                &session,
+                agent_id,
+                prompt_id,
+                provider_run_id,
+                provider_session_id,
+                status_transition,
+            );
+        if prompt.is_none() {
+            return Ok(None);
+        }
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        if let Err(error) = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        ) {
+            let _ = self
+                .prompt_state_owner
+                .compare_and_mark_active_prompt_delivery_failure(
+                    &session,
+                    agent_id,
+                    prompt_id,
+                    provider_run_id,
+                    provider_session_id,
+                    (status_transition.1, status_transition.0),
+                );
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            return Err(error);
+        }
+        Ok(prompt)
+    }
+
+    pub(super) fn restore_active_prompt_after_resume_superseded(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        failed_provider_session_id: &str,
+        current_provider_session_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some((previous, restored)) = self
+            .prompt_state_owner
+            .compare_and_restore_active_prompt_after_resume_superseded(
+                &session,
+                agent_id,
+                prompt_id,
+                provider_run_id,
+                failed_provider_session_id,
+                current_provider_session_id,
+            )
+        else {
+            return Ok(None);
+        };
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        if let Err(error) = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        ) {
+            let _ = self
+                .prompt_state_owner
+                .replace_active_prompt_if_matches(&session, agent_id, &restored, previous);
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            return Err(error);
+        }
+        Ok(Some(restored))
+    }
+
+    pub(super) fn update_active_prompt_delivery_session(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        provider_run_id: &str,
+        expected_provider_session_id: &str,
+        current_provider_session_id: &str,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let Some((previous, updated)) = self
+            .prompt_state_owner
+            .compare_and_update_active_prompt_delivery_session(
+                &session,
+                agent_id,
+                prompt_id,
+                provider_run_id,
+                expected_provider_session_id,
+                current_provider_session_id,
+            )
+        else {
+            return Ok(None);
+        };
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        if let Err(error) = self.mirror_prompt_owner_agent_state(
+            session_id,
+            agent_id,
+            active_prompt,
+            queued_prompts,
+        ) {
+            let _ = self
+                .prompt_state_owner
+                .replace_active_prompt_if_matches(&session, agent_id, &updated, previous);
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            self.session_store.mirror_agent_prompt_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            )?;
+            return Err(error);
+        }
+        Ok(Some(updated))
     }
 
     pub(super) fn begin_active_prompt_recovery(
@@ -160,6 +332,64 @@ impl KernelRuntimeOwnedState {
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
+        Ok(prompt)
+    }
+
+    pub(super) fn compare_and_mark_active_prompt_recovery_phase(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt_id: &str,
+        operation_id: &str,
+        expected_phase: crate::session::DurablePromptDeliveryPhase,
+        next_phase: crate::session::DurablePromptDeliveryPhase,
+    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .compare_and_mark_active_prompt_recovery_phase(
+                &session,
+                agent_id,
+                prompt_id,
+                operation_id,
+                expected_phase,
+                next_phase,
+            )?;
+        if prompt.is_some() {
+            let (active_prompt, queued_prompts) =
+                self.prompt_state_owner.state_parts(&session, agent_id);
+            if let Err(error) = self.mirror_prompt_owner_agent_state(
+                session_id,
+                agent_id,
+                active_prompt,
+                queued_prompts,
+            ) {
+                // The durable append is the commit boundary for this transition. Restore the
+                // owner state only while it still contains our Accepted phase; a concurrent
+                // delivery acknowledgement must win. Then repair the in-memory session mirror
+                // from whichever owner state is current without attempting a second durable
+                // write. The failed transaction left the durable phase at `expected_phase`.
+                let _ = self
+                    .prompt_state_owner
+                    .compare_and_mark_active_prompt_recovery_phase(
+                        &session,
+                        agent_id,
+                        prompt_id,
+                        operation_id,
+                        next_phase,
+                        expected_phase,
+                    );
+                let (active_prompt, queued_prompts) =
+                    self.prompt_state_owner.state_parts(&session, agent_id);
+                self.session_store.mirror_agent_prompt_state(
+                    session_id,
+                    agent_id,
+                    active_prompt,
+                    queued_prompts,
+                )?;
+                return Err(error);
+            }
+        }
         Ok(prompt)
     }
 

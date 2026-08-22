@@ -136,6 +136,7 @@ impl ProviderRunWorkerDeps {
                     agent_id,
                     prompt_id,
                     result,
+                    settlement_retry_attempt: 0,
                 };
                 push_finished_submit(&self.finished_submits, finished);
                 self.completion_signal.record_completion(&provider_run_id);
@@ -220,6 +221,7 @@ impl ProviderRunWorkerDeps {
                 let finished = FinishedProviderOutputPollJob {
                     provider_run_id: provider_run_id.clone(),
                     result,
+                    settlement_retry_attempt: 0,
                 };
                 push_finished_output_poll(&self.finished_output_polls, finished);
                 self.completion_signal.record_completion(&provider_run_id);

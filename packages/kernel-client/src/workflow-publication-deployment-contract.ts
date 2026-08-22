@@ -1,4 +1,4 @@
-export const WORKFLOW_PUBLICATION_PACKAGE_VERSION = 3
+export const WORKFLOW_PUBLICATION_PACKAGE_VERSION = 4
 export const WORKFLOW_PUBLICATION_DEPLOYMENT_CONTRACT_VERSION = 1
 
 export interface WorkflowPublicationDeploymentNetworkDestination {
@@ -7,6 +7,45 @@ export interface WorkflowPublicationDeploymentNetworkDestination {
   readonly ports: readonly [443]
   readonly protocols: readonly ["tls"]
   readonly credential_slot_ids: readonly string[]
+}
+
+export interface WorkflowPublicationDeploymentExtensionUse {
+  readonly agent_id: string
+  readonly node_ids: readonly string[]
+}
+
+export interface WorkflowPublicationDeploymentExtensionCredentialSlot {
+  readonly slot_id: string
+  readonly kind: "integration"
+  readonly label: string
+  readonly integration: string
+  readonly extension_id: string
+  readonly role: string
+  readonly authentication_method: string
+  readonly required: true
+  readonly agent_ids: readonly string[]
+  readonly node_ids: readonly string[]
+  readonly readiness_test: "integration_native"
+}
+
+export interface WorkflowPublicationDeploymentExtensionRequirement {
+  readonly id: string
+  readonly kind: "mcp" | "skill" | "script" | "connector"
+  readonly name: string
+  readonly version: string
+  readonly content_digest: string
+  readonly launch_definition: Readonly<Record<string, unknown>> | null
+  readonly credential_slots: readonly WorkflowPublicationDeploymentExtensionCredentialSlot[]
+  readonly network_destinations: readonly WorkflowPublicationDeploymentNetworkDestination[]
+  readonly uses: readonly WorkflowPublicationDeploymentExtensionUse[]
+  readonly readiness_test: Readonly<Record<string, unknown>>
+  readonly portability:
+    | { readonly classification: "portable" }
+    | {
+      readonly classification: "local_only"
+      readonly reason: string
+      readonly recommendation: string
+    }
 }
 
 export interface WorkflowPublicationDeploymentProviderAccess {
@@ -55,7 +94,7 @@ export interface WorkflowPublicationDeploymentContract {
     readonly snapshot_digest?: string | null
   }
   readonly compatibility: {
-    readonly package_version: 3
+    readonly package_version: 4
     readonly minimum_kernel_version: string
     readonly minimum_local_daemon_protocol_version: number
   }
@@ -63,7 +102,9 @@ export interface WorkflowPublicationDeploymentContract {
   readonly provider_requirements: readonly Record<string, unknown>[]
   readonly credential_slots: readonly Record<string, unknown>[]
   readonly configuration: readonly Record<string, unknown>[]
-  readonly capabilities: Record<string, unknown>
+  readonly capabilities: Record<string, unknown> & {
+    readonly extensions: readonly WorkflowPublicationDeploymentExtensionRequirement[]
+  }
   readonly resources: Record<string, unknown>
   readonly presentation: Record<string, unknown>
   readonly signatures: readonly Record<string, unknown>[]
@@ -71,7 +112,7 @@ export interface WorkflowPublicationDeploymentContract {
 
 export type WorkflowPublicationDeploymentContractResolution = {
   readonly kind: "native"
-  readonly packageVersion: 3
+  readonly packageVersion: 4
   readonly contract: WorkflowPublicationDeploymentContract
 }
 
@@ -88,11 +129,11 @@ export function workflowPublicationDeploymentContractPath(
   }
   const reference = publicationPackage.deployment_contract
   if (reference?.schema_version !== WORKFLOW_PUBLICATION_DEPLOYMENT_CONTRACT_VERSION) {
-    throw new Error("publication package v3 requires deployment_contract schema_version 1")
+    throw new Error("publication package v4 requires deployment_contract schema_version 1")
   }
   const path = reference.path?.trim()
   if (!path || path.startsWith("/") || path.includes("\\") || path.split("/").some((part) => part === ".." || part === "." || !part)) {
-    throw new Error("publication package v3 requires a safe relative deployment_contract path")
+    throw new Error("publication package v4 requires a safe relative deployment_contract path")
   }
   return path
 }
@@ -103,7 +144,7 @@ export function resolveWorkflowPublicationDeploymentContract(
 ): WorkflowPublicationDeploymentContractResolution {
   const packageVersion = normalizedPackageVersion(publicationPackage.package_version)
   const path = workflowPublicationDeploymentContractPath(publicationPackage)
-  if (!path) throw new Error("publication package v3 is missing deployment_contract")
+  if (!path) throw new Error("publication package v4 is missing deployment_contract")
   const contract = validateWorkflowPublicationDeploymentContract(value)
   if (contract.compatibility.package_version !== packageVersion) {
     throw new Error("deployment contract package version does not match publication package")
@@ -164,7 +205,7 @@ export function validateWorkflowPublicationDeploymentContract(
   }
   const compatibility = objectRecord(contract.compatibility, "deployment contract compatibility")
   if (compatibility.package_version !== WORKFLOW_PUBLICATION_PACKAGE_VERSION) {
-    throw new Error("deployment contract compatibility package_version must be 3")
+    throw new Error("deployment contract compatibility package_version must be 4")
   }
   requireString(compatibility.minimum_kernel_version, "deployment contract minimum_kernel_version")
   if (!Number.isInteger(compatibility.minimum_local_daemon_protocol_version)
@@ -183,13 +224,89 @@ export function validateWorkflowPublicationDeploymentContract(
   }
   requireArray(contract.configuration, "deployment contract configuration")
   const capabilities = objectRecord(contract.capabilities, "deployment contract capabilities")
+  const extensions = validateDeploymentExtensions(capabilities.extensions)
   const networkPolicy = validateDeploymentNetworkPolicy(capabilities.network)
   validateDeploymentNetworkBindings(networkPolicy, slots, contract.provider_requirements)
+  validateDeploymentExtensionBindings(extensions, slots, networkPolicy)
   objectRecord(contract.resources, "deployment contract resources")
   objectRecord(contract.presentation, "deployment contract presentation")
   requireArray(contract.signatures, "deployment contract signatures")
   assertNoSecretPayloadFields(contract)
-  return contract as unknown as WorkflowPublicationDeploymentContract
+  const validated = contract as unknown as WorkflowPublicationDeploymentContract
+  validateWorkflowPublicationProviderPolicy(validated)
+  return validated
+}
+
+export function workflowPublicationDeploymentExtensions(
+  contract: WorkflowPublicationDeploymentContract,
+): readonly WorkflowPublicationDeploymentExtensionRequirement[] {
+  return validateWorkflowPublicationDeploymentExtensions(
+    objectRecord(contract.capabilities, "deployment contract capabilities").extensions,
+  )
+}
+
+export function validateWorkflowPublicationDeploymentExtensions(
+  value: unknown,
+): readonly WorkflowPublicationDeploymentExtensionRequirement[] {
+  const extensions = validateDeploymentExtensions(value)
+  assertNoSecretPayloadFields({ extensions })
+  return extensions
+}
+
+export function workflowPublicationAllowedProviders(
+  contract: WorkflowPublicationDeploymentContract,
+  agentId: string,
+  capturedProvider?: string,
+): readonly string[] {
+  const matches = contract.configuration.filter((candidate) => {
+    const field = objectRecord(candidate, "deployment contract configuration field")
+    return field.kind === "provider_profile" && field.agent_id === agentId
+  })
+  if (matches.length !== 1) {
+    throw new Error(`deployment contract must declare exactly one provider profile for agent ${agentId}`)
+  }
+  const field = objectRecord(matches[0], `deployment contract provider profile ${agentId}`)
+  const captured = objectRecord(field.captured, `deployment contract captured provider profile ${agentId}`)
+  const capturedValue = requireString(captured.provider, `deployment contract captured provider ${agentId}`).trim()
+  if (capturedProvider !== undefined && capturedValue !== capturedProvider.trim()) {
+    throw new Error(`deployment contract captured provider does not match bindings for agent ${agentId}`)
+  }
+  const declared = field.allowed_providers === undefined
+    ? [capturedValue]
+    : requireArray(field.allowed_providers, `deployment contract allowed providers ${agentId}`)
+      .map((provider) => requireString(provider, `deployment contract allowed provider ${agentId}`).trim())
+  if (declared.length === 0 || new Set(declared).size !== declared.length || !declared.includes(capturedValue)) {
+    throw new Error(`deployment contract allowed providers are invalid for agent ${agentId}`)
+  }
+  const packagedFamilies = new Set(contract.provider_requirements.map((candidate, index) => {
+    const requirement = objectRecord(candidate, `deployment contract provider requirement ${index}`)
+    return providerFamily(requireString(requirement.provider, `deployment contract provider requirement ${index}`).trim())
+  }))
+  if (declared.some((provider) => !packagedFamilies.has(providerFamily(provider)))) {
+    throw new Error(`deployment contract allowed providers exceed packaged requirements for agent ${agentId}`)
+  }
+  return declared
+}
+
+function validateWorkflowPublicationProviderPolicy(contract: WorkflowPublicationDeploymentContract): void {
+  const agentIds = contract.configuration.map((candidate, index) => {
+    const field = objectRecord(candidate, `deployment contract configuration field ${index}`)
+    if (field.kind !== "provider_profile") {
+      throw new Error(`deployment contract configuration field ${index} is unsupported`)
+    }
+    return requireString(field.agent_id, `deployment contract configuration agent ${index}`).trim()
+  })
+  if (new Set(agentIds).size !== agentIds.length) {
+    throw new Error("deployment contract provider profile agents must be unique")
+  }
+  for (const agentId of agentIds) workflowPublicationAllowedProviders(contract, agentId)
+}
+
+function providerFamily(provider: string): string {
+  const value = provider.trim().toLowerCase()
+  if (value === "default") return "opencode"
+  if (value === "claude-headless" || value === "claude-p") return "claude"
+  return value
 }
 
 export function workflowPublicationDeploymentNetworkPolicy(
@@ -280,6 +397,215 @@ function validateDeploymentNetworkPolicy(value: unknown): WorkflowPublicationDep
     destinations,
     provider_access: providerAccess,
   }
+}
+
+function validateDeploymentExtensions(value: unknown): WorkflowPublicationDeploymentExtensionRequirement[] {
+  const extensions = requireArray(value, "deployment contract extensions").map((candidate, index) => {
+    const label = `deployment contract extensions[${index}]`
+    const extension = objectRecord(candidate, label)
+    requireExactKeys(extension, [
+      "id",
+      "kind",
+      "name",
+      "version",
+      "content_digest",
+      "launch_definition",
+      "credential_slots",
+      "network_destinations",
+      "uses",
+      "readiness_test",
+      "portability",
+    ], label)
+    const id = requireString(extension.id, `${label}.id`)
+    const kind = requireString(extension.kind, `${label}.kind`)
+    const name = requireString(extension.name, `${label}.name`)
+    if (!new Set(["mcp", "skill", "script", "connector"]).has(kind) || id !== `${kind}:${name}`) {
+      throw new Error(`${label} identity is invalid`)
+    }
+    requireSha256(extension.version, `${label}.version`)
+    requireSha256(extension.content_digest, `${label}.content_digest`)
+    if (extension.version !== extension.content_digest) {
+      throw new Error(`${label} version must match its immutable content digest`)
+    }
+    if (extension.launch_definition !== null) objectRecord(extension.launch_definition, `${label}.launch_definition`)
+    const networkDestinations = requireArray(extension.network_destinations, `${label}.network_destinations`)
+      .map((destination, destinationIndex) => validateNetworkDestination(destination, destinationIndex))
+    const uses = requireArray(extension.uses, `${label}.uses`, true).map((use, useIndex) => {
+      const useLabel = `${label}.uses[${useIndex}]`
+      const record = objectRecord(use, useLabel)
+      requireExactKeys(record, ["agent_id", "node_ids"], useLabel)
+      const agentId = requireString(record.agent_id, `${useLabel}.agent_id`)
+      const nodeIds = requireArray(record.node_ids, `${useLabel}.node_ids`, true)
+        .map((nodeId, nodeIndex) => requireString(nodeId, `${useLabel}.node_ids[${nodeIndex}]`))
+      if (new Set(nodeIds).size !== nodeIds.length) throw new Error(`${useLabel}.node_ids must be unique`)
+      return { agent_id: agentId, node_ids: nodeIds }
+    })
+    if (new Set(uses.map((use) => use.agent_id)).size !== uses.length) {
+      throw new Error(`${label}.uses agent IDs must be unique`)
+    }
+    const credentialSlots = requireArray(extension.credential_slots, `${label}.credential_slots`)
+      .map((slot, slotIndex) => validateExtensionCredentialSlot(
+        slot,
+        `${label}.credential_slots[${slotIndex}]`,
+        id,
+        name,
+        uses,
+      ))
+    if (new Set(credentialSlots.map((slot) => slot.slot_id)).size !== credentialSlots.length) {
+      throw new Error(`${label}.credential slot IDs must be unique`)
+    }
+    objectRecord(extension.readiness_test, `${label}.readiness_test`)
+    const portability = objectRecord(extension.portability, `${label}.portability`)
+    if (portability.classification === "portable") {
+      requireExactKeys(portability, ["classification"], `${label}.portability`)
+      if (extension.launch_definition === null) throw new Error(`${label} portable extension requires a launch definition`)
+    } else if (portability.classification === "local_only") {
+      requireExactKeys(portability, ["classification", "reason", "recommendation"], `${label}.portability`)
+      requireString(portability.reason, `${label}.portability.reason`)
+      requireString(portability.recommendation, `${label}.portability.recommendation`)
+      if (extension.launch_definition !== null) throw new Error(`${label} local-only extension cannot declare a portable launch definition`)
+    } else {
+      throw new Error(`${label}.portability classification is invalid`)
+    }
+    return {
+      id,
+      kind: kind as WorkflowPublicationDeploymentExtensionRequirement["kind"],
+      name,
+      version: extension.version as string,
+      content_digest: extension.content_digest as string,
+      launch_definition: extension.launch_definition as Readonly<Record<string, unknown>> | null,
+      credential_slots: credentialSlots,
+      network_destinations: networkDestinations,
+      uses,
+      readiness_test: extension.readiness_test as Readonly<Record<string, unknown>>,
+      portability: portability as WorkflowPublicationDeploymentExtensionRequirement["portability"],
+    }
+  })
+  if (new Set(extensions.map((extension) => extension.id)).size !== extensions.length) {
+    throw new Error("deployment contract extension IDs must be unique")
+  }
+  return extensions
+}
+
+function validateExtensionCredentialSlot(
+  value: unknown,
+  label: string,
+  extensionId: string,
+  extensionName: string,
+  uses: readonly WorkflowPublicationDeploymentExtensionUse[],
+): WorkflowPublicationDeploymentExtensionCredentialSlot {
+  const slot = objectRecord(value, label)
+  requireExactKeys(slot, [
+    "slot_id",
+    "kind",
+    "label",
+    "integration",
+    "extension_id",
+    "role",
+    "authentication_method",
+    "required",
+    "agent_ids",
+    "node_ids",
+    "readiness_test",
+  ], label)
+  const slotId = requireCredentialSlotId(slot.slot_id, `${label}.slot_id`)
+  if (!slotId.startsWith("integration:")) throw new Error(`${label}.slot_id must identify an integration slot`)
+  if (slot.kind !== "integration" || slot.required !== true || slot.readiness_test !== "integration_native") {
+    throw new Error(`${label} integration policy is invalid`)
+  }
+  const integration = requireString(slot.integration, `${label}.integration`)
+  if (integration !== extensionName || slot.extension_id !== extensionId) {
+    throw new Error(`${label} extension identity is inconsistent`)
+  }
+  const agentIds = requireUniqueStringArray(slot.agent_ids, `${label}.agent_ids`, true)
+  const nodeIds = requireUniqueStringArray(slot.node_ids, `${label}.node_ids`, true)
+  const expectedAgentIds = [...new Set(uses.map((use) => use.agent_id))].sort()
+  const expectedNodeIds = [...new Set(uses.flatMap((use) => use.node_ids))].sort()
+  if (!sameStrings(agentIds, expectedAgentIds) || !sameStrings(nodeIds, expectedNodeIds)) {
+    throw new Error(`${label} usage does not match the extension's workflow nodes and agents`)
+  }
+  return {
+    slot_id: slotId,
+    kind: "integration",
+    label: requireString(slot.label, `${label}.label`),
+    integration,
+    extension_id: extensionId,
+    role: requireString(slot.role, `${label}.role`),
+    authentication_method: requireString(slot.authentication_method, `${label}.authentication_method`),
+    required: true,
+    agent_ids: agentIds,
+    node_ids: nodeIds,
+    readiness_test: "integration_native",
+  }
+}
+
+function validateDeploymentExtensionBindings(
+  extensions: readonly WorkflowPublicationDeploymentExtensionRequirement[],
+  credentialSlots: readonly unknown[],
+  networkPolicy: WorkflowPublicationDeploymentNetworkPolicy,
+): void {
+  const contractSlots = new Map(credentialSlots.map((slot, index) => {
+    const record = objectRecord(slot, `deployment contract credential_slots[${index}]`)
+    const slotId = requireCredentialSlotId(record.slot_id, `deployment contract credential_slots[${index}].slot_id`)
+    return [slotId, record] as const
+  }))
+  const contractDestinations = new Map(networkPolicy.destinations.map((destination) => [destination.id, destination]))
+  const extensionSlotIds = new Set<string>()
+  for (const extension of extensions) {
+    const currentExtensionSlotIds = new Set<string>()
+    for (const [slotIndex, slot] of extension.credential_slots.entries()) {
+      const slotId = requireCredentialSlotId(slot.slot_id, `deployment contract extension ${extension.id} credential slot ${slotIndex}`)
+      const contractSlot = contractSlots.get(slotId)
+      if (!slotId.startsWith("integration:") || !contractSlot) {
+        throw new Error(`deployment contract extension ${extension.id} references an unknown integration credential slot`)
+      }
+      if (extensionSlotIds.has(slotId)) {
+        throw new Error(`deployment contract integration credential slot ${slotId} belongs to more than one extension`)
+      }
+      extensionSlotIds.add(slotId)
+      currentExtensionSlotIds.add(slotId)
+      const contractAgentIds = requireUniqueStringArray(contractSlot.agent_ids, `deployment contract credential slot ${slotId}.agent_ids`, true)
+      const contractNodeIds = requireUniqueStringArray(contractSlot.uses, `deployment contract credential slot ${slotId}.uses`, true)
+      if (
+        contractSlot.kind !== "integration"
+        || contractSlot.integration !== slot.integration
+        || contractSlot.extension_id !== extension.id
+        || contractSlot.authentication_method !== slot.authentication_method
+        || contractSlot.required !== true
+        || contractSlot.test_method !== "integration_native"
+        || !sameStrings(contractAgentIds, slot.agent_ids)
+        || !sameStrings(contractNodeIds, slot.node_ids)
+      ) {
+        throw new Error(`deployment contract extension ${extension.id} credential slot ${slotId} is inconsistent`)
+      }
+    }
+    for (const destination of extension.network_destinations) {
+      const contractDestination = contractDestinations.get(destination.id)
+      if (!contractDestination || !sameNetworkDestination(contractDestination, destination)) {
+        throw new Error(`deployment contract extension ${extension.id} network destination does not match its egress ceiling`)
+      }
+      if (destination.credential_slot_ids.some((slotId) => !currentExtensionSlotIds.has(slotId))) {
+        throw new Error(`deployment contract extension ${extension.id} network destination references another extension's credential slot`)
+      }
+    }
+  }
+  for (const slotId of contractSlots.keys()) {
+    if (slotId.startsWith("integration:") && !extensionSlotIds.has(slotId)) {
+      throw new Error(`deployment contract integration credential slot ${slotId} has no extension requirement`)
+    }
+  }
+}
+
+function sameNetworkDestination(
+  left: WorkflowPublicationDeploymentNetworkDestination,
+  right: WorkflowPublicationDeploymentNetworkDestination,
+): boolean {
+  return left.id === right.id
+    && left.host.kind === right.host.kind
+    && left.host.value === right.host.value
+    && left.ports[0] === right.ports[0]
+    && left.protocols[0] === right.protocols[0]
+    && sameStrings(left.credential_slot_ids, right.credential_slot_ids)
 }
 
 function validateNetworkDestination(value: unknown, index: number): WorkflowPublicationDeploymentNetworkDestination {
@@ -394,6 +720,20 @@ function requireCredentialSlotId(value: unknown, label: string): string {
   return slotId
 }
 
+function requireUniqueStringArray(value: unknown, label: string, nonEmpty = false): string[] {
+  const values = requireArray(value, label, nonEmpty)
+    .map((entry, index) => requireString(entry, `${label}[${index}]`))
+  if (new Set(values).size !== values.length) throw new Error(`${label} must contain unique values`)
+  return values
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  const sortedLeft = [...left].sort()
+  const sortedRight = [...right].sort()
+  return sortedLeft.every((value, index) => value === sortedRight[index])
+}
+
 function isCanonicalDnsName(value: string): boolean {
   if (value.length > 253 || value !== value.toLowerCase() || value.endsWith(".") || value.includes("*") || /^\d+(?:\.\d+){3}$/.test(value)) {
     return false
@@ -417,7 +757,9 @@ function assertNoSecretPayloadFields(value: unknown, path = "deployment contract
   if (!value || typeof value !== "object") return
   const forbidden = new Set(["authorization", "account_profile", "credential_payload", "password", "secret", "token"])
   for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
-    if (forbidden.has(key.toLowerCase())) {
+    const normalizedKey = key.toLowerCase()
+    const secretMetadataFlag = normalizedKey === "secret" && typeof child === "boolean"
+    if (forbidden.has(normalizedKey) && !secretMetadataFlag) {
       throw new Error(`${path} contains forbidden secret payload field ${key}`)
     }
     assertNoSecretPayloadFields(child, `${path}.${key}`)

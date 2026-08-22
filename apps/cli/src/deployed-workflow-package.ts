@@ -23,7 +23,7 @@ interface PackageFile {
 export interface PreparedPublicationReleasePackage {
   readonly packageId: string
   readonly packageDigest: string
-  readonly packageVersion: 3
+  readonly packageVersion: 4
   readonly contractVersion: 1
   readonly contract: WorkflowPublicationDeploymentContract
   readonly artifact: {
@@ -38,8 +38,8 @@ export async function preparePublicationReleasePackage(
   packagePath: string,
 ): Promise<PreparedPublicationReleasePackage> {
   const metadata = await readPublicationPackageMetadata(packagePath)
-  if (metadata.packageVersion !== 3 || !metadata.deploymentContract) {
-    throw new Error("deployed workflow releases require a package v3 deployment contract")
+  if (metadata.packageVersion !== 4 || !metadata.deploymentContract) {
+    throw new Error("deployed workflow releases require a package v4 deployment contract")
   }
   if (requestsPersistentPatch(metadata.agentApp)) {
     throw new Error("Persistent patches are not available for managed Cloud deployments.")
@@ -61,7 +61,7 @@ export async function preparePublicationReleasePackage(
   return {
     packageId,
     packageDigest: workflowPublicationPackageDigest(files),
-    packageVersion: 3,
+    packageVersion: 4,
     contractVersion: 1,
     contract: metadata.deploymentContract,
     artifact: {

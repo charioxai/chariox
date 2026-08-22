@@ -331,6 +331,31 @@ impl ProviderProcessServiceStore {
         self.write().drain_finished_structured_prompt_submit_jobs()
     }
 
+    pub(crate) fn schedule_finished_structured_prompt_submit_retry(
+        &self,
+        finished: FinishedProviderPromptSubmitJob,
+    ) {
+        self.write()
+            .schedule_finished_structured_prompt_submit_retry(finished);
+    }
+
+    pub(crate) fn schedule_finished_structured_output_poll_retry(
+        &self,
+        finished: FinishedProviderOutputPollJob,
+    ) {
+        self.write()
+            .schedule_finished_structured_output_poll_retry(finished);
+    }
+
+    pub(crate) fn preview_structured_output_metadata(
+        &self,
+        provider_run_id: &str,
+        batch: &ProviderPromptSignalBatch,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.read()
+            .preview_structured_output_metadata(provider_run_id, batch)
+    }
+
     #[cfg(test)]
     pub(crate) fn push_finished_structured_prompt_submit_for_test(
         &self,

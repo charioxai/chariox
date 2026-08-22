@@ -2,6 +2,8 @@ use super::*;
 
 use std::path::{Path, PathBuf};
 
+use crate::DaemonConfig;
+
 use tokio::sync::oneshot;
 use tokio::time::{timeout, Instant as TokioInstant};
 use tokio_tungstenite::{
@@ -13,14 +15,13 @@ use tokio_tungstenite::{
     },
 };
 
-fn isolated_runtime_mcp_test_config() -> crate::config::DaemonConfig {
-    let probe = StdTcpListener::bind("127.0.0.1:0").expect("MCP port probe should bind");
-    let port = probe
+fn daemon_config_for_runtime_mcp_listener(listener: &StdTcpListener) -> DaemonConfig {
+    let port = listener
         .local_addr()
-        .expect("MCP port probe should have an address")
+        .expect("runtime MCP listener should have an address")
         .port();
-    drop(probe);
-    let mut config = crate::config::DaemonConfig::for_tests();
+
+    let mut config = DaemonConfig::for_tests();
     config.runtime_mcp_port = port;
     config
 }
@@ -205,15 +206,23 @@ fn kernel_event_writer_can_disable_event_coalescing_for_tests() {
 async fn kernel_websocket_replies_to_ping_frames() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    let config = isolated_runtime_mcp_test_config();
+    let mcp_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config).expect("daemon should boot"),
+        DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
+            .expect("daemon should boot"),
     ));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server_on_listener(app, listener, async {
-            let _ = shutdown_rx.await;
-        })
+        run_kernel_websocket_server_on_listeners_with_auth(
+            app,
+            listener,
+            mcp_listener,
+            None,
+            async {
+                let _ = shutdown_rx.await;
+            },
+        )
         .await
     });
 
@@ -253,15 +262,18 @@ async fn kernel_websocket_replies_to_ping_frames() {
 async fn kernel_websocket_auth_rejects_missing_or_wrong_tokens_before_accepting_requests() {
     let listener = StdTcpListener::bind("127.0.0.1:0").expect("listener should bind");
     let addr = listener.local_addr().expect("listener should have addr");
-    let config = isolated_runtime_mcp_test_config();
+    let mcp_listener =
+        StdTcpListener::bind("127.0.0.1:0").expect("runtime MCP listener should bind");
     let app = Arc::new(Mutex::new(
-        DaemonApp::bootstrap(config).expect("daemon should boot"),
+        DaemonApp::bootstrap(daemon_config_for_runtime_mcp_listener(&mcp_listener))
+            .expect("daemon should boot"),
     ));
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let server = tokio::spawn(async move {
-        run_kernel_websocket_server_on_listener_with_auth(
+        run_kernel_websocket_server_on_listeners_with_auth(
             app,
             listener,
+            mcp_listener,
             Some(Arc::<str>::from("kernel-local-auth-sentinel")),
             async {
                 let _ = shutdown_rx.await;

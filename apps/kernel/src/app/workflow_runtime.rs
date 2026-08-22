@@ -36,6 +36,24 @@ impl WorkflowProgression {
         session_id: &str,
         workflow: &WorkflowDefinition,
     ) -> Result<(), DaemonError> {
+        if workflow.flush_agent_context_before_run() {
+            let mut seen_agents = BTreeSet::new();
+            for node in workflow.nodes() {
+                if !seen_agents.insert(node.agent_id().to_string()) {
+                    continue;
+                }
+                let agent = app.agents().get_agent(node.agent_id())?;
+                if agent.remote_execution().is_some()
+                    || app
+                        .prompt_owner_active_prompt_for_agent(session_id, node.agent_id())?
+                        .is_some()
+                {
+                    continue;
+                }
+                app.end_provider_run_for_workflow_context_flush(session_id, node.agent_id())?;
+            }
+            return Ok(());
+        }
         let mut seen_agents = BTreeSet::new();
         for node in workflow.nodes() {
             if !seen_agents.insert(node.agent_id().to_string()) {
@@ -378,14 +396,6 @@ pub(crate) fn cancel_workflow_prompt_from_runtime(
     WorkflowProgression::on_prompt_cancelled(app, session_id, prompt)
 }
 
-pub(crate) fn ensure_workflow_provider_run_from_runtime(
-    app: &mut DaemonApp,
-    session_id: &str,
-    agent_id: &str,
-) -> Result<String, DaemonError> {
-    WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false, false, false)
-}
-
 pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
     app: &mut DaemonApp,
     session_id: &str,
@@ -394,14 +404,102 @@ pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
 ) -> Result<String, DaemonError> {
     let (event_reply_enabled, event_context_enabled, event_actions_enabled) =
         workflow_event_capabilities_for_prompt_from_runtime(app, session_id, prompt)?;
-    ensure_workflow_provider_run_with_event_capabilities_from_runtime(
+    let fresh_context = workflow_prompt_requires_fresh_provider_context(
         app,
         session_id,
         agent_id,
-        event_reply_enabled,
-        event_context_enabled,
-        event_actions_enabled,
-    )
+        prompt.workflow_run_id(),
+        prompt.workflow_node_run_id(),
+    )?;
+    let provider_run_id = if fresh_context {
+        crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+            app,
+            session_id,
+            agent_id,
+            event_reply_enabled,
+            event_context_enabled,
+            event_actions_enabled,
+        )?
+    } else {
+        ensure_workflow_provider_run_with_event_capabilities_from_runtime(
+            app,
+            session_id,
+            agent_id,
+            event_reply_enabled,
+            event_context_enabled,
+            event_actions_enabled,
+        )?
+    };
+    if fresh_context {
+        let workflow_run_id = prompt
+            .workflow_run_id()
+            .expect("workflow prompt must have a run");
+        let workflow_node_run_id = prompt
+            .workflow_node_run_id()
+            .expect("workflow prompt must have a node run");
+        app.release_workflow_node_workspace_claim(
+            session_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        );
+        app.acquire_workflow_node_workspace_claim(
+            session_id,
+            &provider_run_id,
+            agent_id,
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        app.record_notice(
+            session_id,
+            Some(&provider_run_id),
+            app.attachments().list_session_attachment_ids(session_id),
+            format!(
+                "Workflow run `{workflow_run_id}` started agent `{agent_id}` with fresh provider context."
+            ),
+        );
+    }
+    Ok(provider_run_id)
+}
+
+pub(crate) fn ensure_workflow_provider_run_for_node_from_runtime(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    workflow_run_id: &str,
+    workflow_node_run_id: &str,
+) -> Result<String, DaemonError> {
+    let event_capabilities =
+        workflow_event_capabilities_for_run_from_runtime(app, session_id, workflow_run_id)?;
+    let agent_is_idle = app
+        .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+        .is_none();
+    let fresh_context = agent_is_idle
+        && workflow_prompt_requires_fresh_provider_context(
+            app,
+            session_id,
+            agent_id,
+            Some(workflow_run_id),
+            Some(workflow_node_run_id),
+        )?;
+    if fresh_context {
+        crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+            app,
+            session_id,
+            agent_id,
+            event_capabilities.0,
+            event_capabilities.1,
+            event_capabilities.2,
+        )
+    } else {
+        ensure_workflow_provider_run_with_event_capabilities_from_runtime(
+            app,
+            session_id,
+            agent_id,
+            event_capabilities.0,
+            event_capabilities.1,
+            event_capabilities.2,
+        )
+    }
 }
 
 pub(crate) fn ensure_workflow_provider_run_with_event_capabilities_from_runtime(
@@ -430,6 +528,14 @@ pub(crate) fn workflow_event_capabilities_for_prompt_from_runtime(
     let Some(workflow_run_id) = prompt.workflow_run_id() else {
         return Ok((false, false, false));
     };
+    workflow_event_capabilities_for_run_from_runtime(app, session_id, workflow_run_id)
+}
+
+fn workflow_event_capabilities_for_run_from_runtime(
+    app: &DaemonApp,
+    session_id: &str,
+    workflow_run_id: &str,
+) -> Result<(bool, bool, bool), DaemonError> {
     let workflow_run = app
         .sessions()
         .resolve_workflow_run_ref(session_id, workflow_run_id)?;
@@ -459,6 +565,52 @@ pub(crate) fn workflow_event_capabilities_for_prompt_from_runtime(
     ))
 }
 
+fn workflow_prompt_requires_fresh_provider_context(
+    app: &DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    workflow_run_id: Option<&str>,
+    workflow_node_run_id: Option<&str>,
+) -> Result<bool, DaemonError> {
+    let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+        (workflow_run_id, workflow_node_run_id)
+    else {
+        return Ok(false);
+    };
+    let workflow_run = app
+        .sessions()
+        .resolve_workflow_run_ref(session_id, workflow_run_id)?;
+    let workflow = app
+        .sessions()
+        .resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
+    if !workflow.flush_agent_context_before_run() {
+        return Ok(false);
+    }
+    if !workflow_run
+        .node_runs()
+        .iter()
+        .any(|node_run| node_run.id() == workflow_node_run_id && node_run.agent_id() == agent_id)
+    {
+        return Ok(false);
+    }
+    let agent_already_started_in_run = workflow_run.node_runs().iter().any(|node_run| {
+        node_run.id() != workflow_node_run_id
+            && node_run.agent_id() == agent_id
+            && node_run.turn_envelope().is_some_and(|envelope| {
+                envelope.state() != crate::session::WorkflowTurnRuntimeState::Prepared
+            })
+    });
+    if agent_already_started_in_run {
+        return Ok(false);
+    }
+    Ok(!app
+        .providers()
+        .get_run_for_agent(session_id, agent_id)
+        .is_some_and(|run| {
+            run.workflow_tools_enabled() && run.started_at_ms() >= workflow_run.created_at_ms()
+        }))
+}
+
 pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
     for session_id in WorkflowProgression::retry_blocked_claims(app) {
         let _ = crate::app::KernelSessionReadService::new(app).session_snapshot(&session_id);
@@ -468,6 +620,14 @@ pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ensure_ordinary_workflow_provider_run(
+        app: &mut DaemonApp,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<String, DaemonError> {
+        WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false, false, false)
+    }
 
     #[test]
     fn queued_workflow_prompt_preserves_agent_runtime_context() {
@@ -507,6 +667,9 @@ mod tests {
             .sessions_mut()
             .create_workflow(session.id(), Some("queued".to_string()))
             .expect("workflow should be created");
+        app.sessions_mut()
+            .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), false)
+            .expect("workflow should preserve provider context");
         let node = app
             .sessions_mut()
             .add_workflow_node(session.id(), workflow.id(), agent.id())
@@ -543,13 +706,307 @@ mod tests {
             Some("thread-1"),
             "queued workflow delivery must not flush provider runtime context"
         );
-        let run_id = ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+        let run_id = ensure_ordinary_workflow_provider_run(&mut app, session.id(), agent.id())
             .expect("workflow provider ensure should launch a provider run");
         let run = app
             .providers()
             .get_run(&run_id)
             .expect("workflow prompt should launch a provider run");
         assert_eq!(run.account_profile(), profile.profile_id);
+    }
+
+    #[test]
+    fn workflow_context_flush_replaces_idle_provider_without_resuming_its_session() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-flush",
+                "worktree-flush",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("fresh-workflow-agent")
+                    .with_model("test-model"),
+            )
+            .expect("workflow agent should be created");
+        app.agents
+            .set_agent_runtime_profile_with_account_profile(
+                agent.id(),
+                "dev-stub",
+                Some("test-model".to_string()),
+                None,
+                Some("default".to_string()),
+                crate::provider::ProviderResumeState::from_opencode_session_id(
+                    "stale-workflow-session",
+                ),
+            )
+            .expect("stale provider context should be recorded");
+        let stale_run_id =
+            ensure_ordinary_workflow_provider_run(&mut app, session.id(), agent.id())
+                .expect("stale workflow provider run should launch");
+        let stale_run = app
+            .providers()
+            .get_run(&stale_run_id)
+            .expect("stale workflow provider run should resolve");
+        assert!(stale_run.workflow_tools_enabled());
+        assert_eq!(
+            stale_run.resume_state().opencode_session_id(),
+            Some("stale-workflow-session")
+        );
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("fresh-context".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let queued = app
+            .sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review a new event".to_string()),
+                None,
+                WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("workflow prompt should queue");
+
+        app.invoke_queued_workflow_prompt(session.id(), queued)
+            .expect("workflow should launch with fresh context");
+
+        let fresh_run = app
+            .providers()
+            .get_run_for_agent(session.id(), agent.id())
+            .expect("fresh provider run should exist");
+        assert_ne!(fresh_run.id(), stale_run.id());
+        assert!(fresh_run.workflow_tools_enabled());
+        assert!(fresh_run.resume_state().is_empty());
+        assert_eq!(
+            app.providers()
+                .get_run(stale_run.id())
+                .expect("stale run should remain auditable")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
+    }
+
+    #[test]
+    fn workflow_context_flush_still_applies_after_current_turn_is_dispatched() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-flush-dispatched",
+                "worktree-flush-dispatched",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("dispatched-fresh-workflow-agent")
+                    .with_model("test-model"),
+            )
+            .expect("workflow agent should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("fresh-dispatched-context".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review the event".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run_id = run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "review the event".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+        app.sessions_mut()
+            .start_workflow_node_run(session.id(), run.id(), &node_run_id)
+            .expect("workflow node should start");
+        app.sessions_mut()
+            .mark_workflow_turn_dispatched(session.id(), run.id(), &node_run_id)
+            .expect("workflow turn should dispatch");
+
+        assert!(
+            workflow_prompt_requires_fresh_provider_context(
+                &app,
+                session.id(),
+                agent.id(),
+                Some(run.id()),
+                Some(&node_run_id),
+            )
+            .expect("fresh-context policy should resolve"),
+            "the current dispatched node must not count as prior agent context"
+        );
+    }
+
+    #[test]
+    fn workflow_context_flush_waits_for_an_active_user_prompt_before_replacing_provider() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-flush-queued",
+                "worktree-flush-queued",
+            ))
+            .expect("session should be created");
+        let attachment = crate::app::KernelSessionService::new(&mut app)
+            .attach(crate::attachment::AttachRequest::new(
+                session.id(),
+                "flush-queued-client",
+                crate::attachment::ClientCapabilityLevel::InteractiveStructured,
+            ))
+            .expect("client should attach");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("queued-fresh-workflow-agent")
+                    .with_model("test-model"),
+            )
+            .expect("workflow agent should be created");
+        let stale_run = app
+            .launch_provider(
+                crate::provider::LaunchProviderRequest::new(
+                    session.id(),
+                    "dev-stub",
+                    "dev-stub",
+                    "default",
+                    "test-model",
+                )
+                .with_agent_id(agent.id()),
+            )
+            .expect("existing provider run should launch");
+        let user_prompt = crate::session::PromptQueueItem::new(
+            "user-before-workflow",
+            attachment.id(),
+            agent.id(),
+            "finish the user request first",
+            crate::session::PromptStatus::Queued,
+        );
+        let user_outcome = app
+            .prompt_owner_submit_prepared_prompt(session.id(), user_prompt.clone(), false)
+            .expect("user prompt should start");
+        let user_active_id = match user_outcome {
+            crate::session::PromptSubmissionOutcome::Started { prompt } => prompt.id().to_string(),
+            crate::session::PromptSubmissionOutcome::Queued { .. } => {
+                panic!("first user prompt should start")
+            }
+        };
+
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("fresh-after-user".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let queued = app
+            .sessions_mut()
+            .enqueue_workflow_prompt(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("run after the user prompt".to_string()),
+                None,
+                WorkflowQueuedPromptSource::Manual,
+                None,
+            )
+            .expect("workflow prompt should queue");
+        let launched = app
+            .invoke_queued_workflow_prompt(session.id(), queued)
+            .expect("workflow run should be admitted without cancelling the user prompt");
+        let launched_run_id = match launched {
+            WorkflowLaunchOutcome::Started { workflow_run, .. } => workflow_run.id().to_string(),
+            WorkflowLaunchOutcome::Enqueued { .. } => {
+                panic!("direct queued invocation should create the workflow run")
+            }
+        };
+        assert_eq!(
+            app.prompt_owner_active_prompt_for_agent(session.id(), agent.id())
+                .expect("active prompt should resolve")
+                .expect("user prompt should remain active")
+                .id(),
+            user_active_id
+        );
+        assert_eq!(
+            app.providers()
+                .get_run(stale_run.id())
+                .expect("existing provider should remain active")
+                .state(),
+            crate::provider::ProviderRunState::Running
+        );
+
+        app.prompt_owner_complete_active_prompt_only(session.id(), agent.id())
+            .expect("user prompt should complete");
+        let promoted = crate::app::KernelAgentService::new(&mut app)
+            .advance_next_queued_prompt(session.id(), agent.id(), None)
+            .expect("workflow prompt promotion should succeed")
+            .expect("workflow prompt should promote");
+        assert_eq!(promoted.workflow_run_id(), Some(launched_run_id.as_str()));
+        let fresh_run = app
+            .providers()
+            .get_run_for_agent(session.id(), agent.id())
+            .expect("fresh provider should replace the prior provider");
+        assert_ne!(fresh_run.id(), stale_run.id());
+        assert!(fresh_run.workflow_tools_enabled());
+        assert_eq!(
+            app.providers()
+                .get_run(stale_run.id())
+                .expect("prior provider should remain auditable")
+                .state(),
+            crate::provider::ProviderRunState::Ended
+        );
     }
 
     #[test]
@@ -677,7 +1134,7 @@ mod tests {
                 .expect("binding capabilities should resolve");
         assert_eq!(capabilities, (false, true, true));
         let ordinary_provider_run_id =
-            ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+            ensure_ordinary_workflow_provider_run(&mut app, session.id(), agent.id())
                 .expect("ordinary provider run should launch before the event run");
         let ordinary_provider_run = app
             .providers()
@@ -700,7 +1157,7 @@ mod tests {
         assert!(provider_run.workflow_event_context_enabled());
         assert!(provider_run.workflow_event_actions_enabled());
         let ordinary_provider_run_again_id =
-            ensure_workflow_provider_run_from_runtime(&mut app, session.id(), agent.id())
+            ensure_ordinary_workflow_provider_run(&mut app, session.id(), agent.id())
                 .expect("ordinary provider run should replace the action-enabled run");
         assert_ne!(ordinary_provider_run_again_id, provider_run_id);
         assert!(!app

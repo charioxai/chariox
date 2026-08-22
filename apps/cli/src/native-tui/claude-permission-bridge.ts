@@ -76,12 +76,14 @@ async function handleClaudePermissionBridgeRequest(
     const allowed = resolution.reply === "allow" || resolution.choice_id === "allow_once"
     writeJsonResponse(response, 200, {
       handled: true,
-      permissionDecision: allowed ? "allow" : "deny",
-      permissionDecisionReason: allowed
-        ? "Approved through Chariox."
-        : resolution.status === "timed_out"
-          ? "Timed out waiting for Chariox approval."
-          : "Denied through Chariox.",
+      behavior: allowed ? "allow" : "deny",
+      ...(allowed
+        ? {}
+        : {
+            message: resolution.status === "timed_out"
+              ? "Timed out waiting for Chariox approval."
+              : "Denied through Chariox.",
+          }),
     })
   } catch (error) {
     writeJsonResponse(response, 500, {
@@ -100,6 +102,7 @@ type ClaudePermissionPayload = {
 
 function shouldBridgeClaudePermission(payload: ClaudePermissionPayload): boolean {
   if (payload.hook_event_name !== "PreToolUse" && payload.hook_event_name !== "PermissionRequest") return false
+  if (payload.permission_mode === "bypassPermissions") return false
   const toolName = typeof payload.tool_name === "string" ? payload.tool_name : ""
   return new Set(["Bash", "Write", "Edit", "MultiEdit", "NotebookEdit"]).has(toolName)
 }

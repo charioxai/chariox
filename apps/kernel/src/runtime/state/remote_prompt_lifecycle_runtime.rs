@@ -221,12 +221,13 @@ impl KernelRuntimeState {
         )?;
         if completion.completed.workflow_run_id().is_some() {
             if let Some(diagnostic) = provider_diagnostic.as_deref() {
-                owned.workflow_fail_provider_prompt(
+                let dispatches = owned.workflow_fail_provider_prompt(
                     session_id,
                     &completion.completed,
                     Some(&remote_provider_run_id),
                     diagnostic,
                 )?;
+                self.spawn_workflow_prompt_dispatches(dispatches);
             } else {
                 let dispatches = owned.workflow_complete_prompt(
                     session_id,

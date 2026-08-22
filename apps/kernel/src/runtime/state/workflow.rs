@@ -55,8 +55,41 @@ impl KernelRuntimeOwnedState {
         event_reply_enabled: bool,
         event_context_enabled: bool,
         event_actions_enabled: bool,
-    ) -> Result<String, DaemonError> {
-        let existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
+        fresh_context: bool,
+    ) -> Result<(String, Option<String>), DaemonError> {
+        // Admission and workflow-tool activation must be one critical section. Two concurrent
+        // workflow prompts for the same agent can otherwise both observe the first run while it
+        // is still Starting but before workflow tools are enabled, then create two provider
+        // processes for one workflow turn.
+        let _launch_guard = self
+            .workflow_provider_launch_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut existing_run = self.provider_store.get_run_for_agent(session_id, agent_id);
+        let previous_run = existing_run.clone();
+        let mut retired_provider_run_id = None;
+        if fresh_context {
+            if let Some(run) = existing_run.as_ref() {
+                if matches!(
+                    run.state(),
+                    crate::provider::ProviderRunState::Starting
+                        | crate::provider::ProviderRunState::Running
+                ) && self.provider_run_has_active_prompt(session_id, run)?
+                {
+                    return Ok((run.id().to_string(), None));
+                }
+                if run.state() != crate::provider::ProviderRunState::Ended {
+                    let ended = self
+                        .provider_store
+                        .terminate_run_provider_only(session_id, run.id())?
+                        .into_run();
+                    self.clear_active_provider_run_session_pointer(session_id, ended.id())?;
+                    self.provider_run_projection.update(ended.clone());
+                    retired_provider_run_id = Some(ended.id().to_string());
+                }
+            }
+            existing_run = None;
+        }
         if let Some(run) = existing_run.as_ref() {
             if run.workflow_tools_enabled()
                 && run.workflow_event_reply_enabled() == event_reply_enabled
@@ -67,12 +100,12 @@ impl KernelRuntimeOwnedState {
                     let resumed = self.resume_provider_run_for_session(session_id, run.id())?;
                     self.session_store
                         .set_active_provider_run(session_id, Some(resumed.id().to_string()))?;
-                    return Ok(resumed.id().to_string());
+                    return Ok((resumed.id().to_string(), None));
                 }
                 if run.state() != crate::provider::ProviderRunState::Ended {
                     self.session_store
                         .set_active_provider_run(session_id, Some(run.id().to_string()))?;
-                    return Ok(run.id().to_string());
+                    return Ok((run.id().to_string(), None));
                 }
             } else if matches!(
                 run.state(),
@@ -85,7 +118,7 @@ impl KernelRuntimeOwnedState {
                 // settlement path will replace this run before it is promoted.
                 self.session_store
                     .set_active_provider_run(session_id, Some(run.id().to_string()))?;
-                return Ok(run.id().to_string());
+                return Ok((run.id().to_string(), None));
             }
         }
         let agent = self.agent_store.get_agent(agent_id)?;
@@ -96,7 +129,7 @@ impl KernelRuntimeOwnedState {
         // belongs to the run that is being rotated. Reuse that adapter when
         // replacing an idle run so workflow admission does not try to resolve
         // a provider variant as a standalone adapter.
-        let adapter_key = existing_run
+        let adapter_key = previous_run
             .as_ref()
             .filter(|run| run.state() != crate::provider::ProviderRunState::Ended)
             .map(|run| run.adapter_key())
@@ -111,7 +144,11 @@ impl KernelRuntimeOwnedState {
         .with_agent_id(agent.id().to_string())
         .with_owner_user_id(agent.owner_user_id().to_string())
         .with_variant(agent.effort().map(str::to_string));
-        if let Some(working_directory) = existing_run
+        if fresh_context {
+            request.resume_state = Some(crate::provider::ProviderResumeState::default());
+        }
+        if let Some(working_directory) = previous_run
+            .as_ref()
             .and_then(|run| run.working_directory().cloned())
             .or_else(|| agent.worktree_id().map(std::path::PathBuf::from))
         {
@@ -134,7 +171,46 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .enable_workflow_tools(started.run.id())?;
         self.provider_run_projection.update(run.clone());
-        Ok(run.id().to_string())
+        Ok((run.id().to_string(), retired_provider_run_id))
+    }
+
+    pub(super) fn workflow_prompt_requires_fresh_provider_context(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<bool, DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(false);
+        };
+        let sessions = self.session_store.read();
+        let workflow_run = sessions.resolve_workflow_run_ref(session_id, workflow_run_id)?;
+        let workflow = sessions.resolve_workflow_ref(session_id, workflow_run.workflow_id())?;
+        if !workflow.flush_agent_context_before_run()
+            || !workflow_run.node_runs().iter().any(|node_run| {
+                node_run.id() == workflow_node_run_id && node_run.agent_id() == agent_id
+            })
+        {
+            return Ok(false);
+        }
+        let agent_already_started_in_run = workflow_run.node_runs().iter().any(|node_run| {
+            node_run.id() != workflow_node_run_id
+                && node_run.agent_id() == agent_id
+                && node_run.turn_envelope().is_some_and(|envelope| {
+                    envelope.state() != crate::session::WorkflowTurnRuntimeState::Prepared
+                })
+        });
+        if agent_already_started_in_run {
+            return Ok(false);
+        }
+        Ok(!self
+            .provider_store
+            .get_run_for_agent(session_id, agent_id)
+            .is_some_and(|run| {
+                run.workflow_tools_enabled() && run.started_at_ms() >= workflow_run.created_at_ms()
+            }))
     }
 
     pub(super) fn workflow_event_capabilities_for_prompt(
@@ -219,18 +295,36 @@ impl KernelRuntimeOwnedState {
         let target_agent = self
             .agent_store
             .get_agent(prepared.prompt.target_agent_id())?;
-        if target_agent.remote_execution().is_none() {
+        let workflow_provider_run_id = if target_agent.remote_execution().is_none() {
             let (event_reply_enabled, event_context_enabled, event_actions_enabled) = self
                 .workflow_event_capabilities_for_prompt(&prepared.session_id, &prepared.prompt)?;
-            self.workflow_ensure_provider_run(
+            let fresh_context = self.workflow_prompt_requires_fresh_provider_context(
+                &prepared.session_id,
+                prepared.prompt.target_agent_id(),
+                &prepared.prompt,
+            )?;
+            let (provider_run_id, retired_provider_run_id) = self.workflow_ensure_provider_run(
                 &prepared.session_id,
                 prepared.prompt.target_agent_id(),
                 event_reply_enabled,
                 event_context_enabled,
                 event_actions_enabled,
+                fresh_context,
             )?;
-        }
-        let mut submission = match self.submit_local_prepared_prompt(&prepared)? {
+            if let Some(retired_provider_run_id) = retired_provider_run_id {
+                dispatches.retire_provider_before_launch(
+                    provider_run_id.clone(),
+                    retired_provider_run_id,
+                );
+            }
+            Some(provider_run_id)
+        } else {
+            None
+        };
+        let mut submission = match self.submit_local_prepared_prompt_for_provider_run(
+            &prepared,
+            workflow_provider_run_id.as_deref(),
+        )? {
             Some(submission) => submission,
             None => match self.submit_remote_prepared_prompt(&prepared)? {
                 Some(submission) => submission,
@@ -263,9 +357,9 @@ impl KernelRuntimeOwnedState {
             submission.outcome,
             crate::session::PromptSubmissionOutcome::Queued { .. }
         ) {
-            if let Some(run) = self
-                .provider_store
-                .get_run_for_agent(&prepared.session_id, prepared.prompt.target_agent_id())
+            if let Some(run) = workflow_provider_run_id
+                .as_deref()
+                .and_then(|provider_run_id| self.provider_store.get_run(provider_run_id).ok())
             {
                 if run.state() == crate::provider::ProviderRunState::Starting {
                     dispatches.starting_provider_runs.push(run.id().to_string());

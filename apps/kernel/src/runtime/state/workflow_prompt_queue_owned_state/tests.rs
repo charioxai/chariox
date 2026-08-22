@@ -183,6 +183,18 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
         .sessions_mut()
         .create_workflow(session.id(), Some("owned-workflow".to_string()))
         .expect("workflow should be created");
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session.id(), workflow.id(), true)
+        .expect("workflow should require fresh provider context");
+    app.agents_mut()
+        .set_agent_provider_resume_state(
+            agent.id(),
+            crate::provider::ProviderResumeState::from_external_provider_session(
+                "opencode",
+                "stale-opencode-session",
+            ),
+        )
+        .expect("agent should retain a stale provider session for the drill");
     let node = app
         .sessions_mut()
         .add_workflow_node_owned(
@@ -245,6 +257,74 @@ fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, 
         endpoint_id,
         test_root,
     )
+}
+
+#[test]
+fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let old_provider_run_id = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should resolve")
+        .active_provider_run_id()
+        .expect("idle provider should be active")
+        .to_string();
+
+    let (outcome, dispatches) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("fresh workflow invocation".to_string()),
+            None,
+            None,
+        )
+        .expect("workflow should launch");
+
+    assert_eq!(dispatches.starting_provider_runs.len(), 1);
+    assert_eq!(
+        dispatches.provider_run_retirements,
+        std::collections::BTreeMap::from([(
+            dispatches.starting_provider_runs[0].clone(),
+            vec![old_provider_run_id],
+        )])
+    );
+    let new_provider_run = runtime
+        .owned
+        .provider_store
+        .get_run(&dispatches.starting_provider_runs[0])
+        .expect("fresh provider run should resolve");
+    assert!(new_provider_run.resume_state().is_empty());
+    assert!(new_provider_run.workflow_tools_enabled());
+
+    let workflow_run = match outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
+            workflow_run
+        }
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. } => {
+            panic!("idle workflow invocation should start")
+        }
+    };
+    let agent_id = workflow_run.node_runs()[0].agent_id();
+    let session = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("session should resolve");
+    let queued_prompt = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&session, agent_id)
+        .1
+        .front()
+        .cloned()
+        .expect("workflow prompt should wait for the starting provider");
+    assert!(!runtime
+        .owned
+        .workflow_prompt_requires_fresh_provider_context(&session_id, agent_id, &queued_prompt)
+        .expect("freshness check should succeed"));
 }
 
 struct TestRoot(std::path::PathBuf);

@@ -9,7 +9,7 @@ export async function deployedWorkflowPackageFixture(): Promise<string> {
   await mkdir(join(root, "public"))
   const publication = Buffer.from(JSON.stringify({
     schema_version: 1,
-    package_version: 3,
+    package_version: 4,
     publication_id: "publication-1",
     alias: "Demo app",
     source_session_id: "session-1",
@@ -51,7 +51,7 @@ export function deploymentContractFixture(packageId: string) {
       captured_at_ms: null,
     },
     compatibility: {
-      package_version: 3,
+      package_version: 4,
       minimum_kernel_version: "0.1.0",
       minimum_local_daemon_protocol_version: 1,
     },
@@ -60,6 +60,7 @@ export function deploymentContractFixture(packageId: string) {
     credential_slots: [],
     configuration: [],
     capabilities: {
+      extensions: [],
       network: {
         policy_version: 1,
         default_action: "deny",
