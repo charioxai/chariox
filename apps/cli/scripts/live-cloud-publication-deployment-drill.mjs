@@ -254,7 +254,7 @@ async function main() {
   const configHome = path.join(root, 'config')
   const serverConfigHome = path.join(root, 'server-config')
   const stateHome = path.join(root, 'state')
-  const home = path.join(root, 'home')
+  const charioxHome = path.join(root, 'chariox-home')
   const kernelPort = options.kernelPort ?? await freePort()
   const relayPort = options.relayPort ?? await freePort()
   const mcpPort = await freePort()
@@ -267,7 +267,7 @@ async function main() {
   const useLocalRelay = shouldUseLocalRelay(options)
   const baseEnv = {
     ...process.env,
-    HOME: options.provider === 'dev-stub' ? home : process.env.HOME,
+    CHARIOX_HOME: charioxHome,
     XDG_CONFIG_HOME: configHome,
     XDG_STATE_HOME: stateHome,
     CHARIOX_KERNEL_PORT: String(kernelPort),
