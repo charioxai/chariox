@@ -314,13 +314,16 @@ mod tests {
                     .name(format!("workflow-provider-admission-{index}"))
                     .spawn(move || {
                         barrier.wait();
-                        owned.workflow_ensure_provider_run(
-                            &session_id,
-                            &agent_id,
-                            false,
-                            false,
-                            false,
-                        )
+                        owned
+                            .workflow_ensure_provider_run(
+                                &session_id,
+                                &agent_id,
+                                false,
+                                false,
+                                false,
+                                false,
+                            )
+                            .map(|(provider_run_id, _)| provider_run_id)
                     })
                     .expect("workflow provider admission thread should spawn"),
             );
@@ -2965,7 +2968,17 @@ impl KernelRuntimeState {
                 }
             });
         }
-        for provider_run_id in dispatches.starting_provider_runs {
+        let retiring_provider_runs = dispatches.retiring_provider_runs;
+        let mut starting_provider_runs = dispatches.starting_provider_runs.into_iter();
+        if let Some(provider_run_id) = starting_provider_runs.next() {
+            self.spawn_detached_workflow_provider_launch_after_retiring(
+                provider_run_id,
+                retiring_provider_runs,
+            );
+        } else {
+            self.spawn_retired_workflow_provider_cleanup(retiring_provider_runs);
+        }
+        for provider_run_id in starting_provider_runs {
             self.spawn_detached_workflow_provider_launch(provider_run_id);
         }
         for dispatch in dispatches.local {
@@ -3038,6 +3051,42 @@ impl KernelRuntimeState {
     }
 
     fn spawn_detached_workflow_provider_launch(&self, provider_run_id: String) {
+        self.spawn_detached_workflow_provider_launch_after_retiring(provider_run_id, Vec::new());
+    }
+
+    fn spawn_retired_workflow_provider_cleanup(&self, retired_provider_run_ids: Vec<String>) {
+        if retired_provider_run_ids.is_empty() {
+            return;
+        }
+        let state = self.clone();
+        tokio::spawn(async move {
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        });
+    }
+
+    fn spawn_detached_workflow_provider_launch_after_retiring(
+        &self,
+        provider_run_id: String,
+        retired_provider_run_ids: Vec<String>,
+    ) {
         let claim = {
             let mut claims = self
                 .detached_workflow_provider_launches
@@ -3054,6 +3103,25 @@ impl KernelRuntimeState {
         let state = self.clone();
         tokio::spawn(async move {
             let _claim = claim;
+            for retired_provider_run_id in retired_provider_run_ids {
+                let cleanup_run_id = retired_provider_run_id.clone();
+                if let Err(error) = state
+                    .with_app_side_effect(move |app| {
+                        crate::app::ProviderLaunchProcessRuntime::new(app)
+                            .remove_run(&cleanup_run_id)
+                    })
+                    .await
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.provider",
+                        "failed to retire workflow provider process",
+                        serde_json::json!({
+                            "provider_run_id": retired_provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
             let run = match state.owned.provider_store.get_run(&provider_run_id) {
                 Ok(run) if run.state() == crate::provider::ProviderRunState::Starting => run,
                 _ => return,

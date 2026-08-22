@@ -569,17 +569,26 @@ impl KernelRuntimeState {
         let (event_reply_enabled, event_context_enabled, event_actions_enabled) = self
             .owned
             .workflow_event_capabilities_for_prompt(session_id, &prompt)?;
-        let provider_run_id = self.owned.workflow_ensure_provider_run(
+        let fresh_context = self
+            .owned
+            .workflow_prompt_requires_fresh_provider_context(session_id, agent_id, &prompt)?;
+        let (provider_run_id, retired_provider_run_id) = self.owned.workflow_ensure_provider_run(
             session_id,
             agent_id,
             event_reply_enabled,
             event_context_enabled,
             event_actions_enabled,
+            fresh_context,
         )?;
         let provider_run = self
             .owned
             .ensure_provider_run_in_session(session_id, &provider_run_id)?;
         let mut dispatches = WorkflowPromptDispatches::default();
+        if let Some(retired_provider_run_id) = retired_provider_run_id {
+            dispatches
+                .retiring_provider_runs
+                .push(retired_provider_run_id);
+        }
         match provider_run.state() {
             crate::provider::ProviderRunState::Starting => {
                 dispatches.starting_provider_runs.push(provider_run_id);
