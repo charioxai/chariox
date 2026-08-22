@@ -594,7 +594,8 @@ fn workflow_prompt_requires_fresh_provider_context(
         return Ok(false);
     }
     let agent_already_started_in_run = workflow_run.node_runs().iter().any(|node_run| {
-        node_run.agent_id() == agent_id
+        node_run.id() != workflow_node_run_id
+            && node_run.agent_id() == agent_id
             && node_run.turn_envelope().is_some_and(|envelope| {
                 envelope.state() != crate::session::WorkflowTurnRuntimeState::Prepared
             })
@@ -802,6 +803,81 @@ mod tests {
                 .expect("stale run should remain auditable")
                 .state(),
             crate::provider::ProviderRunState::Ended
+        );
+    }
+
+    #[test]
+    fn workflow_context_flush_still_applies_after_current_turn_is_dispatched() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-flush-dispatched",
+                "worktree-flush-dispatched",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("dispatched-fresh-workflow-agent")
+                    .with_model("test-model"),
+            )
+            .expect("workflow agent should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("fresh-dispatched-context".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("review the event".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run_id = run.node_runs()[0].id().to_string();
+        app.sessions_mut()
+            .prepare_workflow_turn(
+                session.id(),
+                run.id(),
+                &node_run_id,
+                format!("workflow-ack:{node_run_id}"),
+                "review the event".to_string(),
+                None,
+                None,
+            )
+            .expect("workflow turn should prepare");
+        app.sessions_mut()
+            .start_workflow_node_run(session.id(), run.id(), &node_run_id)
+            .expect("workflow node should start");
+        app.sessions_mut()
+            .mark_workflow_turn_dispatched(session.id(), run.id(), &node_run_id)
+            .expect("workflow turn should dispatch");
+
+        assert!(
+            workflow_prompt_requires_fresh_provider_context(
+                &app,
+                session.id(),
+                agent.id(),
+                Some(run.id()),
+                Some(&node_run_id),
+            )
+            .expect("fresh-context policy should resolve"),
+            "the current dispatched node must not count as prior agent context"
         );
     }
 
