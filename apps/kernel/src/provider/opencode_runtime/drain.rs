@@ -151,9 +151,6 @@ pub(in crate::provider) fn drain_opencode_events(
             }
             Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
                 if session_id == state.session_id {
-                    if state.active_user_message_id.is_some() && kind != "idle" {
-                        state.active_prompt_observed_non_idle_status = true;
-                    }
                     if state.last_status_kind.as_deref() != Some(kind.as_str()) {
                         state.last_status_kind = Some(kind.clone());
                         chunks.push(OpenCodeOutputChunk {
@@ -191,8 +188,7 @@ pub(in crate::provider) fn drain_opencode_events(
                     }
                     if !prompt_completed
                         && kind == "idle"
-                        && (state.active_terminal_assistant_message_id.is_some()
-                            || state.active_prompt_observed_non_idle_status)
+                        && state.active_terminal_assistant_message_id.is_some()
                     {
                         prompt_completed = true;
                         state.active_terminal_assistant_message_id = None;
@@ -220,9 +216,6 @@ pub(in crate::provider) fn drain_opencode_events(
                     OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL,
                 )?;
                 if let Ok(snapshot) = client.snapshot(&state.session_id) {
-                    if state.active_user_message_id.is_some() && snapshot.status != "idle" {
-                        state.active_prompt_observed_non_idle_status = true;
-                    }
                     if resolved_model.is_none() {
                         resolved_model = snapshot
                             .messages
@@ -270,8 +263,7 @@ pub(in crate::provider) fn drain_opencode_events(
                         state.active_terminal_assistant_message_id = None;
                         state.active_user_message_id = None;
                     } else if snapshot.status == "idle"
-                        && (state.active_terminal_assistant_message_id.is_some()
-                            || state.active_prompt_observed_non_idle_status)
+                        && state.active_terminal_assistant_message_id.is_some()
                     {
                         prompt_completed = true;
                         state.active_terminal_assistant_message_id = None;
@@ -286,7 +278,6 @@ pub(in crate::provider) fn drain_opencode_events(
         let client = OpenCodeClient::new(provider_run_id, &state.base_url)?;
         if let Ok(status) = client.session_status(&state.session_id) {
             if status != "idle" {
-                state.active_prompt_observed_non_idle_status = true;
                 if state.last_status_kind.as_deref() != Some(status.as_str()) {
                     state.last_status_kind = Some(status.clone());
                     chunks.push(OpenCodeOutputChunk {
