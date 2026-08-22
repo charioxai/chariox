@@ -454,6 +454,15 @@ impl KernelRuntimeState {
                     | crate::terminal::TerminalOutputKind::ProviderTool
             )
         });
+        for chunk in &poll_result.chunks {
+            if chunk.kind == crate::terminal::TerminalOutputKind::ProviderTool {
+                owned.note_prompt_tool_output(
+                    provider_run_id,
+                    chunk.merge_key.as_deref(),
+                    &chunk.bytes,
+                );
+            }
+        }
         if saw_response_content {
             owned.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {

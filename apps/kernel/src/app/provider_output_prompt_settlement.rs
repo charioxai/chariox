@@ -297,6 +297,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
+                active_tool_ids: std::collections::BTreeSet::new(),
             });
     }
 

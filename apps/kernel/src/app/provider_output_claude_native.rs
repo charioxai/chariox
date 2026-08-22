@@ -652,6 +652,14 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             if chunk.text.is_empty() {
                 continue;
             }
+            if chunk.kind == TerminalOutputKind::ProviderTool {
+                crate::transport::flow_control::note_prompt_tool_output(
+                    self.app,
+                    provider_run_id,
+                    Some(&chunk.merge_key_suffix),
+                    chunk.text.as_bytes(),
+                );
+            }
             if matches!(
                 chunk.kind,
                 TerminalOutputKind::ProviderOutput | TerminalOutputKind::ProviderReasoning

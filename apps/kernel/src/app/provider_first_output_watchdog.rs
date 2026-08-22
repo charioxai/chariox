@@ -80,9 +80,12 @@ pub(crate) fn provider_inactivity_timeout_candidates(
             ) {
                 return None;
             }
-            let elapsed_ms = prompt_activity
-                .get(&turn.provider_run_id)
-                .and_then(|activity| activity.last_output_at)
+            let activity = prompt_activity.get(&turn.provider_run_id)?;
+            if activity.has_active_provider_tools() {
+                return None;
+            }
+            let elapsed_ms = activity
+                .last_output_at
                 .map(|last_output_at| last_output_at.elapsed().as_millis() as u64)?;
             if elapsed_ms < timeout_ms {
                 return None;
@@ -111,4 +114,54 @@ pub(crate) fn provider_inactivity_timeout_diagnostic(elapsed_ms: u64) -> String 
         "Provider prompt produced no output for {} seconds after its last activity; the provider may be stuck. Chariox closed this turn so the agent can be retried.",
         elapsed_ms / 1000
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn active_provider_tool_suppresses_inactivity_timeout_until_it_finishes() {
+        let turn = ActiveTurnState::new(
+            "session-1".to_string(),
+            "agent-1".to_string(),
+            "prompt-1".to_string(),
+            "provider-run-1".to_string(),
+        )
+        .with_phase(ActiveTurnPhase::Streaming);
+        let mut activity = ActivePromptState {
+            last_output_at: Some(
+                std::time::Instant::now() - std::time::Duration::from_secs(11 * 60),
+            ),
+            saw_response_content: true,
+            completion_recorded: false,
+            settlement_requested: false,
+            active_tool_ids: std::collections::BTreeSet::from(["tool-1".to_string()]),
+        };
+        let mut prompt_activity =
+            BTreeMap::from([("provider-run-1".to_string(), activity.clone())]);
+
+        assert!(provider_inactivity_timeout_candidates(
+            "session-1",
+            [turn.clone()],
+            &prompt_activity,
+            |_| true,
+            |_| true,
+        )
+        .is_empty());
+
+        activity.active_tool_ids.clear();
+        prompt_activity.insert("provider-run-1".to_string(), activity);
+        assert_eq!(
+            provider_inactivity_timeout_candidates(
+                "session-1",
+                [turn],
+                &prompt_activity,
+                |_| true,
+                |_| true,
+            )
+            .len(),
+            1,
+        );
+    }
 }

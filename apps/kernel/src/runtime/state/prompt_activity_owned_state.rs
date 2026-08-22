@@ -523,6 +523,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: false,
                 completion_recorded: false,
                 settlement_requested: false,
+                active_tool_ids: std::collections::BTreeSet::new(),
             },
         );
         let active_turn = self
@@ -596,6 +597,17 @@ impl KernelRuntimeOwnedState {
         }
     }
 
+    pub(super) fn note_prompt_tool_output(
+        &self,
+        provider_run_id: &str,
+        merge_key: Option<&str>,
+        bytes: &[u8],
+    ) {
+        if let Some(state) = self.prompt_activity.write().get_mut(provider_run_id) {
+            state.observe_provider_tool(merge_key, bytes);
+        }
+    }
+
     pub(super) fn note_prompt_settlement_requested(&self, provider_run_id: &str) {
         self.active_turns.mark_settling(provider_run_id);
         self.prompt_activity
@@ -609,6 +621,7 @@ impl KernelRuntimeOwnedState {
                 saw_response_content: true,
                 completion_recorded: false,
                 settlement_requested: true,
+                active_tool_ids: std::collections::BTreeSet::new(),
             });
         self.schedule_provider_output_check_after(provider_run_id, PROMPT_SETTLEMENT_RECHECK_DELAY);
     }

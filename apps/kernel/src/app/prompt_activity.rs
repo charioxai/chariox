@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -11,6 +11,7 @@ pub(crate) struct ActivePromptState {
     pub(crate) saw_response_content: bool,
     pub(crate) completion_recorded: bool,
     pub(crate) settlement_requested: bool,
+    pub(crate) active_tool_ids: BTreeSet<String>,
 }
 
 impl ActivePromptState {
@@ -21,6 +22,60 @@ impl ActivePromptState {
         self.last_output_at = Some(Instant::now());
         self.saw_response_content = true;
         self.settlement_requested = true;
+    }
+
+    pub(crate) fn observe_provider_tool(&mut self, merge_key: Option<&str>, bytes: &[u8]) {
+        let Ok(value) = serde_json::from_slice::<serde_json::Value>(bytes) else {
+            return;
+        };
+        let Some(record) = value.as_object() else {
+            return;
+        };
+        let status = record
+            .get("status")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| {
+                record
+                    .get("state")
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|state| state.get("status"))
+                    .and_then(serde_json::Value::as_str)
+            })
+            .map(|status| status.to_ascii_lowercase());
+        let Some(status) = status else {
+            return;
+        };
+        let id = ["id", "call_id", "tool_call_id"]
+            .into_iter()
+            .find_map(|field| record.get(field).and_then(serde_json::Value::as_str))
+            .or(merge_key)
+            .filter(|id| !id.is_empty());
+        let Some(id) = id else {
+            return;
+        };
+        if matches!(
+            status.as_str(),
+            "pending" | "queued" | "started" | "running" | "in_progress" | "inprogress" | "waiting"
+        ) {
+            self.active_tool_ids.insert(id.to_string());
+        } else if matches!(
+            status.as_str(),
+            "completed"
+                | "complete"
+                | "succeeded"
+                | "success"
+                | "error"
+                | "failed"
+                | "declined"
+                | "cancelled"
+                | "canceled"
+        ) {
+            self.active_tool_ids.remove(id);
+        }
+    }
+
+    pub(crate) fn has_active_provider_tools(&self) -> bool {
+        !self.active_tool_ids.is_empty()
     }
 }
 
@@ -399,6 +454,7 @@ mod tests {
             saw_response_content: false,
             completion_recorded: true,
             settlement_requested: false,
+            active_tool_ids: BTreeSet::new(),
         };
 
         activity.request_settlement();
@@ -411,6 +467,29 @@ mod tests {
         assert_eq!(activity.last_output_at, Some(first_requested_at));
         assert!(activity.saw_response_content);
         assert!(activity.settlement_requested);
+    }
+
+    #[test]
+    fn provider_tool_activity_tracks_running_calls_until_their_terminal_update() {
+        let mut activity = ActivePromptState {
+            last_output_at: None,
+            saw_response_content: true,
+            completion_recorded: false,
+            settlement_requested: false,
+            active_tool_ids: BTreeSet::new(),
+        };
+
+        activity.observe_provider_tool(
+            Some("tool-1"),
+            br#"{"id":"tool-1","tool":"bash","status":"running"}"#,
+        );
+        assert!(activity.has_active_provider_tools());
+
+        activity.observe_provider_tool(
+            Some("tool-1"),
+            br#"{"id":"tool-1","tool":"bash","status":"completed"}"#,
+        );
+        assert!(!activity.has_active_provider_tools());
     }
 
     #[test]

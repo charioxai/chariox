@@ -751,6 +751,16 @@ impl<'a> ProviderOutputPumpContext<'a> {
                     | TerminalOutputKind::ProviderTool
             )
         });
+        for chunk in &poll_result.chunks {
+            if chunk.kind == TerminalOutputKind::ProviderTool {
+                crate::transport::flow_control::note_prompt_tool_output(
+                    self.app,
+                    provider_run_id,
+                    chunk.merge_key.as_deref(),
+                    &chunk.bytes,
+                );
+            }
+        }
         if saw_response_content {
             self.note_prompt_response_content(provider_run_id);
         } else if saw_runtime_activity {

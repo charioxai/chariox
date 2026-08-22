@@ -1168,6 +1168,136 @@ async fn provider_inactivity_timeout_records_diagnostic_and_closes_prompt() {
 }
 
 #[tokio::test]
+async fn provider_inactivity_timeout_waits_for_an_active_structured_tool() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-active-tool",
+            "worktree-active-tool",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-active-tool",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "opencode",
+        "opencode",
+        "default",
+        "zen",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-active-tool",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-opencode-active-tool".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-opencode-active-tool-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let prompt = crate::session::PromptQueueItem::new(
+        app.sessions_mut().reserve_prompt_id(),
+        attachment.id(),
+        agent.id(),
+        "run a long compile\n",
+        crate::session::PromptStatus::Queued,
+    );
+    app.prompt_owner_submit_prepared_prompt(session.id(), prompt, false)
+        .expect("prompt should start");
+    crate::transport::flow_control::note_prompt_started(&mut app, run.id());
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("compile-1".to_string()),
+                    bytes: br#"{"id":"compile-1","tool":"bash","status":"running"}"#.to_vec(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("running tool output should be accepted");
+    runtime
+        .owned
+        .prompt_activity
+        .write()
+        .get_mut(run.id())
+        .expect("prompt activity should exist")
+        .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
+
+    runtime
+        .reap_provider_inactivity_timeouts(session.id())
+        .await
+        .expect("active tool should suppress the inactivity timeout");
+    assert!(runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_some());
+
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderTool,
+                    merge_key: Some("compile-1".to_string()),
+                    bytes: br#"{"id":"compile-1","tool":"bash","status":"completed"}"#.to_vec(),
+                }],
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("completed tool output should be accepted");
+    runtime
+        .owned
+        .prompt_activity
+        .write()
+        .get_mut(run.id())
+        .expect("prompt activity should still exist")
+        .last_output_at = Some(std::time::Instant::now() - std::time::Duration::from_secs(11 * 60));
+
+    runtime
+        .reap_provider_inactivity_timeouts(session.id())
+        .await
+        .expect("completed tool should restore the inactivity timeout");
+    assert!(runtime
+        .owned
+        .session_snapshot(session.id())
+        .expect("session snapshot should exist")
+        .active_prompt_for_agent(agent.id())
+        .is_none());
+}
+
+#[tokio::test]
 async fn provider_inactivity_timeout_retires_managed_process() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

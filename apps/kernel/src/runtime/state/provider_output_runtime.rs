@@ -392,7 +392,10 @@ impl KernelRuntimeState {
         Ok(())
     }
 
-    async fn reap_provider_inactivity_timeouts(&self, session_id: &str) -> Result<(), DaemonError> {
+    pub(super) async fn reap_provider_inactivity_timeouts(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
         let timed_out = inactivity_timeout_candidates(&self.owned, session_id);
         for timeout in timed_out {
             let diagnostic = crate::app::provider_inactivity_timeout_diagnostic(timeout.elapsed_ms);

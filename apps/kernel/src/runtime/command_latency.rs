@@ -683,6 +683,7 @@ mod tests {
             saw_response_content: true,
             completion_recorded: true,
             settlement_requested: true,
+            active_tool_ids: std::collections::BTreeSet::new(),
         };
 
         let fields = provider_turn_completion_fields(&run, Some(&turn), Some(&activity), 2_075);
