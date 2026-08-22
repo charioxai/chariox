@@ -224,12 +224,14 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
   const {
     transitionToNoSession,
     detachCurrentAttachment,
+    rollbackAttachedSession,
     attachBinding,
   } = createSessionLifecycleController({
     cliOptions: deps.options,
     connectedStatus: DEFAULT_CONNECTED_STATUS,
     waitingRoomState: deps.waitingRoomState,
     attachmentState: deps.attachmentState,
+    sessionState: deps.sessionState,
     deriveDetachedCliTransitionState,
     deriveAttachedCliTransitionState,
     clearPendingPromptAttachments: deps.clearPendingPromptAttachments,
@@ -472,6 +474,7 @@ export function createCliSessionLifecycleComposition(deps: CliSessionLifecycleCo
     recoverAttachedSessionAfterKernelRestart,
     transitionToNoSession,
     detachCurrentAttachment,
+    rollbackAttachedSession,
     attachBinding,
     recoverProviderRun,
     requestExit,

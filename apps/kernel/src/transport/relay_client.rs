@@ -47,6 +47,7 @@ mod peer_events;
 mod peer_requests;
 mod remote_inventory;
 mod request_errors;
+mod sender_identity;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
@@ -60,6 +61,7 @@ use envelope_io::{
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::handle_incoming_envelope;
+pub(crate) use peer_client::send_peer_request_to_known_kernel_via_relay;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};

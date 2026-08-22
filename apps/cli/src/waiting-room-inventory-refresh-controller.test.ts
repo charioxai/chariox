@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtempSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 import type { ExternalProviderSessionRecord, SliceRecord, WaitingRoomPublicSessionSummary } from "./cli-types.js"
@@ -14,7 +17,12 @@ import type {
   WaitingRoomInventory,
 } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
+import {
+  createWaitingRoomInventoryCache,
+  waitingRoomInventoryCacheScopeKey,
+} from "./waiting-room-inventory-cache.js"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 
 test("waiting room inventory refresh is idle while kernel is disconnected", async () => {
   const harness = createHarness({ connected: false })
@@ -44,6 +52,89 @@ test("waiting room inventory refresh applies snapshots and filters hidden inacti
   assert.equal(harness.reconcileCount(), 1)
 })
 
+test("waiting room inventory refresh applies managed catalog and exact launch target", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [inventory("v1", {
+      managedEnvironmentCatalog,
+      launchTarget: { workspaceId: "workspace-1", worktreeId: "worktree-1" },
+    })],
+  })
+
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+  assert.deepEqual(harness.launchTarget(), {
+    workspaceId: "workspace-1",
+    worktreeId: "worktree-1",
+  })
+})
+
+test("waiting room inventory refresh preserves the last managed catalog on transient omission", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { managedEnvironmentCatalog }),
+      inventory("v2"),
+    ],
+  })
+
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.equal(harness.managedEnvironmentCatalog(), managedEnvironmentCatalog)
+})
+
+test("waiting room inventory refresh clears retained managed catalog across kernel scope", async () => {
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v2", { kernelId: "kernel-b" }),
+    ],
+  })
+
+  await harness.controller.refreshNow()
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), undefined)
+})
+
+test("waiting room inventory refresh clears retained managed catalog across Cloud account scope", async () => {
+  let scope = "kernel-a:account-a"
+  const managedEnvironmentCatalog: ManagedEnvironmentCatalog = {
+    computeClasses: [{ computeClass: "agent-small", regions: ["hel1"] }],
+    contextSources: [],
+    environments: [],
+  }
+  const harness = createHarness({
+    snapshots: [
+      inventory("v1", { kernelId: "kernel-a", managedEnvironmentCatalog }),
+      inventory("v2", { kernelId: "kernel-a" }),
+    ],
+    getManagedEnvironmentCatalogScope: () => scope,
+  })
+
+  await harness.controller.refreshNow()
+  scope = "kernel-a:account-b"
+  await harness.controller.refreshNow()
+
+  assert.equal(harness.managedEnvironmentCatalog(), undefined)
+})
+
 test("waiting room inventory refresh reconciles unchanged versions without replacing state", async () => {
   const harness = createHarness({
     snapshots: [
@@ -71,6 +162,181 @@ test("waiting room inventory refresh scopes equal versions to their kernel", asy
   await harness.controller.refreshNow()
 
   assert.deepEqual(harness.availableSessions().map((entry) => entry.id).sort(), ["session-a", "session-b"])
+})
+
+test("direct target inventory excludes unrelated cached sessions", async () => {
+  const cached = inventory("cached", {
+    kernelId: "kernel-a",
+    sessions: [{ ...session("session-a"), alias: "pr_reviewer" }],
+  })
+  const harness = createHarness({
+    directTargetKernelId: "kernel-b",
+    cachedInventories: [cached],
+    snapshots: [inventory("fresh", { kernelId: "kernel-b", sessions: [] })],
+  })
+
+  assert.deepEqual(harness.availableSessions(), [])
+  await harness.controller.refreshNow()
+  assert.deepEqual(harness.availableSessions(), [])
+})
+
+test("Cloud scope change reloads cache before persisting a fresh direct target", async () => {
+  let scope = "local"
+  const persisted: Array<{ scope: string; kernelId: string }> = []
+  const cached = inventory("cached", {
+    kernelId: "kernel-a",
+    sessions: [{ ...session("session-a"), alias: "pr_reviewer" }],
+  })
+  const harness = createHarness({
+    directTargetKernelId: "kernel-b",
+    cachedInventories: [cached],
+    getCacheScopeKey: () => scope,
+    loadCachedInventories: () => [],
+    persistInventory: (entry) => persisted.push({ scope, kernelId: entry.kernelId }),
+    snapshots: [inventory("fresh", { kernelId: "kernel-b", sessions: [] })],
+  })
+
+  scope = "cloud-account-b-user-b-realm-b"
+  await harness.controller.refreshNow()
+
+  assert.deepEqual(harness.availableSessions(), [])
+  assert.deepEqual(persisted, [{ scope: "cloud-account-b-user-b-realm-b", kernelId: "kernel-b" }])
+})
+
+test("in-flight inventory from the previous Cloud scope is discarded before retry", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "chariox-waiting-room-inflight-scope-"))
+  const scopeA = waitingRoomInventoryCacheScopeKey({
+    apiUrl: "https://cloud.example",
+    accountId: "account-a",
+    userId: "user-a",
+    realmId: "realm-a",
+  })
+  const scopeB = waitingRoomInventoryCacheScopeKey({
+    apiUrl: "https://cloud.example",
+    accountId: "account-b",
+    userId: "user-b",
+    realmId: "realm-b",
+  })
+  let scope = scopeA
+  try {
+    const cache = createWaitingRoomInventoryCache(directory, () => 1_000, {}, () => scope)
+    cache.persist(inventory("cached-a", {
+      kernelId: "kernel-a",
+      sessions: [{ ...session("session-cached-a"), alias: "pr_reviewer" }],
+    }))
+    const firstFetch = deferred<WaitingRoomInventory>()
+    let fetchCount = 0
+    const harness = createHarness({
+      directTargetKernelId: "kernel-b",
+      cachedInventories: cache.load(),
+      getCacheScopeKey: () => scope,
+      loadCachedInventories: cache.load,
+      persistInventory: cache.persist,
+      getInventory: () => {
+        fetchCount += 1
+        return fetchCount === 1
+          ? firstFetch.promise
+          : Promise.resolve(inventory("fresh-b", { kernelId: "kernel-b", sessions: [] }))
+      },
+    })
+
+    const refreshing = harness.controller.refreshNow()
+    scope = scopeB
+    firstFetch.resolve(inventory("stale-a", {
+      kernelId: "kernel-a",
+      sessions: [{ ...session("session-inflight-a"), alias: "in-flight-a" }],
+    }))
+    await refreshing
+
+    assert.equal(fetchCount, 2)
+    assert.deepEqual(harness.availableSessions(), [])
+    assert.deepEqual(cache.load().map((entry) => entry.kernelId), ["kernel-b"])
+    scope = scopeA
+    assert.deepEqual(
+      cache.load().flatMap((entry) => entry.sessions.map((entry) => entry.alias)),
+      ["pr_reviewer"],
+    )
+  } finally {
+    rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test("repeated in-flight scope changes settle the refresh as an error", async () => {
+  let scope = "scope-a"
+  const firstFetch = deferred<WaitingRoomInventory>()
+  const secondFetch = deferred<WaitingRoomInventory>()
+  const secondStarted = deferred<void>()
+  let fetchCount = 0
+  const harness = createHarness({
+    getCacheScopeKey: () => scope,
+    loadCachedInventories: () => [],
+    getInventory: () => {
+      fetchCount += 1
+      if (fetchCount === 1) return firstFetch.promise
+      secondStarted.resolve()
+      return secondFetch.promise
+    },
+  })
+
+  const refreshing = harness.controller.refreshNow()
+  scope = "scope-b"
+  firstFetch.resolve(inventory("scope-a", { kernelId: "kernel-a" }))
+  await secondStarted.promise
+  scope = "scope-c"
+  secondFetch.resolve(inventory("scope-b", { kernelId: "kernel-b" }))
+  await refreshing
+
+  assert.equal(harness.inventoryStatus(), "error")
+  assert.deepEqual(harness.availableSessions(), [])
+  assert.equal(harness.warnings().at(-1)?.message, "waiting room inventory scope changed repeatedly during refresh")
+})
+
+test("direct target projection follows a kernel pivot and rollback", () => {
+  let directTargetKernelId = "kernel-a"
+  const harness = createHarness({
+    cachedInventories: [
+      inventory("cached-a", { kernelId: "kernel-a", sessions: [session("session-a")] }),
+      inventory("cached-b", { kernelId: "kernel-b", sessions: [session("session-b")] }),
+    ],
+    getDirectTargetKernelId: () => directTargetKernelId,
+  })
+
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-a"])
+  directTargetKernelId = "kernel-b"
+  harness.controller.invalidate()
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-b"])
+  directTargetKernelId = "kernel-a"
+  harness.controller.invalidate()
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-a"])
+})
+
+test("old client rejection during a target pivot retries the new target", async () => {
+  let directTargetKernelId = "kernel-a"
+  const firstFetch = deferred<WaitingRoomInventory>()
+  let fetchCount = 0
+  const harness = createHarness({
+    getDirectTargetKernelId: () => directTargetKernelId,
+    getInventory: () => {
+      fetchCount += 1
+      return fetchCount === 1
+        ? firstFetch.promise
+        : Promise.resolve(inventory("fresh-b", {
+            kernelId: "kernel-b",
+            sessions: [session("session-b")],
+          }))
+    },
+  })
+
+  const refreshing = harness.controller.refreshNow()
+  directTargetKernelId = "kernel-b"
+  harness.controller.invalidate()
+  firstFetch.reject(new Error("old client closed during pivot"))
+  await refreshing
+
+  assert.equal(fetchCount, 2)
+  assert.equal(harness.inventoryStatus(), "ready")
+  assert.deepEqual(harness.availableSessions().map((entry) => entry.id), ["session-b"])
+  assert.deepEqual(harness.warnings(), [])
 })
 
 test("waiting room inventory refresh makes fresh local sibling kernels visible", async () => {
@@ -302,6 +568,13 @@ function createHarness(options: {
   snapshots?: WaitingRoomInventory[]
   getInventory?: () => Promise<WaitingRoomInventory>
   localKernelPresences?: readonly LocalKernelPresence[]
+  cachedInventories?: readonly WaitingRoomInventory[]
+  directTargetKernelId?: string | null
+  getDirectTargetKernelId?: () => string | null | undefined
+  getCacheScopeKey?: () => string
+  loadCachedInventories?: () => readonly WaitingRoomInventory[]
+  persistInventory?: (inventory: WaitingRoomInventory) => void
+  getManagedEnvironmentCatalogScope?: (inventory: WaitingRoomInventory) => string
 } = {}) {
   const catalog = fallbackProviderCatalog()
   const hiddenKernelIds = options.hiddenKernelIds ?? new Set<string>()
@@ -314,6 +587,8 @@ function createHarness(options: {
   let projects: WaitingRoomProjectSummary[] = []
   let externalProviderSessions: ExternalProviderSessionRecord[] = []
   let externalProviderSessionsPage = { hasMore: false, nextCursor: null as string | null }
+  let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
+  let launchTarget: WaitingRoomInventory["launchTarget"]
   let inventoryCalls = 0
   let reconcileCount = 0
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
@@ -353,6 +628,15 @@ function createHarness(options: {
     },
     setTerminals: () => {},
     setSlices: () => {},
+    setManagedEnvironmentCatalog: (catalog) => {
+      managedEnvironmentCatalog = catalog
+    },
+    ...(options.getManagedEnvironmentCatalogScope
+      ? { getManagedEnvironmentCatalogScope: options.getManagedEnvironmentCatalogScope }
+      : {}),
+    setLaunchTarget: (target) => {
+      launchTarget = target
+    },
     setExternalProviderSessions: (sessions) => {
       externalProviderSessions = sessions
     },
@@ -367,6 +651,16 @@ function createHarness(options: {
       warnings.push({ message, fields })
     },
     getLocalKernelPresences: () => options.localKernelPresences ?? [],
+    ...(options.cachedInventories ? { cachedInventories: options.cachedInventories } : {}),
+    ...(options.directTargetKernelId !== undefined
+      ? { directTargetKernelId: options.directTargetKernelId }
+      : {}),
+    ...(options.getDirectTargetKernelId
+      ? { getDirectTargetKernelId: options.getDirectTargetKernelId }
+      : {}),
+    ...(options.getCacheScopeKey ? { getCacheScopeKey: options.getCacheScopeKey } : {}),
+    ...(options.loadCachedInventories ? { loadCachedInventories: options.loadCachedInventories } : {}),
+    ...(options.persistInventory ? { persistInventory: options.persistInventory } : {}),
   })
 
   return {
@@ -380,6 +674,8 @@ function createHarness(options: {
     projects: () => projects,
     externalProviderSessions: () => externalProviderSessions,
     externalProviderSessionsPage: () => externalProviderSessionsPage,
+    managedEnvironmentCatalog: () => managedEnvironmentCatalog,
+    launchTarget: () => launchTarget,
     reconcileCount: () => reconcileCount,
     warnings: () => warnings,
   }
@@ -463,8 +759,10 @@ function kernel(id: string, overrides: Partial<RemoteKernelView> = {}): RemoteKe
 
 function deferred<T>() {
   let resolve!: (value: T) => void
-  const promise = new Promise<T>((resolvePromise) => {
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
     resolve = resolvePromise
+    reject = rejectPromise
   })
-  return { promise, resolve }
+  return { promise, resolve, reject }
 }

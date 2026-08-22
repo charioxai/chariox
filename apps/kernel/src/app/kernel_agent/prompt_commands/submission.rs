@@ -218,8 +218,12 @@ impl<'a> KernelAgentService<'a> {
         let session_id = prepared.session_id;
         let attachment_id = prepared.prompt.source_attachment_id().to_string();
         let target_agent_id = prepared.prompt.target_agent_id().to_string();
-        crate::app::KernelSessionReadService::new(self.app)
+        let source_attachment = crate::app::KernelSessionReadService::new(self.app)
             .ensure_attachment_in_session(&session_id, &attachment_id)?;
+        let prompt = prepared.prompt.with_source_attribution(
+            source_attachment.client_id(),
+            source_attachment.owner_user_id(),
+        );
 
         let target_agent = self.app.agents.get_agent(&target_agent_id)?;
         if target_agent.session_id() != session_id {
@@ -258,7 +262,7 @@ impl<'a> KernelAgentService<'a> {
             session_id,
             attachment_id,
             target_agent_id,
-            prompt: prepared.prompt,
+            prompt,
             force_queue: prepared.force_queue,
             provider_run_id,
             remote_execution,

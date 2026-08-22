@@ -118,6 +118,21 @@ export type CliPrimaryTranscriptCompositionDeps = {
 }
 
 export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscriptCompositionDeps) {
+  const waitingRoomRemoteTargets = () => {
+    const targets = deps.waitingRoomTargets()
+    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
+    return {
+      ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
+      ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
+      ...(managedEnvironmentCatalog
+        ? {
+            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
+            managedContextSources: managedEnvironmentCatalog.contextSources,
+            managedEnvironments: managedEnvironmentCatalog.environments,
+          }
+        : {}),
+    }
+  }
   const primaryTranscriptRenderController = createPrimaryTranscriptRenderController({
     getScrollbox: deps.transcriptScrollboxRefController.current,
     getEmptyRenderable: deps.primaryTranscriptRuntimeStore.getEmptyRenderable,
@@ -158,6 +173,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
           ? buildLoadingTranscriptRenderable(deps.renderer)
           : buildEmptyTranscriptRenderable(deps.renderer))
       : buildNoSessionRenderable(deps.renderer, deps.waitingRoomState(), deps.availableSessions(), deps.providerCatalogState(), {
+        ...waitingRoomRemoteTargets(),
         cloudNotice: deps.waitingRoomCloudNotice(),
         inventoryStatus: deps.waitingRoomInventoryStatus(),
         loadingFrame: deps.waitingRoomState().introStep,

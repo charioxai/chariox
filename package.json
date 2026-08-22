@@ -6,6 +6,7 @@
   "scripts": {
     "build": "pnpm -r --workspace-concurrency=1 run build",
     "start:kernel": "node scripts/start-kernel.mjs",
+    "package:managed-kernel-release": "node scripts/package-managed-kernel-release.mjs",
     "build:kernel-client": "pnpm --filter @chariox/tool-display run build && pnpm --filter @chariox/kernel-client run build",
     "build:cli": "pnpm --filter @chariox/cli run build",
     "lint": "pnpm -r --workspace-concurrency=1 run lint",

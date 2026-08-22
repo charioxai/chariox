@@ -157,6 +157,24 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let accounts = runtime_state
         .provider_account_profile_registry()
         .list(&account_owner_user_id, None)?;
+    let github_credential_available =
+        match crate::managed_context::scm::GitCredentialCommandContext::source_from_process() {
+            Ok(context) => tokio::task::spawn_blocking(move || {
+                crate::managed_context::scm::github_credential_is_available(&context)
+            })
+            .await
+            .unwrap_or(false),
+            Err(_) => false,
+        };
+    let git_credentials = if github_credential_available {
+        vec![crate::local::WaitingRoomGitCredentialSummary {
+            credential_id: crate::managed_context::scm::GITHUB_CREDENTIAL_ID.to_string(),
+            hostname: "github.com".to_string(),
+            label: "GitHub".to_string(),
+        }]
+    } else {
+        Vec::new()
+    };
     for session in &mut snapshot.sessions {
         for agent in &mut session.agents {
             agent.account_label = accounts
@@ -179,9 +197,16 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
     let mut hasher = Sha256::new();
     hasher.update(snapshot.structural_version.as_bytes());
     hasher.update(account_fingerprint);
+    hasher.update(serde_json::to_vec(&git_credentials).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "project waiting room Git credentials",
+            message: error.to_string(),
+        }
+    })?);
     snapshot.structural_version = format!("{:x}", hasher.finalize());
     snapshot.inventory_version = snapshot.structural_version.clone();
     snapshot.provider_accounts = accounts;
+    snapshot.git_credentials = git_credentials;
     Ok(snapshot)
 }
 

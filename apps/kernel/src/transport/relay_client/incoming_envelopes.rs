@@ -58,7 +58,7 @@ pub(super) async fn handle_incoming_envelope(
         RelayEnvelope::DaemonIncomingPeerRequest {
             relay_request_id,
             from_daemon_id,
-            caller_identity: _,
+            caller_identity,
             encrypted_request,
         } => {
             let router = Arc::clone(router);
@@ -70,6 +70,7 @@ pub(super) async fn handle_incoming_envelope(
                     &state,
                     &outgoing_tx,
                     &from_daemon_id,
+                    caller_identity,
                     encrypted_request,
                 )
                 .await;

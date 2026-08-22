@@ -158,6 +158,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::RenameProject(request) => {
                 self.store.rename_project(request, caller_user_id).await
             }
+            LocalDaemonRequest::UpdateProjectWorkspaces(request) => {
+                self.store
+                    .update_project_workspaces(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::ArchiveProject(request) => {
                 self.store.archive_project(request, caller_user_id).await
             }

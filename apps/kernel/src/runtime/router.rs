@@ -29,6 +29,7 @@ mod cloud_relay_bridge;
 mod composition;
 mod dispatch;
 pub(crate) mod event_connection_lifecycle;
+mod managed_context_bridge;
 mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
@@ -60,6 +61,12 @@ pub(crate) struct CommandRouter {
     provider_run_projection: ProviderRunProjectionStore,
     provider_process_projection: ProviderProcessProjectionStore,
     credential_enrollment_control: CredentialEnrollmentControl,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
+    managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     #[allow(dead_code)]
     active_turns: crate::app::ActiveTurnStore,
     config_projection: DaemonConfigProjectionStore,

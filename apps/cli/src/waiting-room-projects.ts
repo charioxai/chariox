@@ -34,7 +34,9 @@ export function waitingRoomProjectOptions(
 ): Array<{ id: string; label: string; project?: WaitingRoomProjectSummary }> {
   const existing = (projects ?? [])
     .filter((project) => project.status === "active" && project.kind === "named")
-    .filter((project) => !workspaceId || project.workspace_id === workspaceId)
+    .filter((project) => !workspaceId || (
+      project.workspace_ids?.includes(workspaceId) ?? project.workspace_id === workspaceId
+    ))
     .sort((left, right) => (
       (right.last_session_activity_at_ms ?? right.updated_at_ms)
       - (left.last_session_activity_at_ms ?? left.updated_at_ms)

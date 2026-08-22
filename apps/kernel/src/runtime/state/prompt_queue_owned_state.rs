@@ -21,6 +21,42 @@ struct QueuedPromptSteerContext {
 }
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn prompt_source_attribution(
+        &self,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> (Option<String>, Option<String>) {
+        let source_attachment = self
+            .attachment_store
+            .get_attachment(prompt.source_attachment_id())
+            .ok();
+        let source_client_id = prompt.source_client_id().map(str::to_string).or_else(|| {
+            source_attachment
+                .as_ref()
+                .map(|attachment| attachment.client_id().to_string())
+        });
+        let source_user_id = prompt.source_user_id().map(str::to_string).or_else(|| {
+            source_attachment
+                .as_ref()
+                .map(|attachment| attachment.owner_user_id().to_string())
+        });
+        (source_client_id, source_user_id)
+    }
+
+    pub(super) fn active_prompt_source_attribution(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(Option<String>, Option<String>), DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let prompt = self
+            .prompt_state_owner
+            .active_prompt_for_agent(&session, agent_id)
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(self.prompt_source_attribution(&prompt))
+    }
+
     fn ensure_queued_prompt_manually_mutable(
         &self,
         session: &crate::session::RuntimeSession,
@@ -53,21 +89,8 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         source_attachment_id: &str,
     ) -> Result<String, DaemonError> {
-        if crate::scheduler::runtime::is_workflow_prompt_attachment(source_attachment_id) {
-            return Ok(source_attachment_id.to_string());
-        }
-        let session = self.session_store.get_session(session_id)?;
-        if session.has_attachment(source_attachment_id) {
-            return Ok(source_attachment_id.to_string());
-        }
-        self.attachment_store
-            .list_session_attachment_ids(session_id)
-            .into_iter()
-            .next()
-            .ok_or_else(|| DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: source_attachment_id.to_string(),
-            })
+        let _ = self.session_store.get_session(session_id)?;
+        Ok(source_attachment_id.to_string())
     }
 
     pub(super) fn mirror_prompt_owner_agent_state(

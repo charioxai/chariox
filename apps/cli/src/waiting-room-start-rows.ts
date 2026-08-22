@@ -17,6 +17,15 @@ import {
 import { describeWaitingRoomWorktreeSelection } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomRow, WaitingRoomState, WaitingRoomTargetState } from "./waiting-room-types.js"
 import { describeWaitingRoomProjectSelection } from "./waiting-room-projects.js"
+import {
+  managedAutoStopLabel,
+  managedDurationLabel,
+  managedEnvironmentIsLaunchReady,
+  managedKernelContextLabel,
+  selectedManagedEnvironment,
+  waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectRepositoryOptions,
+} from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomStartRowsChoice = {
   providerId: BackendProviderId
@@ -28,7 +37,28 @@ export type WaitingRoomStartRowsChoice = {
 }
 
 export function waitingRoomStartRows(
-  state: Pick<WaitingRoomState, "focus" | "worktreeSelectionId" | "workspaceLiveSyncMode" | "selectedMachineRef" | "selectedKernelRef" | "projectSelectionId" | "sliceSelectionId" | "sliceDisplayMode">,
+  state: Pick<WaitingRoomState,
+    | "focus"
+    | "worktreeSelectionId"
+    | "workspaceLiveSyncMode"
+    | "selectedMachineRef"
+    | "selectedKernelRef"
+    | "projectSelectionId"
+    | "sliceSelectionId"
+    | "sliceDisplayMode"
+    | "managedComputeClass"
+    | "managedRegion"
+    | "managedKernelContext"
+    | "managedContextSourceTargetId"
+    | "managedDevelopmentMode"
+    | "managedRepositorySelection"
+    | "managedRepositoryIndex"
+    | "managedProviderAccountSource"
+    | "managedGitCredentialSource"
+    | "managedAutoStopPreset"
+    | "managedCustomMinimumRuntimeSeconds"
+    | "managedCustomIdleDelaySeconds"
+  >,
   choice: WaitingRoomStartRowsChoice,
   options: {
     modelOptions: CatalogModelOption[]
@@ -51,16 +81,121 @@ export function waitingRoomStartRows(
       workspacePath: options.targets?.workspacePath,
       worktreeSelectionId: state.worktreeSelectionId,
       worktreePath: options.targets?.worktreePath,
+      projectSelectionId: state.projectSelectionId,
+      developmentMode: state.managedDevelopmentMode,
+      repositorySelection: state.managedRepositorySelection,
       selectedMachineRef: state.selectedMachineRef,
       selectedKernelRef: state.selectedKernelRef,
     }),
     state.sliceDisplayMode,
   )
   const collaborationBackend = remote.collaborationBackend ?? "local"
+  const configuresManaged = waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)
+  const configuresSliceDevelopment = !configuresManaged
+    && Boolean(state.sliceSelectionId && state.sliceSelectionId !== "none")
+  const selectedEnvironment = selectedManagedEnvironment(state, remote)
+  const managedRepositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
+  const selectedSupportingRepositories = new Set(
+    state.managedRepositorySelection?.supportingWorkspaceIds ?? managedRepositoryOptions
+      .slice(1)
+      .map((option) => option.workspaceId),
+  )
+  const selectedManagedRepositoryCount = managedRepositoryOptions.filter((option) => (
+    option.primary || selectedSupportingRepositories.has(option.workspaceId)
+  )).length
+  const managedRepositoryRows: WaitingRoomRow[] = state.managedDevelopmentMode === "current_project"
+    ? [
+        {
+          id: "managed-repositories",
+          title: "Selected repositories",
+          value: `${selectedManagedRepositoryCount} of ${managedRepositoryOptions.length} included`,
+          titleWidth: options.titleWidth,
+          indent: 1,
+          focused: false,
+          selectable: false,
+          scrollbar: "",
+        },
+        ...managedRepositoryOptions.map((option, index): WaitingRoomRow => ({
+          id: `managed-repository:${option.workspaceId}`,
+          title: option.workspaceId,
+          value: option.primary
+            ? "Primary (included)"
+            : selectedSupportingRepositories.has(option.workspaceId) ? "Included" : "Excluded",
+          titleWidth: options.titleWidth,
+          indent: 2,
+          focused: !option.primary
+            && state.focus === "managed-repositories"
+            && (state.managedRepositoryIndex ?? 0) === index - 1,
+          selectable: !option.primary,
+          scrollbar: "",
+        })),
+      ]
+    : [{
+        id: "managed-repositories",
+        title: "Selected repositories",
+        value: "None",
+        titleWidth: options.titleWidth,
+        indent: 1,
+        focused: false,
+        selectable: false,
+        scrollbar: "",
+      }]
+  const managedRows: WaitingRoomRow[] = configuresManaged
+    ? [
+        startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, options.titleWidth),
+        startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, options.titleWidth),
+        startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state as WaitingRoomState, remote), state, options.titleWidth),
+        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
+        ...managedRepositoryRows,
+        startRow(
+          "managed-provider-accounts",
+          "Provider accounts source",
+          state.managedProviderAccountSource === "none" ? "None" : "Selected account",
+          state,
+          options.titleWidth,
+        ),
+        startRow(
+          "managed-git-credentials",
+          "Git credentials source",
+          state.managedGitCredentialSource === "none" ? "None" : "GitHub",
+          state,
+          options.titleWidth,
+        ),
+        startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state as WaitingRoomState), state, options.titleWidth),
+        ...(state.managedAutoStopPreset === "custom"
+          ? [
+              startRow(
+                "managed-custom-minimum",
+                "Minimum runtime",
+                managedDurationLabel(state.managedCustomMinimumRuntimeSeconds),
+                state,
+                options.titleWidth,
+              ),
+              startRow(
+                "managed-custom-idle",
+                "Idle delay",
+                managedDurationLabel(state.managedCustomIdleDelaySeconds),
+                state,
+                options.titleWidth,
+              ),
+            ]
+          : []),
+      ]
+    : []
+  const sliceDevelopmentRows: WaitingRoomRow[] = configuresSliceDevelopment
+    ? [
+        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
+        ...managedRepositoryRows,
+      ]
+    : []
   return [
     {
       id: "new",
-      title: "Start New Session",
+      title: configuresManaged
+        ? "Create machine and start session"
+        : selectedEnvironment && !managedEnvironmentIsLaunchReady(selectedEnvironment)
+          ? "Start machine and session"
+          : "Start New Session",
       value: "Press Enter",
       titleWidth: options.titleWidth,
       indent: 0,
@@ -88,6 +223,7 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...managedRows,
     ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
       ? [{
           id: "project",
@@ -201,6 +337,7 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+    ...sliceDevelopmentRows,
     {
       id: "join-header",
       title: "Join Existing Session",
@@ -216,6 +353,25 @@ export function waitingRoomStartRows(
       scrollbar: "",
     },
   ]
+}
+
+function startRow(
+  id: WaitingRoomState["focus"],
+  title: string,
+  value: string,
+  state: Pick<WaitingRoomState, "focus">,
+  titleWidth: number,
+): WaitingRoomRow {
+  return {
+    id,
+    title,
+    value,
+    titleWidth,
+    indent: 1,
+    focused: state.focus === id,
+    selectable: true,
+    scrollbar: "",
+  }
 }
 
 function formatAccountValue(profile: ProviderAccountProfile | null): string {

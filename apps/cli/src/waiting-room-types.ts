@@ -1,6 +1,11 @@
 import type { ExternalProviderSessionRecord, SliceRecord } from "./cli-types.js"
 import type { BackendProviderId } from "./provider-catalog.js"
 import type { ProviderAccountProfile, ProviderAccountSummary } from "@chariox/kernel-client"
+import type {
+  ManagedEnvironmentComputeClassOption,
+  ManagedEnvironmentContextSourceOption,
+  ManagedEnvironmentSummary,
+} from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { ThemeName } from "./theme-registry.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 
@@ -8,6 +13,16 @@ export type WaitingRoomFocus =
   | "new"
   | "launch-machine"
   | "launch-kernel"
+  | "managed-compute"
+  | "managed-region"
+  | "managed-kernel-context"
+  | "managed-development"
+  | "managed-repositories"
+  | "managed-provider-accounts"
+  | "managed-git-credentials"
+  | "managed-auto-stop"
+  | "managed-custom-minimum"
+  | "managed-custom-idle"
   | "project"
   | "project-entry"
   | "archived-projects"
@@ -41,6 +56,12 @@ export type WaitingRoomKeyState = {
   right: boolean
 }
 
+export type WaitingRoomManagedRepositorySelection = {
+  projectId: string
+  primaryWorkspaceId: string
+  supportingWorkspaceIds: string[]
+}
+
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
@@ -54,6 +75,18 @@ export type WaitingRoomState = {
   workspaceLiveSyncMode: "off" | "managed" | "tracked"
   selectedMachineRef?: string
   selectedKernelRef?: string
+  managedComputeClass?: string
+  managedRegion?: string
+  managedKernelContext?: "empty" | "source_kernel"
+  managedContextSourceTargetId?: string
+  managedDevelopmentMode?: "empty" | "current_project"
+  managedRepositorySelection?: WaitingRoomManagedRepositorySelection
+  managedRepositoryIndex?: number
+  managedProviderAccountSource?: "none" | "selected_account"
+  managedGitCredentialSource?: "none" | "selected"
+  managedAutoStopPreset?: "agents_done" | "idle_15m" | "idle_30m" | "minimum_3h" | "manual" | "custom"
+  managedCustomMinimumRuntimeSeconds?: number
+  managedCustomIdleDelaySeconds?: number | null
   projectSelectionId?: string
   showArchivedProjects?: boolean
   sliceSelectionId?: string
@@ -97,6 +130,7 @@ export type WaitingRoomRemoteKernel = {
 
 export type WaitingRoomRemoteState = {
   workspaceId?: string
+  worktreeId?: string
   inventoryStatus?: "loading" | "ready" | "error"
   loadingFrame?: number
   cloudNotice?: string | null
@@ -105,6 +139,8 @@ export type WaitingRoomRemoteState = {
     configured: boolean
     connected: boolean
     relay_url?: string | null
+    daemon_id?: string | null
+    machine_id?: string | null
   } | null
   machines?: WaitingRoomRemoteMachine[]
   kernels?: WaitingRoomRemoteKernel[]
@@ -115,6 +151,10 @@ export type WaitingRoomRemoteState = {
   externalProviderSessionsNextCursor?: string | null
   projects?: WaitingRoomProjectSummary[]
   providerAccounts?: ProviderAccountProfile[]
+  gitCredentials?: import("@chariox/kernel-client").WaitingRoomGitCredentialSummary[]
+  managedComputeClasses?: readonly ManagedEnvironmentComputeClassOption[]
+  managedContextSources?: readonly ManagedEnvironmentContextSourceOption[]
+  managedEnvironments?: readonly ManagedEnvironmentSummary[]
 }
 
 export type WaitingRoomTerminalType = "cli" | "web" | "ios" | "android"
@@ -130,6 +170,9 @@ export type WaitingRoomTerminal = {
 export type WaitingRoomTargetState = {
   workspacePath: string
   worktreePath: string
+  workspaceId?: string
+  worktreeId?: string
+  managedEnvironmentCatalog?: import("@chariox/kernel-client/ipc-managed-environment-requests").ManagedEnvironmentCatalog
 }
 
 export type WaitingRoomRow = {

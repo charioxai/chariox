@@ -35,6 +35,7 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
             }),
         );
     }
+    chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
     let config_started = Instant::now();
     let config = DaemonConfig::load_from_env();
     chariox_kernel::logging::info_with_fields(

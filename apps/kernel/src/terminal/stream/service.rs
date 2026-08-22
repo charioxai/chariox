@@ -378,7 +378,10 @@ impl TerminalStreamService {
         record
     }
 
-    fn push_output_record(&mut self, record: TerminalOutputRecord) -> u64 {
+    fn push_output_record(&mut self, record: TerminalOutputRecord) {
+        if record.pending_recipient_attachment_ids.is_empty() {
+            return;
+        }
         let record_id = self.next_output_record_id;
         self.next_output_record_id = self.next_output_record_id.saturating_add(1);
         for attachment_id in &record.pending_recipient_attachment_ids {
@@ -395,7 +398,6 @@ impl TerminalStreamService {
             },
         );
         self.last_output_record_id = Some(record_id);
-        record_id
     }
 
     fn try_replace_external_observed_output_record(
@@ -772,7 +774,10 @@ impl TerminalStreamService {
         record
     }
 
-    fn push_completion_record(&mut self, record: AssistantMessageCompletionRecord) -> u64 {
+    fn push_completion_record(&mut self, record: AssistantMessageCompletionRecord) {
+        if record.pending_recipient_attachment_ids.is_empty() {
+            return;
+        }
         let record_id = self.next_completion_record_id;
         self.next_completion_record_id = self.next_completion_record_id.saturating_add(1);
         for attachment_id in &record.pending_recipient_attachment_ids {
@@ -782,7 +787,6 @@ impl TerminalStreamService {
                 .push_back(record_id);
         }
         self.completion_records.insert(record_id, record);
-        record_id
     }
 
     pub fn drain_completion_records(

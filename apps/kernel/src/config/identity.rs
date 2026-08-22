@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::transport::relay_crypto;
 
-use super::{paths::default_config_dir, DaemonConfig};
+use super::{paths::default_config_dir, private_file::write_private_file, DaemonConfig};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct RuntimeIdentity {
@@ -22,6 +22,13 @@ pub(super) struct RuntimeIdentity {
     pub(super) daemon_alias: Option<String>,
     pub(super) relay_public_key: String,
     pub(super) relay_private_key: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ManagedRuntimeIdentity {
+    pub(crate) kernel_id: String,
+    pub(crate) machine_id: String,
+    pub(crate) relay_public_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +160,33 @@ pub(super) fn load_or_create_runtime_identity(host: &str, port: u16) -> RuntimeI
     identity
 }
 
+pub(crate) fn load_or_create_managed_runtime_identity(
+    host: &str,
+    port: u16,
+) -> Result<ManagedRuntimeIdentity, crate::error::DaemonError> {
+    let identity = load_or_create_runtime_identity(host, port);
+    let persisted = load_or_create_runtime_identity(host, port);
+    if identity != persisted || identity_is_invalid(&identity) {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "persist managed runtime identity",
+            message: "managed runtime identity did not persist exactly".to_string(),
+        });
+    }
+    let expected_public =
+        relay_crypto::public_key_from_private_key_base64(&identity.relay_private_key)?;
+    if expected_public != identity.relay_public_key {
+        return Err(crate::error::DaemonError::LocalTransport {
+            operation: "persist managed runtime identity",
+            message: "managed runtime relay keypair is inconsistent".to_string(),
+        });
+    }
+    Ok(ManagedRuntimeIdentity {
+        kernel_id: identity.daemon_id,
+        machine_id: identity.machine_id,
+        relay_public_key: identity.relay_public_key,
+    })
+}
+
 fn prune_kernel_registry(registry: &mut KernelRegistry, current_endpoint_key: &str) {
     let mut recent = registry
         .kernels
@@ -229,7 +263,7 @@ fn load_or_create_machine_identity() -> MachineIdentity {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(contents) = serde_json::to_string_pretty(&identity) {
-        let _ = fs::write(&path, contents);
+        let _ = write_private_file(&path, contents.as_bytes());
     }
     identity
 }
@@ -256,7 +290,7 @@ fn persist_kernel_registry(path: &PathBuf, registry: &KernelRegistry) {
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(contents) = serde_json::to_string_pretty(registry) {
-        let _ = fs::write(path, contents);
+        let _ = write_private_file(path, contents.as_bytes());
     }
 }
 
@@ -269,7 +303,7 @@ fn persist_kernel_identity(identity: &RuntimeIdentity, record: &KernelIdentityRe
         let _ = fs::create_dir_all(parent);
     }
     if let Ok(contents) = serde_json::to_string_pretty(record) {
-        let _ = fs::write(path, contents);
+        let _ = write_private_file(&path, contents.as_bytes());
     }
 }
 

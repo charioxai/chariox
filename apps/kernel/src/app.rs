@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -144,6 +145,11 @@ pub struct DaemonApp {
     history: SessionHistoryStore,
     operational_history: OperationalHistoryStore,
     durable_state: DurableKernelStateStore,
+    managed_context_transfers: crate::managed_context::transfer::ManagedContextTransferStore,
+    managed_context_outbound:
+        crate::managed_context::outbound_service::ManagedContextOutboundOperationStore,
+    managed_kernel_registration:
+        Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration>,
     legacy_workflow_history: LegacyWorkflowHistoryStore,
     provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore,
@@ -180,6 +186,15 @@ impl DaemonApp {
         let bootstrap_started = Instant::now();
         let validate_started = Instant::now();
         config.validate()?;
+        if config.user_config.credential_vault.backend
+            == crate::config::CredentialVaultBackend::CharioxEncrypted
+        {
+            crate::secret::restore_transferred_vault_unlock(
+                &config.user_config.credential_vault.path,
+                &config.daemon_id,
+                &config.relay_private_key,
+            )?;
+        }
         crate::logging::info_with_fields(
             "daemon.startup",
             "daemon config validated",
@@ -222,6 +237,37 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
+        let managed_context_root = config
+            .durable_state_path()
+            .parent()
+            .map(Path::to_path_buf)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "open managed context transfer store",
+                message: "durable state path has no parent directory".to_string(),
+            })?;
+        let managed_kernel_registration =
+            crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
+        let managed_context_launch_recovery =
+            managed_kernel_registration
+                .as_ref()
+                .and_then(|registration| {
+                    registration.context_plan.as_ref().map(|plan| {
+                        crate::managed_context::transfer::ManagedContextLaunchRecoveryBinding {
+                            environment_id: registration.environment_id.clone(),
+                            kernel_id: registration.kernel_id.clone(),
+                            plan: plan.package_binding(),
+                        }
+                    })
+                });
+        let managed_context_transfers =
+            crate::managed_context::transfer::ManagedContextTransferStore::open_with_launch_recovery(
+                managed_context_root.join("managed-context-transfers"),
+                managed_context_launch_recovery.as_ref(),
+            )?;
+        let managed_context_outbound =
+            crate::managed_context::outbound_service::ManagedContextOutboundOperationStore::open(
+                managed_context_root.join("managed-context-outbound"),
+            )?;
         crate::logging::info_with_fields(
             "daemon.startup",
             "durable state store opened",
@@ -259,6 +305,9 @@ impl DaemonApp {
             history,
             operational_history,
             durable_state,
+            managed_context_transfers,
+            managed_context_outbound,
+            managed_kernel_registration,
             legacy_workflow_history: LegacyWorkflowHistoryStore::default(),
             provider_account_profiles,
             metaagent_events: crate::runtime::metaagent_event::MetaagentEventStore::default(),
@@ -374,6 +423,24 @@ impl DaemonApp {
 
     pub(crate) fn durable_state_store(&self) -> DurableKernelStateStore {
         self.durable_state.clone()
+    }
+
+    pub(crate) fn managed_context_transfer_store(
+        &self,
+    ) -> crate::managed_context::transfer::ManagedContextTransferStore {
+        self.managed_context_transfers.clone()
+    }
+
+    pub(crate) fn managed_context_outbound_operation_store(
+        &self,
+    ) -> crate::managed_context::outbound_service::ManagedContextOutboundOperationStore {
+        self.managed_context_outbound.clone()
+    }
+
+    pub(crate) fn managed_kernel_registration(
+        &self,
+    ) -> Option<crate::managed_bootstrap::ConfirmedManagedKernelRegistration> {
+        self.managed_kernel_registration.clone()
     }
 
     pub(crate) fn legacy_workflow_history_store(&self) -> LegacyWorkflowHistoryStore {
@@ -669,6 +736,7 @@ mod tests {
                         workspace_id: None,
                         worktree_id: None,
                         workspace_mount: Some("/repo".to_string()),
+                        development: None,
                         worker_kernel_ref: None,
                         display_url: Some("http://127.0.0.1:6080".to_string()),
                         provider_auth: Vec::new(),

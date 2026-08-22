@@ -1,0 +1,22 @@
+import type { ProviderAccountProfile } from "@chariox/kernel-client"
+
+export function providerAccountFamily(provider: string): string {
+  return provider === "claude-headless" || provider === "claude-p" ? "claude" : provider
+}
+
+export function providerAccountsForProvider(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+): readonly ProviderAccountProfile[] {
+  const family = providerAccountFamily(provider)
+  return (profiles ?? []).filter((profile) => profile.provider === family)
+}
+
+export function selectedProviderAccount(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+  profileId: string | undefined,
+): ProviderAccountProfile | null {
+  return providerAccountsForProvider(profiles, provider)
+    .find((profile) => profile.profile_id === profileId) ?? null
+}

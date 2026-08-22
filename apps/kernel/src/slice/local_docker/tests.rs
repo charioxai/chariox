@@ -15,6 +15,7 @@ fn test_record() -> SliceRecord {
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: Some("/repo".to_string()),
+                development: None,
                 worker_kernel_ref: None,
                 display_url: None,
                 provider_auth: Vec::new(),
@@ -166,6 +167,120 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
 }
 
 #[test]
+fn local_docker_slice_mounts_only_development_repositories() {
+    let store = SliceStore::default();
+    let record = store
+        .create(
+            "kernel-1",
+            "machine-1",
+            CreateSliceInput {
+                name: "project-dev".to_string(),
+                backend: SliceBackendKind::SshDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                workspace_id: Some("/source/primary".to_string()),
+                worktree_id: Some("/source/primary-worktree".to_string()),
+                workspace_mount: Some("/source/primary-worktree".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 42,
+            },
+        )
+        .expect("slice should create");
+    let record = store
+        .set_development_publication(
+            &record.id,
+            crate::slice::SliceDevelopmentPublication {
+                publication_id: "development".to_string(),
+                destination_root: "/state/development/slice-1/development".to_string(),
+                primary_repository_path: "/state/development/slice-1/development/primary"
+                    .to_string(),
+                repository_paths: vec![
+                    "/state/development/slice-1/development/primary".to_string(),
+                    "/state/development/slice-1/development/supporting".to_string(),
+                ],
+            },
+            43,
+        )
+        .expect("publication should bind to slice");
+    let mut command = Command::new("slice-provisioner");
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options())
+        .expect("slice command should configure");
+    let envs: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+        .collect();
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_WORKSPACE"),
+        Some(&"/state/development/slice-1/development/primary")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT"),
+        Some(&"2")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_0"),
+        Some(&"/state/development/slice-1/development/primary")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_1"),
+        Some(&"/state/development/slice-1/development/supporting")
+    );
+    assert!(!envs.contains_key("CHARIOX_SLICE_DEVELOPMENT_ROOT"));
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    assert!(
+        script.contains("-v \"$development_mount:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE\"")
+    );
+    assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
+}
+
+#[test]
+fn local_docker_slice_rejects_mounting_development_control_root() {
+    let mut record = SliceStore::default()
+        .create(
+            "kernel-1",
+            "machine-1",
+            CreateSliceInput {
+                name: "project-dev-invalid".to_string(),
+                backend: SliceBackendKind::SshDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                workspace_id: Some("/source/primary".to_string()),
+                worktree_id: Some("/source/primary-worktree".to_string()),
+                workspace_mount: Some("/source/primary-worktree".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 42,
+            },
+        )
+        .expect("slice should create");
+    record.development_publication = Some(crate::slice::SliceDevelopmentPublication {
+        publication_id: "development".to_string(),
+        destination_root: "/state/development/slice-1/development".to_string(),
+        primary_repository_path: "/state/development/slice-1/development".to_string(),
+        repository_paths: vec!["/state/development/slice-1/development".to_string()],
+    });
+    let mut command = Command::new("slice-provisioner");
+
+    let error = configure_local_docker_slice_command(&mut command, &record, None, &test_options())
+        .expect_err("publication control root must never be mounted into the slice");
+
+    assert!(error
+        .to_string()
+        .contains("repository mount escaped its publication"));
+}
+
+#[test]
 fn local_docker_default_saved_state_round_trips_through_pointer_manifest() {
     let root = test_root("slice-default-state");
     let state_dir = root.join("states").join("gmail-ready");
@@ -208,6 +323,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: Some("/repo".to_string()),
+                development: None,
                 worker_kernel_ref: None,
                 display_url: None,
                 provider_auth: Vec::new(),

@@ -62,6 +62,37 @@ test("transitionToNoSession resets session-bound state and refreshes the waiting
   ])
 })
 
+test("rollbackAttachedSession detaches and clears only the exact target binding", async () => {
+  const attachment = { id: "att-managed", session_id: "session-managed" }
+  let currentAttachment: typeof attachment | null = attachment
+  let currentSessionId = "session-managed"
+  const { deps, calls } = createBaseDeps({
+    attachmentState: () => currentAttachment,
+    sessionState: () => ({ id: currentSessionId }),
+    detachAttachment: async (attachmentId: string) => {
+      calls.push(`detachAttachment:${attachmentId}`)
+    },
+    setAttachmentState: (next: typeof attachment | null) => {
+      calls.push("setAttachmentState")
+      currentAttachment = next
+    },
+    setSessionState: (session: RuntimeSession) => {
+      calls.push("setSessionState")
+      currentSessionId = session.id
+    },
+  })
+  const controller = createSessionLifecycleController(deps as never)
+
+  assert.equal(await controller.rollbackAttachedSession("session-other"), false)
+  assert.equal(calls.length, 0)
+
+  assert.equal(await controller.rollbackAttachedSession("session-managed"), true)
+  assert.equal(currentAttachment, null)
+  assert.equal(currentSessionId, "no-session")
+  assert.equal(calls[0], "detachAttachment:att-managed")
+  assert.ok(calls.includes("refreshWaitingRoomData"))
+})
+
 test("attachBinding reattaches and hydrates the attached session before restoring the attached state", async () => {
   const events: string[] = []
   const attachedSession: RuntimeSession = {

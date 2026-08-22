@@ -10,7 +10,7 @@ fn temp_root(name: &str) -> PathBuf {
 }
 
 #[test]
-fn registry_and_remote_materialization_roots_can_be_isolated_for_managed_slice_runtime() {
+fn managed_user_isolation_preserves_repository_scoped_skills() {
     let _guard = crate::env_lock::lock();
     let isolation_root = temp_root("managed-slice-isolation");
     std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
@@ -22,8 +22,7 @@ fn registry_and_remote_materialization_roots_can_be_isolated_for_managed_slice_r
     std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     let _ = fs::remove_dir_all(&isolation_root);
 
-    assert!(project_root.starts_with(isolation_root.join("project")));
-    assert!(project_root.ends_with("skills"));
+    assert_eq!(project_root, PathBuf::from("/workspace/.chariox/skills"));
     assert_eq!(user_root, isolation_root.join("user").join("skills"));
     assert_eq!(remote_root, isolation_root.join("remote").join("skills"));
 }
