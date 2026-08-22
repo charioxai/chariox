@@ -55,7 +55,10 @@ import {
 import { getWaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 import { createWaitingRoomInventoryRefreshController } from "./waiting-room-inventory-refresh-controller.js"
-import { createWaitingRoomInventoryCache } from "./waiting-room-inventory-cache.js"
+import {
+  createWaitingRoomInventoryCache,
+  waitingRoomInventoryCacheScopeKey,
+} from "./waiting-room-inventory-cache.js"
 import { createWaitingRoomLifecycleActionController } from "./waiting-room-lifecycle-action-controller.js"
 import { createWaitingRoomLifecycleConfirmationController } from "./waiting-room-lifecycle-confirmation-controller.js"
 import { createWaitingRoomReconcileController } from "./waiting-room-reconcile-controller.js"
@@ -160,8 +163,17 @@ export type CliWaitingRoomCompositionDeps = {
 }
 
 export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionDeps) {
-  const waitingRoomInventoryCache = createWaitingRoomInventoryCache()
+  const waitingRoomInventoryCacheScope = () => (
+    waitingRoomInventoryCacheScopeKey(relayCloudProfile(deps.preferencesState()))
+  )
+  const waitingRoomInventoryCache = createWaitingRoomInventoryCache(
+    undefined,
+    undefined,
+    undefined,
+    waitingRoomInventoryCacheScope,
+  )
   const cachedWaitingRoomInventories = waitingRoomInventoryCache.load()
+  let directTargetKernelId = deps.options.targetDaemonId?.trim() || null
   let providerCatalogSelectionRevision = 0
   let managedEnvironmentCatalog: ManagedEnvironmentCatalog | undefined
   let sourceLaunchTarget: { workspaceId: string; worktreeId: string } | null | undefined
@@ -290,6 +302,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
     cachedInventories: cachedWaitingRoomInventories,
+    getCacheScopeKey: waitingRoomInventoryCacheScope,
+    loadCachedInventories: waitingRoomInventoryCache.load,
+    getDirectTargetKernelId: () => directTargetKernelId,
     persistInventory: waitingRoomInventoryCache.persist,
     getLocalKernelPresences: loadLocalKernelPresences,
   })
@@ -330,6 +345,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   ): Promise<boolean> => {
     const targetKernelRef = kernelRef?.trim()
     const currentKernelId = deps.relayStatusState()?.daemon_id?.trim()
+    const sourceTargetKernelId = directTargetKernelId
     if (!targetKernelRef || targetKernelRef === "local" || targetKernelRef === currentKernelId) {
       if (connected && targetKernelRef && targetKernelRef !== "local") {
         const inventory = await getWaitingRoomInventory(deps.client)
@@ -379,14 +395,30 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }
       const pivot = beginMutableLocalIpcClientPivot(deps.client, nextClient)
       try {
+        directTargetKernelId = targetInventory.kernelId
         connected?.(targetInventory)
+        retainPrevious({
+          commit: () => pivot.commit(),
+          rollback: async () => {
+            try {
+              await pivot.rollback()
+            } finally {
+              directTargetKernelId = sourceTargetKernelId
+              waitingRoomInventoryRefreshController.invalidate()
+            }
+          },
+        })
       } catch (error) {
-        await pivot.rollback()
+        try {
+          await pivot.rollback()
+        } finally {
+          directTargetKernelId = sourceTargetKernelId
+        }
         throw error
       }
-      retainPrevious(pivot)
     } else {
       await deps.client.replaceClient(nextClient)
+      directTargetKernelId = targetInventory.kernelId
       connected?.(targetInventory)
     }
     waitingRoomInventoryRefreshController.invalidate()
