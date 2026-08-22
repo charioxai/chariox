@@ -22,15 +22,22 @@ pub(crate) fn capture_workflow_publication_requirements(
     let mut network_destinations = BTreeMap::<String, serde_json::Value>::new();
 
     for ((kind, name), extension_uses) in uses {
-        let Some(requirement) = (match kind {
+        let requirement = match kind {
             crate::extension::ExtensionKind::Mcp => mcp_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Skill => skill_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Script => script_requirement(&name, &extension_uses)?,
             crate::extension::ExtensionKind::Connector => {
                 connector_requirement(&name, &extension_uses)?
             }
-        }) else {
-            continue;
+        };
+        let Some(requirement) = requirement else {
+            return Err(extension_error(
+                &name,
+                format!(
+                    "is granted to a workflow agent but has no installed {} definition",
+                    kind.as_str()
+                ),
+            ));
         };
         for credential in requirement["credential_slots"]
             .as_array()

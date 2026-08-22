@@ -382,7 +382,7 @@ fn publication_package_omits_runtime_agent_state_and_remains_stable() {
 }
 
 #[test]
-fn publication_export_includes_only_extensions_that_are_installed_and_granted_at_export() {
+fn publication_export_captures_exact_grants_and_rejects_missing_definitions() {
     let harness = LocalRouterTestHarness::new();
     let workspace = std::env::temp_dir().join(format!(
         "chariox-publication-extensions-{}-{}",
@@ -625,6 +625,29 @@ fn publication_export_includes_only_extensions_that_are_installed_and_granted_at
             },
         ))
         .expect("source MCP should uninstall before the next export");
+    let missing_definition_error = harness
+        .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
+            ExportWorkflowPublicationPackageRequest {
+                session_id: graph.session_id.clone(),
+                publication_ref: publication.id().to_string(),
+                kernel_url: None,
+                agent_app: None,
+                agent_app_assets_dir: None,
+            },
+        ))
+        .expect_err("a dangling extension grant must block publication export");
+    assert!(missing_definition_error
+        .to_string()
+        .contains("granted to a workflow agent but has no installed mcp definition"));
+    harness
+        .dispatch(LocalDaemonRequest::RevokeAgentExtension(
+            crate::local::RevokeAgentExtensionRequest {
+                agent_ref: graph.agent_id.clone(),
+                kind: crate::local::ExtensionKind::Mcp,
+                name: github.name.clone(),
+            },
+        ))
+        .expect("deleted MCP should be ungranted before export");
     let (removed_digest, removed_files) = export();
     let removed_requirements = package_json_file(&removed_files, "requirements.json");
     assert_eq!(
