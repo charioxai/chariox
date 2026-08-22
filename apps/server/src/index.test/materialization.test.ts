@@ -673,6 +673,105 @@ test("gateway fails before materialization when provider/model bindings cannot b
   }
 })
 
+test("gateway materializes captured dev-stub bindings without exposing them in the provider catalog", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-dev-stub-bindings-"))
+  const requests: Record<string, unknown>[] = []
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1,
+      package_version: 4,
+      publication_id: "pub-1",
+      source_session_id: "session-1",
+      workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      default_bindings_path: "bindings.local.json",
+      hooks: [{
+        id: "hook-1",
+        transport: "human_http",
+        endpoint_id: "endpoint-1",
+        route: "/*",
+        methods: ["GET"],
+      }],
+    }))
+    await writeDeploymentContractFixture(root, "pub-1", "hook-1", [{
+      agentId: "agent-1",
+      capturedProvider: "dev-stub",
+    }])
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1,
+      source_session: {
+        id: "session-1",
+        workspace_id: "/repo",
+        worktree_id: "/repo",
+      },
+      workflow: {
+        id: "workflow-1",
+        alias: null,
+        nodes: [{ id: "node-1", agent_id: "agent-1" }],
+        edges: [],
+        endpoints: [{ id: "endpoint-1", entry_node_id: "node-1" }],
+      },
+      endpoint: { id: "endpoint-1", entry_node_id: "node-1" },
+      agents: [{
+        id: "agent-1",
+        agent_ref: "agent-ref-1",
+        session_id: "session-1",
+        alias: null,
+        provider: "dev-stub",
+        model: "workflow-intermediate-node",
+        effort: "low",
+        worktree_id: "/repo",
+        state: "Idle",
+        is_processing: false,
+        grid_row: 0,
+        grid_col: 0,
+        grid_row_span: 1,
+        grid_col_span: 1,
+        created_at_ms: 0,
+        last_activity_at_ms: 0,
+      }],
+    }))
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+
+    const config = await loadPublicationPackageConfig(root, {
+      kernelEndpoint: "ws://kernel",
+      materialize: true,
+      promptProviderModelReplacement: false,
+      client: {
+        send: async (request) => {
+          requests.push(request)
+          if ("GetProviderCatalog" in request) return providerCatalogResponse({ codex: ["gpt-5"] })
+          return {
+            WorkflowPublicationMaterialized: {
+              publication_id: "pub-1",
+              session: { id: "runtime-session-1" },
+              agent_id_map: { "agent-1": "agent-2" },
+            },
+          }
+        },
+      },
+    })
+
+    const materializeRequest = requests.at(-1) as {
+      MaterializeWorkflowPublication: {
+        snapshot: {
+          agents: Array<{ provider: string; model: string | null; effort?: string | null }>
+        }
+      }
+    }
+    assert.equal(config.session_id, "runtime-session-1")
+    assert.deepEqual(requests.map((request) => Object.keys(request)[0]), [
+      "GetProviderCatalog",
+      "MaterializeWorkflowPublication",
+    ])
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.provider, "dev-stub")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.model, "workflow-intermediate-node")
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.effort, "low")
+  } finally {
+    await removeMaterializationFixture(root)
+  }
+})
+
 test("gateway fails package materialization before runtime creation when requirements are missing", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-requirements-"))
   const requests: Record<string, unknown>[] = []

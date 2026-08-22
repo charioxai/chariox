@@ -43,7 +43,9 @@ export async function resolvePublicationProviderModelBindings(
       throw new Error(`publication provider is not permitted for agent ${agent.id}: ${selected.provider}`)
     }
     const allowedCatalog = providerCatalogForAllowedProviders(catalog, allowedProviders)
-    const selectedProfile = availableProviderProfile(allowedCatalog, selected)
+    const selectedProfile = binding.replacement
+      ? availableProviderProfile(allowedCatalog, selected)
+      : internalDevelopmentAdapterProfile(selected) ?? availableProviderProfile(allowedCatalog, selected)
     if (selectedProfile) {
       applyAgentProfile(agent, selectedProfile)
       continue
@@ -72,6 +74,12 @@ export async function resolvePublicationProviderModelBindings(
     await writeFile(bindingsPath, `${JSON.stringify(bindings, null, 2)}\n`)
   }
   return { snapshot, bindings, changed }
+}
+
+function internalDevelopmentAdapterProfile(
+  profile: PublicationProviderModelProfile,
+): PublicationProviderModelProfile | null {
+  return profile.provider === "dev-stub" ? profile : null
 }
 
 function providerCatalogForAllowedProviders(
