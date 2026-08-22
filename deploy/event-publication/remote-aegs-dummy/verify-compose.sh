@@ -14,3 +14,5 @@ export CHARIOX_AEGS_MANAGEMENT_TOKEN_FILE="${temporary_dir}/management-token"
 rendered="$(docker compose -f "${deployment_dir}/compose.yaml" config --format json)"
 jq -e '.services["dummy-aegs"].tmpfs == ["/tmp:size=16m,mode=1777"]' \
   <<<"${rendered}" >/dev/null
+
+"${deployment_dir}/backup-restore.test.sh"
