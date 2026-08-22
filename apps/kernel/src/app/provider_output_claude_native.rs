@@ -433,6 +433,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
                     provider_run_id,
                     &agent_id,
                     context_file,
+                    provider_run,
                     native_interaction_bridge.clone(),
                     &event,
                 )?;
@@ -857,12 +858,10 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         provider_run_id: &str,
         agent_id: &str,
         context_file: &str,
+        provider_run: &RuntimeProviderRun,
         native_interaction_bridge: Option<std::sync::Arc<dyn ProviderNativeInteractionBridge>>,
         event: &Value,
     ) -> Result<(), DaemonError> {
-        let Some(bridge) = native_interaction_bridge else {
-            return Ok(());
-        };
         if !should_bridge_claude_permission(event) {
             return Ok(());
         }
@@ -871,6 +870,20 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             .and_then(Value::as_str)
             .filter(|value| !value.trim().is_empty())
         else {
+            return Ok(());
+        };
+        if provider_run.permission_level() == crate::provider::AgentPermissionLevel::Yolo {
+            write_claude_hook_permission_tombstone(context_file, event);
+            clear_claude_permission_recent(context_file);
+            write_claude_permission_response(
+                context_file,
+                request_id,
+                true,
+                "Allowed by Chariox yolo permission policy.",
+            );
+            return Ok(());
+        }
+        let Some(bridge) = native_interaction_bridge else {
             return Ok(());
         };
         let tool_name = event

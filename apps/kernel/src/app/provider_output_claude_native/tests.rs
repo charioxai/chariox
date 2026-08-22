@@ -199,6 +199,95 @@ fn yolo_rendered_permission_is_confirmed_without_user_interaction() {
 }
 
 #[test]
+fn yolo_hook_permission_uses_kernel_policy_when_claude_reports_auto() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon should bootstrap");
+    let root = std::env::temp_dir().join(format!(
+        "chariox-claude-yolo-hook-permission-test-{}-{}",
+        std::process::id(),
+        timestamp_millis()
+    ));
+    fs::create_dir_all(&root).expect("test root should be created");
+    let context_file = root.join("hidden-context.txt");
+    fs::write(&context_file, "").expect("context file should be created");
+    let context_file = context_file.display().to_string();
+    let request = crate::provider::LaunchProviderRequest::new(
+        "session-yolo-hook",
+        "claude",
+        "claude-headless",
+        "default",
+        "claude-opus",
+    )
+    .with_agent_id("agent-yolo-hook")
+    .with_permission_level(crate::provider::AgentPermissionLevel::Yolo);
+    let run = RuntimeProviderRun::new(
+        "provider-run-yolo-hook",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::Managed,
+            process_label: "test-claude-yolo-hook-permission".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::from([(
+                "CHARIOX_CLAUDE_NATIVE_CONTEXT".to_string(),
+                context_file.clone(),
+            )]),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: None,
+        },
+    );
+    let bridge = RecordingPermissionBridge::default();
+    let event = serde_json::json!({
+        "hook_event_name": "PermissionRequest",
+        "hook_context_request_id": "request-auto-yolo",
+        "permission_mode": "auto",
+        "tool_name": "Bash",
+        "tool_input": {
+            "command": "rm -rf /tmp/chariox-rev-head && echo \"cleaned\""
+        },
+    });
+
+    assert!(should_bridge_claude_permission(&event));
+    ProviderOutputClaudeNativeBridge::new(&mut app)
+        .resolve_permission_event(
+            "session-yolo-hook",
+            run.id(),
+            "agent-yolo-hook",
+            &context_file,
+            &run,
+            Some(std::sync::Arc::new(bridge.clone())),
+            &event,
+        )
+        .expect("yolo hook permission should resolve without user interaction");
+
+    let response: serde_json::Value = serde_json::from_str(
+        &fs::read_to_string(root.join("permission-responses/request-auto-yolo.json"))
+            .expect("yolo hook should receive an immediate response"),
+    )
+    .expect("yolo hook response should be valid JSON");
+    assert_eq!(response["behavior"], "allow");
+    assert_eq!(
+        response["message"],
+        "Allowed by Chariox yolo permission policy."
+    );
+    assert!(
+        bridge
+            .interaction_ids
+            .lock()
+            .expect("permission interaction recorder should not be poisoned")
+            .is_empty(),
+        "the provider-reported mode must not override the kernel-owned yolo policy"
+    );
+    assert!(!claude_native_marker(&context_file)
+        .as_deref()
+        .is_some_and(|marker| marker.starts_with("permission:")));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon should bootstrap");
@@ -256,6 +345,7 @@ fn hook_permission_suppresses_post_stop_stale_rendered_permission_fallback() {
             run.id(),
             "agent-1",
             &context_file,
+            &run,
             Some(bridge_ref.clone()),
             &event,
         )
