@@ -240,9 +240,17 @@ export function validateWorkflowPublicationDeploymentContract(
 export function workflowPublicationDeploymentExtensions(
   contract: WorkflowPublicationDeploymentContract,
 ): readonly WorkflowPublicationDeploymentExtensionRequirement[] {
-  return validateDeploymentExtensions(
+  return validateWorkflowPublicationDeploymentExtensions(
     objectRecord(contract.capabilities, "deployment contract capabilities").extensions,
   )
+}
+
+export function validateWorkflowPublicationDeploymentExtensions(
+  value: unknown,
+): readonly WorkflowPublicationDeploymentExtensionRequirement[] {
+  const extensions = validateDeploymentExtensions(value)
+  assertNoSecretPayloadFields({ extensions })
+  return extensions
 }
 
 export function workflowPublicationAllowedProviders(
