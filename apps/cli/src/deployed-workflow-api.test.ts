@@ -221,6 +221,10 @@ test("deployed workflow API scopes claim and member handoff requests", async () 
       targetEmail: "owner@customer.test",
       expiresInSeconds: 600,
     })
+    assert.deepEqual(calls[1]?.body, {
+      accountId: "account-1",
+      claimToken: "chariox_claim_secret",
+    })
     assert.deepEqual(calls[2]?.body, {
       accountId: "account-1",
       claimToken: "chariox_claim_secret",

@@ -258,7 +258,10 @@ export async function reviewDeploymentClaim(
   profile: RelayCloudProfile,
   claimToken: string,
 ): Promise<DeploymentClaimResult> {
-  return postJson(profile, "/deployment-claims/review", { claimToken })
+  return postJson(profile, "/deployment-claims/review", {
+    accountId: profile.accountId,
+    claimToken,
+  })
 }
 
 export async function acceptDeploymentClaim(
