@@ -29,6 +29,7 @@ fn workflow_with_endpoint(
 }
 
 mod console;
+mod endpoint_instances;
 mod lifecycle;
 mod prompt_queues;
 mod publication_observability;

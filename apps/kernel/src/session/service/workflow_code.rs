@@ -211,6 +211,11 @@ impl SessionService {
                     source.alias.clone(),
                     report.node_ids[&source.entry_node].clone(),
                 );
+                endpoint.set_max_instances(
+                    source
+                        .max_instances
+                        .unwrap_or(crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES),
+                );
                 if let Some(previous) = current
                     .endpoints()
                     .iter()
@@ -565,6 +570,14 @@ impl SessionService {
                 &workflow_id,
                 created.id(),
                 created_by_user_id.clone(),
+            )?;
+            let created = self.set_workflow_endpoint_max_instances(
+                session_id,
+                &workflow_id,
+                created.id(),
+                endpoint
+                    .max_instances
+                    .unwrap_or(crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES),
             )?;
             report
                 .endpoint_ids

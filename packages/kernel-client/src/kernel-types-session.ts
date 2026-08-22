@@ -14,6 +14,7 @@ import type {
   WorkflowDefinition,
   WorkflowEventBinding,
   WorkflowEventDeliveryReceipt,
+  WorkflowEndpointRuntimeInstance,
   WorkflowPromptQueueDefinition,
   WorkflowPublicationDefinition,
   WorkflowQueuedPrompt,
@@ -59,6 +60,7 @@ export type RuntimeSession = {
   workflow_event_bindings?: WorkflowEventBinding[]
   workflow_event_delivery_receipts?: Record<string, WorkflowEventDeliveryReceipt>
   workflow_runs?: WorkflowRun[]
+  workflow_runtime_instances?: WorkflowEndpointRuntimeInstance[]
   workflow_prompt_queues?: WorkflowPromptQueueDefinition[]
   workflow_queued_prompts?: WorkflowQueuedPrompt[]
   workflow_schedules?: WorkflowScheduleDefinition[]

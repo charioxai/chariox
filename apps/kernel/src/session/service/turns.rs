@@ -109,6 +109,7 @@ impl SessionService {
             workflow_run.clone()
         };
         session.remove_queued_prompts_by_workflow_run(&workflow_run_id);
+        let _ = session.release_workflow_runtime_instance_for_run(&workflow_run_id);
         Ok(cancelled)
     }
 
@@ -637,7 +638,9 @@ impl SessionService {
         }
         workflow_run.discard_unconsumed_messages();
         workflow_run.set_status(WorkflowRunStatus::Stopped);
-        Ok(workflow_run.clone())
+        let stopped = workflow_run.clone();
+        let _ = session.release_workflow_runtime_instance_for_run(workflow_run_id);
+        Ok(stopped)
     }
 
     pub fn record_workflow_failure_event(
@@ -814,7 +817,9 @@ impl SessionService {
         }
         workflow_run.clear_active_node_run();
         workflow_run.set_status(WorkflowRunStatus::Stopped);
-        Ok(workflow_run.clone())
+        let stopped = workflow_run.clone();
+        let _ = session.release_workflow_runtime_instance_for_run(workflow_run_id);
+        Ok(stopped)
     }
 
     pub fn fail_workflow_node_run(
@@ -852,6 +857,8 @@ impl SessionService {
         }
         workflow_run.clear_active_node_run();
         workflow_run.set_status(WorkflowRunStatus::Failed);
-        Ok(workflow_run.clone())
+        let failed = workflow_run.clone();
+        let _ = session.release_workflow_runtime_instance_for_run(workflow_run_id);
+        Ok(failed)
     }
 }

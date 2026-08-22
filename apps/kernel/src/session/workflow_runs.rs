@@ -6,7 +6,9 @@ use super::workflow_diagnostics::WorkflowFailureEvent;
 use super::workflow_graph::{WorkflowEndpointDefinition, WorkflowNodeDefinition};
 use super::workflow_outputs::{WorkflowIntermediateOutput, WorkflowOutputPayload};
 use super::workflow_run_records::{WorkflowMessage, WorkflowNodeRun};
-use super::workflow_scheduling::WorkflowPublicationInvocationEnvelope;
+use super::workflow_scheduling::{
+    WorkflowPublicationInvocationEnvelope, WorkflowQueuedPromptSource,
+};
 use super::workflow_turns::WorkflowRunStatus;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -17,12 +19,20 @@ pub struct WorkflowRun {
     workflow_revision: u64,
     endpoint_id: String,
     entry_node_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    runtime_instance_id: Option<String>,
+    #[serde(default = "default_workflow_run_invocation_source")]
+    invocation_source: WorkflowQueuedPromptSource,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    runtime_agent_ids_by_node: std::collections::BTreeMap<String, String>,
     status: WorkflowRunStatus,
     invocation_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     publication_invocation: Option<WorkflowPublicationInvocationEnvelope>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     queue_ref: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    queue_item_id: Option<String>,
     #[serde(default)]
     received_at_ms: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -69,10 +79,14 @@ impl WorkflowRun {
             workflow_revision: 0,
             endpoint_id: endpoint_id.into(),
             entry_node_id: entry_node_id.into(),
+            runtime_instance_id: None,
+            invocation_source: WorkflowQueuedPromptSource::Manual,
+            runtime_agent_ids_by_node: std::collections::BTreeMap::new(),
             status: WorkflowRunStatus::Created,
             invocation_prompt,
             publication_invocation,
             queue_ref,
+            queue_item_id: None,
             received_at_ms: created_at_ms,
             queued_at_ms: None,
             active_node_run_id,
@@ -110,6 +124,24 @@ impl WorkflowRun {
         &self.entry_node_id
     }
 
+    pub fn runtime_instance_id(&self) -> Option<&str> {
+        self.runtime_instance_id.as_deref()
+    }
+
+    pub fn invocation_source(&self) -> WorkflowQueuedPromptSource {
+        self.invocation_source
+    }
+
+    pub fn runtime_agent_ids_by_node(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.runtime_agent_ids_by_node
+    }
+
+    pub fn runtime_agent_id_for_node(&self, node_id: &str) -> Option<&str> {
+        self.runtime_agent_ids_by_node
+            .get(node_id)
+            .map(String::as_str)
+    }
+
     pub fn status(&self) -> WorkflowRunStatus {
         self.status
     }
@@ -124,6 +156,10 @@ impl WorkflowRun {
 
     pub fn queue_ref(&self) -> Option<&str> {
         self.queue_ref.as_deref()
+    }
+
+    pub fn queue_item_id(&self) -> Option<&str> {
+        self.queue_item_id.as_deref()
     }
 
     pub fn received_at_ms(&self) -> u64 {
@@ -150,13 +186,26 @@ impl WorkflowRun {
         &mut self,
         workflow_revision: u64,
         queue_ref: Option<String>,
+        queue_item_id: Option<String>,
         received_at_ms: u64,
         queued_at_ms: Option<u64>,
     ) {
         self.workflow_revision = workflow_revision;
         self.queue_ref = queue_ref;
+        self.queue_item_id = queue_item_id;
         self.received_at_ms = received_at_ms;
         self.queued_at_ms = queued_at_ms;
+    }
+
+    pub(crate) fn set_runtime_instance_context(
+        &mut self,
+        runtime_instance_id: impl Into<String>,
+        invocation_source: WorkflowQueuedPromptSource,
+        runtime_agent_ids_by_node: std::collections::BTreeMap<String, String>,
+    ) {
+        self.runtime_instance_id = Some(runtime_instance_id.into());
+        self.invocation_source = invocation_source;
+        self.runtime_agent_ids_by_node = runtime_agent_ids_by_node;
     }
 
     pub fn active_node_run_id(&self) -> Option<&str> {
@@ -311,4 +360,8 @@ impl WorkflowRun {
         self.final_output_warning = warning;
         self.completed_by_node_run_id = completed_by_node_run_id;
     }
+}
+
+fn default_workflow_run_invocation_source() -> WorkflowQueuedPromptSource {
+    WorkflowQueuedPromptSource::Manual
 }

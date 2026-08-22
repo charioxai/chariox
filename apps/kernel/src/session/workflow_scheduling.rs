@@ -377,6 +377,13 @@ impl WorkflowQueuedPrompt {
         self.dispatched_at_ms = Some(now);
     }
 
+    pub(crate) fn mark_queued_for_retry(&mut self) {
+        self.status = WorkflowQueuedPromptStatus::Queued;
+        self.updated_at_ms = unix_epoch_ms();
+        self.dispatched_at_ms = None;
+        self.workflow_run_id = None;
+    }
+
     pub fn mark_running(&mut self, workflow_run_id: impl Into<String>) {
         self.status = WorkflowQueuedPromptStatus::Running;
         self.workflow_run_id = Some(workflow_run_id.into());

@@ -8,6 +8,10 @@ pub(super) struct WorkflowPromptDispatches {
     /// A prompt may be admitted to a busy provider queue without producing a dispatch yet.
     /// Keep this admission signal separate from the concrete work vectors.
     pub(super) admitted_workflow_prompt: bool,
+    /// The admitted prompt landed in the provider queue instead of starting immediately.
+    /// Queued prompts must not retain their node workspace claim: the claim would block
+    /// earlier queued work on the same agent worktree from ever being promoted.
+    pub(super) queued_workflow_prompt: bool,
 }
 
 impl WorkflowPromptDispatches {
@@ -35,10 +39,15 @@ impl WorkflowPromptDispatches {
         self.starting_metaagent_tasks
             .extend(other.starting_metaagent_tasks);
         self.admitted_workflow_prompt |= other.admitted_workflow_prompt;
+        self.queued_workflow_prompt |= other.queued_workflow_prompt;
     }
 
     pub(super) fn mark_workflow_prompt_admitted(&mut self) {
         self.admitted_workflow_prompt = true;
+    }
+
+    pub(super) fn mark_workflow_prompt_queued(&mut self) {
+        self.queued_workflow_prompt = true;
     }
 
     pub(super) fn retire_provider_before_launch(

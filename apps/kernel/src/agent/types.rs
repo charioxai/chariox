@@ -665,6 +665,28 @@ impl AgentInstance {
         self
     }
 
+    pub fn materialized_for_workflow_runtime(
+        mut self,
+        id: impl Into<String>,
+        agent_ref: impl Into<String>,
+        session_id: impl Into<String>,
+        worktree_id: impl Into<String>,
+    ) -> Self {
+        self.id = id.into();
+        self.agent_ref = agent_ref.into();
+        self.session_id = session_id.into();
+        self.worktree_id = Some(worktree_id.into());
+        self.clear_publication_runtime_state();
+        self.controlled_by_metaagent_id = None;
+        self.meta_mode = None;
+        self.active_substitute_index = None;
+        self.last_substitution = None;
+        self.visible_in_freeform = false;
+        self.created_at_ms = crate::session::unix_epoch_ms();
+        self.last_activity_at_ms = self.created_at_ms;
+        self
+    }
+
     fn clear_publication_runtime_state(&mut self) {
         self.remote_execution = None;
         self.provider_resume_state = ProviderResumeState::default();

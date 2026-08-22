@@ -133,6 +133,7 @@ fn workflow_code_definition() -> WorkflowCodeDefinition {
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),
+            max_instances: None,
             canvas: Some(WorkflowCodeCanvasPoint { x: -220, y: 20 }),
         }],
         queues: vec![WorkflowCodeQueueDefinition {

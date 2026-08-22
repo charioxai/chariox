@@ -958,6 +958,8 @@ pub struct WorkflowDesignEndpoint {
     pub entry_node_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -970,6 +972,8 @@ pub struct WorkflowDesignEndpointPatch {
     pub alias: Option<Option<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entry_node_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_instances: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

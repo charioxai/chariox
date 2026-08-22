@@ -227,7 +227,7 @@ impl KernelRuntimeOwnedState {
             workflow_node_run_id,
         );
         let mut dispatches =
-            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
+            self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches)?;
         // Queue promotion may already have exchanged the completed node's claim for the next
         // shared-agent node. Retrying is safe in either case: conflicting work remains queued,
         // while claims released by this completion immediately unblock eligible nodes.

@@ -28,8 +28,8 @@ async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn(
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "dev-stub",
                 "claude-code",
+                "dev-stub",
                 "default",
                 "sonnet",
             )
@@ -127,8 +127,8 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "dev-stub",
                 "claude-code",
+                "dev-stub",
                 "default",
                 "sonnet",
             )
@@ -987,4 +987,292 @@ async fn provider_output_records_carry_active_external_prompt_origin() {
         output_entry.source_attachment_id.as_deref(),
         Some("external:claude")
     );
+}
+
+fn spawn_shared_worktree_agent(app: &mut DaemonApp, session_id: &str, alias: &str) -> String {
+    crate::app::KernelSessionService::new(app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session_id, "dev-stub")
+                .with_alias(alias)
+                .with_model("test-model")
+                .with_worktree("worktree-blocked-retry-fifo"),
+        )
+        .expect("shared-worktree agent should spawn")
+        .id()
+        .to_string()
+}
+
+fn invoke_single_node_workflow(
+    app: &mut DaemonApp,
+    session_id: &str,
+    alias: &str,
+    agent_id: &str,
+) -> (crate::session::WorkflowRun, String) {
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(session_id, Some(alias.to_string()))
+        .expect("workflow should be created");
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(session_id, workflow.id(), false)
+        .expect("workflow flush context should update");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session_id, workflow.id(), agent_id)
+        .expect("workflow node should be added");
+    app.sessions_mut()
+        .create_workflow_endpoint(
+            session_id,
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let (run, _, _) = app
+        .invoke_workflow_endpoint_and_schedule(
+            session_id,
+            workflow.id(),
+            "entry",
+            Some("run".to_string()),
+        )
+        .expect("workflow run should be created and scheduled");
+    let node_run_id = run
+        .node_runs()
+        .first()
+        .expect("workflow run should contain its entry node")
+        .id()
+        .to_string();
+    (run, node_run_id)
+}
+
+async fn settle_and_promote_next_queued_prompt(
+    runtime: &KernelRuntimeState,
+    session_id: &str,
+    agent_id: &str,
+    _provider_run_id: &str,
+) -> crate::session::PromptCompletion {
+    let expected_active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session_id)
+                .expect("session should exist"),
+            agent_id,
+        )
+        .expect("active prompt should exist before promotion");
+    let next = runtime
+        .owned
+        .prompt_state_owner
+        .peek_next_queued_prompt(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session_id)
+                .expect("session should exist"),
+            agent_id,
+        )
+        .expect("next queued prompt should exist");
+    let completion = runtime
+        .owned
+        .complete_local_prompt_with_queued_advance_if_matches(
+            session_id,
+            agent_id,
+            None,
+            &next,
+            Some(expected_active.id()),
+        )
+        .expect("claim-aware completion should succeed")
+        .expect("completion should match the active prompt");
+    completion.completion
+}
+
+#[tokio::test]
+async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-blocked-retry-fifo",
+            "worktree-blocked-retry-fifo",
+        ))
+        .expect("session should be created");
+    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "holder");
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "worker");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-blocked-retry-fifo",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let _holder_provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(&holder),
+        )
+        .expect("holder provider run should launch");
+    let worker_provider_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(&worker),
+        )
+        .expect("worker provider run should launch");
+
+    let (holder_run, holder_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-holder", &holder);
+    let holder_session = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    assert!(
+        holder_session.active_prompt_for_agent(&holder).is_some(),
+        "holder workflow prompt should start while the shared worktree is free"
+    );
+
+    // The worker is idle but the holder owns the shared-worktree write claim, so its
+    // entry node blocks instead of queueing a prompt.
+    let (blocked_run, blocked_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-blocked", &worker);
+    let blocked_before = app
+        .sessions()
+        .get_session(session.id())
+        .expect("session should resolve");
+    assert!(matches!(
+        blocked_before
+            .workflow_run(blocked_run.id())
+            .expect("blocked run should exist")
+            .node_runs()
+            .iter()
+            .find(|node| node.id() == blocked_node)
+            .map(|node| node.status()),
+        Some(crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim),
+    ));
+
+    // Model holder settlement without immediately running the global retry pass. This
+    // leaves the blocked node eligible while we first place older work in the worker's
+    // own FIFO queue.
+    assert!(app.release_workflow_node_workspace_claim(session.id(), holder_run.id(), &holder_node,));
+
+    // Give the worker an active turn plus a queued workflow invocation so the later
+    // retry lands at the tail of a non-empty per-agent queue.
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: _first_user,
+    } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(&worker),
+            "first user turn\n",
+            Vec::new(),
+        )
+        .expect("worker user turn should start")
+    else {
+        panic!("worker user turn should start immediately");
+    };
+    let (_queued_run, _) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-queued", &worker);
+    assert_eq!(
+        app.prompt_owner_queued_prompt_count_for_agent(session.id(), &worker)
+            .expect("worker queue should resolve"),
+        1
+    );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    // Retry the blocked claim while the worker still has queued work: the retried
+    // prompt must queue behind `wf-queued` without retaining its workspace claim.
+    let retries = runtime.owned.workflow_retry_blocked_claims();
+    assert!(
+        retries.local.is_empty(),
+        "retry admission into a busy queue must not produce a concrete dispatch"
+    );
+    let blocked_claim_id =
+        runtime
+            .owned
+            .workflow_dispatch_claim_id(session.id(), blocked_run.id(), &blocked_node);
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&blocked_claim_id),
+        "a queued retry admission must release its workspace claim"
+    );
+    let retried_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let (_, worker_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&retried_session, &worker);
+    assert_eq!(worker_queue.len(), 2);
+    assert_eq!(worker_queue[0].workflow_run_id(), Some(_queued_run.id()));
+    assert_eq!(worker_queue[1].workflow_run_id(), Some(blocked_run.id()));
+
+    // FIFO resume: the head (`wf-queued`) promotes first now that no stale claim holds
+    // the shared worktree, then the retried prompt follows.
+    let first_completion = settle_and_promote_next_queued_prompt(
+        &runtime,
+        session.id(),
+        &worker,
+        worker_provider_run.id(),
+    )
+    .await;
+    assert_eq!(
+        first_completion
+            .started_next
+            .as_ref()
+            .and_then(|p| p.workflow_run_id()),
+        Some(_queued_run.id()),
+        "the earlier queued workflow must resume before the retried one"
+    );
+
+    let second_completion = settle_and_promote_next_queued_prompt(
+        &runtime,
+        session.id(),
+        &worker,
+        worker_provider_run.id(),
+    )
+    .await;
+    assert_eq!(
+        second_completion
+            .started_next
+            .as_ref()
+            .and_then(|p| p.workflow_run_id()),
+        Some(blocked_run.id()),
+        "the retried workflow must resume after the earlier queued workflow"
+    );
+
+    let final_session = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should exist");
+    let final_active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(&final_session, &worker)
+        .expect("retried workflow prompt should be active");
+    assert_eq!(final_active.workflow_run_id(), Some(blocked_run.id()));
+    let (_, final_queue) = runtime
+        .owned
+        .prompt_state_owner
+        .state_parts(&final_session, &worker);
+    assert!(final_queue.is_empty());
 }

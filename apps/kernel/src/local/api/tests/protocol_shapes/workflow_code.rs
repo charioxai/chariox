@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_code_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 270);
 
     let validate_request =
         LocalDaemonRequest::ValidateWorkflowCode(crate::local::ValidateWorkflowCodeRequest {
@@ -140,6 +140,7 @@ fn local_daemon_protocol_workflow_code_shape_is_versioned() {
             handle: "entry".to_string(),
             entry_node: "planner".to_string(),
             alias: Some("entry".to_string()),
+            max_instances: None,
             canvas: None,
         }],
         queues: Vec::new(),

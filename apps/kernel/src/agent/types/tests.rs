@@ -1,4 +1,6 @@
-use super::{calculate_agent_layout, AgentInstance, AgentSubstituteProfile, GridPosition};
+use super::{
+    calculate_agent_layout, AgentInstance, AgentState, AgentSubstituteProfile, GridPosition,
+};
 
 #[test]
 fn calculate_agent_layout_expands_past_six_agents() {
@@ -49,4 +51,54 @@ fn substitute_deactivation_restores_primary_without_default_model() {
     assert_eq!(agent.provider(), "opencode");
     assert_eq!(agent.model(), None);
     assert_eq!(agent.effort(), None);
+}
+
+#[test]
+fn workflow_runtime_materialization_preserves_config_without_live_state() {
+    let mut source = AgentInstance::new(
+        "agent-1",
+        "source-ref",
+        "session-1",
+        Some("reviewer".to_string()),
+        "opencode",
+        Some("x-preview-f-free".to_string()),
+        Some("high".to_string()),
+        Some("/source".to_string()),
+        GridPosition::new(0, 0, 1, 1),
+    );
+    source.set_account_profile(Some("zen".to_string()));
+    source.set_execution_mode_override(Some(crate::provider::AgentExecutionMode::Build));
+    source.set_permission_level_override(Some(crate::provider::AgentPermissionLevel::Yolo));
+    source.grant_mcp("github");
+    source.set_provider_resume_state(
+        crate::provider::ProviderResumeState::from_opencode_session_id("provider-session-secret"),
+    );
+    source.set_state(AgentState::Working);
+    source.set_processing(true);
+
+    let runtime = source.materialized_for_workflow_runtime(
+        "agent-runtime",
+        "runtime-ref",
+        "session-1",
+        "/isolated",
+    );
+
+    assert_eq!(runtime.provider(), "opencode");
+    assert_eq!(runtime.model(), Some("x-preview-f-free"));
+    assert_eq!(runtime.effort(), Some("high"));
+    assert_eq!(runtime.account_profile(), Some("zen"));
+    assert_eq!(
+        runtime.execution_mode_override(),
+        Some(crate::provider::AgentExecutionMode::Build)
+    );
+    assert_eq!(
+        runtime.permission_level_override(),
+        Some(crate::provider::AgentPermissionLevel::Yolo)
+    );
+    assert_eq!(runtime.mcp_grants(), vec!["github".to_string()]);
+    assert_eq!(runtime.worktree_id(), Some("/isolated"));
+    assert_eq!(runtime.state(), AgentState::Idle);
+    assert!(!runtime.is_processing());
+    assert!(runtime.provider_resume_state().is_empty());
+    assert!(!runtime.visible_in_freeform());
 }

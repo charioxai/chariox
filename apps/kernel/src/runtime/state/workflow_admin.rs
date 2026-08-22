@@ -36,6 +36,10 @@ impl KernelRuntimeOwnedState {
         caller_user_id: &str,
         caller_metaagent_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let removes_workflow = matches!(
+            &request.op,
+            crate::local::WorkflowDesignOp::WorkflowRemove { .. }
+        );
         let node_owner_user_id = self.ensure_workflow_design_op_authorized(
             &request.session_id,
             &request.op,
@@ -51,6 +55,9 @@ impl KernelRuntimeOwnedState {
                 node_owner_user_id,
                 caller_metaagent_id.map(str::to_string),
             )?;
+        if removes_workflow {
+            self.workflow_cleanup_runtime_instances_exclusive(&request.session_id)?;
+        }
         self.workflow_session(&request.session_id)
     }
 

@@ -109,7 +109,10 @@ impl KernelRuntimeOwnedState {
             workflow_run.id(),
             node_run.id(),
         )?;
-        if !dispatches.admitted_workflow_prompt {
+        // Only a prompt that started immediately may keep its workspace claim. A prompt
+        // queued behind existing agent work releases the claim so the queue head can be
+        // promoted later without hitting its own worktree conflict.
+        if !dispatches.admitted_workflow_prompt || dispatches.queued_workflow_prompt {
             self.release_workflow_node_workspace_claim(
                 session_id,
                 workflow_run.id(),

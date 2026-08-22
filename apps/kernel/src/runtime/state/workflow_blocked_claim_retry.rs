@@ -162,7 +162,19 @@ impl KernelRuntimeOwnedState {
             &retry.workflow_run_id,
             &retry.workflow_node_run_id,
         ) {
-            Ok(prepared) => Some(prepared),
+            Ok(prepared) => {
+                // A prompt admitted to a busy provider queue must not keep its claim:
+                // the retained worktree hold would deadlock earlier queued work for the
+                // same agent, which can only be promoted after this prompt runs.
+                if prepared.queued_workflow_prompt {
+                    self.release_workflow_node_workspace_claim(
+                        &retry.session_id,
+                        &retry.workflow_run_id,
+                        &retry.workflow_node_run_id,
+                    );
+                }
+                Some(prepared)
+            }
             Err(error) => {
                 // Admission owns the claim only after it succeeds.  A provider/runtime
                 // failure must not leave the blocked node's workspace claim behind and starve

@@ -221,18 +221,20 @@ impl DaemonApp {
         session_id: &str,
     ) -> Result<Option<WorkflowLaunchOutcome>, DaemonError> {
         loop {
-            let Some(queued_prompt) = self
+            self.ensure_legacy_primary_workflow_runtime_instance(session_id)?;
+            let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
                 .sessions_mut()
-                .dequeue_next_workflow_prompt(session_id)?
+                .dequeue_next_workflow_prompt_and_create_run(session_id)?
             else {
                 return Ok(None);
             };
-            if let Some(watchdog_id) = queued_prompt.watchdog_id() {
-                let _ = self
-                    .sessions_mut()
-                    .mark_workflow_watchdog_pending_started(session_id, watchdog_id);
-            }
-            let outcome = self.invoke_queued_workflow_prompt(session_id, queued_prompt.clone());
+            let outcome = self.schedule_claimed_workflow_prompt(
+                session_id,
+                queued_prompt.clone(),
+                workflow_run,
+                workflow,
+                endpoint,
+            );
             match outcome {
                 Ok(outcome) => return Ok(Some(outcome)),
                 Err(error) => {
@@ -240,6 +242,29 @@ impl DaemonApp {
                 }
             }
         }
+    }
+
+    fn ensure_legacy_primary_workflow_runtime_instance(
+        &mut self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let Some(instance) = self
+            .sessions_mut()
+            .ensure_primary_workflow_runtime_instance(session_id)?
+        else {
+            return Ok(());
+        };
+        let session = self.sessions().get_session(session_id)?.clone();
+        if let Err(error) = self
+            .durable_state_store()
+            .persist_workflow_runtime_transition(&session, "legacy_workflow_instance_provisioned")
+        {
+            let _ = self
+                .sessions_mut()
+                .remove_workflow_runtime_instance(session_id, instance.id());
+            return Err(error);
+        }
+        Ok(())
     }
 
     fn record_failed_queued_workflow_prompt(
@@ -267,6 +292,34 @@ impl DaemonApp {
         );
     }
 
+    fn fail_claimed_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run: &WorkflowRun,
+        error: &DaemonError,
+    ) {
+        if let Some(node_run) = workflow_run.node_runs().first() {
+            let _ = self.sessions_mut().record_workflow_failure_event(
+                session_id,
+                workflow_run.id(),
+                WorkflowFailureEvent::new(
+                    WorkflowFailureKind::TransportFailure,
+                    node_run.id(),
+                    Vec::new(),
+                    error.to_string(),
+                ),
+            );
+            let _ = self.sessions_mut().fail_workflow_node_run(
+                session_id,
+                workflow_run.id(),
+                node_run.id(),
+            );
+        }
+        let _ = self
+            .sessions_mut()
+            .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
+    }
+
     fn invoke_queued_workflow_prompt(
         &mut self,
         session_id: &str,
@@ -280,31 +333,38 @@ impl DaemonApp {
             queued_prompt.workflow_id(),
             queued_prompt.endpoint_id(),
         )?;
-        WorkflowProgression::validate_agents(self, session_id, &workflow)?;
-        WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)?;
         let workflow_run = self
             .sessions_mut()
             .invoke_queued_workflow_endpoint(session_id, &queued_prompt)?;
+        self.schedule_claimed_workflow_prompt(
+            session_id,
+            queued_prompt,
+            workflow_run,
+            workflow,
+            endpoint,
+        )
+    }
+
+    fn schedule_claimed_workflow_prompt(
+        &mut self,
+        session_id: &str,
+        queued_prompt: WorkflowQueuedPrompt,
+        workflow_run: WorkflowRun,
+        workflow: WorkflowDefinition,
+        endpoint: WorkflowEndpointDefinition,
+    ) -> Result<WorkflowLaunchOutcome, DaemonError> {
+        if let Err(error) = WorkflowProgression::validate_agents(self, session_id, &workflow)
+            .and_then(|()| {
+                WorkflowProgression::preflight_local_provider_runs(self, session_id, &workflow)
+            })
+        {
+            self.fail_claimed_workflow_run(session_id, &workflow_run, &error);
+            return Err(error);
+        }
         if let Err(error) =
             WorkflowProgression::schedule_entry_node(self, session_id, &workflow_run)
         {
-            if let Some(node_run) = workflow_run.node_runs().first() {
-                let _ = self.sessions_mut().record_workflow_failure_event(
-                    session_id,
-                    workflow_run.id(),
-                    WorkflowFailureEvent::new(
-                        WorkflowFailureKind::TransportFailure,
-                        node_run.id(),
-                        Vec::new(),
-                        error.to_string(),
-                    ),
-                );
-                let _ = self.sessions_mut().fail_workflow_node_run(
-                    session_id,
-                    workflow_run.id(),
-                    node_run.id(),
-                );
-            }
+            self.fail_claimed_workflow_run(session_id, &workflow_run, &error);
             return Err(error);
         }
         let workflow_run = self
@@ -620,6 +680,7 @@ pub(crate) fn retry_blocked_workflow_claims_from_runtime(app: &mut DaemonApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     fn ensure_ordinary_workflow_provider_run(
         app: &mut DaemonApp,
@@ -1102,6 +1163,26 @@ mod tests {
             mode: None,
             caller: serde_json::json!({ "type": "event" }),
         };
+        let workflow_revision = app
+            .sessions()
+            .resolve_workflow_ref(session.id(), workflow.id())
+            .expect("event workflow should resolve")
+            .revision();
+        app.sessions_mut()
+            .register_workflow_runtime_instance(
+                session.id(),
+                crate::session::WorkflowEndpointRuntimeInstance::new(
+                    "event-instance",
+                    workflow.id(),
+                    endpoint.id(),
+                    workflow_revision,
+                    1,
+                    true,
+                    BTreeMap::from([(node.id().to_string(), agent.id().to_string())]),
+                    session.worktree_id(),
+                ),
+            )
+            .expect("event workflow runtime instance should register");
         let (_queued, claimed) = app
             .sessions_mut()
             .enqueue_workflow_prompt_and_maybe_create_run(

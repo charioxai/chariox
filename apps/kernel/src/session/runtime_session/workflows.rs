@@ -200,6 +200,13 @@ impl RuntimeSession {
             .retain(|schedule| schedule.workflow_id() != workflow_id);
         self.workflow_consoles
             .retain(|console| console.workflow_id() != workflow_id);
+        for instance in self
+            .workflow_runtime_instances
+            .iter_mut()
+            .filter(|instance| instance.workflow_id() == workflow_id)
+        {
+            instance.mark_stale();
+        }
         Some(removed)
     }
 
@@ -312,6 +319,229 @@ impl RuntimeSession {
     pub fn create_workflow_run(&mut self, workflow_run: WorkflowRun) -> WorkflowRun {
         self.workflow_runs.push(workflow_run.clone());
         workflow_run
+    }
+
+    pub fn workflow_runtime_instances(&self) -> &[WorkflowEndpointRuntimeInstance] {
+        &self.workflow_runtime_instances
+    }
+
+    pub fn workflow_runtime_instance(
+        &self,
+        instance_id: &str,
+    ) -> Option<&WorkflowEndpointRuntimeInstance> {
+        self.workflow_runtime_instances
+            .iter()
+            .find(|instance| instance.id() == instance_id)
+    }
+
+    pub fn add_workflow_runtime_instance(
+        &mut self,
+        instance: WorkflowEndpointRuntimeInstance,
+    ) -> WorkflowEndpointRuntimeInstance {
+        self.workflow_runtime_instances.push(instance.clone());
+        instance
+    }
+
+    pub fn remove_workflow_runtime_instance(
+        &mut self,
+        instance_id: &str,
+    ) -> Option<WorkflowEndpointRuntimeInstance> {
+        let index = self
+            .workflow_runtime_instances
+            .iter()
+            .position(|instance| instance.id() == instance_id)?;
+        Some(self.workflow_runtime_instances.remove(index))
+    }
+
+    pub fn idle_workflow_runtime_instance(
+        &self,
+        workflow_id: &str,
+        endpoint_id: &str,
+        workflow_revision: u64,
+    ) -> Option<&WorkflowEndpointRuntimeInstance> {
+        self.workflow_runtime_instances.iter().find(|instance| {
+            instance.workflow_id() == workflow_id
+                && instance.endpoint_id() == endpoint_id
+                && instance.workflow_revision() == workflow_revision
+                && instance.status() == WorkflowEndpointRuntimeInstanceStatus::Idle
+        })
+    }
+
+    pub fn current_workflow_runtime_instance_count(
+        &self,
+        workflow_id: &str,
+        endpoint_id: &str,
+        workflow_revision: u64,
+    ) -> usize {
+        self.workflow_runtime_instances
+            .iter()
+            .filter(|instance| {
+                instance.workflow_id() == workflow_id
+                    && instance.endpoint_id() == endpoint_id
+                    && instance.workflow_revision() == workflow_revision
+                    && instance.status() != WorkflowEndpointRuntimeInstanceStatus::Stale
+            })
+            .count()
+    }
+
+    pub fn next_workflow_runtime_instance_ordinal(
+        &self,
+        workflow_id: &str,
+        endpoint_id: &str,
+    ) -> u16 {
+        self.workflow_runtime_instances
+            .iter()
+            .filter(|instance| {
+                instance.workflow_id() == workflow_id && instance.endpoint_id() == endpoint_id
+            })
+            .map(WorkflowEndpointRuntimeInstance::ordinal)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1)
+    }
+
+    pub fn claim_workflow_runtime_instance(
+        &mut self,
+        instance_id: &str,
+        workflow_run_id: &str,
+    ) -> Option<WorkflowEndpointRuntimeInstance> {
+        let instance = self
+            .workflow_runtime_instances
+            .iter_mut()
+            .find(|instance| instance.id() == instance_id)?;
+        instance
+            .claim(workflow_run_id.to_string())
+            .then(|| instance.clone())
+    }
+
+    pub fn release_workflow_runtime_instance_for_run(
+        &mut self,
+        workflow_run_id: &str,
+    ) -> Option<WorkflowEndpointRuntimeInstance> {
+        let instance = self
+            .workflow_runtime_instances
+            .iter_mut()
+            .find(|instance| instance.active_run_id() == Some(workflow_run_id))?;
+        instance.release(workflow_run_id).then(|| instance.clone())
+    }
+
+    pub fn mark_workflow_runtime_instance_stale(
+        &mut self,
+        instance_id: &str,
+    ) -> Option<WorkflowEndpointRuntimeInstance> {
+        let instance = self
+            .workflow_runtime_instances
+            .iter_mut()
+            .find(|instance| instance.id() == instance_id)?;
+        instance.mark_stale();
+        Some(instance.clone())
+    }
+
+    pub(crate) fn retarget_workflow_runtime_instances_revision(
+        &mut self,
+        workflow_id: &str,
+        workflow_revision: u64,
+    ) {
+        for instance in self
+            .workflow_runtime_instances
+            .iter_mut()
+            .filter(|instance| instance.workflow_id() == workflow_id)
+        {
+            instance.retarget_workflow_revision(workflow_revision);
+        }
+    }
+
+    pub fn reconcile_workflow_runtime_instances(&mut self) {
+        let active_runs = self
+            .workflow_runs
+            .iter()
+            .filter(|run| !run.status().is_terminal())
+            .filter_map(|run| Some((run.runtime_instance_id()?.to_string(), run.id().to_string())))
+            .collect::<BTreeMap<_, _>>();
+        let workflow_revisions = self
+            .workflows
+            .iter()
+            .map(|workflow| (workflow.id().to_string(), workflow.revision()))
+            .collect::<BTreeMap<_, _>>();
+        for instance in &mut self.workflow_runtime_instances {
+            let active_run_id = active_runs.get(instance.id());
+            let revision_is_current = workflow_revisions.get(instance.workflow_id()).copied()
+                == Some(instance.workflow_revision());
+            if let Some(run_id) = active_run_id {
+                if instance.status() == WorkflowEndpointRuntimeInstanceStatus::Idle {
+                    instance.claim(run_id.clone());
+                }
+            } else if let Some(run_id) = instance.active_run_id().map(str::to_string) {
+                instance.release(&run_id);
+            }
+            if !revision_is_current && active_run_id.is_none() {
+                instance.mark_stale();
+            }
+        }
+    }
+
+    pub fn cleanup_ready_workflow_runtime_instances(
+        &mut self,
+    ) -> Vec<WorkflowEndpointRuntimeInstance> {
+        self.reconcile_workflow_runtime_instances();
+        let endpoint_limits = self
+            .workflows
+            .iter()
+            .flat_map(|workflow| {
+                workflow.endpoints().iter().map(move |endpoint| {
+                    (
+                        (workflow.id().to_string(), endpoint.id().to_string()),
+                        endpoint.max_instances() as usize,
+                    )
+                })
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut current_ordinals = BTreeMap::<(String, String, u64), Vec<u16>>::new();
+        for instance in &self.workflow_runtime_instances {
+            if instance.status() == WorkflowEndpointRuntimeInstanceStatus::Stale {
+                continue;
+            }
+            current_ordinals
+                .entry((
+                    instance.workflow_id().to_string(),
+                    instance.endpoint_id().to_string(),
+                    instance.workflow_revision(),
+                ))
+                .or_default()
+                .push(instance.ordinal());
+        }
+        for ordinals in current_ordinals.values_mut() {
+            ordinals.sort_unstable();
+        }
+        self.workflow_runtime_instances
+            .iter()
+            .filter_map(|instance| {
+                let stale = instance.status() == WorkflowEndpointRuntimeInstanceStatus::Stale;
+                let over_limit = endpoint_limits
+                    .get(&(
+                        instance.workflow_id().to_string(),
+                        instance.endpoint_id().to_string(),
+                    ))
+                    .and_then(|limit| {
+                        current_ordinals
+                            .get(&(
+                                instance.workflow_id().to_string(),
+                                instance.endpoint_id().to_string(),
+                                instance.workflow_revision(),
+                            ))
+                            .map(|ordinals| {
+                                ordinals
+                                    .iter()
+                                    .position(|ordinal| *ordinal == instance.ordinal())
+                                    .is_some_and(|index| index >= *limit)
+                            })
+                    })
+                    .unwrap_or(true);
+                let cleanup = (stale || over_limit)
+                    && instance.status() != WorkflowEndpointRuntimeInstanceStatus::Busy;
+                cleanup.then(|| instance.clone())
+            })
+            .collect()
     }
 
     fn workflow_run_ids_with_owned_prompts(&self) -> BTreeSet<String> {
@@ -649,6 +879,8 @@ impl RuntimeSession {
             );
         }
 
+        self.reconcile_workflow_runtime_instances();
+
         reconciliation
     }
 
@@ -881,6 +1113,68 @@ impl RuntimeSession {
         let mut item = self.workflow_queued_prompts.remove(best)?;
         item.mark_dispatching();
         Some(item)
+    }
+
+    pub fn pop_next_workflow_queued_prompt_with_idle_instance(
+        &mut self,
+        workflow_run_id: &str,
+    ) -> Option<(WorkflowQueuedPrompt, WorkflowEndpointRuntimeInstance)> {
+        self.reconcile_workflow_runtime_instances();
+        let best = self
+            .workflow_queued_prompts
+            .iter()
+            .enumerate()
+            .filter(|(_, item)| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter_map(|(index, item)| {
+                let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
+                if !queue.enabled() {
+                    return None;
+                }
+                let workflow = self.workflow(item.workflow_id())?;
+                let instance = self.idle_workflow_runtime_instance(
+                    workflow.id(),
+                    item.endpoint_id(),
+                    workflow.revision(),
+                )?;
+                Some((
+                    index,
+                    queue.priority(),
+                    item.created_at_ms(),
+                    instance.clone(),
+                ))
+            })
+            .min_by_key(|(_, priority, created_at_ms, _)| {
+                (std::cmp::Reverse(*priority), *created_at_ms)
+            });
+        let (index, _, _, instance) = best?;
+        let instance = self
+            .workflow_runtime_instances
+            .iter_mut()
+            .find(|candidate| candidate.id() == instance.id())
+            .and_then(|candidate| candidate.claim(workflow_run_id).then(|| candidate.clone()))?;
+        let mut item = self.workflow_queued_prompts.remove(index)?;
+        item.mark_dispatching();
+        Some((item, instance))
+    }
+
+    pub fn next_dispatchable_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {
+        self.workflow_queued_prompts
+            .iter()
+            .filter(|item| item.status() == WorkflowQueuedPromptStatus::Queued)
+            .filter_map(|item| {
+                let queue = self.workflow_prompt_queue(item.workflow_id(), item.queue_id())?;
+                let workflow = self.workflow(item.workflow_id())?;
+                self.idle_workflow_runtime_instance(
+                    workflow.id(),
+                    item.endpoint_id(),
+                    workflow.revision(),
+                )?;
+                queue
+                    .enabled()
+                    .then_some((queue.priority(), item.created_at_ms()))
+            })
+            .min_by_key(|(priority, created_at_ms)| (std::cmp::Reverse(*priority), *created_at_ms))
+            .map(|(_, created_at_ms)| created_at_ms)
     }
 
     pub fn next_workflow_queued_prompt_created_at_ms(&self) -> Option<u64> {

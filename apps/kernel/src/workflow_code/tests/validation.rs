@@ -73,6 +73,32 @@ fn rejects_explicit_canvas_box_collisions() {
 }
 
 #[test]
+fn rejects_endpoint_max_instances_outside_hard_range() {
+    for invalid in [0u16, 33] {
+        let mut definition = minimal_definition();
+        definition.endpoints[0].max_instances = Some(invalid);
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(!report.ok, "max_instances={invalid} must be rejected");
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "invalid_endpoint_max_instances"
+                && diagnostic.handle.as_deref() == Some("entry")
+                && diagnostic.message.contains("between 1 and 32")
+        }));
+    }
+
+    for valid in [1u16, 32] {
+        let mut definition = minimal_definition();
+        definition.endpoints[0].max_instances = Some(valid);
+
+        let report = definition.validate_with_limits(&WorkflowCodeLimitsConfig::default());
+
+        assert!(report.ok, "max_instances={valid}: {:?}", report.diagnostics);
+    }
+}
+
+#[test]
 fn source_export_drops_a_legacy_canvas_layout_that_cannot_be_reused() {
     let mut definition = minimal_definition();
     definition.nodes[0].canvas = Some(WorkflowCodeCanvasPoint { x: 229, y: 121 });
@@ -149,12 +175,14 @@ fn rejects_invalid_aliases_and_duplicate_queue_aliases() {
         handle: "duplicate_endpoint".to_string(),
         entry_node: "planner".to_string(),
         alias: Some("ENTRY".to_string()),
+        max_instances: None,
         canvas: None,
     });
     definition.endpoints.push(WorkflowCodeEndpointDefinition {
         handle: "duplicate_endpoint_copy".to_string(),
         entry_node: "planner".to_string(),
         alias: Some("entry".to_string()),
+        max_instances: None,
         canvas: None,
     });
     definition.queues = vec![

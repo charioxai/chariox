@@ -22,6 +22,13 @@ fn default_workflow_node_wait_for_all_inputs() -> bool {
     false
 }
 
+pub const DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES: u16 = 1;
+pub const MAX_WORKFLOW_ENDPOINT_INSTANCES: u16 = 32;
+
+fn default_workflow_endpoint_max_instances() -> u16 {
+    DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkflowEndpointDefinition {
     id: String,
@@ -29,6 +36,8 @@ pub struct WorkflowEndpointDefinition {
     owner_user_id: String,
     alias: Option<String>,
     entry_node_id: String,
+    #[serde(default = "default_workflow_endpoint_max_instances")]
+    max_instances: u16,
 }
 
 impl WorkflowEndpointDefinition {
@@ -42,6 +51,7 @@ impl WorkflowEndpointDefinition {
             owner_user_id: default_workflow_owner_user_id(),
             alias,
             entry_node_id: entry_node_id.into(),
+            max_instances: default_workflow_endpoint_max_instances(),
         }
     }
 
@@ -61,6 +71,10 @@ impl WorkflowEndpointDefinition {
         &self.entry_node_id
     }
 
+    pub fn max_instances(&self) -> u16 {
+        self.max_instances
+    }
+
     pub fn set_owner_user_id(&mut self, owner_user_id: impl Into<String>) {
         self.owner_user_id = owner_user_id.into();
     }
@@ -71,6 +85,10 @@ impl WorkflowEndpointDefinition {
 
     pub fn set_entry_node_id(&mut self, entry_node_id: impl Into<String>) {
         self.entry_node_id = entry_node_id.into();
+    }
+
+    pub fn set_max_instances(&mut self, max_instances: u16) {
+        self.max_instances = max_instances;
     }
 }
 

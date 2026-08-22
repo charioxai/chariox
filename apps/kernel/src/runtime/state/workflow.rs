@@ -343,6 +343,12 @@ impl KernelRuntimeOwnedState {
             },
         };
         dispatches.mark_workflow_prompt_admitted();
+        if matches!(
+            &submission.outcome,
+            crate::session::PromptSubmissionOutcome::Queued { .. }
+        ) {
+            dispatches.mark_workflow_prompt_queued();
+        }
         if let crate::session::PromptSubmissionOutcome::Started { prompt } = &submission.outcome {
             self.workflow_mark_prompt_started(&prepared.session_id, prompt)?;
         }

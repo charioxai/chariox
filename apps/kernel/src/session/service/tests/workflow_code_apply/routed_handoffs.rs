@@ -136,6 +136,7 @@ fn workflow_code_apply_supports_multi_edge_routed_handoffs() {
             handle: "entry".to_string(),
             entry_node: "router".to_string(),
             alias: Some("entry".to_string()),
+            max_instances: None,
             canvas: None,
         }],
         queues: Vec::new(),

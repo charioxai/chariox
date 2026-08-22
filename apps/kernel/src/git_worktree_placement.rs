@@ -98,6 +98,42 @@ pub(crate) fn prepare_git_worktree(
     resolve_existing_worktree(&target, Path::new("."), operation)
 }
 
+pub(crate) fn remove_git_worktree(
+    base_directory: impl AsRef<Path>,
+    worktree_directory: impl AsRef<Path>,
+    operation: &'static str,
+) -> Result<(), DaemonError> {
+    let base_directory = base_directory.as_ref();
+    let worktree_directory = worktree_directory.as_ref();
+    let repo_root = run_git(base_directory, &["rev-parse", "--show-toplevel"], operation)?;
+    let repo_root = PathBuf::from(repo_root.trim());
+    if worktree_directory == repo_root || worktree_directory.parent().is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation,
+            message: format!(
+                "refusing to remove unsafe worktree path `{}`",
+                worktree_directory.display()
+            ),
+        });
+    }
+    if !worktree_directory.exists() {
+        run_git(&repo_root, &["worktree", "prune"], operation)?;
+        return Ok(());
+    }
+    run_git(
+        &repo_root,
+        &[
+            "worktree",
+            "remove",
+            "--force",
+            &worktree_directory.display().to_string(),
+        ],
+        operation,
+    )?;
+    run_git(&repo_root, &["worktree", "prune"], operation)?;
+    Ok(())
+}
+
 fn resolve_target_directory(base_directory: &Path, target: &str) -> PathBuf {
     let path = PathBuf::from(target);
     if path.is_absolute() {

@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 270);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -618,13 +618,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "5baf61c7575fd731efb8b71d4e8240130c47d79d84908e6b2c4d2296a36981b0"
+        "1b0e56130fa8a124e0bc7488ac6545ceb7e251c83a0c30a3f62bbaa14c8a5851"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 270);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

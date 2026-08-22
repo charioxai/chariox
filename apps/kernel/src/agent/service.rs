@@ -244,6 +244,32 @@ impl AgentService {
         self.store.insert(agent)
     }
 
+    pub(crate) fn materialize_workflow_runtime_agent(
+        &mut self,
+        agent: AgentInstance,
+        session_id: &str,
+        worktree_id: &str,
+    ) -> AgentInstance {
+        let agent = agent.materialized_for_workflow_runtime(
+            self.store.next_agent_id(),
+            generate_agent_ref(),
+            session_id,
+            worktree_id,
+        );
+        self.store.insert(agent)
+    }
+
+    pub(crate) fn remove_workflow_runtime_agent(
+        &mut self,
+        agent_id: &str,
+    ) -> Option<AgentInstance> {
+        let agent = self.store.get(agent_id)?;
+        if agent.visible_in_freeform() || agent.is_processing() {
+            return None;
+        }
+        self.store.remove(agent_id)
+    }
+
     /// Create default agent for a new session
     pub fn create_default_agent(
         &mut self,

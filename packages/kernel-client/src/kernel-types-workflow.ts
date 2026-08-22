@@ -645,11 +645,13 @@ export type WorkflowDesignEndpoint = {
   id: string
   alias?: string | null
   entry_node_id: string
+  max_instances?: number
 }
 
 export type WorkflowDesignEndpointPatch = {
   alias?: string | null
   entry_node_id?: string | null
+  max_instances?: number
 }
 
 export type WorkflowDesignOp =
@@ -684,6 +686,7 @@ export type WorkflowEndpointDefinition = {
   owner_user_id?: string
   alias: string | null
   entry_node_id: string
+  max_instances?: number
 }
 
 export type WorkflowPublicationDefinition = {
@@ -997,11 +1000,19 @@ export type WorkflowFailureEvent = {
 export type WorkflowRun = {
   id: string
   workflow_id: string
+  workflow_revision?: number
   endpoint_id: string
   entry_node_id: string
+  runtime_instance_id?: string | null
+  invocation_source?: "manual" | "scheduled" | "event"
+  runtime_agent_ids_by_node?: Record<string, string>
   status: string
   invocation_prompt: string | null
   publication_invocation?: WorkflowPublicationInvocationEnvelope | null
+  queue_ref?: string | null
+  queue_item_id?: string | null
+  received_at_ms?: number
+  queued_at_ms?: number | null
   active_node_run_id: string | null
   node_runs: WorkflowNodeRun[]
   messages: WorkflowMessage[]
@@ -1026,6 +1037,21 @@ export type WorkflowRun = {
   created_at_ms: number
   started_at_ms: number | null
   completed_at_ms: number | null
+}
+
+export type WorkflowEndpointRuntimeInstance = {
+  id: string
+  workflow_id: string
+  endpoint_id: string
+  workflow_revision: number
+  ordinal: number
+  primary: boolean
+  node_agent_ids: Record<string, string>
+  worktree_id: string
+  status: "idle" | "busy" | "stale"
+  active_run_id?: string | null
+  created_at_ms: number
+  updated_at_ms: number
 }
 
 export type WorkflowConsoleEntry = {

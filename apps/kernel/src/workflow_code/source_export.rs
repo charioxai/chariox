@@ -324,6 +324,7 @@ pub(super) fn workflow_code_definition_from_session_workflow(
                 alias: endpoint
                     .alias()
                     .and_then(|_| endpoint_handles.get(endpoint.id()).cloned()),
+                max_instances: Some(endpoint.max_instances()),
                 canvas: canvas
                     .and_then(|layout| layout.endpoints.get(endpoint.id()))
                     .map(workflow_code_canvas_point_from_layout),
@@ -654,6 +655,7 @@ impl WorkflowCodeJavascriptWriter {
         let mut fields = Vec::new();
         push_json_field(&mut fields, "handle", &Some(endpoint.handle.clone()))?;
         push_json_field(&mut fields, "alias", &endpoint.alias)?;
+        push_json_field(&mut fields, "maxInstances", &endpoint.max_instances)?;
         push_json_field(&mut fields, "canvas", &endpoint.canvas)?;
         self.line(format!(
             "const {var} = workflow.endpoint({entry}, {{ {} }})",

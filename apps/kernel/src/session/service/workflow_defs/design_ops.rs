@@ -604,6 +604,16 @@ impl SessionService {
                     alias,
                     endpoint.entry_node_id,
                 );
+                let max_instances = endpoint
+                    .max_instances
+                    .unwrap_or(crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES);
+                if !(1..=crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES).contains(&max_instances) {
+                    return Err(workflow_design_conflict(format!(
+                        "endpoint max_instances must be between 1 and {}",
+                        crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES
+                    )));
+                }
+                definition.set_max_instances(max_instances);
                 definition.set_owner_user_id(caller_user_id);
                 workflow.add_endpoint(definition);
                 if let Some(point) = position {
@@ -622,6 +632,14 @@ impl SessionService {
                 endpoint_id,
                 patch,
             } => {
+                if patch.max_instances.is_some_and(|max_instances| {
+                    !(1..=crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES).contains(&max_instances)
+                }) {
+                    return Err(workflow_design_conflict(format!(
+                        "endpoint max_instances must be between 1 and {}",
+                        crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES
+                    )));
+                }
                 let workflow_id = self
                     .resolve_workflow_ref(session_id, &workflow_id)?
                     .id()
@@ -674,6 +692,9 @@ impl SessionService {
                 }
                 if let Some(entry_node_id) = patch.entry_node_id {
                     endpoint.set_entry_node_id(entry_node_id);
+                }
+                if let Some(max_instances) = patch.max_instances {
+                    endpoint.set_max_instances(max_instances);
                 }
                 workflow.bump_revision();
                 Ok(workflow.clone())

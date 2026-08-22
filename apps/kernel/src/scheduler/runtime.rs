@@ -246,6 +246,11 @@ fn dispatch_prepared_workflow_node_prompt(
             return Err(error);
         }
     };
+    // A queued admission must not keep its claim: the worktree hold would block
+    // earlier queued prompts for the same agent from ever being promoted.
+    if matches!(outcome, PromptSubmissionOutcome::Queued { .. }) {
+        let _ = app.release_prompt_workspace_claim(&provider_run_id);
+    }
     handle_workflow_prompt_submission_outcome(
         app,
         session_id,
@@ -354,6 +359,11 @@ fn retry_prepared_workflow_node_prompt(
         target_agent_id,
         prompt,
     )?;
+    // A queued admission must not keep its claim: the worktree hold would block
+    // earlier queued prompts for the same agent from ever being promoted.
+    if matches!(outcome, PromptSubmissionOutcome::Queued { .. }) {
+        let _ = app.release_prompt_workspace_claim(&provider_run_id);
+    }
     handle_workflow_prompt_submission_outcome(
         app,
         session_id,

@@ -287,6 +287,7 @@ fn workflow_design_endpoints_enforce_canonical_aliases() {
                     id: "endpoint-invalid".to_string(),
                     entry_node_id: "node-1".to_string(),
                     alias: Some("entry-1.1".to_string()),
+                    max_instances: None,
                 },
                 position: None,
             },
@@ -307,6 +308,7 @@ fn workflow_design_endpoints_enforce_canonical_aliases() {
                     id: "endpoint-valid".to_string(),
                     entry_node_id: "node-1".to_string(),
                     alias: Some(" Entry-1-1 ".to_string()),
+                    max_instances: None,
                 },
                 position: None,
             },
@@ -329,6 +331,7 @@ fn workflow_design_endpoints_enforce_canonical_aliases() {
                 patch: crate::local::WorkflowDesignEndpointPatch {
                     alias: Some(Some("entry-2.1".to_string())),
                     entry_node_id: None,
+                    max_instances: None,
                 },
             },
             DEFAULT_LOCAL_USER_ID.to_string(),
@@ -338,6 +341,136 @@ fn workflow_design_endpoints_enforce_canonical_aliases() {
         invalid_update,
         DaemonError::InvalidWorkflowEndpointAlias { .. }
     ));
+}
+
+#[test]
+fn workflow_design_endpoint_max_instances_contract() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let workflow = service
+        .create_workflow(session.id(), Some("endpoint-pool".to_string()))
+        .expect("workflow should be created");
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::NodeAdd {
+                workflow_id: workflow.id().to_string(),
+                node: crate::local::WorkflowDesignNode {
+                    id: "node-1".to_string(),
+                    agent_id: "agent-1".to_string(),
+                    label: None,
+                    instructions: None,
+                    can_complete_workflow_run: None,
+                    can_emit_intermediate_run_output: None,
+                    wait_for_all_inputs: None,
+                    intermediate_output_schema_ref: None,
+                    max_turns: None,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("endpoint entry node should be created");
+
+    let add_endpoint = |service: &mut SessionService, id: &str, max_instances: Option<u16>| {
+        service.apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointAdd {
+                workflow_id: workflow.id().to_string(),
+                endpoint: crate::local::WorkflowDesignEndpoint {
+                    id: id.to_string(),
+                    entry_node_id: "node-1".to_string(),
+                    alias: Some(format!("{id}-alias")),
+                    max_instances,
+                },
+                position: None,
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+    };
+
+    let defaulted = add_endpoint(&mut service, "endpoint-default", None)
+        .expect("endpoint without max_instances should apply");
+    assert_eq!(
+        defaulted.endpoint("endpoint-default").map(|endpoint| {
+            (
+                endpoint.max_instances(),
+                crate::session::DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES,
+            )
+        }),
+        Some((1, 1)),
+        "endpoints must default to max_instances = 1"
+    );
+
+    for invalid in [0u16, 33] {
+        let error = add_endpoint(&mut service, "endpoint-invalid", Some(invalid))
+            .expect_err("endpoint max_instances outside 1..=32 must be rejected");
+        let DaemonError::LocalTransport { message, .. } = error else {
+            panic!("expected design conflict error, got {error:?}");
+        };
+        assert!(
+            message.contains("max_instances must be between 1 and 32"),
+            "{message}"
+        );
+    }
+
+    let pooled = add_endpoint(&mut service, "endpoint-pooled", Some(4))
+        .expect("endpoint with valid max_instances should apply");
+    assert_eq!(
+        pooled
+            .endpoint("endpoint-pooled")
+            .map(|endpoint| endpoint.max_instances()),
+        Some(4)
+    );
+
+    let mut update_endpoint = |max_instances: Option<u16>| {
+        service.apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: "endpoint-pooled".to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: None,
+                    entry_node_id: None,
+                    max_instances,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+    };
+
+    for invalid in [0u16, 33] {
+        let error = update_endpoint(Some(invalid))
+            .expect_err("endpoint max_instances updates outside 1..=32 must be rejected");
+        let DaemonError::LocalTransport { message, .. } = error else {
+            panic!("expected design conflict error, got {error:?}");
+        };
+        assert!(
+            message.contains("max_instances must be between 1 and 32"),
+            "{message}"
+        );
+    }
+
+    let updated = update_endpoint(Some(32)).expect("valid max_instances update should apply");
+    assert_eq!(
+        updated
+            .endpoint("endpoint-pooled")
+            .map(|endpoint| endpoint.max_instances()),
+        Some(32)
+    );
+}
+
+#[test]
+fn workflow_endpoint_max_instances_defaults_when_deserialized_from_legacy_payloads() {
+    let legacy = serde_json::json!({
+        "id": "endpoint-legacy",
+        "entry_node_id": "node-1"
+    });
+    let endpoint: crate::session::WorkflowEndpointDefinition =
+        serde_json::from_value(legacy).expect("legacy endpoint payload should deserialize");
+    assert_eq!(endpoint.max_instances(), 1);
 }
 
 #[test]
@@ -1297,6 +1430,7 @@ fn workflow_design_ops_reject_invalid_or_ambiguous_graph_mutations() {
                     id: "endpoint-missing".to_string(),
                     entry_node_id: "node-missing".to_string(),
                     alias: None,
+                    max_instances: None,
                 },
                 position: None,
             },

@@ -12,7 +12,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         workflow_run_id: &str,
         dispatches: &[crate::session::WorkflowDispatch],
-    ) -> WorkflowPromptDispatches {
+    ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let mut prepared = WorkflowPromptDispatches::default();
         for dispatch in dispatches {
             self.record_notice(
@@ -71,9 +71,26 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id,
                 dispatch.node_run.id(),
             );
-            let agent_busy = self
+            let agent_busy = match self
                 .workflow_agent_has_prompt_work(session_id, dispatch.node_run.agent_id())
-                .unwrap_or(false);
+            {
+                Ok(agent_busy) => agent_busy,
+                Err(error) => {
+                    // Never default to "idle" on error: scheduling against a busy
+                    // agent must stay conservative or the claim/queue invariants break.
+                    self.record_notice(
+                            session_id,
+                            None,
+                            self.attachment_store.list_session_attachment_ids(session_id),
+                            format!(
+                                "Workflow run `{workflow_run_id}` could not schedule downstream node `{}` after an agent busyness error: {}",
+                                dispatch.node_run.node_id(),
+                                error
+                            ),
+                        );
+                    continue;
+                }
+            };
             if !agent_busy {
                 match self.acquire_workflow_node_workspace_claim(
                     session_id,
@@ -150,10 +167,10 @@ impl KernelRuntimeOwnedState {
                 dispatch.node_run.id(),
             ) {
                 Ok(dispatches) => {
-                    // A queued prompt can be successfully admitted without producing a concrete
-                    // dispatch while its provider is busy. Retain the claim for every admitted
-                    // prompt; release it only when admission itself returned no prompt.
-                    if !dispatches.admitted_workflow_prompt {
+                    // Only a prompt that started immediately may keep its workspace claim.
+                    // A queued prompt releases it so the per-agent queue head can be
+                    // promoted later without conflicting with its own worktree claim.
+                    if !dispatches.admitted_workflow_prompt || dispatches.queued_workflow_prompt {
                         self.release_workflow_node_workspace_claim(
                             session_id,
                             workflow_run_id,
@@ -191,7 +208,7 @@ impl KernelRuntimeOwnedState {
                 }
             }
         }
-        prepared
+        Ok(prepared)
     }
 
     fn workflow_fail_node_after_dispatch_error(

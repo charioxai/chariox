@@ -19,6 +19,7 @@ mod workflow_canvas;
 mod workflow_definition;
 mod workflow_diagnostics;
 mod workflow_graph;
+mod workflow_instances;
 mod workflow_outputs;
 mod workflow_publication;
 mod workflow_run_records;
@@ -81,6 +82,12 @@ pub use types::{
 pub(crate) use types::{DurablePromptDeliveryPhase, DurablePromptPrivateState};
 pub(crate) use workflow_definition::{
     WorkflowCodeSourceDescriptor, WorkflowCodeStructureReplacement,
+};
+pub use workflow_graph::{
+    DEFAULT_WORKFLOW_ENDPOINT_MAX_INSTANCES, MAX_WORKFLOW_ENDPOINT_INSTANCES,
+};
+pub use workflow_instances::{
+    WorkflowEndpointRuntimeInstance, WorkflowEndpointRuntimeInstanceStatus,
 };
 pub use workflow_publication::{
     WorkflowEventBinding, WorkflowEventBindingStatus, WorkflowEventDeliveryReceipt,
