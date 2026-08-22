@@ -349,6 +349,7 @@ fn workflow_design_endpoint_max_instances_contract() {
     let session = service
         .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
         .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
     let workflow = service
         .create_workflow(session.id(), Some("endpoint-pool".to_string()))
         .expect("workflow should be created");
@@ -425,6 +426,45 @@ fn workflow_design_endpoint_max_instances_contract() {
         Some(4)
     );
 
+    let publication = service
+        .create_workflow_publication(
+            session.id(),
+            workflow.id(),
+            "endpoint-pooled",
+            Some("default".to_string()),
+            Some("endpoint-pool-events".to_string()),
+            Some("event_based".to_string()),
+            None,
+            Vec::new(),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("event publication should be created");
+    service
+        .create_workflow_event_binding(
+            session.id(),
+            publication.id(),
+            "dev.chariox.github".to_string(),
+            "1".to_string(),
+            "manifest-digest".to_string(),
+            "github-connection".to_string(),
+            "charioxai/chariox".to_string(),
+            "pull_request.synchronize".to_string(),
+            1,
+            serde_json::json!({}),
+            None,
+            Some("default".to_string()),
+            Some("disabled".to_string()),
+            Vec::new(),
+        )
+        .expect("event binding should be created");
+
     let mut update_endpoint = |max_instances: Option<u16>| {
         service.apply_workflow_design_op(
             session.id(),
@@ -460,6 +500,11 @@ fn workflow_design_endpoint_max_instances_contract() {
             .map(|endpoint| endpoint.max_instances()),
         Some(32)
     );
+    let updated_session = service
+        .get_session(session.id())
+        .expect("updated session should load");
+    assert_eq!(updated_session.workflow_publications().len(), 1);
+    assert_eq!(updated_session.workflow_event_bindings().len(), 1);
 }
 
 #[test]

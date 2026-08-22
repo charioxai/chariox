@@ -519,6 +519,19 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
         binding.event_interest_key
     );
 
+    let persisted = harness.with_app(|app| {
+        app.durable_state_store()
+            .load_workflow_hot_states("daemon-test")
+            .expect("durable workflow state should load")
+            .into_iter()
+            .find(|(session_id, _)| session_id == &graph.session_id)
+            .map(|(_, state)| state)
+            .expect("event publication session should be persisted")
+    });
+    assert_eq!(persisted.workflow_publications.len(), 2);
+    assert_eq!(persisted.workflow_publication_snapshots.len(), 2);
+    assert_eq!(persisted.workflow_event_bindings.len(), 2);
+
     let package_files = match harness
         .dispatch(LocalDaemonRequest::ExportWorkflowPublicationPackage(
             ExportWorkflowPublicationPackageRequest {
