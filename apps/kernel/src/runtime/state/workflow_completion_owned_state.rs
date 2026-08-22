@@ -12,16 +12,19 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
         reason: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
-        let session = self.session_snapshot(session_id)?;
         self.durable_state_store
-            .persist_workflow_runtime_transition(&session, reason)?;
-        self.session_store
-            .write()
-            .archive_terminal_workflow_runs(session_id)?;
-        if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
-            self.session_projection.update(hot_session);
-        }
-        Ok(session)
+            .with_workflow_runtime_transition_lock(|| {
+                let session = self.session_snapshot(session_id)?;
+                self.durable_state_store
+                    .persist_workflow_runtime_transition(&session, reason)?;
+                self.session_store
+                    .write()
+                    .archive_terminal_workflow_runs(session_id)?;
+                if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
+                    self.session_projection.update(hot_session);
+                }
+                Ok(session)
+            })
     }
 
     #[allow(dead_code)]

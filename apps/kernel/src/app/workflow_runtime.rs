@@ -254,11 +254,15 @@ impl DaemonApp {
         else {
             return Ok(());
         };
-        let session = self.sessions().get_session(session_id)?.clone();
-        if let Err(error) = self
-            .durable_state_store()
-            .persist_workflow_runtime_transition(&session, "legacy_workflow_instance_provisioned")
-        {
+        let durable_state = self.durable_state_store();
+        if let Err(error) = durable_state.with_workflow_runtime_transition_lock(|| {
+            let session = self.sessions().get_session(session_id)?.clone();
+            durable_state.persist_workflow_runtime_transition(
+                &session,
+                "legacy_workflow_instance_provisioned",
+            )?;
+            Ok(())
+        }) {
             let _ = self
                 .sessions_mut()
                 .remove_workflow_runtime_instance(session_id, instance.id());

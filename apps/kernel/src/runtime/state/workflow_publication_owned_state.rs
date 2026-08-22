@@ -160,30 +160,42 @@ impl KernelRuntimeOwnedState {
             &request.target_session_id,
             &request.target_publication_ref,
         )?;
-        let target_session = self.workflow_session(&request.target_session_id)?;
-        if request.source_session_id != request.target_session_id {
-            let source_session = self.workflow_session(&request.source_session_id)?;
-            if let Err(error) = self
+        let target_session = if request.source_session_id != request.target_session_id {
+            let persist_result = self
                 .durable_state_store
-                .persist_workflow_runtime_sessions_transition(
-                    &[source_session, target_session.clone()],
-                    "workflow_event_binding_transferred",
-                )
-            {
-                let mut sessions = self.session_store.write();
-                sessions.restore_session(source_before);
-                if let Some(target_before) = target_before {
-                    sessions.restore_session(target_before);
+                .with_workflow_runtime_transition_lock(|| {
+                    let source_session = self.workflow_session(&request.source_session_id)?;
+                    let target_session = self.workflow_session(&request.target_session_id)?;
+                    self.durable_state_store
+                        .persist_workflow_runtime_sessions_transition(
+                            &[source_session, target_session.clone()],
+                            "workflow_event_binding_transferred",
+                        )?;
+                    Ok(target_session)
+                });
+            match persist_result {
+                Ok(target_session) => target_session,
+                Err(error) => {
+                    let mut sessions = self.session_store.write();
+                    sessions.restore_session(source_before);
+                    if let Some(target_before) = target_before {
+                        sessions.restore_session(target_before);
+                    }
+                    return Err(error);
                 }
-                return Err(error);
             }
-        } else if let Err(error) = self.persist_workflow_runtime_session(
-            &request.source_session_id,
-            "workflow_event_binding_transferred",
-        ) {
-            self.session_store.write().restore_session(source_before);
-            return Err(error);
-        }
+        } else {
+            match self.persist_workflow_runtime_session(
+                &request.source_session_id,
+                "workflow_event_binding_transferred",
+            ) {
+                Ok(target_session) => target_session,
+                Err(error) => {
+                    self.session_store.write().restore_session(source_before);
+                    return Err(error);
+                }
+            }
+        };
         Ok(LocalDaemonResponse::WorkflowEventBindingTransferred {
             binding,
             session: target_session,

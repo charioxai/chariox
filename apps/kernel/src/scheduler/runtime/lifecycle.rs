@@ -5,15 +5,18 @@ fn persist_workflow_session_state(
     session_id: &str,
     reason: &'static str,
 ) -> Result<(), DaemonError> {
-    let session = crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
-    app.durable_state_store()
-        .persist_workflow_runtime_transition(&session, reason)?;
-    app.sessions_mut()
-        .archive_terminal_workflow_runs(session_id)?;
-    if let Ok(hot_session) = app.sessions().get_session(session_id) {
-        app.update_session_projection(hot_session);
-    }
-    Ok(())
+    let durable_state = app.durable_state_store();
+    durable_state.with_workflow_runtime_transition_lock(|| {
+        let session =
+            crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
+        durable_state.persist_workflow_runtime_transition(&session, reason)?;
+        app.sessions_mut()
+            .archive_terminal_workflow_runs(session_id)?;
+        if let Ok(hot_session) = app.sessions().get_session(session_id) {
+            app.update_session_projection(hot_session);
+        }
+        Ok(())
+    })
 }
 
 pub fn on_workflow_prompt_started(

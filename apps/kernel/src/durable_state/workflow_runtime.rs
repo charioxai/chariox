@@ -24,6 +24,20 @@ pub(crate) struct DurableWorkflowRunPage {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn with_workflow_runtime_transition_lock<T>(
+        &self,
+        transition: impl FnOnce() -> Result<T, DaemonError>,
+    ) -> Result<T, DaemonError> {
+        let _guard = self
+            .workflow_runtime_transition_lock
+            .lock()
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.lock_workflow_runtime_transition",
+                message: error.to_string(),
+            })?;
+        transition()
+    }
+
     pub(crate) fn persist_workflow_runtime_transition(
         &self,
         session: &RuntimeSession,
@@ -1043,6 +1057,8 @@ fn storage_error(operation: &'static str, error: rusqlite::Error) -> DaemonError
 mod tests {
     use super::*;
     use crate::session::WorkflowRunStatus;
+    use std::sync::{mpsc, Arc, Mutex};
+    use std::thread;
     use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
     fn temp_store(label: &str) -> (DurableKernelStateStore, std::path::PathBuf) {
@@ -1177,6 +1193,75 @@ mod tests {
                 .expect("workflow hot state should load")
                 .len(),
             1
+        );
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn workflow_runtime_transition_lock_serializes_snapshot_capture_and_commit() {
+        let (store, path) = temp_store("workflow-runtime-transition-order");
+        let session = Arc::new(Mutex::new(session_with_runs()));
+        let delayed_store = store.clone();
+        let delayed_session = Arc::clone(&session);
+        let (start_delayed_tx, start_delayed_rx) = mpsc::channel();
+        let (delayed_attempt_tx, delayed_attempt_rx) = mpsc::channel();
+
+        session
+            .lock()
+            .expect("session should lock")
+            .workflow_run_mut("run-active")
+            .expect("active run should exist")
+            .set_status(WorkflowRunStatus::Completed);
+
+        let delayed = thread::spawn(move || {
+            start_delayed_rx
+                .recv()
+                .expect("newer transition should release delayed transition");
+            delayed_attempt_tx
+                .send(())
+                .expect("delayed transition should report its attempt");
+            delayed_store
+                .with_workflow_runtime_transition_lock(|| {
+                    let snapshot = delayed_session.lock().expect("session should lock").clone();
+                    delayed_store
+                        .persist_workflow_runtime_transition(&snapshot, "delayed_transition")
+                })
+                .expect("delayed transition should persist");
+        });
+
+        store
+            .with_workflow_runtime_transition_lock(|| {
+                start_delayed_tx
+                    .send(())
+                    .expect("delayed transition should start");
+                delayed_attempt_rx
+                    .recv()
+                    .expect("delayed transition should wait on the shared lock");
+                let snapshot = session.lock().expect("session should lock").clone();
+                store.persist_workflow_runtime_transition(&snapshot, "newer_transition")?;
+                session
+                    .lock()
+                    .expect("session should lock")
+                    .archive_terminal_workflow_runs();
+                Ok(())
+            })
+            .expect("newer transition should persist");
+        delayed.join().expect("delayed transition should join");
+
+        assert!(store
+            .load_active_workflow_runs("kernel-1")
+            .expect("active runs should load")
+            .is_empty());
+        assert_eq!(
+            store
+                .resolve_workflow_run("kernel-1", "session-1", "run-active")
+                .expect("run should resolve")
+                .expect("run history should remain")
+                .status(),
+            WorkflowRunStatus::Completed,
+            "a delayed transition must snapshot current state after the newer commit",
         );
 
         drop(store);
