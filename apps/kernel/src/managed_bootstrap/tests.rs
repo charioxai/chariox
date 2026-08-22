@@ -350,6 +350,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
         "KillMode=control-group",
         "StartLimitIntervalSec=0",
+        "After=network-online.target",
         "RestartSteps=8",
         "RestartMaxDelaySec=5min",
         "NoNewPrivileges=true",
@@ -364,7 +365,15 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
             "missing systemd contract: {required}"
         );
     }
+    assert!(!unit.contains("cloud-final.service"));
     assert!(!unit.contains("ssh"));
+}
+
+#[test]
+fn managed_systemd_unit_remains_eligible_after_one_time_envelope_removal() {
+    let unit = include_str!("../../../../deploy/managed-kernel/chariox-managed-bootstrap.service");
+    assert!(unit.contains("ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap"));
+    assert!(!unit.contains("ConditionPathExists=/var/lib/chariox/managed-bootstrap.json"));
 }
 
 struct Fixture {

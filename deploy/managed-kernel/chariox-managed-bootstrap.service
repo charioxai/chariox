@@ -1,6 +1,6 @@
 [Unit]
 Description=Chariox managed independent kernel supervisor
-After=network-online.target cloud-final.service
+After=network-online.target
 Wants=network-online.target
 ConditionPathExists=/usr/local/bin/chariox-managed-bootstrap
 StartLimitIntervalSec=0
