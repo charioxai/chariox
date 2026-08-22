@@ -563,6 +563,12 @@ impl KernelRuntimeOwnedState {
                 operation: "advance queued prompt",
             });
         }
+        let acquired_workflow_claim =
+            match self.ensure_workflow_prompt_workspace_claim(session_id, &next_prompt) {
+                Ok(acquired) => acquired,
+                Err(DaemonError::WorkspaceClaimConflict { .. }) => return Ok(None),
+                Err(error) => return Err(error),
+            };
         let started_next = self
             .prompt_state_owner
             .activate_next_queued_prompt_with_prompt_id(
@@ -570,14 +576,36 @@ impl KernelRuntimeOwnedState {
                 agent_id,
                 Some(next_prompt.id()),
                 self.session_store.reserve_prompt_id(),
-            )?
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "advance queued prompt",
-                message: format!(
-                    "expected queued prompt `{}` but no queued prompt was available",
-                    next_prompt.id()
-                ),
-            })?;
+            );
+        let started_next = match started_next {
+            Ok(Some(prompt)) => prompt,
+            Ok(None) => {
+                if acquired_workflow_claim == Some(true) {
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        next_prompt.workflow_run_id().unwrap_or_default(),
+                        next_prompt.workflow_node_run_id().unwrap_or_default(),
+                    );
+                }
+                return Err(DaemonError::LocalTransport {
+                    operation: "advance queued prompt",
+                    message: format!(
+                        "expected queued prompt `{}` but no queued prompt was available",
+                        next_prompt.id()
+                    ),
+                });
+            }
+            Err(error) => {
+                if acquired_workflow_claim == Some(true) {
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        next_prompt.workflow_run_id().unwrap_or_default(),
+                        next_prompt.workflow_node_run_id().unwrap_or_default(),
+                    );
+                }
+                return Err(error);
+            }
+        };
         let source_attachment_id = self.promoted_prompt_source_attachment_id(
             session_id,
             started_next.source_attachment_id(),

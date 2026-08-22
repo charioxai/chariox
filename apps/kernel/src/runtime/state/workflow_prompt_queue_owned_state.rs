@@ -119,17 +119,6 @@ impl KernelRuntimeOwnedState {
                 Some(plan.watchdog_id.clone()),
             )?;
         }
-        if self
-            .session_store
-            .read()
-            .session_has_active_workflow_run(&plan.session_id)?
-        {
-            let _ = self
-                .session_store
-                .write()
-                .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
-            return Ok(WorkflowPromptDispatches::default());
-        }
         let outcome = self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
         if self
             .session_store
@@ -332,6 +321,7 @@ impl KernelRuntimeOwnedState {
         session_id: &str,
     ) -> WorkflowPromptDispatches {
         self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
         loop {
             let next_workflow = {
                 self.session_store
@@ -356,18 +346,18 @@ impl KernelRuntimeOwnedState {
                         })
                         .unwrap_or(false);
                     if queued_metaagent_is_busy {
-                        return WorkflowPromptDispatches::default();
+                        return accumulated;
                     }
                     let queued_metaagent_task = self
                         .session_store
                         .write()
                         .pop_next_queued_metaagent_task(session_id);
                     return match queued_metaagent_task {
-                        Ok(Some(task)) => WorkflowPromptDispatches {
-                            starting_metaagent_tasks: vec![task],
-                            ..WorkflowPromptDispatches::default()
-                        },
-                        Ok(None) => WorkflowPromptDispatches::default(),
+                        Ok(Some(task)) => {
+                            accumulated.starting_metaagent_tasks.push(task);
+                            accumulated
+                        }
+                        Ok(None) => accumulated,
                         Err(error) => {
                             self.record_notice(
                                 session_id,
@@ -376,7 +366,7 @@ impl KernelRuntimeOwnedState {
                                     .list_session_attachment_ids(session_id),
                                 format!("Failed to start queued Meta task: {error}"),
                             );
-                            WorkflowPromptDispatches::default()
+                            accumulated
                         }
                     };
                 }
@@ -388,7 +378,7 @@ impl KernelRuntimeOwnedState {
                             .list_session_attachment_ids(session_id),
                         format!("Failed to start queued workflow prompt: {error}"),
                     );
-                    return WorkflowPromptDispatches::default();
+                    return accumulated;
                 }
             };
             match self.workflow_schedule_queued_prompt_run(
@@ -418,7 +408,7 @@ impl KernelRuntimeOwnedState {
                             endpoint.id()
                         ),
                     );
-                    return dispatches;
+                    accumulated.extend(dispatches);
                 }
                 Ok((crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. }, _)) => {}
                 Err(error) => {

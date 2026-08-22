@@ -71,55 +71,60 @@ impl KernelRuntimeOwnedState {
                 workflow_run_id,
                 dispatch.node_run.id(),
             );
-            match self.acquire_workflow_node_workspace_claim(
-                session_id,
-                &claim_id,
-                dispatch.node_run.agent_id(),
-                workflow_run_id,
-                dispatch.node_run.id(),
-            ) {
-                Ok(()) => {
-                    let _ = self
-                        .session_store
-                        .write()
-                        .ready_workflow_node_after_workspace_claim(
+            let agent_busy = self
+                .workflow_agent_has_prompt_work(session_id, dispatch.node_run.agent_id())
+                .unwrap_or(false);
+            if !agent_busy {
+                match self.acquire_workflow_node_workspace_claim(
+                    session_id,
+                    &claim_id,
+                    dispatch.node_run.agent_id(),
+                    workflow_run_id,
+                    dispatch.node_run.id(),
+                ) {
+                    Ok(()) => {
+                        let _ = self
+                            .session_store
+                            .write()
+                            .ready_workflow_node_after_workspace_claim(
+                                session_id,
+                                workflow_run_id,
+                                dispatch.node_run.id(),
+                            );
+                    }
+                    Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
+                        let _ = self
+                            .session_store
+                            .write()
+                            .block_workflow_node_on_workspace_claim(
+                                session_id,
+                                workflow_run_id,
+                                dispatch.node_run.id(),
+                            );
+                        self.record_notice(
                             session_id,
-                            workflow_run_id,
-                            dispatch.node_run.id(),
+                            None,
+                            self.attachment_store.list_session_attachment_ids(session_id),
+                            format!(
+                                "Workflow run `{workflow_run_id}` blocked node `{}` on a workspace claim: {error}",
+                                dispatch.node_run.node_id()
+                            ),
                         );
-                }
-                Err(error @ DaemonError::WorkspaceClaimConflict { .. }) => {
-                    let _ = self
-                        .session_store
-                        .write()
-                        .block_workflow_node_on_workspace_claim(
+                        continue;
+                    }
+                    Err(error) => {
+                        self.record_notice(
                             session_id,
-                            workflow_run_id,
-                            dispatch.node_run.id(),
+                            None,
+                            self.attachment_store.list_session_attachment_ids(session_id),
+                            format!(
+                                "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
+                                dispatch.node_run.node_id(),
+                                error
+                            ),
                         );
-                    self.record_notice(
-                        session_id,
-                        None,
-                        self.attachment_store.list_session_attachment_ids(session_id),
-                        format!(
-                            "Workflow run `{workflow_run_id}` blocked node `{}` on a workspace claim: {error}",
-                            dispatch.node_run.node_id()
-                        ),
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    self.record_notice(
-                        session_id,
-                        None,
-                        self.attachment_store.list_session_attachment_ids(session_id),
-                        format!(
-                            "Workflow run `{workflow_run_id}` could not schedule downstream node `{}`: {}",
-                            dispatch.node_run.node_id(),
-                            error
-                        ),
-                    );
-                    continue;
+                        continue;
+                    }
                 }
             }
             let prompt = crate::session::PromptQueueItem::new(

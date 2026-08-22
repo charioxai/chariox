@@ -221,16 +221,17 @@ impl KernelRuntimeOwnedState {
                     workflow_node_run_id,
                 )?;
         }
-        let released_workflow_claim = self.release_workflow_node_workspace_claim(
+        self.release_workflow_node_workspace_claim(
             session_id,
             workflow_run_id,
             workflow_node_run_id,
         );
         let mut dispatches =
             self.workflow_prepare_dispatches(session_id, workflow_run_id, &update.dispatches);
-        if released_workflow_claim {
-            dispatches.extend(self.workflow_retry_blocked_claims());
-        }
+        // Queue promotion may already have exchanged the completed node's claim for the next
+        // shared-agent node. Retrying is safe in either case: conflicting work remains queued,
+        // while claims released by this completion immediately unblock eligible nodes.
+        dispatches.extend(self.workflow_retry_blocked_claims());
         let state_suffix = match update.workflow_run.status() {
             crate::session::WorkflowRunStatus::Waiting => "waiting for downstream handoffs",
             crate::session::WorkflowRunStatus::Completing => "is completing",

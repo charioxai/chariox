@@ -25,10 +25,18 @@ fn local_request_api_enqueues_into_a_disabled_workflow_queue_without_launching()
 }
 
 #[test]
-fn local_request_api_serializes_concurrent_workflow_launch_admission() {
+fn local_request_api_serializes_concurrent_workflows_per_agent() {
     run_workflow_run_lifecycle_large_stack_test(
-        "local-request-api-serializes-concurrent-workflow-launch-admission",
-        local_request_api_serializes_concurrent_workflow_launch_admission_inner,
+        "local-request-api-serializes-concurrent-workflows-per-agent",
+        local_request_api_serializes_concurrent_workflows_per_agent_inner,
+    );
+}
+
+#[test]
+fn local_request_api_runs_independent_workflows_concurrently() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-runs-independent-workflows-concurrently",
+        local_request_api_runs_independent_workflows_concurrently_inner,
     );
 }
 
@@ -545,7 +553,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
         LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
     };
-    match harness
+    let second_run = match harness
         .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
             InvokeWorkflowEndpointRequest {
                 session_id: session.id().to_string(),
@@ -556,27 +564,25 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
                 publication_invocation: None,
             },
         ))
-        .expect("second workflow should enqueue")
+        .expect("second workflow should create its run")
     {
-        LocalDaemonResponse::WorkflowPromptEnqueued { .. } => {}
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
-    }
-    match harness
-        .dispatch(LocalDaemonRequest::PauseWorkflowRun(
-            PauseWorkflowRunRequest {
-                session_id: session.id().to_string(),
-                workflow_run_ref: first_run.id().to_string(),
-            },
-        ))
-        .expect("first workflow should pause")
-    {
-        LocalDaemonResponse::WorkflowRunPaused { .. } => {}
-        _ => panic!("unexpected local response"),
-    }
-    harness.wait_for_session_where(
-        session.id(),
-        "paused workflow prompt should settle before stop",
-        |session| session.active_prompt_for_agent(agent.id()).is_none(),
+    };
+    let queued_before_stop = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .queued_prompts_for_agent(agent.id())
+            .expect("second workflow prompt should queue behind the shared agent")
+            .front()
+            .cloned()
+            .expect("second workflow prompt should be durable")
+    });
+    assert_eq!(queued_before_stop.workflow_run_id(), Some(second_run.id()));
+    assert_eq!(
+        queued_before_stop.workflow_node_run_id(),
+        Some(second_run.node_runs()[0].id())
     );
     match harness
         .dispatch(LocalDaemonRequest::CancelWorkflowRun(
@@ -585,7 +591,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
                 workflow_run_ref: first_run.id().to_string(),
             },
         ))
-        .expect("first workflow should stop")
+        .expect("first workflow should stop and release the shared agent")
     {
         LocalDaemonResponse::WorkflowRunCancelled { .. } => {}
         _ => panic!("unexpected local response"),
@@ -683,7 +689,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
     assert_ne!(first_page[0].id(), second_page[0].id());
 }
 
-fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
+fn local_request_api_serializes_concurrent_workflows_per_agent_inner() {
     const INVOCATION_COUNT: usize = 12;
 
     let harness = std::sync::Arc::new(LocalRouterTestHarness::new());
@@ -780,8 +786,8 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
             )
         })
         .count();
-    assert_eq!(started, 1, "exactly one concurrent invoke should start");
-    assert_eq!(enqueued, INVOCATION_COUNT - 1);
+    assert_eq!(started, INVOCATION_COUNT);
+    assert_eq!(enqueued, 0);
 
     let workflow_runs = match harness
         .dispatch(LocalDaemonRequest::ListWorkflowRuns(
@@ -799,8 +805,8 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
     };
     assert_eq!(
         workflow_runs.len(),
-        1,
-        "concurrent admission created extra runs"
+        INVOCATION_COUNT,
+        "every invocation should own a durable workflow run"
     );
     let queued_prompts = match harness
         .dispatch(LocalDaemonRequest::ListQueuedWorkflowPrompts(
@@ -813,7 +819,154 @@ fn local_request_api_serializes_concurrent_workflow_launch_admission_inner() {
         LocalDaemonResponse::QueuedWorkflowPromptsListed { queued_prompts } => queued_prompts,
         _ => panic!("unexpected local response"),
     };
-    assert_eq!(queued_prompts.len(), INVOCATION_COUNT - 1);
+    assert!(queued_prompts.is_empty());
+    let session_state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+    });
+    let active = session_state
+        .active_prompt_for_agent(agent.id())
+        .expect("one workflow prompt should be active");
+    let per_agent_queue = session_state
+        .queued_prompts_for_agent(agent.id())
+        .expect("shared agent should have a durable workflow prompt queue");
+    assert_eq!(per_agent_queue.len(), INVOCATION_COUNT - 1);
+    let mut attributed_run_ids = per_agent_queue
+        .iter()
+        .chain(std::iter::once(active))
+        .map(|prompt| {
+            let workflow_run_id = prompt
+                .workflow_run_id()
+                .expect("queued workflow prompt should retain its run id");
+            let workflow_node_run_id = prompt
+                .workflow_node_run_id()
+                .expect("queued workflow prompt should retain its node-run id");
+            let run = workflow_runs
+                .iter()
+                .find(|run| run.id() == workflow_run_id)
+                .expect("prompt run id should resolve");
+            assert_eq!(run.workflow_id(), workflow.id());
+            let node_run = run
+                .node_runs()
+                .iter()
+                .find(|node_run| node_run.id() == workflow_node_run_id)
+                .expect("prompt node-run id should resolve");
+            assert_eq!(node_run.iteration_index(), 1);
+            workflow_run_id.to_string()
+        })
+        .collect::<Vec<_>>();
+    attributed_run_ids.sort();
+    attributed_run_ids.dedup();
+    assert_eq!(attributed_run_ids.len(), INVOCATION_COUNT);
+}
+
+fn local_request_api_runs_independent_workflows_concurrently_inner() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new("workspace-independent-workflows", "worktree-root"),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let first_worktree = std::env::temp_dir()
+        .join("chariox-independent-workflow-first")
+        .join(session.id());
+    let second_worktree = std::env::temp_dir()
+        .join("chariox-independent-workflow-second")
+        .join(session.id());
+    std::fs::create_dir_all(&first_worktree).expect("first worktree should exist");
+    std::fs::create_dir_all(&second_worktree).expect("second worktree should exist");
+    let first_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "independent-first",
+        Some(&first_worktree.to_string_lossy()),
+    );
+    let second_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "independent-second",
+        Some(&second_worktree.to_string_lossy()),
+    );
+    harness.launch_workflow_test_provider(session.id(), first_agent.id());
+    harness.launch_workflow_test_provider(session.id(), second_agent.id());
+
+    let create_workflow = |alias: &str, agent_id: &str| {
+        let workflow = match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some(alias.to_string()),
+            }))
+            .expect("workflow create should succeed")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let node = harness.add_workflow_test_node(session.id(), workflow.id(), agent_id);
+        let endpoint = match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: node.id().to_string(),
+                    alias: Some("entry".to_string()),
+                    expected_workflow_revision: None,
+                },
+            ))
+            .expect("workflow endpoint should create")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        (workflow, endpoint)
+    };
+    let (first_workflow, first_endpoint) = create_workflow("independent-first", first_agent.id());
+    let (second_workflow, second_endpoint) =
+        create_workflow("independent-second", second_agent.id());
+
+    let invoke = |workflow_ref: &str, endpoint_ref: &str, prompt: &str| match harness
+        .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+            InvokeWorkflowEndpointRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: workflow_ref.to_string(),
+                endpoint_ref: endpoint_ref.to_string(),
+                prompt: Some(prompt.to_string()),
+                queue_ref: None,
+                publication_invocation: None,
+            },
+        ))
+        .expect("workflow invocation should succeed")
+    {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        other => panic!("workflow should start immediately, got {other:?}"),
+    };
+    let first_run = invoke(
+        first_workflow.id(),
+        first_endpoint.id(),
+        "run first workflow",
+    );
+    let second_run = invoke(
+        second_workflow.id(),
+        second_endpoint.id(),
+        "run second workflow",
+    );
+
+    let state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+    });
+    let first_prompt = state
+        .active_prompt_for_agent(first_agent.id())
+        .expect("first workflow should own its agent");
+    let second_prompt = state
+        .active_prompt_for_agent(second_agent.id())
+        .expect("second workflow should own its agent");
+    assert_eq!(first_prompt.workflow_run_id(), Some(first_run.id()));
+    assert_eq!(second_prompt.workflow_run_id(), Some(second_run.id()));
+    assert!(state.workflow_queued_prompts().is_empty());
 }
 
 fn wait_for_workflow_run_status(

@@ -167,7 +167,7 @@ impl DaemonApp {
         if self
             .sessions()
             .get_session(session_id)?
-            .has_active_workflow_run()
+            .has_active_metaagent_task()
         {
             return Ok(WorkflowLaunchOutcome::Enqueued {
                 queued_prompt: Box::new(queued_prompt),

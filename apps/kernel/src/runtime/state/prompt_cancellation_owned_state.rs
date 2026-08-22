@@ -70,13 +70,24 @@ impl KernelRuntimeOwnedState {
             &prompt,
             cancellation_provider_run_id.as_deref(),
         );
+        let released_workflow_claim =
+            match (prompt.workflow_run_id(), prompt.workflow_node_run_id()) {
+                (Some(workflow_run_id), Some(workflow_node_run_id)) => self
+                    .release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run_id,
+                        workflow_node_run_id,
+                    ),
+                _ => false,
+            };
         let (active_prompt, queued_prompts) =
             self.prompt_state_owner.state_parts(&session, agent_id);
         self.mirror_prompt_owner_agent_state(session_id, agent_id, active_prompt, queued_prompts)?;
         let released_claim = cancellation_provider_run_id
             .as_deref()
             .map(|provider_run_id| self.clear_prompt_activity(provider_run_id))
-            .unwrap_or(false);
+            .unwrap_or(false)
+            || released_workflow_claim;
         let current_session = self.session_store.get_session(session_id)?;
         let hold_queued_prompts = current_session
             .metaagent_task(agent_id)
@@ -104,6 +115,24 @@ impl KernelRuntimeOwnedState {
                 let provider_run =
                     self.ensure_provider_run_in_session(session_id, provider_run_id)?;
                 if provider_run.state() == crate::provider::ProviderRunState::Running {
+                    let acquired_workflow_claim = match self
+                        .ensure_workflow_prompt_workspace_claim(session_id, next_prompt)
+                    {
+                        Ok(acquired) => acquired,
+                        Err(DaemonError::WorkspaceClaimConflict { .. }) => None,
+                        Err(error) => return Err(error),
+                    };
+                    if next_prompt.workflow_run_id().is_some() && acquired_workflow_claim.is_none()
+                    {
+                        return Ok(OwnedPromptCancellation {
+                            cancellation: crate::session::PromptCancellation {
+                                prompt,
+                                started_next: None,
+                            },
+                            released_claim,
+                            dispatch: None,
+                        });
+                    }
                     let started_next = self
                         .prompt_state_owner
                         .activate_next_queued_prompt_with_prompt_id(
@@ -136,6 +165,12 @@ impl KernelRuntimeOwnedState {
                             &provider_run,
                             started_next,
                             Some(prompt_sent_at_ms),
+                        );
+                    } else if acquired_workflow_claim == Some(true) {
+                        self.release_workflow_node_workspace_claim(
+                            session_id,
+                            next_prompt.workflow_run_id().unwrap_or_default(),
+                            next_prompt.workflow_node_run_id().unwrap_or_default(),
                         );
                     }
                     started_next

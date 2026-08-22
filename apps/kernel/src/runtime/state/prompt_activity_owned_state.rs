@@ -699,4 +699,29 @@ impl KernelRuntimeOwnedState {
             .insert(claim_id.to_string(), claim);
         Ok(())
     }
+
+    pub(super) fn ensure_workflow_prompt_workspace_claim(
+        &self,
+        session_id: &str,
+        prompt: &crate::session::PromptQueueItem,
+    ) -> Result<Option<bool>, DaemonError> {
+        let (Some(workflow_run_id), Some(workflow_node_run_id)) =
+            (prompt.workflow_run_id(), prompt.workflow_node_run_id())
+        else {
+            return Ok(None);
+        };
+        let claim_id =
+            self.workflow_dispatch_claim_id(session_id, workflow_run_id, workflow_node_run_id);
+        if self.prompt_workspace_claims.contains(&claim_id) {
+            return Ok(Some(false));
+        }
+        self.acquire_workflow_node_workspace_claim(
+            session_id,
+            &claim_id,
+            prompt.target_agent_id(),
+            workflow_run_id,
+            workflow_node_run_id,
+        )?;
+        Ok(Some(true))
+    }
 }

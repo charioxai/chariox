@@ -314,16 +314,6 @@ impl SessionService {
             .collect())
     }
 
-    pub fn session_has_active_workflow_run(&self, session_id: &str) -> Result<bool, DaemonError> {
-        let session = self
-            .store
-            .get(session_id)
-            .ok_or_else(|| DaemonError::SessionNotFound {
-                session_id: session_id.to_string(),
-            })?;
-        Ok(session.has_active_workflow_run())
-    }
-
     pub fn mark_workflow_run_settling(
         &mut self,
         session_id: &str,
@@ -577,7 +567,7 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
-        if session.has_active_session_task() {
+        if session.has_active_metaagent_task() {
             return Ok(None);
         }
         if let (Some(meta_task), Some(workflow_created_at_ms)) = (

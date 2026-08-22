@@ -19,6 +19,59 @@ impl KernelRuntimeOwnedState {
                 dispatches.extend(prepared);
             }
         }
+        dispatches.extend(self.workflow_retry_queued_prompts_waiting_for_claims());
+        dispatches
+    }
+
+    fn workflow_retry_queued_prompts_waiting_for_claims(&self) -> WorkflowPromptDispatches {
+        let mut dispatches = WorkflowPromptDispatches::default();
+        for session in self
+            .session_store
+            .list_non_ended_sessions_including_hidden()
+        {
+            for agent in self.agent_store.get_session_agents(session.id()) {
+                if self
+                    .prompt_state_owner
+                    .active_prompt_for_agent(&session, agent.id())
+                    .is_some()
+                {
+                    continue;
+                }
+                let Some(next_prompt) = self
+                    .prompt_state_owner
+                    .peek_next_queued_prompt(&session, agent.id())
+                else {
+                    continue;
+                };
+                if next_prompt.workflow_run_id().is_none() {
+                    continue;
+                }
+                let Some(provider_run) = self
+                    .provider_store
+                    .get_run_for_agent(session.id(), agent.id())
+                    .filter(|run| run.state() == crate::provider::ProviderRunState::Running)
+                else {
+                    continue;
+                };
+                match self.advance_next_queued_prompt_dispatch(
+                    session.id(),
+                    agent.id(),
+                    provider_run.id(),
+                ) {
+                    Ok(Some(dispatch)) => dispatches.local.push(dispatch),
+                    Ok(None) => {}
+                    Err(error) => self.record_notice(
+                        session.id(),
+                        Some(provider_run.id()),
+                        self.attachment_store
+                            .list_session_attachment_ids(session.id()),
+                        format!(
+                            "Queued workflow prompt remained pending after workspace release: {error}"
+                        ),
+                    ),
+                }
+            }
+        }
         dispatches
     }
 

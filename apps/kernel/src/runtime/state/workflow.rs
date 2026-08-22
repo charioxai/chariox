@@ -6,6 +6,17 @@
 use super::*;
 
 impl KernelRuntimeOwnedState {
+    pub(super) fn workflow_agent_has_prompt_work(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let session = self.session_store.get_session(session_id)?;
+        let (active_prompt, queued_prompts) =
+            self.prompt_state_owner.state_parts(&session, agent_id);
+        Ok(active_prompt.is_some() || !queued_prompts.is_empty())
+    }
+
     pub(super) fn workflow_start_prompt(
         &self,
         session_id: &str,
