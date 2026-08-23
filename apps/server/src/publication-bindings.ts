@@ -213,6 +213,7 @@ function applyAgentProfile(agent: NonNullable<WorkflowPublicationSnapshot["agent
   agent.provider = profile.provider
   agent.model = profile.model ?? null
   agent.effort = profile.effort ?? null
+  if (profile.account_profile) agent.account_profile = profile.account_profile
 }
 
 async function promptProviderModelReplacement({

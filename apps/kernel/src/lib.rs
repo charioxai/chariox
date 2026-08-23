@@ -29,6 +29,7 @@ pub mod prompt_transcript;
 pub mod provider;
 pub(crate) mod provider_output_policy;
 pub mod pty;
+mod publication_provider_accounts;
 pub mod runtime;
 pub mod runtime_transport;
 pub mod scheduler;

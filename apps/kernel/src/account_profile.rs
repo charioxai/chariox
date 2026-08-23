@@ -367,6 +367,28 @@ impl ProviderAccountLocator {
         }
     }
 
+    fn home_relative(provider: &str, home: &Path) -> Result<Self, DaemonError> {
+        match provider {
+            "codex" => Ok(Self::Codex {
+                codex_home: home.join(".codex"),
+            }),
+            "claude" => Ok(Self::Claude {
+                claude_config_dir: home.join(".claude"),
+            }),
+            "opencode" => {
+                let config = home.join(".config");
+                Ok(Self::Opencode {
+                    xdg_data_home: home.join(".local/share"),
+                    xdg_config_home: config.clone(),
+                    xdg_state_home: home.join(".local/state"),
+                    xdg_cache_home: home.join(".cache"),
+                    opencode_config_dir: config.join("opencode"),
+                })
+            }
+            _ => Err(unsupported_provider(provider)),
+        }
+    }
+
     fn roots(&self) -> Vec<&Path> {
         match self {
             Self::Codex { codex_home } => vec![codex_home],
@@ -949,51 +971,10 @@ impl ProviderAccountProfileRegistry {
         let provider = normalize_provider(provider)?;
         let document = self.read_document()?;
         let stored = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
-        let mut files = Vec::new();
-        match &stored.locator {
-            ProviderAccountLocator::Codex { codex_home } => {
-                collect_optional_file(codex_home, "auth.json", "auth.json", &mut files)?;
-                collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
-            }
-            ProviderAccountLocator::Claude { claude_config_dir } => {
-                for name in [".credentials.json", "settings.json", "stats-cache.json"] {
-                    collect_optional_file(claude_config_dir, name, name, &mut files)?;
-                }
-                if stored.public.origin == ProviderAccountProfileOrigin::Default
-                    && !files
-                        .iter()
-                        .any(|file| file.relative_path == ".credentials.json")
-                {
-                    collect_default_claude_keychain_credentials(&mut files)?;
-                }
-            }
-            ProviderAccountLocator::Opencode {
-                xdg_data_home,
-                xdg_config_home,
-                xdg_state_home,
-                opencode_config_dir,
-                ..
-            } => {
-                collect_optional_tree(
-                    &xdg_data_home.join("opencode"),
-                    "data/opencode",
-                    &mut files,
-                )?;
-                collect_optional_tree(
-                    &xdg_config_home.join("opencode"),
-                    "config/opencode",
-                    &mut files,
-                )?;
-                collect_optional_tree(
-                    &xdg_state_home.join("opencode"),
-                    "state/opencode",
-                    &mut files,
-                )?;
-                if opencode_config_dir != &xdg_config_home.join("opencode") {
-                    collect_optional_tree(opencode_config_dir, "opencode-config", &mut files)?;
-                }
-            }
-        }
+        let files = materialization_files(
+            &stored.locator,
+            stored.public.origin == ProviderAccountProfileOrigin::Default,
+        )?;
         Ok(ProviderAccountMaterialization {
             profile: ProviderAccountReplicaMetadata {
                 owner_user_id: stored.public.owner_user_id.clone(),
@@ -1006,6 +987,41 @@ impl ProviderAccountProfileRegistry {
             files,
             generated_at_ms: crate::session::unix_epoch_ms(),
         })
+    }
+
+    pub(crate) fn materialize_deployment_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+        label: &str,
+        source_home: &Path,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let profile_id = validate_profile_id(profile_id)?;
+        let locator = ProviderAccountLocator::home_relative(provider, source_home)?;
+        let files = materialization_files(&locator, false)?;
+        if files.is_empty() {
+            return Err(registry_error(
+                "materialize deployment account profile",
+                "provider credential profile is empty",
+            ));
+        }
+        self.materialize_replica(
+            owner_user_id,
+            &ProviderAccountMaterialization {
+                profile: ProviderAccountReplicaMetadata {
+                    owner_user_id: owner_user_id.to_string(),
+                    provider: provider.to_string(),
+                    profile_id: profile_id.to_string(),
+                    label: label.trim().to_string(),
+                    origin: ProviderAccountProfileOrigin::Linked,
+                    is_default: false,
+                },
+                files,
+                generated_at_ms: crate::session::unix_epoch_ms(),
+            },
+        )
     }
 
     pub(crate) fn materialize_replica(
@@ -1442,6 +1458,54 @@ fn validate_profile_id(profile_id: &str) -> Result<&str, DaemonError> {
         ));
     }
     Ok(profile_id)
+}
+
+fn materialization_files(
+    locator: &ProviderAccountLocator,
+    include_default_claude_keychain: bool,
+) -> Result<Vec<ProviderAccountMaterializationFile>, DaemonError> {
+    let mut files = Vec::new();
+    match locator {
+        ProviderAccountLocator::Codex { codex_home } => {
+            collect_optional_file(codex_home, "auth.json", "auth.json", &mut files)?;
+            collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
+        }
+        ProviderAccountLocator::Claude { claude_config_dir } => {
+            for name in [".credentials.json", "settings.json", "stats-cache.json"] {
+                collect_optional_file(claude_config_dir, name, name, &mut files)?;
+            }
+            if include_default_claude_keychain
+                && !files
+                    .iter()
+                    .any(|file| file.relative_path == ".credentials.json")
+            {
+                collect_default_claude_keychain_credentials(&mut files)?;
+            }
+        }
+        ProviderAccountLocator::Opencode {
+            xdg_data_home,
+            xdg_config_home,
+            xdg_state_home,
+            opencode_config_dir,
+            ..
+        } => {
+            collect_optional_tree(&xdg_data_home.join("opencode"), "data/opencode", &mut files)?;
+            collect_optional_tree(
+                &xdg_config_home.join("opencode"),
+                "config/opencode",
+                &mut files,
+            )?;
+            collect_optional_tree(
+                &xdg_state_home.join("opencode"),
+                "state/opencode",
+                &mut files,
+            )?;
+            if opencode_config_dir != &xdg_config_home.join("opencode") {
+                collect_optional_tree(opencode_config_dir, "opencode-config", &mut files)?;
+            }
+        }
+    }
+    Ok(files)
 }
 
 fn collect_optional_file(
@@ -1950,6 +2014,46 @@ mod tests {
         let projected = serde_json::to_value(work).unwrap();
         assert!(projected.get("locator").is_none());
         assert!(!projected.to_string().contains("CODEX_HOME"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn deployment_profiles_materialize_from_isolated_provider_homes() {
+        let (root, registry) = fixture();
+        let source_home = root.join("mounted-profile/home");
+        fs::create_dir_all(source_home.join(".codex")).unwrap();
+        fs::write(
+            source_home.join(".codex/auth.json"),
+            "{\"token\":\"secret\"}",
+        )
+        .unwrap();
+        fs::write(
+            source_home.join(".codex/config.toml"),
+            "model = \"gpt-test\"\n",
+        )
+        .unwrap();
+
+        let profile = registry
+            .materialize_deployment_profile(
+                "local",
+                "codex",
+                "cloud-profile-2",
+                "Codex validation",
+                &source_home,
+            )
+            .unwrap();
+        let environment = registry
+            .resolve_environment("local", "codex", &profile.profile_id)
+            .unwrap();
+        let codex_home = Path::new(&environment["CODEX_HOME"]);
+
+        assert_eq!(profile.profile_id, "cloud-profile-2");
+        assert_eq!(profile.label, "Codex validation");
+        assert_eq!(
+            fs::read_to_string(codex_home.join("auth.json")).unwrap(),
+            "{\"token\":\"secret\"}"
+        );
+        assert!(codex_home.starts_with(root.join("provider-accounts/local/codex/cloud-profile-2")));
         let _ = fs::remove_dir_all(root);
     }
 

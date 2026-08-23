@@ -190,6 +190,7 @@ export type PublicationProviderModelProfile = {
   provider: string
   model?: string | null
   effort?: string | null
+  account_profile?: string | null
 }
 
 export type PublicationProviderModelOverride = {

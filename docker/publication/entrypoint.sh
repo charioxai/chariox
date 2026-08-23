@@ -214,6 +214,7 @@ launch_kernel_as_chariox() {
       CHARIOX_SESSION_HISTORY_READ_DELAY_MS \
       CHARIOX_WORKSPACE_DIR \
       CHARIOX_PUBLICATION_RUNTIME_STATE_DIR \
+      CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS \
       CHARIOX_PUBLICATION_RUNTIME_ROOT \
       CHARIOX_PUBLICATION_PACKAGE \
       CHARIOX_PUBLICATION_CONFIG \
@@ -367,10 +368,49 @@ import_credential_bindings() {
   local profile_dir
   for profile_dir in "$bindings_root"/*; do
     if [[ -d "$profile_dir" ]]; then
-      import_credential_profile "$profile_dir"
+      if should_import_credential_binding_to_home "$profile_dir"; then
+        import_credential_profile "$profile_dir"
+      else
+        local decision_status=$?
+        if [[ "$decision_status" -ne 1 ]]; then
+          return "$decision_status"
+        fi
+      fi
     fi
   done
   shopt -u nullglob
+}
+
+should_import_credential_binding_to_home() {
+  local profile_dir="$1"
+  node -e '
+    const fs = require("node:fs")
+    const path = require("node:path")
+    const profileDir = process.argv[1]
+    const configured = process.env.CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS
+    if (!configured) process.exit(0)
+    let identity
+    let manifest
+    try {
+      identity = JSON.parse(fs.readFileSync(path.join(profileDir, "profile.json"), "utf8"))
+      manifest = JSON.parse(configured)
+    } catch {
+      process.exit(70)
+    }
+    if (identity.kind !== "provider") process.exit(0)
+    const provider = String(identity.provider || "").toLowerCase()
+    const profileId = String(identity.profileId || "")
+    const selected = (Array.isArray(manifest.accounts) ? manifest.accounts : [])
+      .filter((account) => String(account.provider || "").toLowerCase() === provider)
+    const selectedIds = new Set(selected.map((account) => String(account.account_profile || "")))
+    const defaults = Array.isArray(manifest.defaults) ? manifest.defaults : []
+    const isDefault = defaults.some((account) => (
+      String(account.provider || "").toLowerCase() === provider
+      && String(account.account_profile || "") === profileId
+    ))
+    if (selectedIds.size > 1 && selectedIds.has(profileId) && !isDefault) process.exit(1)
+    process.exit(0)
+  ' "$profile_dir"
 }
 
 validate_credential_destination

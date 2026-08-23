@@ -1,4 +1,7 @@
 import assert from "node:assert/strict"
+import { mkdtemp, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import test from "node:test"
 
 import { resolvePublicationProviderModelBindings } from "./publication-bindings.js"
@@ -105,6 +108,39 @@ test("publication bindings validate the Claude family against runtime adapter ca
   assert.equal(resolved.snapshot.agents?.[0]?.provider, "claude")
   assert.equal(resolved.snapshot.agents?.[0]?.model, "claude-sonnet-5")
   assert.equal(resolved.changed, false)
+})
+
+test("publication bindings apply a destination account profile without packaging source identity", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-account-binding-"))
+  const bindingsPath = join(root, "bindings.local.json")
+  const snapshot = {
+    workflow: { id: "workflow-1", nodes: [{ id: "node-1", agent_id: "agent-1" }] },
+    agents: [{ id: "agent-1", provider: "codex", model: "gpt-5.6-luna", effort: "low" }],
+  } as unknown as WorkflowPublicationSnapshot
+  try {
+    await writeFile(bindingsPath, JSON.stringify({
+      schema_version: 1,
+      provider_model_overrides: [{
+        agent_id: "agent-1",
+        captured: { provider: "codex", model: "gpt-5.6-luna", effort: "low" },
+        replacement: {
+          provider: "codex",
+          model: "gpt-5.6-luna",
+          effort: "low",
+          account_profile: "destination-profile-2",
+        },
+      }],
+    }))
+    const resolved = await resolvePublicationProviderModelBindings(snapshot, bindingsPath, {
+      send: async <T>(): Promise<T> => ({
+        ProviderCatalog: { catalog: { all: [{ id: "codex", models: { "gpt-5.6-luna": {} } }] } },
+      }) as T,
+    }, { promptReplacement: false })
+
+    assert.equal(resolved.snapshot.agents?.[0]?.account_profile, "destination-profile-2")
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
 })
 
 test("publication bindings never prompt or persist providers outside the immutable contract", async () => {
