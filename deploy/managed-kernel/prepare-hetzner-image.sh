@@ -126,7 +126,10 @@ ln -sfn "$provider_toolchain_root/node_modules/.bin/opencode" /usr/local/bin/ope
 ln -sfn "$provider_toolchain_root/node_modules/.bin/claude" /usr/local/bin/claude
 ln -sfn "$provider_toolchain_root/node_modules/.bin/pnpm" /usr/local/bin/pnpm
 provider_tool_as_chariox() {
-  runuser -u chariox -- env PATH=/usr/local/bin:/usr/bin:/bin "$@"
+  runuser -u chariox -- env \
+    HOME=/var/lib/chariox/home \
+    PATH=/usr/local/bin:/usr/bin:/bin \
+    sh -c 'cd "$HOME" && exec "$@"' sh "$@"
 }
 [ "$(provider_tool_as_chariox codex --version)" = "codex-cli $codex_version" ] \
   || fail "installed Codex version does not match"

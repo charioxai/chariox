@@ -59,7 +59,7 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /npm_config_cache="\$npm_cache" npm ci --omit=dev/)
   assert.match(script, /rm -rf "\$npm_cache" \/root\/\.npm/)
   assert.match(script, /chmod -R u=rwX,go=rX "\$provider_toolchain_root"/)
-  assert.match(script, /runuser -u chariox -- env PATH=\/usr\/local\/bin:\/usr\/bin:\/bin "\$@"/)
+  assert.match(script, /runuser -u chariox -- env/)
   assert.match(script, /provider_tool_as_chariox codex --version/)
   assert.match(script, /provider_tool_as_chariox opencode --version/)
   assert.match(script, /provider_tool_as_chariox claude --version/)
@@ -85,6 +85,16 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\* "\$MARKER_PATH"/)
   assert.doesNotMatch(script, /systemctl (?:start|restart|enable --now) chariox-managed-bootstrap/)
   assert.doesNotMatch(script, /\.arroba/)
+})
+
+test("provider probes run from the managed user's accessible home", async () => {
+  const script = await readFile(scriptUrl, "utf8")
+  const helper = script.match(/provider_tool_as_chariox\(\) \{(?<body>[\s\S]*?)\n\}/)?.groups?.body
+
+  assert.ok(helper, "provider_tool_as_chariox helper must exist")
+  assert.match(helper, /HOME=\/var\/lib\/chariox\/home/)
+  assert.match(helper, /PATH=\/usr\/local\/bin:\/usr\/bin:\/bin/)
+  assert.match(helper, /sh -c 'cd "\$HOME" && exec "\$@"' sh "\$@"/)
 })
 
 test("rootful Docker socket cleanup fails closed and removes only stale sockets", async () => {
