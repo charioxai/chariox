@@ -825,6 +825,13 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     "usr/lib/chariox/releases",
     packaged.stdout.trim().slice("sha256:".length),
   )
+  for (const relativePath of ["usr", "usr/local", "usr/lib", "etc", "etc/systemd"]) {
+    assert.equal(
+      (await stat(join(deterministicRelease, relativePath))).mode & 0o777,
+      0o755,
+      `${relativePath} must be traversable by managed runtime users`,
+    )
+  }
   const firstReleaseInode = (await stat(deterministicRelease)).ino
   const currentLink = join(harness.installRoot, "usr/lib/chariox/current")
   const firstCurrentInode = (await lstat(currentLink)).ino

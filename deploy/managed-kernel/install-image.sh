@@ -180,8 +180,13 @@ fi
 if [ ! -e "$published_release" ]; then
   install -d -o root -g root -m 0755 \
     "$pending_release" \
+    "$pending_release/usr" \
+    "$pending_release/usr/local" \
     "$pending_release/usr/local/bin" \
+    "$pending_release/usr/lib" \
     "$pending_release/usr/lib/chariox" \
+    "$pending_release/etc" \
+    "$pending_release/etc/systemd" \
     "$pending_release/etc/systemd/system"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-kernel" "$pending_release/usr/local/bin/chariox-kernel"
   install -o root -g root -m 0755 "$image_root/usr/local/bin/chariox-managed-bootstrap" "$pending_release/usr/local/bin/chariox-managed-bootstrap"
