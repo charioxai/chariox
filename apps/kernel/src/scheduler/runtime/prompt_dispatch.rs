@@ -171,6 +171,7 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
     event_context_enabled: bool,
     event_actions_enabled: bool,
     fresh_context: bool,
+    workflow_node_run_id: Option<&str>,
 ) -> Result<String, DaemonError> {
     if fresh_context {
         app.end_provider_run_for_workflow_context_flush(session_id, agent_id)?;
@@ -208,7 +209,8 @@ pub(super) fn ensure_workflow_provider_run_for_agent(
         event_actions_enabled,
         fresh_context,
     )?;
-    let provider_run = app.start_workflow_provider_launch(request)?;
+    let provider_run =
+        app.start_workflow_provider_launch_for_node(request, workflow_node_run_id)?;
     Ok(provider_run.id().to_string())
 }
 

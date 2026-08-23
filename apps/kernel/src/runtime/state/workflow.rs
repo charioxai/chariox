@@ -67,6 +67,7 @@ impl KernelRuntimeOwnedState {
         event_context_enabled: bool,
         event_actions_enabled: bool,
         fresh_context: bool,
+        workflow_node_run_id: Option<&str>,
     ) -> Result<(String, Option<String>), DaemonError> {
         // Admission and workflow-tool activation must be one critical section. Two concurrent
         // workflow prompts for the same agent can otherwise both observe the first run while it
@@ -181,6 +182,12 @@ impl KernelRuntimeOwnedState {
         let run = self
             .provider_store
             .enable_workflow_tools(started.run.id())?;
+        let run = if let Some(workflow_node_run_id) = workflow_node_run_id {
+            self.provider_store
+                .mark_workflow_fresh_context(run.id(), workflow_node_run_id)?
+        } else {
+            run
+        };
         self.provider_run_projection.update(run.clone());
         Ok((run.id().to_string(), retired_provider_run_id))
     }
@@ -220,7 +227,8 @@ impl KernelRuntimeOwnedState {
             .provider_store
             .get_run_for_agent(session_id, agent_id)
             .is_some_and(|run| {
-                run.workflow_tools_enabled() && run.started_at_ms() >= workflow_run.created_at_ms()
+                run.workflow_tools_enabled()
+                    && run.workflow_fresh_context_node_run_id() == Some(workflow_node_run_id)
             }))
     }
 
@@ -299,7 +307,7 @@ impl KernelRuntimeOwnedState {
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
         _workflow_run_id: &str,
-        _workflow_node_run_id: &str,
+        workflow_node_run_id: &str,
     ) -> Result<WorkflowPromptDispatches, DaemonError> {
         let prepared = normalize_workflow_prepared_prompt(prepared);
         let mut dispatches = WorkflowPromptDispatches::default();
@@ -321,6 +329,7 @@ impl KernelRuntimeOwnedState {
                 event_context_enabled,
                 event_actions_enabled,
                 fresh_context,
+                Some(workflow_node_run_id),
             )?;
             if let Some(retired_provider_run_id) = retired_provider_run_id {
                 dispatches.retire_provider_before_launch(

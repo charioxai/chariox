@@ -322,6 +322,7 @@ mod tests {
                                 false,
                                 false,
                                 false,
+                                None,
                             )
                             .map(|(provider_run_id, _)| provider_run_id)
                     })

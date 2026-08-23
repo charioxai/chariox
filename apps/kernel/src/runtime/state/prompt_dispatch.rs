@@ -63,13 +63,14 @@ impl KernelRuntimeState {
                         &target_agent_id,
                         &prepared.prompt,
                     )?;
-                    owned.workflow_ensure_provider_run(
+                    let (_provider_run_id, _) = owned.workflow_ensure_provider_run(
                         &session_id,
                         &target_agent_id,
                         event_reply_enabled,
                         event_context_enabled,
                         event_actions_enabled,
                         fresh_context,
+                        prepared.prompt.workflow_node_run_id(),
                     )?;
                 } else if is_remote_agent {
                     if let Some(mut submission) = owned.submit_remote_prepared_prompt(&prepared)? {

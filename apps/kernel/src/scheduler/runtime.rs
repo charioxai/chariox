@@ -605,6 +605,7 @@ pub fn ensure_workflow_provider_run_for_agent_with_event_reply(
         event_context_enabled,
         event_actions_enabled,
         false,
+        None,
     )
 }
 
@@ -624,6 +625,28 @@ pub fn ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
         event_context_enabled,
         event_actions_enabled,
         true,
+        None,
+    )
+}
+
+pub fn ensure_fresh_workflow_provider_run_for_node_with_event_reply(
+    app: &mut DaemonApp,
+    session_id: &str,
+    agent_id: &str,
+    workflow_node_run_id: &str,
+    event_reply_enabled: bool,
+    event_context_enabled: bool,
+    event_actions_enabled: bool,
+) -> Result<String, DaemonError> {
+    prompt_dispatch::ensure_workflow_provider_run_for_agent(
+        app,
+        session_id,
+        agent_id,
+        event_reply_enabled,
+        event_context_enabled,
+        event_actions_enabled,
+        true,
+        Some(workflow_node_run_id),
     )
 }
 

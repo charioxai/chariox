@@ -204,6 +204,15 @@ impl ProviderProcessServiceStore {
         self.write().enable_workflow_tools(run_id)
     }
 
+    pub(crate) fn mark_workflow_fresh_context(
+        &self,
+        run_id: &str,
+        workflow_node_run_id: &str,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.write()
+            .mark_workflow_fresh_context(run_id, workflow_node_run_id)
+    }
+
     pub(crate) fn reconcile_run_liveness_provider_only(
         &self,
         session_id: &str,

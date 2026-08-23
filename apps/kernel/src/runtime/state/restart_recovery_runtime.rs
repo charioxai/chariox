@@ -579,6 +579,7 @@ impl KernelRuntimeState {
             event_context_enabled,
             event_actions_enabled,
             fresh_context,
+            prompt.workflow_node_run_id(),
         )?;
         let provider_run = self
             .owned

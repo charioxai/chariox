@@ -476,10 +476,13 @@ pub(crate) fn ensure_workflow_provider_run_for_prompt_from_runtime(
         prompt.workflow_node_run_id(),
     )?;
     let provider_run_id = if fresh_context {
-        crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+        crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_node_with_event_reply(
             app,
             session_id,
             agent_id,
+            prompt
+                .workflow_node_run_id()
+                .expect("workflow prompt must have a node run"),
             event_reply_enabled,
             event_context_enabled,
             event_actions_enabled,
@@ -546,14 +549,16 @@ pub(crate) fn ensure_workflow_provider_run_for_node_from_runtime(
             Some(workflow_node_run_id),
         )?;
     if fresh_context {
-        crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+        let provider_run_id = crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_node_with_event_reply(
             app,
             session_id,
             agent_id,
+            workflow_node_run_id,
             event_capabilities.0,
             event_capabilities.1,
             event_capabilities.2,
-        )
+        )?;
+        Ok(provider_run_id)
     } else {
         ensure_workflow_provider_run_with_event_capabilities_from_runtime(
             app,
@@ -671,7 +676,8 @@ fn workflow_prompt_requires_fresh_provider_context(
         .providers()
         .get_run_for_agent(session_id, agent_id)
         .is_some_and(|run| {
-            run.workflow_tools_enabled() && run.started_at_ms() >= workflow_run.created_at_ms()
+            run.workflow_tools_enabled()
+                && run.workflow_fresh_context_node_run_id() == Some(workflow_node_run_id)
         }))
 }
 
@@ -943,6 +949,93 @@ mod tests {
             )
             .expect("fresh-context policy should resolve"),
             "the current dispatched node must not count as prior agent context"
+        );
+    }
+
+    #[test]
+    fn workflow_context_flush_is_keyed_to_the_dispatched_node_not_provider_start_time() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace-cross-workflow-flush",
+                "worktree-cross-workflow-flush",
+            ))
+            .expect("session should be created");
+        let agent = crate::app::KernelSessionService::new(&mut app)
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                    .with_alias("shared-cross-workflow-agent")
+                    .with_model("test-model"),
+            )
+            .expect("workflow agent should be created");
+        let workflow = app
+            .sessions_mut()
+            .create_workflow(session.id(), Some("second-workflow".to_string()))
+            .expect("workflow should be created");
+        let node = app
+            .sessions_mut()
+            .add_workflow_node(session.id(), workflow.id(), agent.id())
+            .expect("workflow node should be created");
+        let endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("workflow endpoint should be created");
+        let run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                session.id(),
+                workflow.id(),
+                endpoint.id(),
+                Some("second workflow prompt".to_string()),
+            )
+            .expect("workflow run should be created");
+        let node_run_id = run.node_runs()[0].id().to_string();
+
+        let provider_run_id =
+            crate::scheduler::runtime::ensure_fresh_workflow_provider_run_for_agent_with_event_reply(
+                &mut app,
+                session.id(),
+                agent.id(),
+                false,
+                false,
+                false,
+            )
+            .expect("another workflow provider should launch after this run was created");
+        app.providers()
+            .mark_workflow_fresh_context(&provider_run_id, "other-workflow-node-run")
+            .expect("other workflow context should be recorded");
+
+        assert!(
+            workflow_prompt_requires_fresh_provider_context(
+                &app,
+                session.id(),
+                agent.id(),
+                Some(run.id()),
+                Some(&node_run_id),
+            )
+            .expect("fresh-context policy should resolve"),
+            "a provider launched later for another workflow must not satisfy this node's flush"
+        );
+
+        app.providers()
+            .mark_workflow_fresh_context(&provider_run_id, &node_run_id)
+            .expect("current workflow context should be recorded");
+        assert!(
+            !workflow_prompt_requires_fresh_provider_context(
+                &app,
+                session.id(),
+                agent.id(),
+                Some(run.id()),
+                Some(&node_run_id),
+            )
+            .expect("fresh-context policy should resolve"),
+            "retries for the same node must reuse the provider that was already flushed"
         );
     }
 

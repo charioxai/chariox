@@ -45,7 +45,19 @@ impl DaemonApp {
         &mut self,
         request: LaunchProviderRequest,
     ) -> Result<RuntimeProviderRun, DaemonError> {
+        self.start_workflow_provider_launch_for_node(request, None)
+    }
+
+    pub(crate) fn start_workflow_provider_launch_for_node(
+        &mut self,
+        request: LaunchProviderRequest,
+        workflow_node_run_id: Option<&str>,
+    ) -> Result<RuntimeProviderRun, DaemonError> {
         let started = self.start_provider_launch_with_options(request, false, true)?;
+        if let Some(workflow_node_run_id) = workflow_node_run_id {
+            self.providers
+                .mark_workflow_fresh_context(started.run.id(), workflow_node_run_id)?;
+        }
         let binding = match ProviderProcessService::initialize_runtime_binding(&started.run) {
             Ok(binding) => binding,
             Err(error) => {
