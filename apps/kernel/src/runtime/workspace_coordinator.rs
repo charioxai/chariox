@@ -195,9 +195,54 @@ fn normalize_worktree_id(worktree_id: String) -> String {
     worktree_id
 }
 
+pub(crate) fn workflow_agent_claim_id(agent_id: &str) -> String {
+    format!("workflow-agent:{agent_id}")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::WorkspaceCoordinator;
+    use super::{workflow_agent_claim_id, WorkspaceCoordinator};
+
+    #[test]
+    fn workflow_claim_identity_is_scoped_to_the_agent() {
+        assert_eq!(workflow_agent_claim_id("agent-1"), "workflow-agent:agent-1");
+        assert_ne!(
+            workflow_agent_claim_id("agent-1"),
+            workflow_agent_claim_id("agent-2")
+        );
+    }
+
+    #[test]
+    fn workflow_claims_queue_the_same_agent_but_allow_different_agents() {
+        let coordinator = WorkspaceCoordinator::default();
+        let _first = coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                workflow_agent_claim_id("agent-1"),
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect("first agent claim should acquire");
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                workflow_agent_claim_id("agent-2"),
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect("another agent should run in parallel");
+        coordinator
+            .acquire_worktree_write_claim(
+                "workspace",
+                workflow_agent_claim_id("agent-1"),
+                "session",
+                None,
+                "workflow_node_dispatch",
+            )
+            .expect_err("the same agent should stay serialized");
+    }
 
     #[test]
     fn rejects_overlapping_worktree_write_claims() {

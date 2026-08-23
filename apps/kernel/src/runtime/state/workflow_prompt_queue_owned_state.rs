@@ -67,12 +67,13 @@ impl KernelRuntimeOwnedState {
                 branch: None,
                 from_ref: Some("HEAD".to_string()),
             };
-            let worktree_id = crate::git_worktree_placement::prepare_git_worktree(
-                &placement,
-                std::path::Path::new(&candidate.source_worktree_id),
-                None,
-                "provision workflow runtime instance",
-            )?;
+            let worktree_id =
+                crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
+                    &placement,
+                    std::path::Path::new(&candidate.source_worktree_id),
+                    None,
+                    "provision workflow runtime instance",
+                )?;
             let mut agent_id_map: BTreeMap<String, String> = BTreeMap::new();
             for node in candidate.workflow.nodes() {
                 let runtime_agent_id = if let Some(agent_id) = agent_id_map.get(node.agent_id()) {
@@ -274,7 +275,7 @@ impl KernelRuntimeOwnedState {
                         }
                     }
                 }
-                crate::git_worktree_placement::remove_git_worktree(
+                crate::git_worktree_placement::remove_workflow_runtime_worktree(
                     &source_worktree_id,
                     instance.worktree_id(),
                     "cleanup workflow runtime instance",
@@ -383,7 +384,7 @@ impl KernelRuntimeOwnedState {
             let _ = self.agent_store.remove_workflow_runtime_agent(agent.id());
         }
         if !primary {
-            let _ = crate::git_worktree_placement::remove_git_worktree(
+            let _ = crate::git_worktree_placement::remove_workflow_runtime_worktree(
                 source_worktree_id,
                 worktree_id,
                 "rollback workflow runtime instance",

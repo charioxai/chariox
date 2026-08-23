@@ -12,12 +12,7 @@ impl DaemonApp {
     ) -> Result<(), DaemonError> {
         let session = self.sessions.get_session(session_id)?;
         let workspace_id = session.workspace_id().to_string();
-        let worktree_id = self
-            .agents
-            .get_agent(agent_id)
-            .ok()
-            .and_then(|agent| agent.worktree_id().map(str::to_string))
-            .unwrap_or_else(|| session.worktree_id().to_string());
+        let worktree_id = crate::runtime::workspace_coordinator::workflow_agent_claim_id(agent_id);
         let claim = self.workspace_coordinator.acquire_worktree_write_claim(
             workspace_id,
             worktree_id,
