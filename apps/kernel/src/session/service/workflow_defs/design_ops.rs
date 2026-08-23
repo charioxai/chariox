@@ -632,6 +632,7 @@ impl SessionService {
                 endpoint_id,
                 patch,
             } => {
+                let preserves_runtime_instances = patch.entry_node_id.is_none();
                 if patch.max_instances.is_some_and(|max_instances| {
                     !(1..=crate::session::MAX_WORKFLOW_ENDPOINT_INSTANCES).contains(&max_instances)
                 }) {
@@ -697,7 +698,14 @@ impl SessionService {
                     endpoint.set_max_instances(max_instances);
                 }
                 workflow.bump_revision();
-                Ok(workflow.clone())
+                let workflow = workflow.clone();
+                if preserves_runtime_instances {
+                    session.retarget_workflow_runtime_instances_revision(
+                        &workflow_id,
+                        workflow.revision(),
+                    );
+                }
+                Ok(workflow)
             }
             crate::local::WorkflowDesignOp::EndpointMove {
                 workflow_id,

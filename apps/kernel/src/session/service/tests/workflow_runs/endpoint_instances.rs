@@ -674,3 +674,230 @@ fn cap_only_edit_keeps_existing_instances_on_the_new_revision() {
         crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
     );
 }
+
+#[test]
+fn design_op_pool_shrink_retargets_instances_and_selects_excess_clones_for_cleanup() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    service
+        .set_workflow_endpoint_max_instances(session.id(), workflow.id(), endpoint.id(), 3)
+        .expect("pool should expand");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    let endpoint = workflow.endpoint(endpoint.id()).expect("endpoint").clone();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    for (ordinal, instance_id) in [(2, "instance-2"), (3, "instance-3")] {
+        let node_agent_ids = workflow
+            .nodes()
+            .iter()
+            .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+            .collect::<BTreeMap<_, _>>();
+        service
+            .register_workflow_runtime_instance(
+                session.id(),
+                crate::session::WorkflowEndpointRuntimeInstance::new(
+                    instance_id,
+                    workflow.id(),
+                    endpoint.id(),
+                    workflow.revision(),
+                    ordinal,
+                    false,
+                    node_agent_ids,
+                    format!("worktree-{ordinal}"),
+                ),
+            )
+            .expect("clone instance should register");
+    }
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: None,
+                    entry_node_id: None,
+                    max_instances: Some(1),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("pool should shrink");
+    let current_revision = updated.revision();
+    let snapshot = service
+        .get_session(session.id())
+        .expect("session should exist");
+    assert!(snapshot
+        .workflow_runtime_instances()
+        .iter()
+        .all(|instance| instance.workflow_revision() == current_revision));
+    let cleanup = service
+        .cleanup_ready_workflow_runtime_instances(session.id())
+        .expect("cleanup should resolve");
+    assert_eq!(
+        cleanup
+            .iter()
+            .map(|instance| instance.ordinal())
+            .collect::<Vec<_>>(),
+        vec![2, 3]
+    );
+}
+
+#[test]
+fn design_op_alias_edit_retargets_compatible_runtime_instances() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+
+    let updated = service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: Some(Some("updated-review".to_string())),
+                    entry_node_id: None,
+                    max_instances: None,
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("alias should update");
+    let snapshot = service
+        .get_session(session.id())
+        .expect("session should exist");
+    let instance = snapshot
+        .workflow_runtime_instance("instance-primary")
+        .expect("compatible instance should remain");
+    assert_eq!(instance.workflow_revision(), updated.revision());
+    assert_eq!(
+        instance.status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+}
+
+#[test]
+fn pool_shrink_keeps_a_busy_excess_clone_until_its_run_finishes() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    service
+        .set_workflow_endpoint_max_instances(session.id(), workflow.id(), endpoint.id(), 2)
+        .expect("pool should expand");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    let endpoint = workflow.endpoint(endpoint.id()).expect("endpoint").clone();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    let node_agent_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    service
+        .register_workflow_runtime_instance(
+            session.id(),
+            crate::session::WorkflowEndpointRuntimeInstance::new(
+                "instance-busy",
+                workflow.id(),
+                endpoint.id(),
+                workflow.revision(),
+                2,
+                false,
+                node_agent_ids,
+                "worktree-2",
+            ),
+        )
+        .expect("clone instance should register");
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "primary run",
+    );
+    service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("primary run should dequeue")
+        .expect("primary run should start");
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "clone run",
+    );
+    let (_, clone_run, _, _) = service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("clone run should dequeue")
+        .expect("clone run should start");
+    assert_eq!(clone_run.runtime_instance_id(), Some("instance-busy"));
+
+    service
+        .apply_workflow_design_op(
+            session.id(),
+            crate::local::WorkflowDesignOp::EndpointUpdate {
+                workflow_id: workflow.id().to_string(),
+                endpoint_id: endpoint.id().to_string(),
+                patch: crate::local::WorkflowDesignEndpointPatch {
+                    alias: None,
+                    entry_node_id: None,
+                    max_instances: Some(1),
+                },
+            },
+            DEFAULT_LOCAL_USER_ID.to_string(),
+        )
+        .expect("pool should shrink");
+    assert!(service
+        .cleanup_ready_workflow_runtime_instances(session.id())
+        .expect("cleanup should resolve")
+        .is_empty());
+    let snapshot = service
+        .get_session(session.id())
+        .expect("session should exist");
+    assert_eq!(
+        snapshot
+            .workflow_runtime_instance("instance-busy")
+            .expect("busy clone should remain")
+            .status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Busy
+    );
+}
