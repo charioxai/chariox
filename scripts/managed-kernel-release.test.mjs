@@ -563,6 +563,7 @@ test("managed kernel builder archives the exact commit and emits a signed binary
   const fixture = await makeFixture(root)
   const bin = join(root, "builder-bin")
   const trace = join(root, "builder-trace")
+  const extractionState = join(root, "builder-extraction-state")
   const output = join(root, "builder-output")
   await mkdir(bin)
   await writeHarnessCommand(join(bin, "docker"), `#!/bin/sh
@@ -573,7 +574,7 @@ set -eu
 case "$1" in
   build)
     case " $* " in *" --pull --platform linux/amd64 --target rust-builder "*) ;; *) exit 31 ;; esac
-    case " $* " in *" --tag chariox-managed-builder:"*) ;; *) exit 31 ;; esac
+    case " $* " in *" --tag chariox-managed-builder:"*"-"*"-"*) ;; *) exit 31 ;; esac
     for source do :; done
     dockerfile=
     previous=
@@ -587,18 +588,36 @@ case "$1" in
     [ ! -e "$source/working-tree-only" ]
     printf '%s\n' "$*" > '${trace}'
     ;;
-  create)
-    printf 'fixture-container\n'
-    ;;
-  cp)
-    destination=$3
-    case "$2" in
-      *chariox-kernel) printf 'kernel from archived commit\n' > "$destination" ;;
-      *chariox-managed-bootstrap) printf 'supervisor from archived commit\n' > "$destination" ;;
+  run)
+    case " $* " in *" --rm --pull=never --platform linux/amd64 --entrypoint cat sha256:"*) ;; *) exit 32 ;; esac
+    previous=
+    image=
+    for argument do
+      if [ "$previous" = "cat" ]; then image=$argument; fi
+      previous=$argument
+      source_path=$argument
+    done
+    [ "$image" = "sha256:1111111111111111111111111111111111111111111111111111111111111111" ]
+    case "$source_path" in
+      *chariox-kernel)
+        printf 'tag replaced after first immutable read\n' > '${extractionState}'
+        printf 'kernel from archived commit\n'
+        ;;
+      *chariox-managed-bootstrap)
+        [ -f '${extractionState}' ]
+        printf 'supervisor from archived commit\n'
+        ;;
       *) exit 32 ;;
     esac
     ;;
-  rm|image) ;;
+  image)
+    case "$2" in
+      inspect) printf '%s\n' 'sha256:1111111111111111111111111111111111111111111111111111111111111111' ;;
+      rm) ;;
+      *) exit 33 ;;
+    esac
+    ;;
+  rm) ;;
   *) exit 33 ;;
 esac
 `)

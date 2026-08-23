@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-import { createHash, createPrivateKey, createPublicKey, sign } from "node:crypto"
+import { createHash, createPrivateKey, createPublicKey, randomBytes, sign } from "node:crypto"
 import { spawnSync } from "node:child_process"
-import { chmod, lstat, mkdir, mkdtemp, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
+import { chmod, lstat, mkdir, mkdtemp, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join, resolve } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -111,8 +111,7 @@ async function build(options) {
   const scratch = await mkdtemp(join(tmpdir(), "chariox-managed-build."))
   const source = join(scratch, "source")
   const pending = join(dirname(options.output), `.new-${basename(options.output)}-${process.pid}`)
-  const builderImage = `chariox-managed-builder:${tree}`
-  const builderContainer = `chariox-managed-builder-${process.pid}-${tree.slice(0, 12)}`
+  const builderTag = `chariox-managed-builder:${tree}-${process.pid}-${randomBytes(8).toString("hex")}`
   const dockerEnvironment = Object.fromEntries(
     ["PATH", "HOME", "DOCKER_HOST"].flatMap((name) => process.env[name] ? [[name, process.env[name]]] : []),
   )
@@ -127,7 +126,7 @@ async function build(options) {
       [
         "build", "--pull", "--platform", "linux/amd64", "--target", BUILDER_STAGE,
         "--file", join(source, BUILDER_DOCKERFILE),
-        "--tag", builderImage,
+        "--tag", builderTag,
         source,
       ],
       {
@@ -136,18 +135,33 @@ async function build(options) {
       },
     )
     if (dockerBuild.status !== 0) throw new Error(`locked managed release builder image failed with status ${dockerBuild.status}`)
-    const created = spawnSync("docker", ["create", "--platform", "linux/amd64", "--name", builderContainer, builderImage, "true"], {
-      encoding: "utf8",
-      env: dockerEnvironment,
-    })
-    if (created.status !== 0) throw new Error(`managed release builder container failed: ${created.stderr.trim()}`)
+    const inspected = spawnSync(
+      "docker",
+      ["image", "inspect", "--format", "{{.Id}}", builderTag],
+      { encoding: "utf8", env: dockerEnvironment },
+    )
+    if (inspected.status !== 0) throw new Error(`managed release builder image inspection failed: ${inspected.stderr.trim()}`)
+    const builderImage = inspected.stdout.trim()
+    if (!/^sha256:[a-f0-9]{64}$/.test(builderImage)) {
+      throw new Error("managed release builder image ID is invalid")
+    }
     for (const name of ["chariox-kernel", "chariox-managed-bootstrap"]) {
       const sourceBinary = join(pending, name)
-      const copied = spawnSync(
-        "docker",
-        ["cp", `${builderContainer}:/opt/chariox-source/target/release/${name}`, sourceBinary],
-        { encoding: "utf8", env: dockerEnvironment },
-      )
+      const output = await open(sourceBinary, "wx", 0o755)
+      let copied
+      try {
+        copied = spawnSync(
+          "docker",
+          [
+            "run", "--rm", "--pull=never", "--platform", "linux/amd64", "--entrypoint", "cat",
+            builderImage,
+            `/opt/chariox-source/target/release/${name}`,
+          ],
+          { encoding: "utf8", env: dockerEnvironment, stdio: ["ignore", output.fd, "pipe"] },
+        )
+      } finally {
+        await output.close()
+      }
       if (copied.status !== 0) throw new Error(`copy ${name} from managed builder failed: ${copied.stderr.trim()}`)
       const metadata = await lstat(sourceBinary)
       if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error(`build did not produce ${name}`)
@@ -175,8 +189,7 @@ async function build(options) {
     })
     await rename(pending, options.output)
   } finally {
-    spawnSync("docker", ["rm", "-f", builderContainer], { stdio: "ignore", env: dockerEnvironment })
-    spawnSync("docker", ["image", "rm", "-f", builderImage], { stdio: "ignore", env: dockerEnvironment })
+    spawnSync("docker", ["image", "rm", "-f", builderTag], { stdio: "ignore", env: dockerEnvironment })
     await rm(pending, { recursive: true, force: true })
     await rm(scratch, { recursive: true, force: true })
   }
