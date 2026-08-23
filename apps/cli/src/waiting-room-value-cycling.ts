@@ -23,6 +23,7 @@ import { normalizeWaitingRoomState } from "./waiting-room-state.js"
 import { cycleWaitingRoomWorktreeSelectionId } from "./waiting-room-worktrees.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { cycleWaitingRoomProjectSelectionId } from "./waiting-room-projects.js"
+import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
 export function cycleWaitingRoomValue(
   state: WaitingRoomState,
@@ -71,7 +72,7 @@ export function cycleWaitingRoomFocusedValue(
     })
   }
   if (state.focus === "account") {
-    const profiles = (remote.providerAccounts ?? []).filter((profile) => profile.provider === state.providerId)
+    const profiles = providerAccountsForProvider(remote.providerAccounts, state.providerId)
     if (profiles.length === 0) {
       return state
     }

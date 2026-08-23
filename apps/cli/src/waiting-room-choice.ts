@@ -26,6 +26,7 @@ import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { normalizeWaitingRoomProjectSelectionId, projectSelectionFromId } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 
 export function waitingRoomModel(state: WaitingRoomState, catalog: ProviderCatalog) {
   return catalogModelOptions(catalog, state.providerId).find((option) => option.id === state.modelId) ?? null
@@ -75,9 +76,11 @@ export function waitingRoomChoice(
     kernelRef: placement.kernelRef,
     workerKernelRef: placement.workerKernelRef,
     providerId: state.providerId,
-    accountProfile: (remote.providerAccounts ?? []).find((profile) => (
-      profile.provider === state.providerId && profile.profile_id === state.accountProfileId
-    )) ?? null,
+    accountProfile: selectedProviderAccount(
+      remote.providerAccounts,
+      state.providerId,
+      state.accountProfileId,
+    ),
     model,
     effort: state.effort,
     projectSelection: projectSelectionFromId(normalizeWaitingRoomProjectSelectionId(

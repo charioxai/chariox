@@ -38,6 +38,7 @@ import {
   normalizeWaitingRoomProjectSelectionId,
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
 export function createWaitingRoomState(
   sessions: SessionListEntry[],
@@ -102,7 +103,7 @@ export function normalizeWaitingRoomState(
     selectedKernelRef: placement.selectedKernelRef,
   })
   const providerId = normalizeBackendProvider(state.providerId)
-  const providerAccounts = (remote.providerAccounts ?? []).filter((profile) => profile.provider === providerId)
+  const providerAccounts = providerAccountsForProvider(remote.providerAccounts, providerId)
   const accountProfileId = providerAccounts.some((profile) => profile.profile_id === state.accountProfileId)
     ? state.accountProfileId ?? "default"
     : providerAccounts.find((profile) => profile.is_default)?.profile_id
