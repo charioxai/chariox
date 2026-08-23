@@ -5,7 +5,68 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 
-import { validateTransport } from './live-cloud-publication-deployment-drill-transport.mjs'
+import {
+  assertDeployedWorkflowViewerFormPage,
+  deployedWorkflowFormInvokeRequest,
+  deployedWorkflowFormResultEventsPath,
+  validateTransport,
+} from './live-cloud-publication-deployment-drill-transport.mjs'
+
+test('human HTTP form invoke requests target the fixed publication form endpoint', () => {
+  assert.deepEqual(deployedWorkflowFormInvokeRequest('review the exact head'), {
+    path: FORM_INVOKE_PATH,
+    method: 'POST',
+    headers: { accept: 'text/html', 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: 'review the exact head' }),
+  })
+  assert.throws(() => deployedWorkflowFormInvokeRequest('   '), /non-empty prompt/)
+})
+
+test('human HTTP viewer form assertion requires form, prompt field, and invoke endpoint', () => {
+  const page = [
+    '<!doctype html>',
+    `<script>window.__charioxPublicationViewerConfig = {"humanFormInvokePath":"${FORM_INVOKE_PATH}"};</script>`,
+    '<form id="invoke-form"><textarea name="prompt"></textarea></form>',
+  ].join('')
+  assertDeployedWorkflowViewerFormPage(page, 'fixture viewer')
+
+  assert.throws(
+    () => assertDeployedWorkflowViewerFormPage(page.replace('<form id="invoke-form"', '<form>'), 'fixture viewer'),
+    /omitted the prompt invoke form/,
+  )
+  assert.throws(
+    () => assertDeployedWorkflowViewerFormPage(page.replace('name="prompt"', 'name="q"'), 'fixture viewer'),
+    /omitted the prompt field/,
+  )
+  assert.throws(
+    () => assertDeployedWorkflowViewerFormPage(page.replace(FORM_INVOKE_PATH, '/invoke'), 'fixture viewer'),
+    /did not configure the .* form endpoint/,
+  )
+})
+
+test('human HTTP form result event paths require a configured stream URL', () => {
+  const resultPage = (eventsUrl) => (
+    `<script>window.__charioxPublicationViewerConfig = {"eventsUrl":"${eventsUrl}"};</script>`
+  )
+  assert.equal(
+    deployedWorkflowFormResultEventsPath(
+      resultPage('/.well-known/chariox/publication/invocations/req_1/events'),
+    ),
+    '/.well-known/chariox/publication/invocations/req_1/events',
+  )
+  assert.equal(
+    deployedWorkflowFormResultEventsPath(
+      resultPage('/.well-known/chariox/publication/runs/run_2/events'),
+    ),
+    '/.well-known/chariox/publication/runs/run_2/events',
+  )
+  assert.throws(
+    () => deployedWorkflowFormResultEventsPath('<html>no config</html>'),
+    /did not expose an event stream URL/,
+  )
+})
+
+const FORM_INVOKE_PATH = '/.well-known/chariox/publication/human-http/invoke'
 
 test('human HTTP transport writes viewer and completed SSE evidence', async (t) => {
   const artifactsDir = await mkdtemp(path.join(os.tmpdir(), 'chariox-publication-transport-'))
@@ -22,8 +83,47 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
       ].join('\n'))
       return
     }
+    if (request.url === '/publication/invocations/req_fixture/events') {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        assert.equal(body, '')
+        response.writeHead(200, { 'content-type': 'text/event-stream' })
+        response.end([
+          'event: trace',
+          'data: {"message":"form fixture trace"}',
+          '',
+          'event: final',
+          'data: {"workflow_run":{"status":"Completed","failure_events":[]}}',
+          '',
+        ].join('\n'))
+      })
+      return
+    }
+    if (request.url === `/publication${FORM_INVOKE_PATH}`) {
+      let body = ''
+      request.on('data', (chunk) => { body += chunk })
+      request.on('end', () => {
+        assert.equal(request.headers['content-type'], 'application/json')
+        assert.deepEqual(JSON.parse(body), { prompt: 'fixture prompt' })
+        response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' })
+        response.end([
+          '<!doctype html><form id="invoke-form"><textarea name="prompt"></textarea></form>',
+          `<script>window.__charioxPublicationViewerConfig =`,
+          `{"humanFormInvokePath":"${FORM_INVOKE_PATH}",`,
+          `"eventsUrl":"/invocations/req_fixture/events"};</script>`,
+          '<div id="output">fixture result</div>',
+        ].join(''))
+      })
+      return
+    }
     response.writeHead(200, { 'content-type': 'text/html' })
-    response.end('<!doctype html><script>window.__charioxPublicationViewerConfig = {"eventsUrl":"/events"}; const stream = new EventSource("/events");</script>')
+    response.end([
+      '<!doctype html><form id="invoke-form"><textarea name="prompt"></textarea></form>',
+      `<script>window.__charioxPublicationViewerConfig =`,
+      `{"humanFormInvokePath":"${FORM_INVOKE_PATH}","eventsUrl":"/events"};`,
+      'const stream = new EventSource("/events");</script>',
+    ].join(''))
   })
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
   t.after(async () => {
@@ -46,4 +146,11 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
 
   assert.match(await readFile(evidence.htmlPath, 'utf8'), /EventSource/)
   assert.match(await readFile(evidence.transcriptPath, 'utf8'), /event: final/)
+  assert.equal(evidence.formPost.eventsScope, 'invocation')
+  assert.equal(evidence.formPost.streamedFinal, true)
+  const formEvidence = JSON.parse(await readFile(evidence.formPost.evidencePath, 'utf8'))
+  assert.deepEqual(formEvidence.request.body, { prompt: 'fixture prompt' })
+  assert.equal(formEvidence.request.path, FORM_INVOKE_PATH)
+  assert.equal(formEvidence.result.eventsScope, 'invocation')
+  assert.match(await readFile(evidence.formPost.transcriptPath, 'utf8'), /event: final/)
 })

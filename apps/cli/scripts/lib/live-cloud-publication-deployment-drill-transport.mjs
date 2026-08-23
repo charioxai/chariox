@@ -22,6 +22,40 @@ const SHOPPING_LIST_PROMPT_B = '2 red apples, 1 bag of coffee beans, and 3 packs
 const SHOPPING_EXPECTED_SNIPPETS = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'bananas', 'Coca-Cola', 'chips']
 const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-chariox-agent-app-checkout', 'apples', 'coffee', 'pasta']
 
+export const HUMAN_HTTP_FORM_INVOKE_PATH = '/.well-known/chariox/publication/human-http/invoke'
+
+export function deployedWorkflowFormInvokeRequest(prompt) {
+  const trimmedPrompt = `${prompt}`.trim()
+  if (!trimmedPrompt) throw new Error('human HTTP form invocation requires a non-empty prompt')
+  return {
+    path: HUMAN_HTTP_FORM_INVOKE_PATH,
+    method: 'POST',
+    headers: { accept: 'text/html', 'content-type': 'application/json' },
+    body: JSON.stringify({ prompt: trimmedPrompt }),
+  }
+}
+
+export function assertDeployedWorkflowViewerFormPage(body, label = 'human HTTP') {
+  const page = `${body}`
+  if (!page.includes('<form id="invoke-form"')) {
+    throw new Error(`${label} viewer omitted the prompt invoke form:\n${page.slice(0, 1000)}`)
+  }
+  if (!page.includes('name="prompt"')) {
+    throw new Error(`${label} viewer form omitted the prompt field:\n${page.slice(0, 1000)}`)
+  }
+  if (!page.includes(HUMAN_HTTP_FORM_INVOKE_PATH)) {
+    throw new Error(`${label} viewer did not configure the ${HUMAN_HTTP_FORM_INVOKE_PATH} form endpoint:\n${page.slice(0, 1000)}`)
+  }
+}
+
+export function deployedWorkflowFormResultEventsPath(body, label = 'human HTTP form') {
+  const config = parseHumanHttpViewerConfig(`${body}`)
+  if (!config.eventsUrl) {
+    throw new Error(`${label} result page did not expose an event stream URL:\n${`${body}`.slice(0, 1000)}`)
+  }
+  return config.eventsUrl
+}
+
 function publicationStatusWatchdogs(status) {
   if (Array.isArray(status?.watchdogs)) return status.watchdogs
   if (Array.isArray(status?.schedules)) return status.schedules
@@ -32,6 +66,62 @@ function publicationStatusWatchdogCount(status) {
   if (Number.isInteger(status?.watchdog_count)) return status.watchdog_count
   if (Number.isInteger(status?.schedule_count)) return status.schedule_count
   return publicationStatusWatchdogs(status).length
+}
+
+export async function runHumanHttpBrowserFormPost({ baseUrl, prompt, artifactsDir, slug }) {
+  const base = baseUrl.replace(/\/+$/, '')
+  const viewerResponse = await fetch(`${base}/`, { headers: { accept: 'text/html' } })
+  const viewerBody = await viewerResponse.text()
+  if (!viewerResponse.ok) {
+    throw new Error(`human HTTP form viewer failed: ${viewerResponse.status} ${viewerBody.slice(0, 200)}`)
+  }
+  assertDeployedWorkflowViewerFormPage(viewerBody, 'human HTTP form')
+  const request = deployedWorkflowFormInvokeRequest(prompt)
+  const posted = await fetch(`${base}${request.path}`, {
+    method: request.method,
+    headers: request.headers,
+    body: request.body,
+  })
+  const resultBody = await posted.text()
+  if (!posted.ok) {
+    throw new Error(`human HTTP form invocation failed: ${posted.status} ${resultBody.slice(0, 300)}`)
+  }
+  const contentType = posted.headers.get('content-type') ?? ''
+  if (!/text\/html/i.test(contentType)) {
+    throw new Error(`human HTTP form invocation result was not HTML: ${contentType} ${resultBody.slice(0, 300)}`)
+  }
+  const eventsUrl = deployedWorkflowFormResultEventsPath(resultBody)
+  const eventsScope = eventsUrl.includes('/invocations/') ? 'invocation' : 'run'
+  const transcript = await readSse(`${base}${eventsUrl}`, null, {
+    method: 'GET',
+    timeoutMs: 360_000,
+  })
+  if (!transcript.includes('event: final')) {
+    throw new Error(`human HTTP form event transcript missing final:\n${transcript}`)
+  }
+  if (!transcript.includes('event: trace')) {
+    throw new Error(`human HTTP form event transcript missing trace:\n${transcript}`)
+  }
+  assertSuccessfulSseTranscript(transcript, 'human HTTP form post')
+  const evidencePath = path.join(artifactsDir, `${slug}-form-post.json`)
+  const transcriptPath = path.join(artifactsDir, `${slug}-form-events.txt`)
+  const evidence = {
+    request: {
+      method: request.method,
+      path: request.path,
+      headers: request.headers,
+      body: JSON.parse(request.body),
+    },
+    result: {
+      status: posted.status,
+      contentType,
+      eventsScope,
+      streamedFinal: true,
+    },
+  }
+  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`)
+  await writeFile(transcriptPath, transcript)
+  return { evidencePath, transcriptPath, ...evidence.result }
 }
 
 export async function validateTransport(input) {
@@ -84,7 +174,13 @@ export async function validateTransport(input) {
     const transcriptPath = path.join(input.artifactsDir, `${input.slug}-human-http-events.txt`)
     await writeFile(htmlPath, body)
     await writeFile(transcriptPath, eventTranscript)
-    return { promptUrl, htmlPath, transcriptPath }
+    const formPost = await runHumanHttpBrowserFormPost({
+      baseUrl: base,
+      prompt: input.prompt,
+      artifactsDir: input.artifactsDir,
+      slug: input.slug,
+    })
+    return { promptUrl, htmlPath, transcriptPath, formPost }
   }
   if (input.transport === 'schedule') {
     const status = await waitForSchedulePublicationStatus(base, {
