@@ -681,8 +681,12 @@ impl KernelRuntimeOwnedState {
             return Ok(());
         }
         let session = self.session_store.get_session(session_id)?;
+        let agent = self.agent_store.get_agent(agent_id)?;
         let workspace_id = session.workspace_id().to_string();
-        let worktree_id = crate::runtime::workspace_coordinator::workflow_agent_claim_id(agent_id);
+        let worktree_id = agent
+            .worktree_id()
+            .unwrap_or_else(|| session.worktree_id())
+            .to_string();
         let claim = self.workspace_coordinator.acquire_worktree_write_claim(
             workspace_id,
             worktree_id,

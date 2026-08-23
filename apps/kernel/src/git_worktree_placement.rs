@@ -62,7 +62,12 @@ pub(crate) fn remove_workflow_runtime_worktree(
 ) -> Result<(), DaemonError> {
     let base_directory = base_directory.as_ref();
     let worktree_directory = worktree_directory.as_ref();
-    if base_directory == worktree_directory {
+    if base_directory == worktree_directory
+        || std::fs::canonicalize(base_directory)
+            .ok()
+            .zip(std::fs::canonicalize(worktree_directory).ok())
+            .is_some_and(|(base, worktree)| base == worktree)
+    {
         return Ok(());
     }
     remove_git_worktree(base_directory, worktree_directory, operation)
@@ -344,6 +349,23 @@ mod tests {
         remove_workflow_runtime_worktree(&directory, &selected, "cleanup test runtime instance")
             .expect("shared workspace cleanup should be a no-op");
         assert!(directory.exists());
+        std::fs::remove_dir(directory).expect("temporary directory should be removable");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_instance_cleanup_preserves_a_symlinked_plain_shared_directory() {
+        let directory = plain_temp_directory("shared-symlink");
+        let alias = directory.with_extension("alias");
+        std::os::unix::fs::symlink(&directory, &alias)
+            .expect("temporary directory alias should be created");
+
+        remove_workflow_runtime_worktree(&directory, &alias, "cleanup aliased runtime instance")
+            .expect("shared workspace cleanup should be a no-op through an alias");
+
+        assert!(directory.exists());
+        assert!(alias.exists());
+        std::fs::remove_file(alias).expect("temporary alias should be removable");
         std::fs::remove_dir(directory).expect("temporary directory should be removable");
     }
 }

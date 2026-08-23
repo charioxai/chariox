@@ -989,6 +989,40 @@ mod tests {
     }
 
     #[test]
+    fn cross_session_sibling_error_does_not_fail_the_active_prompt() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-other-session-error",
+                    "sessionID": "session-2",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "error": {
+                        "name": "APIError",
+                        "data": { "message": "Provider finish_reason: network_error" }
+                    }
+                }))
+                .expect("cross-session error should deserialize"),
+            },
+        )
+        .expect("cross-session error should send");
+
+        let result =
+            drain_opencode_events(&test_run(), &mut state, None).expect("drain should succeed");
+
+        assert!(result.terminal_failure.is_none());
+        assert!(result.completions.is_empty());
+        assert!(!result.prompt_completed);
+    }
+
+    #[test]
     fn idle_status_after_submitted_prompt_without_response_does_not_complete_prompt() {
         let (tx, rx) = mpsc::channel();
         let mut state = OpenCodeRuntimeState::new(

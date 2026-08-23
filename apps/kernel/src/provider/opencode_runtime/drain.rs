@@ -66,7 +66,8 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_parent_ids
                     .insert(info.id.clone(), info.parent_id.clone());
-                if info.role == "assistant"
+                if info.session_id == state.session_id
+                    && info.role == "assistant"
                     && info.parent_id.as_deref() == drain_active_user_message_id.as_deref()
                 {
                     if let Some(message) = info.terminal_error_message() {
