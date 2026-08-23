@@ -439,6 +439,14 @@ client surface includes:
   launch-target request
 - multi-Workspace Project updates and exact slice repository selections
 
+Every kernel that implements the direct source side of this contract advertises
+`managed_context_source_protocol_version: 1` in its Cloud relay-presence
+metadata. Cloud lists a kernel under `Kernel context from` only while that
+marker, the kernel relay public key, an active owner-bound machine identity, and
+a fresh authenticated heartbeat are all present. The capability marker is
+independent of the local daemon protocol version so Cloud never infers transfer
+support from an unrelated client protocol bump.
+
 These messages coordinate a launch but do not move runtime authority into Cloud or
 the client. A source-backed launch is bound to one source target, one target
 kernel, one context id, and one plan digest. Package chunks travel through the

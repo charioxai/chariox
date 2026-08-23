@@ -156,6 +156,8 @@ pub(crate) fn cloud_kernel_presence_body(
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "managed_context_source_protocol_version":
+                crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION,
             "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
             "available_providers": registration
                 .map(|registration| registration.available_providers.clone())
@@ -329,6 +331,10 @@ mod tests {
         assert_eq!(
             body["metadata"]["local_daemon_protocol_version"],
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            body["metadata"]["managed_context_source_protocol_version"],
+            crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION
         );
         assert_eq!(
             body["metadata"]["kernel_started_at_ms"],
