@@ -76,8 +76,11 @@ sudo deploy/managed-kernel/prepare-hetzner-image.sh \
 The preparation script refuses an unmarked host or the wrong OS and
 architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
 pinned Codex, OpenCode, and Claude Code releases, and the signed Chariox
-release. It disables the rootful Docker socket and validates a rootless daemon
-owned by the separate `chariox-docker` principal. Neither the kernel nor its
+release. It disables and masks the rootful Docker units, verifies both are
+inactive, rejects any live owner or unexpected file at the rootful socket path,
+and removes only the stale socket inode Ubuntu 26.04 can leave behind after
+shutdown. It then validates a rootless daemon owned by the separate
+`chariox-docker` principal. Neither the kernel nor its
 provider and shell descendants can open that daemon socket. At boot the
 bootstrap supervisor claims a single broker connection before any provider can
 start. The broker socket is owned by `chariox-docker:chariox-slice`, has mode

@@ -91,9 +91,13 @@ apt-get install -y --no-install-recommends \
 
 systemctl disable --now docker.service docker.socket >/dev/null 2>&1 || true
 systemctl mask docker.service docker.socket >/dev/null
-if [ -S /var/run/docker.sock ]; then
-  fail "rootful Docker socket remained active"
-fi
+docker_service_state=$(systemctl is-active docker.service || true)
+docker_socket_state=$(systemctl is-active docker.socket || true)
+"$script_root/remove-stale-rootful-docker-socket.sh" \
+  /var/run/docker.sock \
+  "$docker_service_state" \
+  "$docker_socket_state" \
+  /usr/bin/lsof
 
 node_major=$(node -p 'Number(process.versions.node.split(".")[0])')
 [ "$node_major" -eq 22 ] || fail "Ubuntu image did not provide the required Node.js 22 runtime"

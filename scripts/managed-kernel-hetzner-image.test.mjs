@@ -1,8 +1,16 @@
 import assert from "node:assert/strict"
-import { readFile } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { spawn, spawnSync } from "node:child_process"
 import { test } from "node:test"
+import { fileURLToPath } from "node:url"
 
 const scriptUrl = new URL("../deploy/managed-kernel/prepare-hetzner-image.sh", import.meta.url)
+const rootfulSocketHelperUrl = new URL(
+  "../deploy/managed-kernel/remove-stale-rootful-docker-socket.sh",
+  import.meta.url,
+)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
 const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Dockerfile", import.meta.url)
@@ -52,6 +60,9 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /rm -rf "\$npm_cache" \/root\/\.npm/)
   assert.match(script, /pnpm --version/)
   assert.match(script, /systemctl mask docker\.service docker\.socket/)
+  assert.match(script, /systemctl is-active docker\.service/)
+  assert.match(script, /systemctl is-active docker\.socket/)
+  assert.match(script, /remove-stale-rootful-docker-socket\.sh/)
   assert.match(script, /configure_subid_range \/etc\/subuid --add-subuids/)
   assert.match(script, /configure_subid_range \/etc\/subgid --add-subgids/)
   assert.match(script, /requested subordinate ID range overlaps/)
@@ -68,6 +79,77 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\* "\$MARKER_PATH"/)
   assert.doesNotMatch(script, /systemctl (?:start|restart|enable --now) chariox-managed-bootstrap/)
   assert.doesNotMatch(script, /\.arroba/)
+})
+
+test("rootful Docker socket cleanup fails closed and removes only stale sockets", async () => {
+  const helperPath = fileURLToPath(rootfulSocketHelperUrl)
+  const lsofResult = spawnSync("sh", ["-c", "command -v lsof"], { encoding: "utf8" })
+  assert.equal(lsofResult.status, 0, lsofResult.stderr)
+  const lsofPath = lsofResult.stdout.trim()
+  assert.ok(lsofPath.startsWith("/"), "lsof must resolve to an absolute path")
+
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "chariox-rootful-docker-socket-"))
+  try {
+    const absentSocket = join(fixtureRoot, "absent.sock")
+    let result = spawnSync(helperPath, [absentSocket, "inactive", "inactive", lsofPath], {
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 0, result.stderr)
+
+    const staleSocket = join(fixtureRoot, "stale.sock")
+    result = spawnSync(
+      "python3",
+      ["-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.close()", staleSocket],
+      { encoding: "utf8" },
+    )
+    assert.equal(result.status, 0, result.stderr)
+    result = spawnSync(helperPath, [staleSocket, "inactive", "inactive", lsofPath], {
+      encoding: "utf8",
+    })
+    assert.equal(result.status, 0, result.stderr)
+
+    const liveSocket = join(fixtureRoot, "live.sock")
+    const server = await new Promise((resolve, reject) => {
+      const child = spawn(
+        "python3",
+        [
+          "-u",
+          "-c",
+          "import socket,sys,time; s=socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(1); print('ready'); time.sleep(30)",
+          liveSocket,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] },
+      )
+      child.once("error", reject)
+      child.stdout.once("data", () => resolve(child))
+    })
+    try {
+      result = spawnSync(helperPath, [liveSocket, "inactive", "inactive", lsofPath], {
+        encoding: "utf8",
+      })
+      assert.notEqual(result.status, 0)
+      assert.match(result.stderr, /still owned by process/)
+    } finally {
+      server.kill("SIGTERM")
+      await new Promise((resolve) => server.once("exit", resolve))
+    }
+
+    const unexpectedFile = join(fixtureRoot, "docker.sock")
+    await writeFile(unexpectedFile, "not a socket\n")
+    result = spawnSync(helperPath, [unexpectedFile, "inactive", "inactive", lsofPath], {
+      encoding: "utf8",
+    })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /is not a trusted Unix socket/)
+
+    result = spawnSync(helperPath, [absentSocket, "active", "inactive", lsofPath], {
+      encoding: "utf8",
+    })
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /docker\.service remained active/)
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true })
+  }
 })
 
 test("Hetzner image preparation installs the hosted-drill tools", async () => {
