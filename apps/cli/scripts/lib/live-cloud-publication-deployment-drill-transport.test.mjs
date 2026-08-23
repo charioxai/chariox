@@ -6,6 +6,7 @@ import path from 'node:path'
 import test from 'node:test'
 
 import {
+  HUMAN_HTTP_FORM_INVOKE_PATH,
   assertDeployedWorkflowViewerFormPage,
   deployedWorkflowFormInvokeRequest,
   deployedWorkflowFormResultEventsPath,
@@ -14,18 +15,19 @@ import {
 
 test('human HTTP form invoke requests target the fixed publication form endpoint', () => {
   assert.deepEqual(deployedWorkflowFormInvokeRequest('review the exact head'), {
-    path: FORM_INVOKE_PATH,
+    path: HUMAN_HTTP_FORM_INVOKE_PATH,
     method: 'POST',
     headers: { accept: 'text/html', 'content-type': 'application/json' },
     body: JSON.stringify({ prompt: 'review the exact head' }),
   })
   assert.throws(() => deployedWorkflowFormInvokeRequest('   '), /non-empty prompt/)
+  assert.throws(() => deployedWorkflowFormInvokeRequest(undefined), /non-empty prompt/)
 })
 
 test('human HTTP viewer form assertion requires form, prompt field, and invoke endpoint', () => {
   const page = [
     '<!doctype html>',
-    `<script>window.__charioxPublicationViewerConfig = {"humanFormInvokePath":"${FORM_INVOKE_PATH}"};</script>`,
+    `<script>window.__charioxPublicationViewerConfig = {"humanFormInvokePath":"${HUMAN_HTTP_FORM_INVOKE_PATH}"};</script>`,
     '<form id="invoke-form"><textarea name="prompt"></textarea></form>',
   ].join('')
   assertDeployedWorkflowViewerFormPage(page, 'fixture viewer')
@@ -39,7 +41,7 @@ test('human HTTP viewer form assertion requires form, prompt field, and invoke e
     /omitted the prompt field/,
   )
   assert.throws(
-    () => assertDeployedWorkflowViewerFormPage(page.replace(FORM_INVOKE_PATH, '/invoke'), 'fixture viewer'),
+    () => assertDeployedWorkflowViewerFormPage(page.replace(HUMAN_HTTP_FORM_INVOKE_PATH, '/invoke'), 'fixture viewer'),
     /did not configure the .* form endpoint/,
   )
 })
@@ -65,8 +67,6 @@ test('human HTTP form result event paths require a configured stream URL', () =>
     /did not expose an event stream URL/,
   )
 })
-
-const FORM_INVOKE_PATH = '/.well-known/chariox/publication/human-http/invoke'
 
 test('human HTTP transport writes viewer and completed SSE evidence', async (t) => {
   const artifactsDir = await mkdtemp(path.join(os.tmpdir(), 'chariox-publication-transport-'))
@@ -100,7 +100,7 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
       })
       return
     }
-    if (request.url === `/publication${FORM_INVOKE_PATH}`) {
+    if (request.url === `/publication${HUMAN_HTTP_FORM_INVOKE_PATH}`) {
       let body = ''
       request.on('data', (chunk) => { body += chunk })
       request.on('end', () => {
@@ -110,7 +110,7 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
         response.end([
           '<!doctype html><form id="invoke-form"><textarea name="prompt"></textarea></form>',
           `<script>window.__charioxPublicationViewerConfig =`,
-          `{"humanFormInvokePath":"${FORM_INVOKE_PATH}",`,
+          `{"humanFormInvokePath":"${HUMAN_HTTP_FORM_INVOKE_PATH}",`,
           `"eventsUrl":"/invocations/req_fixture/events"};</script>`,
           '<div id="output">fixture result</div>',
         ].join(''))
@@ -121,7 +121,7 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
     response.end([
       '<!doctype html><form id="invoke-form"><textarea name="prompt"></textarea></form>',
       `<script>window.__charioxPublicationViewerConfig =`,
-      `{"humanFormInvokePath":"${FORM_INVOKE_PATH}","eventsUrl":"/events"};`,
+      `{"humanFormInvokePath":"${HUMAN_HTTP_FORM_INVOKE_PATH}","eventsUrl":"/events"};`,
       'const stream = new EventSource("/events");</script>',
     ].join(''))
   })
@@ -150,7 +150,7 @@ test('human HTTP transport writes viewer and completed SSE evidence', async (t) 
   assert.equal(evidence.formPost.streamedFinal, true)
   const formEvidence = JSON.parse(await readFile(evidence.formPost.evidencePath, 'utf8'))
   assert.deepEqual(formEvidence.request.body, { prompt: 'fixture prompt' })
-  assert.equal(formEvidence.request.path, FORM_INVOKE_PATH)
+  assert.equal(formEvidence.request.path, HUMAN_HTTP_FORM_INVOKE_PATH)
   assert.equal(formEvidence.result.eventsScope, 'invocation')
   assert.match(await readFile(evidence.formPost.transcriptPath, 'utf8'), /event: final/)
 })

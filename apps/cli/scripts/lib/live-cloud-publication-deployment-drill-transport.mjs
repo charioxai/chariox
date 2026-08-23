@@ -25,7 +25,7 @@ const SHOPPING_EXPECTED_SNIPPETS_B = ['Agent App Grocery Checkout', 'data-chario
 export const HUMAN_HTTP_FORM_INVOKE_PATH = '/.well-known/chariox/publication/human-http/invoke'
 
 export function deployedWorkflowFormInvokeRequest(prompt) {
-  const trimmedPrompt = `${prompt}`.trim()
+  const trimmedPrompt = typeof prompt === 'string' ? prompt.trim() : ''
   if (!trimmedPrompt) throw new Error('human HTTP form invocation requires a non-empty prompt')
   return {
     path: HUMAN_HTTP_FORM_INVOKE_PATH,
