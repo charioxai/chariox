@@ -171,6 +171,11 @@ fn ensure_configured_mcp_servers_connected(
             OPENCODE_MCP_CONNECT_TIMEOUT,
             OPENCODE_MCP_CONNECT_RETRY_INTERVAL,
         )?;
+        client.wait_until_mcp_server_connected(
+            &name,
+            OPENCODE_MCP_CONNECT_TIMEOUT,
+            OPENCODE_MCP_CONNECT_RETRY_INTERVAL,
+        )?;
         crate::logging::info_with_fields(
             "daemon.provider.opencode",
             "connected opencode MCP server",
