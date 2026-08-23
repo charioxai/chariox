@@ -129,10 +129,18 @@ pub(crate) fn failed_provider_resume_state_replacement_from_message(
     run: &RuntimeProviderRun,
     message: &str,
 ) -> Option<ProviderResumeState> {
-    let operation = if message.contains("thread/resume") {
+    let provider_message = message
+        .strip_prefix("Provider prompt dispatch failed: ")
+        .unwrap_or(message)
+        .trim();
+    let operation = if provider_message.contains("thread/resume") {
         "thread/resume"
-    } else if message.contains("codex_thread_resume") {
+    } else if provider_message.contains("codex_thread_resume") {
         "codex_thread_resume"
+    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
+        && provider_message.starts_with("Provider finish_reason: network_error")
+    {
+        "provider_stream/network_error"
     } else {
         return None;
     };
@@ -194,6 +202,43 @@ fn push_unique_root(roots: &mut Vec<PathBuf>, root: PathBuf) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn opencode_run_with_resume_state() -> RuntimeProviderRun {
+        let mut run = RuntimeProviderRun::from_control_capability_inference(
+            "provider-run-1",
+            "session-1".to_string(),
+            Some("agent-1".to_string()),
+            "opencode".to_string(),
+        );
+        run.set_resume_state(ProviderResumeState::from_opencode_session_id(
+            "open-session-1",
+        ));
+        run
+    }
+
+    #[test]
+    fn opencode_network_error_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "Provider prompt dispatch failed: Provider finish_reason: network_error (retries exhausted)",
+        )
+        .expect("retry-exhausted OpenCode stream failures should retire the session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_resume_recovery_ignores_unrelated_terminal_failures() {
+        let run = opencode_run_with_resume_state();
+
+        assert!(failed_provider_resume_state_replacement_from_message(
+            &run,
+            "provider request failed: network_error",
+        )
+        .is_none());
+    }
 
     #[test]
     fn workspace_live_sync_protected_roots_include_working_directory_and_local_links() {
