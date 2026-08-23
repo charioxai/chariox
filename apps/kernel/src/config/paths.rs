@@ -89,6 +89,9 @@ impl DaemonConfig {
     }
 
     pub fn slice_root(&self) -> PathBuf {
+        if let Some(root) = std::env::var_os("CHARIOX_SLICE_ROOT") {
+            return PathBuf::from(root);
+        }
         self.user_config
             .slices
             .root

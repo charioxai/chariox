@@ -428,7 +428,7 @@ Current pushed event contract:
 - `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
 - `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
 
-Managed remote-kernel control uses local daemon protocol version 278. The kernel
+Managed remote-kernel control uses local daemon protocol version 279. The kernel
 client surface includes:
 
 - Waiting Room inventory fields for provider accounts and safe Git credential
@@ -446,6 +446,15 @@ encrypted relay peer lane directly between those kernels. The target durably
 commits each offset before acknowledgement and returns an idempotent consumed
 receipt after completion. Retryable disconnects resume from the committed target
 offset. Clients must surface failure and must not substitute Empty context.
+
+Kernel-context schema v2 makes a stdio MCP portable only when its executable,
+working directory, and referenced runtime files are contained by the dedicated
+package directory `<user-mcp-root>/<mcp-name>/`. Export snapshots that directory,
+hashes every file, preserves executable bits, and normalizes command paths before
+transfer. Host-path arguments, ambient or literal credential environment values,
+and paths outside the package are rejected. Import verifies the package before
+materializing it below the target user's MCP root and rewriting command paths.
+HTTP MCP definitions carry configuration only and never a local runtime package.
 
 An imported managed Project reports target-owned Workspace and worktree paths.
 The target kernel persists and publishes that Project before it returns the launch
@@ -539,11 +548,11 @@ Current slice-management surface:
 
 - `slice.list`, `slice.create`, `slice.get`, `slice.start`, `slice.stop`, `slice.delete`, `slice.display_endpoint.get`, `slice.logs.get`, `slice.state.save`, `slice.state.status`, `slice.state.reset`, and `slice.backup.create` are daemon-owned local requests.
 - Local Docker slice records persist their assigned host port set in `local_docker_ports`; clients may display these diagnostics, but launch, relay, display, and log behavior must use the kernel-owned values rather than reconstructing ports from the slice id.
-- Local Docker slices keep Docker's default seccomp profile unless the home user explicitly sets `slices.linux.allow_unconfined_seccomp = true`; clients must present this as an advanced security compatibility option.
+- Ordinary local Docker slices keep Docker's default container security profiles unless the home user explicitly sets `slices.linux.allow_unconfined_seccomp = true`; clients must present this as an advanced security compatibility option. Broker-backed managed hosts force that compatibility mode inside their dedicated rootless Docker daemon because the worker kernel's fail-closed bubblewrap boundary needs nested user, PID, and mount namespaces. The managed broker joins only that daemon's user and mount namespaces, pins each validated publication directory by device and inode, and publishes it as a stable broker-owned bind mount. Docker never receives the original publication path or a `/proc` magic link. Durable handle records let the broker reuse mounts after its own restart and recreate them after a daemon restart; slice destruction removes the records and mountpoints.
 - Slice lifecycle status is `stopped`, `starting`, `stopping`, `running`, or `unhealthy`. Start must only report `running` after the worker kernel has been discovered; otherwise the slice remains `unhealthy` and diagnostics are available through `slice.logs.get`.
 - Slice records also carry display-only operation diagnostics: `last_operation`, `last_operation_status`, `last_error`, and `last_operation_at_ms`. The kernel updates these on lifecycle operations and restart reconciliation; clients may render them in status/doctor views, but must continue to treat `status` as the lifecycle state and audit/log records as the detailed diagnostic source.
 - Daemon health `slice_lifecycle.issues` identifies each unhealthy slice or failed slice operation by slice id/name, status, last operation/status/error, sessions, agents, and worktree so clients can point users directly to the affected slice before they open logs/audit or restart/delete it. `slice_lifecycle.provider_auth_issues` separately identifies attached-agent slices with no provider account summaries or with `unknown`/`not_configured` provider auth, including provider, alias/identity, sessions, agents, and worktree. Clients should surface this from kernel health and point users to `/slice doctor`, `/slice audit`, and slice auth login/import before they send more provider prompts.
-- Local Docker slices use the kernel-configured relay when it has a token and a non-loopback `ws://` or `wss://` URL, so hosted Cloud and self-hosted relay deployments expose the slice worker on the same relay fabric as other remote workers. The slice receives only the scoped runtime relay URL/token, not the home Cloud refresh profile. Loopback or incomplete relay configuration falls back to a private per-slice relay owned by the home kernel; clients should render the projected `relay_endpoint.private` flag rather than guessing from the URL.
+- Local Docker slices use the kernel-configured relay when it has a token and a non-loopback `ws://` or `wss://` URL, so hosted Cloud and self-hosted relay deployments expose the slice worker on the same relay fabric as other remote workers. A hosted slice initially receives a short bootstrap token limited to registration and heartbeat. After discovering its relay key, the home kernel obtains a key-bound token that targets only that owner kernel and installs it through the encrypted peer lane. The worker queues the encrypted install acknowledgement before closing its bootstrap relay socket, and the home kernel does not report the slice as running until it has observed that disconnect and proven a same-key reconnect with an encrypted ping. The slice receives no Cloud session or machine credential. Loopback or incomplete relay configuration falls back to a private per-slice relay owned by the home kernel; clients should render the projected `relay_endpoint.private` flag rather than guessing from the URL.
 - Kernel restart reconciliation must not leave runtime-only states active. Local Docker reconciliation inspects the host container: missing/stopped previously running slices become `stopped`, still-running or unverifiable runtime state becomes `unhealthy`, and interrupted `starting`/`stopping` transitions become `unhealthy`.
 - `slice.logs.get` returns structured log entries for local Docker slice provisioner actions and recent container logs. Clients should render these as diagnostics only and must not treat log text as control data.
 - Slice provider auth import/login/alias/remove requests are scoped by provider and the kernel owns displayed provider auth summaries. Removal purges the slice-side provider credential files and clears matching auth summaries from kernel state; `opencode` removes all `opencode:*` account summaries for that slice.
@@ -551,6 +560,8 @@ Current slice-management surface:
 - `GetProviderCatalog` carries provider/profile overrides plus `local`, `worker`, or `slice` execution location. Cache identity includes owner, request/profile selection, and location. Worker/slice requests require a matching kernel-projected materialization record.
 - Provider account selection is immutable within one provider run. Updating an existing agent's provider/account/model uses the normal bounded context-handoff and run replacement lifecycle; it does not mutate provider auth in place.
 - Relay peer protocol v18 carries the selected encrypted provider-account materialization before leased-agent spawn. The relay routes the opaque packet only. The worker validates lease ownership, materializes a distinct profile root, and launches the existing adapter/native-TUI path with that profile environment.
+- Relay peer protocol v22 adds managed-slice relay credential activation and renewal. Relay tokens remain redacted from debug output and travel only inside encrypted peer payloads. The slice validates the token subject, owner target, machine, action set, expiry, and worker-key thumbprint before installing it. A token change forces a new relay socket; the relay independently closes active scoped connections at expiry. Before the refresh window closes, the slice requests a replacement from its recorded owner over the same encrypted owner-targeted lane.
+- Relay peer protocol v23 adds an offline-recovery credential beside the short-lived active credential. The recovery token is bound to the same slice relay key and exactly one owner target, permits only `daemon.register`, `daemon.heartbeat`, and `peer.request`, and is capped at 30 days. It cannot route packets or receive peer events. The slice persists it atomically with the relay owner and key, uses it only when the active credential is missing or expired, then asks that owner for a replacement active/recovery pair over the encrypted peer lane. Each successful refresh rotates the recovery credential. A restart after an outage spanning active-token expiry must retain this same-key recovery path; a key or owner mismatch fails closed.
 - Slice saved state is a kernel-owned product concept, not a Docker-management UX. `slice.state.save` overwrites the active state for the slice, `slice.state.status` returns the active saved-state metadata, `slice.state.reset` removes the active state so future starts use the base slice image, and `slice.backup.create` creates a separate backup plus manual swap instructions. Saved state is composite: a Docker image tag and a `/home/slice` archive under the Chariox slice state root. Slice records expose only metadata (`saved_state_ref`, `saved_state_status`, `saved_state_updated_at_ms`); clients must not inspect archive contents or expose them to provider transcripts.
 - `slice.create.from_saved_state` may reference an existing saved-state id/name. Local Docker restore uses the saved image tag instead of the configured base image and extracts the saved home archive into the fresh slice home volume before normal provisioning continues. Restore still allocates fresh ports, relay identity, and worker identity through the normal slice start path.
 
@@ -727,7 +738,7 @@ Workflow trigger and deployment direction:
     `chariox serve` process over an outbound connector
   - `hosted_container`: a public publication ingress routes to one Docker
     container per deployment on the publication runner
-- Scalingo-hosted Chariox Cloud APIs own deployment records and control commands
+- OpenShip-managed Chariox Cloud APIs own deployment records and control commands
   only. Runtime publication traffic should terminate at the dedicated
   publication ingress and route from there to the active backend.
 
@@ -869,7 +880,7 @@ Remote terminal and Cloud invocation:
   artifacts, outputs, or published transport payloads
 - Cloud publication ingress forwards HTTP and its internal SSE progress stream
   to the active backend target and must preserve streaming semantics.
-- Scalingo Cloud should not proxy runtime publication streams. It may create,
+- Chariox Cloud should not proxy runtime publication streams. It may create,
   list, start, stop, and observe deployment metadata, and the web terminal may
   embed `public_base_url` in the central panel.
 - If the active backend is unavailable, HTTP returns an unavailable page or a

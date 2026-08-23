@@ -7,23 +7,47 @@ manager; it does not provision managed machines or build their images.
 
 ## Release inputs
 
-Build the `chariox-kernel` and `chariox-managed-bootstrap` release binaries for
-`x86_64-unknown-linux-gnu` from the exact pushed OSS revision. Create an Ed25519
-PKCS8 signing key outside the repository with mode `0600`, then package the two
-binaries:
+Use the OpenShip builder to build `chariox-kernel` and
+`chariox-managed-bootstrap` for `x86_64-unknown-linux-gnu` from an exact pushed
+OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
+outside the repository with mode `0600`. Its build command archives the Git
+object into a new temporary directory, runs a locked one-job release build, and
+emits the binaries with a detached source and artifact attestation:
+
+```sh
+node scripts/build-managed-kernel-release.mjs \
+  --source-repository "$(pwd)" \
+  --source-commit "$(git rev-parse HEAD)" \
+  --builder-signing-key <openship-builder-ed25519-private-key> \
+  --output <new-build-output-directory>
+```
+
+Create a separate Ed25519 PKCS8 release-signing key outside the repository with
+mode `0600`. Package only builder outputs whose attestation verifies with the
+pinned OpenShip builder public key:
 
 ```sh
 SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
 node scripts/package-managed-kernel-release.mjs \
-  --kernel <linux-chariox-kernel> \
-  --supervisor <linux-chariox-managed-bootstrap> \
-  --signing-key <ed25519-private-key> \
+  --kernel <build-output>/chariox-kernel \
+  --supervisor <build-output>/chariox-managed-bootstrap \
+  --builder-attestation <build-output>/build-attestation.json \
+  --builder-attestation-signature <build-output>/build-attestation.sig \
+  --trusted-builder-public-key <openship-builder-public-key> \
+  --signing-key <release-ed25519-private-key> \
+  --source-repository "$(pwd)" \
+  --source-commit "$(git rev-parse HEAD)" \
   --output <empty-release-directory>
 ```
 
-Record the printed `sha256:` release digest. Keep the signing key private. Copy
-only the generated root filesystem and a separate copy of its public key to the
-image builder.
+Record the printed `sha256:` release digest. Keep both private keys private.
+Copy only the generated root filesystem and a separate copy of its release
+public key to the image builder. The packager verifies the detached builder
+signature, exact commit and tree IDs, target, and both staged binary digests
+before it reads the release-signing key. The signed release retains the builder
+attestation and records the full Git commit and tree IDs. Its systemd units and
+slice context come from that exact Git object; working-tree changes and
+untracked files cannot enter the release.
 
 ## Disposable Hetzner builder
 
@@ -50,12 +74,69 @@ sudo deploy/managed-kernel/prepare-hetzner-image.sh \
 ```
 
 The preparation script refuses an unmarked host or the wrong OS and
-architecture. It installs Node.js 22, Git and GitHub tooling, the exact pinned
-Codex, OpenCode, and Claude Code releases, and the signed Chariox release. It
-enables the bootstrap service without starting it, rejects runtime state, then
-removes package caches, cloud-init identity, logs, SSH host keys, and the
-temporary root authorization directory. It also removes the disposable-builder
-marker before the snapshot is taken.
+architecture. It installs Node.js 22, Docker, Git and GitHub tooling, the exact
+pinned Codex, OpenCode, and Claude Code releases, and the signed Chariox
+release. It disables the rootful Docker socket and validates a rootless daemon
+owned by the separate `chariox-docker` principal. Neither the kernel nor its
+provider and shell descendants can open that daemon socket. At boot the
+bootstrap supervisor claims a single broker connection before any provider can
+start. The broker socket is owned by `chariox-docker:chariox-slice`, has mode
+`0660`, and lives below the setgid, non-listable
+`/var/lib/chariox-slice-share/.broker-private/control` directory. The broker
+immediately removes its listener after the bootstrap claim and accepts only
+bounded slice operations and host paths under `/var/lib/chariox-slice-share`.
+The credential vault remains under the private `chariox` home. Docker and the
+broker are soft dependencies: kernel bootstrap still runs if either is
+unavailable, while slice operations report Docker as unavailable.
+
+The broker runs as `chariox-docker` inside the rootless Docker daemon's user
+and mount namespaces, but not its network namespace. The namespace entry
+wrapper validates the daemon child PID and owner before invoking `nsenter`.
+For each repository bind, the broker opens the published directory without
+following symlinks, records its device and inode, and bind-mounts that open file
+descriptor onto a broker-owned stable handle below
+`/var/lib/chariox-docker/mount-handles`. Docker receives only that normal
+mountpoint. A broker restart reuses a matching mount, while a rootless-daemon
+restart recreates it in the new namespace only after the durable source record
+still matches. Destroying the slice unmounts and removes its handles.
+
+Every provider process on a managed host is launched through the root-owned
+`/usr/bin/bwrap` boundary. Its namespace masks the kernel home, broker and
+Docker control paths, runtime logs, and unrelated host filesystems; it binds
+only the selected provider profile, explicit runtime files, and canonical
+repository roots. Managed startup fails closed when the wrapper or an approved
+mount is missing. Kernel loopback transport uses a one-time local token outside
+provider-visible mounts, and provider children receive neither that token nor
+Cloud, relay, bootstrap, or broker credentials.
+
+For image acceptance, set `CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE=1` for one
+bootstrap. Startup then authenticates to the real local kernel with its one-time
+token, creates a real session, and launches Codex through the production
+bubblewrap wrapper. The wrapper proves write access to only the selected account
+and repository, denies kernel state, slice-share and broker paths, host `/proc`,
+and an unselected repository, and verifies that cross-mount hardlinks fail. The
+kernel is stopped if any assertion fails. The probe token is removed from the
+environment after the one-shot check and is never written as persistent state.
+
+Broker-backed slice containers run in the dedicated rootless Docker daemon and
+relax the outer seccomp, AppArmor, and system-path masks only so bubblewrap can
+create its inner user, PID, and mount namespaces. Bubblewrap then drops every
+capability, mounts a private `/proc` and `/dev`, disables further user
+namespaces, and exposes only the approved provider profile and repository
+roots. Ordinary local Docker slices retain Docker's defaults unless the user
+enables the advanced compatibility option.
+
+The first local Docker slice builds its runtime image lazily from the complete
+signed context. Its cache fingerprint covers the Dockerfile and all build
+inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
+integrity lock are pinned. Host provider commands are installed with `npm ci`
+from the same signed lock. The script enables the bootstrap and rootless Docker
+services; the broker stays disabled and bootstrap republishes its one-claim
+endpoint from a privileged prestart on each supervisor restart. The script
+rejects runtime state, then removes package caches,
+daemon test state, cloud-init identity, logs, SSH host keys, and the temporary
+root authorization directory. It also removes the disposable-builder marker
+before the snapshot is taken.
 
 ## Snapshot and cleanup
 

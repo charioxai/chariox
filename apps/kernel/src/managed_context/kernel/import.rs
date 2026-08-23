@@ -25,14 +25,14 @@ use super::export::{
     package_definition_hash, reject_literal_secrets_in_json, serialized_json_measure,
     validate_identifier, validate_node_package_files, validate_portable_credential_injection,
     validate_portable_mcp, validate_portable_user_adapter, validate_python_requirements_lock,
-    validate_safe_package_file, validate_sha256, KERNEL_CONTEXT_SCHEMA_VERSION, MAX_DEPENDENCIES,
-    MAX_EXTENSIONS, MAX_FILE_BYTES, MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, MAX_SNAPSHOT_BYTES,
-    MAX_SNAPSHOT_FILES,
+    validate_safe_package_file, validate_sha256, MAX_DEPENDENCIES, MAX_EXTENSIONS, MAX_FILE_BYTES,
+    MAX_PACKAGE_BYTES, MAX_PACKAGE_FILES, MAX_SNAPSHOT_BYTES, MAX_SNAPSHOT_FILES,
 };
 use super::{
     KernelContextImportReceipt, KernelContextImportRequest, KernelContextSnapshot,
     KernelExtensionDefinition, KernelExtensionDependency, KernelExtensionScope, KernelPackageFile,
     PortableEnvironmentKind, PortableEnvironmentManifest, PortableEnvironmentRuntime,
+    KERNEL_CONTEXT_SCHEMA_VERSION,
 };
 
 const IMPORT_RECEIPT_NAME: &str = "kernel-context-import.json";
@@ -302,9 +302,10 @@ fn validate_total_snapshot_file_count(snapshot: &KernelContextSnapshot) -> Resul
         .map(|extension| match &extension.definition {
             KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
             KernelExtensionDefinition::Script { .. } => 1,
-            KernelExtensionDefinition::Mcp { .. } | KernelExtensionDefinition::Connector { .. } => {
-                0
+            KernelExtensionDefinition::Mcp { runtime, .. } => {
+                runtime.as_ref().map_or(0, |runtime| runtime.files.len())
             }
+            KernelExtensionDefinition::Connector { .. } => 0,
         })
         .sum::<usize>();
     let dependency_files = snapshot
@@ -358,12 +359,16 @@ fn validate_extensions(snapshot: &KernelContextSnapshot) -> Result<(), DaemonErr
             )));
         }
         match (&extension.kind, &extension.definition) {
-            (ExtensionKind::Mcp, KernelExtensionDefinition::Mcp { config }) => {
+            (ExtensionKind::Mcp, KernelExtensionDefinition::Mcp { config, runtime }) => {
                 if config.name != extension.name {
                     return Err(import_error("MCP Extension name does not match"));
                 }
                 config.validate()?;
-                validate_portable_mcp(config)?;
+                validate_portable_mcp(config, runtime.as_ref())?;
+                if let Some(runtime) = runtime {
+                    validate_package_files(&runtime.files)?;
+                    file_count = file_count.saturating_add(runtime.files.len());
+                }
             }
             (
                 ExtensionKind::Skill,
@@ -556,7 +561,7 @@ fn validate_extension_dependencies(snapshot: &KernelContextSnapshot) -> Result<(
                     definition.name
                 )));
             }
-            KernelExtensionDefinition::Mcp { config } => {
+            KernelExtensionDefinition::Mcp { config, .. } => {
                 for credential in mcp_credential_bindings(config) {
                     if !credentials.contains(credential) {
                         return Err(import_error(format!(
@@ -583,12 +588,45 @@ fn materialize_snapshot(
     materialize_dependencies(snapshot, staging, final_root, budget)?;
     for extension in &snapshot.payload.extensions {
         match &extension.definition {
-            KernelExtensionDefinition::Mcp { config } => {
+            KernelExtensionDefinition::Mcp { config, runtime } => {
                 let root = user_root.join("mcps");
                 ensure_budgeted_directory(&root, budget)?;
+                let mut materialized = config.clone();
+                if let Some(runtime) = runtime {
+                    let staged_runtime_root = root.join(&extension.name);
+                    let final_runtime_root =
+                        final_root.join("user").join("mcps").join(&extension.name);
+                    ensure_budgeted_directory(&staged_runtime_root, budget)?;
+                    for file in &runtime.files {
+                        let bytes = decode_kernel_package_file(file)?;
+                        write_package_file(
+                            &staged_runtime_root,
+                            &file.path,
+                            &bytes,
+                            file.executable,
+                            budget,
+                        )?;
+                    }
+                    let CharioxMcpTransportConfig::Stdio { command, cwd, .. } =
+                        &mut materialized.transport
+                    else {
+                        return Err(import_error(
+                            "stdio MCP runtime is attached to a non-stdio definition",
+                        ));
+                    };
+                    *command = final_runtime_root
+                        .join(&runtime.command_path)
+                        .to_str()
+                        .ok_or_else(|| import_error("materialized MCP command is not UTF-8"))?
+                        .to_string();
+                    *cwd = Some(match runtime.cwd_path.as_deref() {
+                        Some(relative) => final_runtime_root.join(relative),
+                        None => final_runtime_root,
+                    });
+                }
                 write_json_file(
                     &root.join(format!("{}.json", extension.name)),
-                    config,
+                    &materialized,
                     false,
                     budget,
                 )?;
@@ -1910,7 +1948,7 @@ mod tests {
         };
 
         let receipt = import_kernel_context(request.clone()).expect("kernel context should import");
-        assert_eq!(receipt.extension_count, 3);
+        assert_eq!(receipt.extension_count, 4);
         assert_eq!(receipt.dependency_count, 0);
         assert_eq!(
             import_kernel_context(request.clone()).expect("exact import should replay"),
@@ -1947,8 +1985,21 @@ mod tests {
             crate::mcp::CharioxMcpRegistry::new(vec![capability_root.join("user").join("mcps")])
                 .list()
                 .expect("imported MCPs should load");
-        assert_eq!(mcps.len(), 1);
-        assert_eq!(mcps[0].name, "docs");
+        assert_eq!(mcps.len(), 2);
+        let portable = mcps
+            .iter()
+            .find(|config| config.name == "portable")
+            .expect("portable stdio MCP should import");
+        let CharioxMcpTransportConfig::Stdio { command, cwd, .. } = &portable.transport else {
+            panic!("portable MCP should remain stdio");
+        };
+        let runtime_root = capability_root.join("user/mcps/portable");
+        assert_eq!(Path::new(command), runtime_root.join("bin/server"));
+        assert_eq!(cwd.as_deref(), Some(runtime_root.as_path()));
+        assert_eq!(
+            fs::read(runtime_root.join("bin/server")).expect("stdio runtime should read"),
+            b"#!/bin/sh\nexit 0\n",
+        );
         let skills = crate::skill::CharioxSkillRegistry::new(vec![capability_root
             .join("user")
             .join("skills")])
@@ -2245,6 +2296,24 @@ mod tests {
                 "docs",
                 "https://example.test/mcp",
             ),
+            runtime: None,
+        };
+        let stdio_bytes = b"#!/bin/sh\nexit 0\n";
+        let stdio_files = vec![KernelPackageFile {
+            path: "bin/server".to_string(),
+            sha256: sha256_hex(stdio_bytes),
+            size_bytes: stdio_bytes.len() as u64,
+            executable: true,
+            content_base64: base64::engine::general_purpose::STANDARD.encode(stdio_bytes),
+        }];
+        let stdio_definition = KernelExtensionDefinition::Mcp {
+            config: crate::mcp::CharioxMcpServerConfig::stdio("portable", "bin/server", Vec::new()),
+            runtime: Some(super::super::KernelMcpStdioRuntimeSnapshot {
+                command_path: "bin/server".to_string(),
+                cwd_path: None,
+                package_sha256: package_definition_hash(&stdio_files),
+                files: stdio_files,
+            }),
         };
         let skill_bytes = b"---\nname: review\ndescription: Review code\n---\nReview carefully.\n";
         let skill_sha256 = sha256_hex(skill_bytes);
@@ -2288,6 +2357,7 @@ mod tests {
         };
         let extensions = vec![
             extension(ExtensionKind::Mcp, "docs", mcp_definition),
+            extension(ExtensionKind::Mcp, "portable", stdio_definition),
             extension(ExtensionKind::Skill, "review", skill_definition),
             extension(ExtensionKind::Script, "helper", script_definition),
         ];

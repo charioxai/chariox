@@ -23,6 +23,8 @@ pub(super) struct VerifiedRelease {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReleaseManifest {
     schema_version: u32,
+    source_commit: Option<String>,
+    source_tree: Option<String>,
     artifacts: Vec<ReleaseArtifact>,
 }
 
@@ -61,11 +63,23 @@ pub(super) fn verify_release(
 
     let manifest: ReleaseManifest = serde_json::from_slice(&manifest_bytes)
         .map_err(|_| release_error("release manifest is invalid"))?;
-    if manifest.schema_version != 1
-        || manifest.artifacts.is_empty()
-        || manifest.artifacts.len() > 32
-    {
+    if manifest.artifacts.is_empty() || manifest.artifacts.len() > 32 {
         return Err(release_error("release manifest schema is unsupported"));
+    }
+    match manifest.schema_version {
+        1 if manifest.source_commit.is_none() && manifest.source_tree.is_none() => {}
+        2 if manifest
+            .source_commit
+            .as_deref()
+            .is_some_and(is_git_object_id)
+            && manifest
+                .source_tree
+                .as_deref()
+                .is_some_and(is_git_object_id) => {}
+        1 | 2 => {
+            return Err(release_error("release manifest source identity is invalid"));
+        }
+        _ => return Err(release_error("release manifest schema is unsupported")),
     }
     let mut kernels = manifest
         .artifacts
@@ -173,6 +187,13 @@ fn validate_digest(value: &str) -> Result<(), DaemonError> {
         return Ok(());
     }
     Err(release_error("release artifact digest is invalid"))
+}
+
+fn is_git_object_id(value: &str) -> bool {
+    value.len() == 40
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn release_io_error(label: &'static str, error: io::Error) -> DaemonError {

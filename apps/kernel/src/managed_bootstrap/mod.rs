@@ -52,6 +52,7 @@ struct PendingConfirmation {
 }
 
 pub fn run_from_env() -> Result<(), DaemonError> {
+    supervisor::initialize_managed_docker_broker();
     let cloud = HttpBootstrapCloudClient::default();
     let mut retry_delay = MIN_PREPARE_RETRY_DELAY;
     loop {

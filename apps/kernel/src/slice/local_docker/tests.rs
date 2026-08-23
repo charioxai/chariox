@@ -1,6 +1,60 @@
 use super::*;
 use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
+#[test]
+fn selected_broker_credential_replaces_default_and_missing_selection_clears_it() {
+    let mut inputs = vec![broker::ProvisionerInput {
+        environment: "CHARIOX_SLICE_CODEX_AUTH",
+        name: "codex-auth.json",
+        contents: zeroize::Zeroizing::new(b"default".to_vec()),
+    }];
+    replace_broker_input(
+        &mut inputs,
+        "CHARIOX_SLICE_CODEX_AUTH",
+        "codex-auth.json",
+        Some(zeroize::Zeroizing::new(b"selected".to_vec())),
+    )
+    .expect("replace default credential");
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].contents.as_slice(), b"selected");
+
+    replace_broker_input(
+        &mut inputs,
+        "CHARIOX_SLICE_CODEX_AUTH",
+        "codex-auth.json",
+        None,
+    )
+    .expect("clear missing selected credential");
+    assert!(inputs.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("github-token-timeout");
+    std::fs::create_dir_all(&root).expect("fixture root should create");
+    let success = root.join("gh-success");
+    std::fs::write(&success, "#!/bin/sh\nprintf 'github-token\\n'\n")
+        .expect("success helper should write");
+    std::fs::set_permissions(&success, std::fs::Permissions::from_mode(0o700))
+        .expect("success helper should be executable");
+    let token = bounded_github_token(&success, Duration::from_secs(1))
+        .expect("bounded helper should return a token");
+    assert_eq!(token.as_slice(), b"github-token\n");
+
+    let stalled = root.join("gh-stalled");
+    std::fs::write(&stalled, "#!/bin/sh\nsleep 30\n").expect("stalled helper should write");
+    std::fs::set_permissions(&stalled, std::fs::Permissions::from_mode(0o700))
+        .expect("stalled helper should be executable");
+    let started = std::time::Instant::now();
+    assert!(bounded_github_token(&stalled, Duration::from_millis(50)).is_none());
+    assert!(started.elapsed() < Duration::from_secs(3));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn test_record() -> SliceRecord {
     let store = SliceStore::default();
     store
@@ -98,6 +152,8 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "start-providers.sh",
         "slice-screen.sh",
         "browser-cdp.mjs",
+        "managed-provider-isolation-probe.mjs",
+        "managed-provider-isolation-probe-wrapper.sh",
         "provider-port-bridge.mjs",
         "validate-screen.sh",
     ] {
@@ -135,16 +191,69 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
 
     assert!(script.contains("io.chariox.relay-peer-protocol-version"));
     assert!(script.contains("io.chariox.runtime-source-revision"));
+    assert!(script.contains("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"));
+    assert!(script.contains("^sha256:[a-f0-9]{64}$"));
     assert!(script.contains("refresh_saved_state_runtime"));
     assert!(script.contains("preserving saved state image"));
     assert!(script.contains(
         "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
     ));
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
+    assert!(script.contains("Cargo.toml Cargo.lock"));
+    assert!(script.contains("adapters/rust"));
+    assert!(script.contains("apps/aegs-dummy apps/kernel apps/relay"));
+    assert!(script.contains("packages/aegs-sdk packages/event-protocol"));
+    assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
+    assert!(script.contains("packages/event-protocol"));
+    assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
+    assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
+    assert!(dockerfile.contains("cargo build --locked --release"));
+    assert!(dockerfile.contains("npm ci --omit=dev"));
+    assert!(dockerfile.contains("snapshot.debian.org/archive/debian/20260701T000000Z"));
+    assert!(!dockerfile.contains("npm install -g"));
+    assert!(!dockerfile.contains("rustup.rs"));
+    assert!(!dockerfile.contains("deb.nodesource.com"));
+    for base in dockerfile.lines().filter(|line| line.starts_with("FROM ")) {
+        assert!(
+            base.contains("@sha256:"),
+            "unpinned slice base image: {base}"
+        );
+    }
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
     assert!(dockerfile.contains("io.chariox.relay-peer-protocol-version"));
     assert!(dockerfile.contains("io.chariox.runtime-source-revision"));
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_broker_stream_is_close_on_exec_for_provider_children() {
+    use std::os::fd::AsRawFd;
+    let (stream, _peer) = std::os::unix::net::UnixStream::pair().expect("broker stream pair");
+    let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFD) };
+    assert!(flags >= 0);
+    assert_eq!(
+        unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+        0
+    );
+    assert!(!super::broker::broker_stream_is_close_on_exec(&stream));
+    super::broker::mark_broker_stream_close_on_exec(&stream).expect("mark broker lease CLOEXEC");
+    assert!(super::broker::broker_stream_is_close_on_exec(&stream));
+}
+
+#[test]
+fn managed_slice_rust_paths_do_not_bypass_the_broker() {
+    let driver = include_str!("../local_docker.rs");
+    let state = include_str!("state.rs");
+    assert!(!driver.contains("Command::new(\"docker\")"));
+    assert!(!state.contains("Command::new(\"docker\")"));
+    assert!(driver.contains("broker::run_provisioner"));
+    assert!(driver.contains("/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"));
+    assert!(driver.contains("docker_command()"));
+    assert!(state.contains("docker_command()"));
+    let broker = include_str!("broker.rs");
+    assert!(broker.contains("remove_var(BROKER_SOCKET_ENV)"));
+    assert!(broker.contains("remove_var(BROKER_FD_ENV)"));
 }
 
 #[test]
@@ -153,7 +262,7 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let options = test_options();
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, None, &options, true).unwrap();
 
     let provider_bind_host = command
         .get_envs()
@@ -207,7 +316,7 @@ fn local_docker_slice_mounts_only_development_repositories() {
         )
         .expect("publication should bind to slice");
     let mut command = Command::new("slice-provisioner");
-    configure_local_docker_slice_command(&mut command, &record, None, &test_options())
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
         .expect("slice command should configure");
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -235,9 +344,10 @@ fn local_docker_slice_mounts_only_development_repositories() {
             .join("slice-linux-docker/provision-linux-docker-slice.sh"),
     )
     .expect("slice provisioner should be readable");
-    assert!(
-        script.contains("-v \"$development_mount:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE\"")
-    );
+    assert!(script.contains("mount_source_variable=\"${mount_variable}_SOURCE\""));
+    assert!(script.contains(
+        "-v \"$development_mount_source:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE\""
+    ));
     assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
 }
 
@@ -272,8 +382,9 @@ fn local_docker_slice_rejects_mounting_development_control_root() {
     });
     let mut command = Command::new("slice-provisioner");
 
-    let error = configure_local_docker_slice_command(&mut command, &record, None, &test_options())
-        .expect_err("publication control root must never be mounted into the slice");
+    let error =
+        configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+            .expect_err("publication control root must never be mounted into the slice");
 
     assert!(error
         .to_string()
@@ -335,7 +446,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
     let options = test_options();
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, None, &options, true).unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -357,7 +468,8 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
     };
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+        .unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -382,7 +494,8 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
     };
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+        .unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()

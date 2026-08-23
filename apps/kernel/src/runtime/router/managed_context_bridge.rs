@@ -200,7 +200,8 @@ impl CommandRouter {
         ) {
             None
         } else {
-            let git_credential_home = std::env::var_os("HOME")
+            let git_credential_home = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME")
+                .or_else(|| std::env::var_os("HOME"))
                 .filter(|value| !value.is_empty())
                 .map(std::path::PathBuf::from)
                 .ok_or_else(|| {

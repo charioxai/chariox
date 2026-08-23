@@ -307,7 +307,7 @@ fn kernel_context_exports_one_unified_extension_set() {
 }
 
 #[test]
-fn kernel_context_rejects_stdio_mcp_without_signed_runtime_artifact() {
+fn kernel_context_packages_and_hashes_portable_stdio_mcp_runtime() {
     let _guard = crate::env_lock::lock();
     let root = test_root(format!(
         "chariox-kernel-context-reject-{}-{}",
@@ -320,20 +320,108 @@ fn kernel_context_rejects_stdio_mcp_without_signed_runtime_artifact() {
     std::env::set_var("CHARIOX_HOME", &chariox_home);
     let mcp_root = isolation.join("user/mcps");
     fs::create_dir_all(&mcp_root).expect("MCP root should create");
-    let mut mcp = CharioxMcpServerConfig::stdio("local", "/private/tool", Vec::new());
-    if let CharioxMcpTransportConfig::Stdio { cwd, .. } = &mut mcp.transport {
-        *cwd = Some(PathBuf::from("/private/workspace"));
+    let package_root = mcp_root.join("local");
+    fs::create_dir_all(package_root.join("bin")).expect("MCP package should create");
+    let command = package_root.join("bin/server");
+    fs::write(&command, "#!/bin/sh\nprintf '{\"jsonrpc\":\"2.0\"}\\n'\n")
+        .expect("MCP command should write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
+            .expect("MCP command should become executable");
+    }
+    let mut mcp =
+        CharioxMcpServerConfig::stdio("local", command.to_string_lossy().into_owned(), Vec::new());
+    if let CharioxMcpTransportConfig::Stdio { cwd, env, .. } = &mut mcp.transport {
+        *cwd = Some(package_root);
+        env.insert(
+            "CONFIG_PATH".to_string(),
+            "config/settings.json".to_string(),
+        );
     }
     fs::write(
         mcp_root.join("local.json"),
         serde_json::to_vec(&mcp).expect("MCP should serialize"),
     )
     .expect("MCP should write");
-    let error =
-        export_kernel_context(test_export_request()).expect_err("host-specific MCP should reject");
-    assert!(error
-        .to_string()
-        .contains("has no signed portable runtime artifact"));
+    let snapshot =
+        export_kernel_context(test_export_request()).expect("packaged stdio MCP should export");
+    let extension = snapshot
+        .payload
+        .extensions
+        .iter()
+        .find(|extension| extension.name == "local")
+        .expect("stdio MCP should be present");
+    let KernelExtensionDefinition::Mcp { config, runtime } = &extension.definition else {
+        panic!("stdio MCP definition should retain its kind");
+    };
+    let runtime = runtime.as_ref().expect("stdio runtime should be packaged");
+    assert_eq!(runtime.command_path, "bin/server");
+    assert_eq!(runtime.files.len(), 1);
+    assert_eq!(
+        runtime.package_sha256,
+        package_definition_hash(&runtime.files)
+    );
+    let CharioxMcpTransportConfig::Stdio {
+        command, cwd, env, ..
+    } = &config.transport
+    else {
+        panic!("stdio MCP transport should remain stdio");
+    };
+    assert_eq!(command, "bin/server");
+    assert!(cwd.is_none());
+    assert_eq!(
+        env.get("CONFIG_PATH").map(String::as_str),
+        Some("config/settings.json")
+    );
+    std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+    std::env::remove_var("CHARIOX_HOME");
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn kernel_context_rejects_stdio_mcp_absolute_environment_paths() {
+    let _guard = crate::env_lock::lock();
+    let root = test_root(format!(
+        "chariox-kernel-context-stdio-env-path-{}-{}",
+        std::process::id(),
+        rand::random::<u64>()
+    ));
+    let isolation = root.join("capabilities");
+    let chariox_home = root.join("home");
+    std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation);
+    std::env::set_var("CHARIOX_HOME", &chariox_home);
+    let mcp_root = isolation.join("user/mcps");
+    let package_root = mcp_root.join("local");
+    fs::create_dir_all(package_root.join("bin")).expect("MCP package should create");
+    let command = package_root.join("bin/server");
+    fs::write(&command, "#!/bin/sh\nexit 0\n").expect("MCP command should write");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&command, fs::Permissions::from_mode(0o700))
+            .expect("MCP command should become executable");
+    }
+    let mut mcp =
+        CharioxMcpServerConfig::stdio("local", command.to_string_lossy().into_owned(), Vec::new());
+    if let CharioxMcpTransportConfig::Stdio { env, .. } = &mut mcp.transport {
+        env.insert(
+            "CONFIG_PATH".to_string(),
+            "/source/host/private-config.json".to_string(),
+        );
+    }
+    fs::write(
+        mcp_root.join("local.json"),
+        serde_json::to_vec(&mcp).expect("MCP should serialize"),
+    )
+    .expect("MCP should write");
+
+    let error = export_kernel_context(test_export_request())
+        .expect_err("source-host MCP environment path should reject");
+    assert!(error.to_string().contains("host paths"));
+    assert!(!format!("{error:?}").contains("private-config.json"));
+
     std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
     std::env::remove_var("CHARIOX_HOME");
     let _ = fs::remove_dir_all(root);

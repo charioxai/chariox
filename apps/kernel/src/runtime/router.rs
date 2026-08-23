@@ -36,6 +36,7 @@ mod priority_dispatch;
 mod refresh_dispatch;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
+mod slice_relay_token_bridge;
 mod status_projection_bridge;
 mod transport_bridge;
 

@@ -16,6 +16,7 @@ pub use export::export_kernel_context;
 pub use import::import_kernel_context;
 pub(crate) use import::{cleanup_kernel_context_import, configured_managed_kernel_context_paths};
 pub use source_snapshot::scavenge_source_snapshots;
+pub(crate) const KERNEL_CONTEXT_SCHEMA_VERSION: u32 = 2;
 pub(crate) const MAX_KERNEL_CONTEXT_SNAPSHOT_BYTES: usize = export::MAX_SNAPSHOT_BYTES;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -100,6 +101,8 @@ pub enum KernelExtensionScope {
 pub enum KernelExtensionDefinition {
     Mcp {
         config: CharioxMcpServerConfig,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        runtime: Option<KernelMcpStdioRuntimeSnapshot>,
     },
     Skill {
         package: crate::skill::CharioxSkillPackage,
@@ -112,6 +115,15 @@ pub enum KernelExtensionDefinition {
     Connector {
         definition: CharioxConnectorDefinition,
     },
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KernelMcpStdioRuntimeSnapshot {
+    pub command_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cwd_path: Option<String>,
+    pub package_sha256: String,
+    pub files: Vec<KernelPackageFile>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -243,9 +255,13 @@ impl fmt::Debug for KernelExtensionSnapshot {
 impl fmt::Debug for KernelExtensionDefinition {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Mcp { config } => formatter
+            Self::Mcp { config, runtime } => formatter
                 .debug_struct("Mcp")
                 .field("name", &config.name)
+                .field(
+                    "runtime_file_count",
+                    &runtime.as_ref().map_or(0, |runtime| runtime.files.len()),
+                )
                 .finish_non_exhaustive(),
             Self::Skill {
                 package,

@@ -31,6 +31,7 @@ const PORTABLE_ENVIRONMENT_FILES: [&str; 4] = [
 pub(super) struct KernelContextSourceSnapshot {
     _root: PrivateSnapshotRoot,
     pub(super) mcp_root: PathBuf,
+    pub(super) original_mcp_root: Option<PathBuf>,
     pub(super) skill_root: PathBuf,
     pub(super) script_root: PathBuf,
     pub(super) environment_root: PathBuf,
@@ -61,11 +62,8 @@ impl KernelContextSourceSnapshot {
         let connector_root = root.path.join("connectors/definitions");
         let connector_adapter_root = root.path.join("connectors/adapters");
         let credential_root = root.path.join("credentials");
-        capture_optional_root(
-            crate::mcp::CharioxMcpRegistry::user_root().as_deref(),
-            &mcp_root,
-            &mut budget,
-        )?;
+        let original_mcp_root = crate::mcp::CharioxMcpRegistry::user_root();
+        capture_optional_root(original_mcp_root.as_deref(), &mcp_root, &mut budget)?;
         capture_optional_root(
             crate::skill::CharioxSkillRegistry::user_root().as_deref(),
             &skill_root,
@@ -111,6 +109,7 @@ impl KernelContextSourceSnapshot {
         Ok(Self {
             _root: root,
             mcp_root,
+            original_mcp_root,
             skill_root,
             script_root,
             environment_root,

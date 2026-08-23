@@ -14,6 +14,7 @@ use super::cloud::{
     ManagedCloudRelayProfile,
 };
 use super::prepare_managed_kernel;
+use super::release::verify_release;
 use super::state::{BootstrapConfig, BootstrapReceipt, BootstrapReceiptStatus};
 use super::supervisor::run_kernel_once;
 use super::ManagedKernelContextPlan;
@@ -275,6 +276,115 @@ fn bootstrap_rejects_a_tampered_kernel_before_contacting_cloud() {
 }
 
 #[test]
+fn release_verifier_accepts_v2_identity_and_legacy_v1() {
+    let fixture = Fixture::new("release-schema-compatibility");
+
+    verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &fixture.release_digest,
+        &fixture.config.kernel_binary,
+    )
+    .expect("schema v2 release should verify");
+
+    let legacy_digest = fixture.write_signed_manifest(serde_json::json!({
+        "schemaVersion": 1,
+        "artifacts": [fixture.kernel_artifact()],
+    }));
+    verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &legacy_digest,
+        &fixture.config.kernel_binary,
+    )
+    .expect("legacy schema v1 release should remain restart-compatible");
+
+    fixture.cleanup();
+}
+
+#[test]
+fn release_verifier_rejects_missing_or_invalid_v2_source_identity() {
+    let fixture = Fixture::new("release-v2-identity");
+    let invalid_manifests = [
+        serde_json::json!({
+            "schemaVersion": 2,
+            "sourceTree": "b".repeat(40),
+            "artifacts": [fixture.kernel_artifact()],
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "sourceCommit": "a".repeat(40),
+            "artifacts": [fixture.kernel_artifact()],
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "sourceCommit": "A".repeat(40),
+            "sourceTree": "b".repeat(40),
+            "artifacts": [fixture.kernel_artifact()],
+        }),
+        serde_json::json!({
+            "schemaVersion": 2,
+            "sourceCommit": "a".repeat(40),
+            "sourceTree": "g".repeat(40),
+            "artifacts": [fixture.kernel_artifact()],
+        }),
+    ];
+
+    for manifest in invalid_manifests {
+        let digest = fixture.write_signed_manifest(manifest);
+        let error = verify_release(
+            &fixture.config.manifest_path,
+            &fixture.config.signature_path,
+            &fixture.config.public_key_path,
+            &digest,
+            &fixture.config.kernel_binary,
+        )
+        .expect_err("invalid schema v2 source identity must fail");
+        assert!(error.to_string().contains("source identity is invalid"));
+    }
+
+    fixture.cleanup();
+}
+
+#[test]
+fn release_verifier_checks_digest_and_signature_before_manifest_identity() {
+    let fixture = Fixture::new("release-signature-digest");
+
+    let digest_error = verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &format!("sha256:{}", "0".repeat(64)),
+        &fixture.config.kernel_binary,
+    )
+    .expect_err("wrong managed release digest must fail");
+    assert!(digest_error
+        .to_string()
+        .contains("digest does not match the managed environment"));
+
+    fs::write(
+        &fixture.config.signature_path,
+        base64::engine::general_purpose::STANDARD.encode([0_u8; 64]),
+    )
+    .expect("replace release signature");
+    let signature_error = verify_release(
+        &fixture.config.manifest_path,
+        &fixture.config.signature_path,
+        &fixture.config.public_key_path,
+        &fixture.release_digest,
+        &fixture.config.kernel_binary,
+    )
+    .expect_err("invalid release signature must fail");
+    assert!(signature_error
+        .to_string()
+        .contains("release manifest signature is invalid"));
+
+    fixture.cleanup();
+}
+
+#[test]
 fn bootstrap_rejects_a_context_source_in_another_relay_realm() {
     let _env = crate::env_lock::lock();
     let fixture = Fixture::new("context-realm-mismatch");
@@ -343,10 +453,16 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
     for required in [
         "User=chariox",
         "Group=chariox",
+        "SupplementaryGroups=chariox-slice",
         "Environment=CHARIOX_HOME=/var/lib/chariox/home",
         "Environment=HOME=/var/lib/chariox/home",
         "Environment=CHARIOX_CAPABILITY_ISOLATION_ROOT=/var/lib/chariox/home/managed-context/kernel",
+        "Environment=CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices",
         "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
+        "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        "After=chariox-rootless-docker.service",
+        "Wants=network-online.target chariox-rootless-docker.service",
+        "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",
         "ExecStart=/usr/local/bin/chariox-managed-bootstrap",
         "KillMode=control-group",
         "StartLimitIntervalSec=0",
@@ -357,8 +473,8 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "ProtectSystem=strict",
         "StateDirectory=chariox",
         "StateDirectoryMode=0700",
-        "ReadWritePaths=/var/lib/chariox",
-        "UMask=0077",
+        "ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share",
+        "UMask=0007",
     ] {
         assert!(
             unit.contains(required),
@@ -367,6 +483,69 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
     }
     assert!(!unit.contains("cloud-final.service"));
     assert!(!unit.contains("ssh"));
+    assert!(!unit.contains("Requires=chariox-rootless-docker.service"));
+    assert!(!unit.contains("Environment=DOCKER_HOST="));
+}
+
+#[test]
+fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
+    let unit = include_str!("../../../../deploy/managed-kernel/chariox-rootless-docker.service");
+    for required in [
+        "User=chariox-docker",
+        "Group=chariox-docker",
+        "Environment=HOME=/var/lib/chariox-docker/home",
+        "Environment=XDG_RUNTIME_DIR=/run/chariox-docker",
+        "Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock",
+        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh",
+        "RuntimeDirectory=chariox-docker",
+        "RuntimeDirectoryMode=0700",
+        "StateDirectory=chariox-docker",
+        "StateDirectoryMode=0700",
+        "Delegate=yes",
+        "ProtectSystem=strict",
+        "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs",
+        "ProtectKernelTunables=false",
+        "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker",
+    ] {
+        assert!(
+            unit.contains(required),
+            "missing rootless Docker contract: {required}"
+        );
+    }
+    assert!(!unit.contains("/var/run/docker.sock"));
+    assert!(!unit.contains("User=root"));
+    assert!(!unit.contains("SupplementaryGroups=chariox-slice"));
+    assert!(!unit.contains("/var/lib/chariox/home"));
+}
+
+#[test]
+fn managed_slice_broker_owns_the_only_docker_socket_and_unlinks_its_endpoint() {
+    let unit = include_str!("../../../../deploy/managed-kernel/chariox-slice-broker.service");
+    let broker = include_str!("../../slice-linux-docker/managed-docker-broker.mjs");
+    for required in [
+        "User=chariox-docker",
+        "Group=chariox-docker",
+        "Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock",
+        "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        "Environment=CHARIOX_MANAGED_RELEASE_MANIFEST=/usr/lib/chariox/release-manifest.json",
+        "ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh /usr/bin/node",
+        "Restart=no",
+        "NoNewPrivileges=true",
+        "CapabilityBoundingSet=",
+        "ProtectSystem=strict",
+        "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share /run/chariox-docker",
+    ] {
+        assert!(
+            unit.contains(required),
+            "missing slice broker contract: {required}"
+        );
+    }
+    assert!(broker.contains("server.close()"));
+    assert!(broker.contains("rmSync(SOCKET_PATH, { force: true })"));
+    assert!(broker.contains("Docker command shape is not allowed"));
+    assert!(broker.contains("must stay under the managed slice share"));
+    assert!(broker.contains("chariox-slice-build-context"));
+    assert!(!unit.contains("/var/lib/chariox/home"));
 }
 
 #[test]
@@ -396,7 +575,7 @@ impl Fixture {
         let kernel_binary = root.join("bin").join("chariox-kernel");
         fs::create_dir_all(kernel_binary.parent().expect("kernel parent"))
             .expect("create kernel parent");
-        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\nsleep 1\n";
+        let kernel_fixture = b"#!/bin/sh\nreceipt=\"$CHARIOX_HOME/managed/bootstrap-receipt.json\"\nif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"confirmed\"' \"$receipt\"; then\n  state=confirmed\nelif grep -Eq '\"status\"[[:space:]]*:[[:space:]]*\"exchanged\"' \"$receipt\"; then\n  state=exchanged\nelse\n  state=invalid\nfi\nprintf '%s\\n' \"$state\" >> \"$CHARIOX_HOME/managed/kernel-started\"\ntest -s \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nrm -f -- \"$CHARIOX_KERNEL_LOCAL_AUTH_TOKEN_FILE\"\nsleep 1\n";
         fs::write(&kernel_binary, kernel_fixture).expect("write kernel fixture");
         #[cfg(unix)]
         {
@@ -406,7 +585,9 @@ impl Fixture {
         }
         let kernel_digest = format!("sha256:{:x}", Sha256::digest(kernel_fixture));
         let manifest = serde_json::to_vec(&serde_json::json!({
-            "schemaVersion": 1,
+            "schemaVersion": 2,
+            "sourceCommit": "a".repeat(40),
+            "sourceTree": "b".repeat(40),
             "artifacts": [{
                 "name": "chariox-kernel",
                 "path": kernel_binary.display().to_string(),
@@ -488,6 +669,30 @@ impl Fixture {
                 machine_credential: format!("mcred_{}", "b".repeat(43)),
             },
         }
+    }
+
+    fn kernel_artifact(&self) -> serde_json::Value {
+        serde_json::json!({
+            "name": "chariox-kernel",
+            "path": self.config.kernel_binary.display().to_string(),
+            "sha256": format!(
+                "sha256:{:x}",
+                Sha256::digest(fs::read(&self.config.kernel_binary).expect("read kernel fixture"))
+            ),
+        })
+    }
+
+    fn write_signed_manifest(&self, manifest: serde_json::Value) -> String {
+        let manifest = serde_json::to_vec(&manifest).expect("encode release manifest");
+        let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
+        let signature = signing_key.sign(&manifest);
+        fs::write(&self.config.manifest_path, &manifest).expect("write release manifest");
+        fs::write(
+            &self.config.signature_path,
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes()),
+        )
+        .expect("write release signature");
+        format!("sha256:{:x}", Sha256::digest(&manifest))
     }
 
     fn cleanup(self) {

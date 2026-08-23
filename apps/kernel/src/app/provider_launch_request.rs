@@ -89,6 +89,21 @@ impl DaemonApp {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
+        if crate::provider::managed_provider_isolation_required() {
+            let project = self.sessions.get_project(session.project_id())?;
+            let mut roots = project
+                .workspace_ids()
+                .iter()
+                .filter(|workspace| !workspace.trim().is_empty())
+                .map(PathBuf::from)
+                .collect::<Vec<_>>();
+            for root in std::mem::take(&mut request.workspace_live_sync_roots) {
+                if !roots.iter().any(|existing| existing == &root) {
+                    roots.push(root);
+                }
+            }
+            request = request.with_workspace_live_sync_roots(roots);
+        }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
                 .agent_id

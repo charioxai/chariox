@@ -541,9 +541,8 @@ impl ProviderAccountProfileRegistry {
                 continue;
             }
             let locator = ProviderAccountLocator::effective_default(provider, home)?;
+            create_private_roots(&locator)?;
             if let ProviderAccountLocator::Codex { codex_home } = &locator {
-                fs::create_dir_all(codex_home)
-                    .map_err(registry_io("create default Codex account root"))?;
                 enforce_codex_file_credentials(codex_home)?;
             }
             let profile = new_public_profile(
@@ -732,12 +731,31 @@ impl ProviderAccountProfileRegistry {
         profile_id: &str,
     ) -> Result<BTreeMap<String, String>, DaemonError> {
         let provider = normalize_provider(provider)?;
-        let document = self.read_document()?;
-        Ok(
-            resolve_stored_profile(&document, owner_user_id, provider, profile_id)?
-                .locator
-                .environment(),
-        )
+        let (origin, locator, materialized_replica) = {
+            let document = self.read_document()?;
+            let profile = resolve_stored_profile(&document, owner_user_id, provider, profile_id)?;
+            (
+                profile.public.origin,
+                profile.locator.clone(),
+                profile.materialized_replica,
+            )
+        };
+        if crate::provider::managed_provider_isolation_required()
+            && origin == ProviderAccountProfileOrigin::Linked
+            && !materialized_replica
+        {
+            return Err(registry_error(
+                "resolve account profile",
+                "managed kernels cannot mount a host-linked provider account; transfer or materialize the account into the managed kernel first",
+            ));
+        }
+        if origin == ProviderAccountProfileOrigin::Default {
+            create_private_roots(&locator)?;
+            if let ProviderAccountLocator::Codex { codex_home } = &locator {
+                enforce_codex_file_credentials(codex_home)?;
+            }
+        }
+        Ok(locator.environment())
     }
 
     pub fn create_managed(
@@ -791,6 +809,12 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let label = validate_label(label)?;
+        if crate::provider::managed_provider_isolation_required() {
+            return Err(registry_error(
+                "link account profile",
+                "managed kernels cannot link arbitrary host provider-account paths; transfer or materialize the account instead",
+            ));
+        }
         let canonical = validate_linked_root(path)?;
         let mut document = self.write_document()?;
         ensure_unique_label(&document, owner_user_id, provider, label)?;
@@ -2492,7 +2516,7 @@ fn atomic_write_private(path: &Path, bytes: &[u8]) -> Result<(), DaemonError> {
 fn atomic_write_private_internal(
     path: &Path,
     bytes: &[u8],
-    account_registry_write: bool,
+    _account_registry_write: bool,
 ) -> Result<(), DaemonError> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent).map_err(registry_io("write account profile registry"))?;
@@ -2519,7 +2543,7 @@ fn atomic_write_private_internal(
         fs::rename(&temporary, path).map_err(registry_io("write account profile registry"))?;
         published = true;
         #[cfg(test)]
-        if account_registry_write
+        if _account_registry_write
             && FAIL_ACCOUNT_PROFILE_REGISTRY_PARENT_SYNC_ONCE.with(|fail| fail.replace(false))
         {
             return Err(registry_error(
@@ -2634,6 +2658,39 @@ mod tests {
         assert_eq!(second.len(), 3);
         assert!(first.iter().all(|profile| profile.profile_id == "default"));
         assert!(first.iter().all(|profile| profile.is_default));
+        for provider in ["codex", "claude", "opencode"] {
+            let environment = registry
+                .resolve_environment("owner-a", provider, "default")
+                .unwrap();
+            for path in environment.values() {
+                assert!(
+                    Path::new(path).is_dir(),
+                    "{provider} root {path} should exist"
+                );
+            }
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn resolving_an_existing_default_repairs_missing_profile_roots() {
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        fs::create_dir_all(&home).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "opencode", "default")
+            .unwrap();
+        fs::remove_dir_all(&environment["XDG_STATE_HOME"]).unwrap();
+        fs::remove_dir_all(&environment["OPENCODE_CONFIG_DIR"]).unwrap();
+
+        let repaired = registry
+            .resolve_environment("owner-a", "opencode", "default")
+            .unwrap();
+        assert!(Path::new(&repaired["XDG_STATE_HOME"]).is_dir());
+        assert!(Path::new(&repaired["OPENCODE_CONFIG_DIR"]).is_dir());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3278,6 +3335,43 @@ mod tests {
             .unwrap();
 
         assert!(linked.exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_kernels_reject_host_linked_provider_account_roots() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+
+        let (root, registry) = fixture();
+        let control_state = root.join("var/lib/chariox/home");
+        fs::create_dir_all(&control_state).unwrap();
+        set_private_dir_permissions(&control_state).unwrap();
+        let linked = registry
+            .link_existing("owner-a", "claude", "Control state", &control_state)
+            .unwrap();
+
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let resolve_error = registry
+            .resolve_environment("owner-a", "claude", &linked.profile_id)
+            .expect_err("legacy linked control state must not enter a managed sandbox");
+        assert!(resolve_error
+            .to_string()
+            .contains("cannot mount a host-linked provider account"));
+        let link_error = registry
+            .link_existing("owner-a", "claude", "Second link", &control_state)
+            .expect_err("managed kernels must reject new host path links");
+        assert!(link_error
+            .to_string()
+            .contains("cannot link arbitrary host provider-account paths"));
+
+        match previous {
+            Some(value) => {
+                std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value)
+            }
+            None => std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV),
+        }
         let _ = fs::remove_dir_all(root);
     }
 

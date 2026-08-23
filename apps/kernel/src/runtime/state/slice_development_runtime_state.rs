@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use crate::error::DaemonError;
 use crate::managed_context::development::{
@@ -15,6 +16,7 @@ use super::KernelRuntimeState;
 
 const SLICE_DEVELOPMENT_PUBLICATION_ID: &str = "development";
 const SLICE_DEVELOPMENT_EXPORT_SCRATCH: &str = ".slice-development-export";
+const MANAGED_PUBLICATION_ACCESS_HELPER: &str = "/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh";
 
 impl KernelRuntimeState {
     pub(crate) fn prepare_slice_development_storage_parent(
@@ -237,12 +239,14 @@ fn materialize_slice_development_publication(
         .iter()
         .map(|repository| path_to_string(&repository.destination_path))
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(crate::slice::SliceDevelopmentPublication {
+    let publication = crate::slice::SliceDevelopmentPublication {
         publication_id: receipt.publication_id,
         destination_root: path_to_string(&receipt.destination_root)?,
         primary_repository_path: path_to_string(&primary.destination_path)?,
         repository_paths,
-    })
+    };
+    update_managed_publication_access("grant", &publication_parent, &publication)?;
+    Ok(publication)
 }
 
 fn cleanup_slice_development_publication(
@@ -286,6 +290,25 @@ fn cleanup_slice_development_publication(
         SLICE_DEVELOPMENT_PUBLICATION_ID,
     )?;
     if let Some(receipt) = recovered {
+        let publication = crate::slice::SliceDevelopmentPublication {
+            publication_id: receipt.publication_id.clone(),
+            destination_root: path_to_string(&receipt.destination_root)?,
+            primary_repository_path: receipt
+                .repositories
+                .iter()
+                .find(|repository| repository.role == DevelopmentRepositoryRole::Primary)
+                .map(|repository| path_to_string(&repository.destination_path))
+                .transpose()?
+                .ok_or_else(|| {
+                    slice_development_error("slice publication has no primary repository")
+                })?,
+            repository_paths: receipt
+                .repositories
+                .iter()
+                .map(|repository| path_to_string(&repository.destination_path))
+                .collect::<Result<Vec<_>, _>>()?,
+        };
+        update_managed_publication_access("revoke", &publication_parent, &publication)?;
         cleanup_development_context_publication(
             &receipt.destination_root,
             &receipt.publication_id,
@@ -293,6 +316,32 @@ fn cleanup_slice_development_publication(
     }
     fs::remove_dir(&publication_parent)
         .map_err(|error| slice_development_io_error("remove", &publication_parent, error))
+}
+
+fn update_managed_publication_access(
+    action: &str,
+    storage_root: &Path,
+    publication: &crate::slice::SliceDevelopmentPublication,
+) -> Result<(), DaemonError> {
+    if !crate::slice::managed_docker_broker_configured() {
+        return Ok(());
+    }
+    let status = Command::new(MANAGED_PUBLICATION_ACCESS_HELPER)
+        .arg(action)
+        .arg(storage_root)
+        .arg(&publication.destination_root)
+        .args(&publication.repository_paths)
+        .status()
+        .map_err(|error| {
+            slice_development_error(format!("run managed publication access helper: {error}"))
+        })?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(slice_development_error(format!(
+            "managed publication access helper failed with {status}"
+        )))
+    }
 }
 
 struct SliceDevelopmentScratchCleanup(PathBuf);

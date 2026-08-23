@@ -79,6 +79,15 @@ registry, extension packages, scopes, and a target-sealed Vault snapshot. Suppor
 extension kinds include MCP, Skill, Script, and Connector. Package hashes and
 configuration remain bound to the transfer manifest.
 
+A portable stdio MCP uses one dedicated package directory at
+`<user-mcp-root>/<mcp-name>/`. Its executable, working directory, and referenced
+runtime files must remain inside that directory. Export snapshots and hashes the
+package, preserves executable bits, and normalizes command paths; import verifies
+it before materializing it below the target user's MCP root. Host-path arguments,
+ambient or literal credential environment values, duplicate definitions, and
+paths outside the package fail closed. HTTP MCP definitions transfer configuration
+only because they have no local runtime artifact.
+
 The target creates its own kernel identity before import. It does not import the
 source identity or source runtime database.
 
@@ -153,7 +162,7 @@ state before it reports zero.
 
 ## 10. Protocol and validation
 
-The local daemon protocol is version 278 for this implementation. Shape tests cover
+The local daemon protocol is version 279 for this implementation. Shape tests cover
 managed environment summaries and control, transfer preparation and status,
 explicit launch-target requests, multi-Workspace Projects, slice repository
 topology, and provider and SCM selection. Managed activity uses a separately

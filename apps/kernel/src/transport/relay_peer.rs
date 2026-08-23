@@ -49,9 +49,29 @@ impl std::fmt::Debug for RelayManagedContextChunk {
     }
 }
 
-/// Version 21 binds managed-context packages to the complete Cloud launch plan,
-/// supports Empty development context, and makes arm replay source-idempotent.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 21;
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RelayManagedSliceToken(String);
+
+impl RelayManagedSliceToken {
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn into_inner(self) -> String {
+        self.0
+    }
+}
+
+impl std::fmt::Debug for RelayManagedSliceToken {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted managed-slice relay token]")
+    }
+}
+
+/// Version 23 adds a separately scoped, key-bound recovery credential so a
+/// managed slice can renew after its ordinary relay token expires.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 23;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -334,6 +354,20 @@ pub enum RelayPeerRequest {
     Ping {
         value: String,
     },
+    InstallManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        owner_machine_id: String,
+        relay_token: RelayManagedSliceToken,
+        expires_at_ms: u64,
+        relay_recovery_token: RelayManagedSliceToken,
+        recovery_expires_at_ms: u64,
+    },
+    RefreshManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        worker_kernel_id: String,
+    },
     CreateExecutionLease {
         home_kernel_id: String,
         home_session_id: String,
@@ -590,6 +624,22 @@ pub enum RelayPeerResponse {
         value: String,
         daemon_id: String,
     },
+    ManagedSliceRelayTokenInstalled {
+        slice_id: String,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenRefreshed {
+        slice_id: String,
+        relay_token: RelayManagedSliceToken,
+        expires_at_ms: u64,
+        relay_recovery_token: RelayManagedSliceToken,
+        recovery_expires_at_ms: u64,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenFailed {
+        code: String,
+        retryable: bool,
+    },
     ExecutionLeaseCreated {
         lease: ExecutionLease,
         #[serde(default)]
@@ -768,4 +818,53 @@ pub enum RelayPeerEvent {
         notices: Vec<String>,
         completions: Vec<RelayProjectedCompletion>,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn managed_slice_relay_token_keeps_wire_shape_and_redacts_debug_output() {
+        let request = RelayPeerRequest::InstallManagedSliceRelayToken {
+            slice_id: "slice-1".to_string(),
+            owner_kernel_id: "kernel-owner".to_string(),
+            owner_machine_id: "machine-owner".to_string(),
+            relay_token: RelayManagedSliceToken::new("secret-relay-token".to_string()),
+            expires_at_ms: 300_000,
+            relay_recovery_token: RelayManagedSliceToken::new("secret-recovery-token".to_string()),
+            recovery_expires_at_ms: 2_592_000_000,
+        };
+        let encoded = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(encoded["kind"], "install_managed_slice_relay_token");
+        assert_eq!(encoded["relay_token"], "secret-relay-token");
+        assert_eq!(encoded["relay_recovery_token"], "secret-recovery-token");
+
+        let debug = format!("{request:?}");
+        assert!(debug.contains("[redacted managed-slice relay token]"));
+        assert!(!debug.contains("secret-relay-token"));
+        assert!(!debug.contains("secret-recovery-token"));
+
+        let decoded: RelayPeerRequest =
+            serde_json::from_value(encoded).expect("request should deserialize");
+        assert_eq!(decoded, request);
+    }
+
+    #[test]
+    fn managed_slice_relay_refresh_response_redacts_token() {
+        let response = RelayPeerResponse::ManagedSliceRelayTokenRefreshed {
+            slice_id: "slice-1".to_string(),
+            relay_token: RelayManagedSliceToken::new("refreshed-secret".to_string()),
+            expires_at_ms: 600_000,
+            relay_recovery_token: RelayManagedSliceToken::new(
+                "refreshed-recovery-secret".to_string(),
+            ),
+            recovery_expires_at_ms: 2_592_600_000,
+            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        };
+        let debug = format!("{response:?}");
+        assert!(debug.contains("[redacted managed-slice relay token]"));
+        assert!(!debug.contains("refreshed-secret"));
+        assert!(!debug.contains("refreshed-recovery-secret"));
+    }
 }

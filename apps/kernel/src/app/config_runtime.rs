@@ -19,6 +19,23 @@ impl DaemonApp {
         Ok(())
     }
 
+    pub(crate) fn configure_managed_slice_relay(
+        &mut self,
+        relay_url: String,
+        relay_token: String,
+        recovery_token: String,
+        owner_public_key: String,
+    ) -> Result<(), DaemonError> {
+        self.config.relay_url = Some(relay_url);
+        self.config.relay_token = Some(relay_token);
+        self.config.managed_slice_relay_recovery_token = Some(recovery_token);
+        self.config.managed_slice_relay_owner_public_key = Some(owner_public_key);
+        self.config.validate()?;
+        self.config.persist_relay_config()?;
+        self.config_projection.update(self.config.clone());
+        Ok(())
+    }
+
     pub(crate) fn persist_cloud_relay_profile(
         &mut self,
         profile: Option<crate::config::PersistedCloudRelayProfile>,

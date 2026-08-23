@@ -10,7 +10,7 @@ use crate::local::{
 };
 use crate::runtime::cloud_api_client::{
     cloud_profile_from_persisted, issue_cloud_runtime_token, post_cloud_json,
-    CloudPairingTokenResponse,
+    CloudPairingTokenResponse, CloudRuntimeTokenRequestOptions,
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
@@ -55,14 +55,17 @@ pub(crate) async fn ensure_cloud_relay_connection(
     }
 
     let token_subject = cloud_runtime_token_subject(&config, &profile);
+    let public_key_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
     let issued = match issue_cloud_runtime_token(
         &profile,
         &token_subject.subject,
         token_subject.subject_kind,
-        None,
-        None,
-        token_subject.machine_id,
-        None,
+        CloudRuntimeTokenRequestOptions {
+            machine_id: token_subject.machine_id,
+            public_key_thumbprint: Some(public_key_thumbprint),
+            ..CloudRuntimeTokenRequestOptions::default()
+        },
     )
     .await
     {
@@ -93,7 +96,8 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let daemon_id = config_projection.snapshot().daemon_id;
+    let config = config_projection.snapshot();
+    let daemon_id = config.daemon_id;
     let (subject, subject_kind, machine_id) = if let Some(machine_id) = profile.machine_id.clone() {
         (machine_id.clone(), "machine", Some(machine_id))
     } else {
@@ -103,10 +107,13 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         &profile,
         &subject,
         subject_kind,
-        None,
-        None,
-        machine_id,
-        None,
+        CloudRuntimeTokenRequestOptions {
+            machine_id,
+            public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+                &config.relay_public_key,
+            )),
+            ..CloudRuntimeTokenRequestOptions::default()
+        },
     )
     .await?;
     profile.token_expires_at_ms =
@@ -250,13 +257,16 @@ async fn issue_cloud_relay_client_token(
         &profile,
         &client_id,
         "client",
-        Some(vec![request.target_daemon_alias]),
-        Some(client_id.clone()),
-        profile
-            .machine_credential
-            .as_ref()
-            .and(profile.machine_id.clone()),
-        request.session_id,
+        CloudRuntimeTokenRequestOptions {
+            allowed_targets: Some(vec![request.target_daemon_alias]),
+            client_id: Some(client_id.clone()),
+            machine_id: profile
+                .machine_credential
+                .as_ref()
+                .and(profile.machine_id.clone()),
+            session_id: request.session_id,
+            ..CloudRuntimeTokenRequestOptions::default()
+        },
     )
     .await
     {

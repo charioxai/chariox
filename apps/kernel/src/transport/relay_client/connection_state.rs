@@ -48,7 +48,7 @@ impl RelayClientState {
         self.connected_relay_url.clone()
     }
 
-    pub(super) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
+    pub(crate) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
         self.peer_public_keys.get(target_ref).cloned()
     }
 

@@ -15,7 +15,9 @@ use crate::transport::relay_peer::{
 use super::daemon_requests::RelayRequestOutcome;
 use super::peer_events::emit_leased_projection_event;
 use super::request_errors::{map_relay_error, relay_error};
-use super::sender_identity::{require_bound_kernel_sender, validate_optional_daemon_sender};
+use super::sender_identity::{
+    require_bound_daemon_sender, require_bound_kernel_sender, validate_optional_daemon_sender,
+};
 use super::{RelayClientState, RelayOutgoingSender};
 
 pub(super) async fn handle_daemon_peer_request(
@@ -108,6 +110,110 @@ pub(super) async fn handle_daemon_peer_request(
 
     let response = match request {
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
+        RelayPeerRequest::InstallManagedSliceRelayToken {
+            slice_id,
+            owner_kernel_id,
+            owner_machine_id,
+            relay_token,
+            expires_at_ms,
+            relay_recovery_token,
+            recovery_expires_at_ms,
+        } => {
+            let identity =
+                require_bound_daemon_sender(caller_identity.as_ref(), &encrypted_request);
+            let authorized = identity.is_ok_and(|identity| {
+                stable_peer_daemon_id(from_daemon_id) == owner_kernel_id
+                    && match identity.subject_kind {
+                        chariox_relay::auth::RelaySubjectKind::Kernel => {
+                            identity.subject == owner_kernel_id
+                        }
+                        chariox_relay::auth::RelaySubjectKind::Machine => {
+                            identity.subject == owner_machine_id
+                        }
+                        _ => false,
+                    }
+            });
+            if !authorized {
+                RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code: "unauthorized".to_string(),
+                    retryable: false,
+                }
+            } else {
+                match router
+                    .install_managed_slice_relay_token(
+                        &slice_id,
+                        &owner_kernel_id,
+                        &owner_machine_id,
+                        relay_token.into_inner(),
+                        expires_at_ms,
+                        relay_recovery_token.into_inner(),
+                        recovery_expires_at_ms,
+                        requester_public_key.clone(),
+                    )
+                    .await
+                {
+                    Ok(()) => RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                        slice_id,
+                        relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                    },
+                    Err(error) => managed_slice_token_failure_response(&error),
+                }
+            }
+        }
+        RelayPeerRequest::RefreshManagedSliceRelayToken {
+            slice_id,
+            owner_kernel_id,
+            worker_kernel_id,
+        } => {
+            let identity =
+                require_bound_kernel_sender(caller_identity.as_ref(), &encrypted_request);
+            let authorized = identity
+                .as_ref()
+                .is_ok_and(|_| stable_peer_daemon_id(from_daemon_id) == worker_kernel_id);
+            if !authorized {
+                RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code: "unauthorized".to_string(),
+                    retryable: false,
+                }
+            } else {
+                let identity = identity.expect("authorized slice identity");
+                let key_thumbprint = identity
+                    .public_key_thumbprint
+                    .as_deref()
+                    .expect("bound slice identity")
+                    .to_string();
+                match router
+                    .refresh_managed_slice_relay_token(
+                        &slice_id,
+                        &owner_kernel_id,
+                        &worker_kernel_id,
+                        &identity.subject,
+                        &key_thumbprint,
+                    )
+                    .await
+                {
+                    Ok((
+                        relay_token,
+                        expires_at_ms,
+                        relay_recovery_token,
+                        recovery_expires_at_ms,
+                    )) => RelayPeerResponse::ManagedSliceRelayTokenRefreshed {
+                        slice_id,
+                        relay_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
+                            relay_token,
+                        ),
+                        expires_at_ms,
+                        relay_recovery_token:
+                            crate::transport::relay_peer::RelayManagedSliceToken::new(
+                                relay_recovery_token,
+                            ),
+                        recovery_expires_at_ms,
+                        relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                    },
+                    Err(error) => managed_slice_token_failure_response(&error),
+                }
+            }
+        }
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,
             home_session_id,
@@ -1056,6 +1162,14 @@ fn managed_context_failure_response(error: &crate::error::DaemonError) -> RelayP
     }
 }
 
+fn managed_slice_token_failure_response(error: &crate::error::DaemonError) -> RelayPeerResponse {
+    let projected = map_relay_error(error);
+    RelayPeerResponse::ManagedSliceRelayTokenFailed {
+        code: projected.code,
+        retryable: projected.retryable,
+    }
+}
+
 fn managed_context_failure_from_relay(
     error: &chariox_relay::protocol::RelayError,
 ) -> RelayPeerResponse {
@@ -1417,7 +1531,7 @@ mod tests {
         )
         .expect("export transferred Vault");
         let payload = KernelContextPayload {
-            schema_version: 1,
+            schema_version: crate::managed_context::kernel::KERNEL_CONTEXT_SCHEMA_VERSION,
             context_id: context_id.clone(),
             source_kernel_id: identity.subject.clone(),
             source_key_thumbprint: source_key_thumbprint.clone(),
@@ -1708,7 +1822,7 @@ mod tests {
         )
         .expect("export terminal transferred Vault");
         let terminal_payload = KernelContextPayload {
-            schema_version: 1,
+            schema_version: crate::managed_context::kernel::KERNEL_CONTEXT_SCHEMA_VERSION,
             context_id: terminal_context_id.clone(),
             source_kernel_id: identity.subject.clone(),
             source_key_thumbprint: source_key_thumbprint.clone(),
@@ -1984,7 +2098,7 @@ mod tests {
         )
         .expect("export recovery transferred Vault");
         let recovery_payload = KernelContextPayload {
-            schema_version: 1,
+            schema_version: crate::managed_context::kernel::KERNEL_CONTEXT_SCHEMA_VERSION,
             context_id: recovery_context_id.clone(),
             source_kernel_id: identity.subject.clone(),
             source_key_thumbprint: source_key_thumbprint.clone(),

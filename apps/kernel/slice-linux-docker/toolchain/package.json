@@ -1,0 +1,12 @@
+{
+  "name": "chariox-slice-toolchain",
+  "private": true,
+  "version": "0.0.0",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.207",
+    "@openai/codex": "0.144.0",
+    "opencode-ai": "1.4.1",
+    "pnpm": "11.22.0",
+    "ws": "8.18.3"
+  }
+}

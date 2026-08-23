@@ -1,9 +1,9 @@
 mod dev_stub_adapter;
 
 use super::{
-    apply_workspace_write_fence, plan_claude_launch, plan_codex_launch, plan_opencode_launch,
-    workspace_write_fence_supported, LaunchProviderRequest, ProviderLaunchResult,
-    RuntimeProviderRun,
+    apply_managed_provider_isolation, apply_workspace_write_fence, plan_claude_launch,
+    plan_codex_launch, plan_opencode_launch, workspace_write_fence_supported,
+    LaunchProviderRequest, ProviderLaunchResult, RuntimeProviderRun,
 };
 use crate::error::DaemonError;
 
@@ -133,7 +133,8 @@ impl AgentEndpointAdapter for ClaudeAdapter {
         let mut launch = plan_claude_launch(Some(request))?;
         launch.process_label = format!("claude:{}:{}", request.provider, request.model);
         launch.working_directory = request.working_directory.clone();
-        apply_workspace_write_fence(launch, request)
+        let launch = apply_workspace_write_fence(launch, request)?;
+        apply_managed_provider_isolation(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -173,7 +174,8 @@ impl AgentEndpointAdapter for OpenCodeAdapter {
         launch.process_label = format!("opencode:{}:{}", request.provider, request.model);
         launch.pty_target = None;
         launch.working_directory = request.working_directory.clone();
-        apply_workspace_write_fence(launch, request)
+        let launch = apply_workspace_write_fence(launch, request)?;
+        apply_managed_provider_isolation(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}
@@ -217,7 +219,8 @@ impl AgentEndpointAdapter for CodexAdapter {
         launch.process_label = format!("codex:{}:{}", request.provider, request.model);
         launch.pty_target = None;
         launch.working_directory = request.working_directory.clone();
-        apply_workspace_write_fence(launch, request)
+        let launch = apply_workspace_write_fence(launch, request)?;
+        apply_managed_provider_isolation(launch, request)
     }
 
     fn park(&self, _run: &RuntimeProviderRun) {}

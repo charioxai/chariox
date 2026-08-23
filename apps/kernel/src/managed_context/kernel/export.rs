@@ -8,7 +8,6 @@ use sha2::{Digest, Sha256};
 
 use crate::error::DaemonError;
 
-pub(super) const KERNEL_CONTEXT_SCHEMA_VERSION: u32 = 1;
 pub(super) const MAX_EXTENSIONS: usize = 2_048;
 pub(super) const MAX_DEPENDENCIES: usize = 2_048;
 pub(super) const MAX_PACKAGE_FILES: usize = 1_024;
@@ -136,7 +135,12 @@ pub fn export_kernel_context(
     let mut budget = SnapshotMemoryBudget::new(&request)?;
 
     let mut extensions = Vec::new();
-    export_mcps(&sources.mcp_root, &mut extensions, &mut budget)?;
+    export_mcps(
+        &sources.mcp_root,
+        sources.original_mcp_root.as_deref(),
+        &mut extensions,
+        &mut budget,
+    )?;
     export_skills(&sources.skill_root, &mut extensions, &mut budget)?;
     export_scripts(&sources.script_root, &mut extensions, &mut budget)?;
     let referenced_connector_adapters =
@@ -206,14 +210,15 @@ pub fn export_kernel_context(
 
 fn export_mcps(
     root: &Path,
+    original_root: Option<&Path>,
     extensions: &mut Vec<KernelExtensionSnapshot>,
     budget: &mut SnapshotMemoryBudget,
 ) -> Result<(), DaemonError> {
     let registry = crate::mcp::CharioxMcpRegistry::new(vec![root.to_path_buf()]);
     for config in registry.list()? {
-        validate_portable_mcp(&config)?;
+        let (config, runtime) = export_portable_mcp(root, original_root, config)?;
         let name = config.name.clone();
-        let definition = KernelExtensionDefinition::Mcp { config };
+        let definition = KernelExtensionDefinition::Mcp { config, runtime };
         push_extension(
             extensions,
             budget,
@@ -860,7 +865,10 @@ fn push_extension(
     let file_count = match &extension.definition {
         KernelExtensionDefinition::Skill { package, .. } => package.files.len(),
         KernelExtensionDefinition::Script { .. } => 1,
-        KernelExtensionDefinition::Mcp { .. } | KernelExtensionDefinition::Connector { .. } => 0,
+        KernelExtensionDefinition::Mcp { runtime, .. } => {
+            runtime.as_ref().map_or(0, |runtime| runtime.files.len())
+        }
+        KernelExtensionDefinition::Connector { .. } => 0,
     };
     budget.consume_files(file_count)?;
     budget.consume(&extension)?;
@@ -996,13 +1004,164 @@ fn skill_executable_paths(
     Ok(executable_paths)
 }
 
-pub(super) fn validate_portable_mcp(config: &CharioxMcpServerConfig) -> Result<(), DaemonError> {
+fn export_portable_mcp(
+    mcp_root: &Path,
+    original_mcp_root: Option<&Path>,
+    mut config: CharioxMcpServerConfig,
+) -> Result<
+    (
+        CharioxMcpServerConfig,
+        Option<KernelMcpStdioRuntimeSnapshot>,
+    ),
+    DaemonError,
+> {
+    let CharioxMcpTransportConfig::Stdio {
+        command,
+        args,
+        env,
+        credential_env,
+        env_vars,
+        cwd,
+    } = &mut config.transport
+    else {
+        validate_portable_mcp(&config, None)?;
+        return Ok((config, None));
+    };
+    let package_root = mcp_root.join(&config.name);
+    let configured_package_root = original_mcp_root.unwrap_or(mcp_root).join(&config.name);
+    let files = package_directory(&package_root)?;
+    let canonical_package_root = fs::canonicalize(&package_root)
+        .map_err(|error| kernel_context_io_error("resolve stdio MCP package", error))?;
+    let command_path = portable_mcp_package_path(
+        &canonical_package_root,
+        &configured_package_root,
+        Path::new(command),
+        "command",
+    )?
+    .ok_or_else(|| kernel_context_error("stdio MCP command must name a packaged file"))?;
+    let cwd_path = cwd
+        .as_deref()
+        .map(|path| {
+            portable_mcp_package_path(
+                &canonical_package_root,
+                &configured_package_root,
+                path,
+                "cwd",
+            )
+        })
+        .transpose()?
+        .flatten();
+    *command = command_path.clone();
+    *cwd = cwd_path.as_ref().map(PathBuf::from);
+    if args.iter().any(|argument| argument_has_host_path(argument))
+        || !env_vars.is_empty()
+        || env.keys().any(|name| sensitive_credential_field(name))
+        || env.values().any(|value| argument_has_host_path(value))
+        || env.values().any(|value| url_contains_credentials(value))
+        || env.keys().any(|name| credential_env.contains_key(name))
+    {
+        return Err(kernel_context_error(format!(
+            "stdio MCP `{}` contains host paths or ambient/literal credentials",
+            config.name
+        )));
+    }
+    let runtime = KernelMcpStdioRuntimeSnapshot {
+        command_path,
+        cwd_path,
+        package_sha256: package_definition_hash(&files),
+        files,
+    };
+    validate_portable_mcp(&config, Some(&runtime))?;
+    Ok((config, Some(runtime)))
+}
+
+fn portable_mcp_package_path(
+    canonical_package_root: &Path,
+    configured_package_root: &Path,
+    configured: &Path,
+    label: &str,
+) -> Result<Option<String>, DaemonError> {
+    let relative = if configured.is_absolute() {
+        configured
+            .strip_prefix(configured_package_root)
+            .map_err(|_| {
+                kernel_context_error(format!("stdio MCP {label} escapes its portable package"))
+            })?
+    } else {
+        configured
+    };
+    if relative.as_os_str().is_empty() {
+        return Ok(None);
+    }
+    let portable = portable_relative_path(relative)?;
+    let candidate = canonical_package_root.join(&portable);
+    let canonical = fs::canonicalize(&candidate).map_err(|error| {
+        kernel_context_io_error(
+            "resolve stdio MCP package path",
+            std::io::Error::new(error.kind(), format!("{label}: {error}")),
+        )
+    })?;
+    let relative = canonical
+        .strip_prefix(canonical_package_root)
+        .map_err(|_| {
+            kernel_context_error(format!("stdio MCP {label} escapes its portable package"))
+        })?;
+    portable_relative_path(relative).map(Some)
+}
+
+pub(super) fn validate_portable_mcp(
+    config: &CharioxMcpServerConfig,
+    runtime: Option<&KernelMcpStdioRuntimeSnapshot>,
+) -> Result<(), DaemonError> {
     match &config.transport {
-        CharioxMcpTransportConfig::Stdio { .. } => {
-            return Err(kernel_context_error(format!(
-                "stdio MCP `{}` has no signed portable runtime artifact",
-                config.name
-            )))
+        CharioxMcpTransportConfig::Stdio {
+            command,
+            args,
+            env,
+            credential_env,
+            env_vars,
+            cwd,
+        } => {
+            let runtime = runtime.ok_or_else(|| {
+                kernel_context_error(format!(
+                    "stdio MCP `{}` has no signed portable runtime artifact",
+                    config.name
+                ))
+            })?;
+            validate_portable_package_paths(runtime.files.iter().map(|file| file.path.as_str()))?;
+            if runtime.files.is_empty()
+                || runtime.files.len() > MAX_PACKAGE_FILES
+                || package_definition_hash(&runtime.files) != runtime.package_sha256
+                || command != &runtime.command_path
+                || cwd.as_ref().and_then(|path| path.to_str()) != runtime.cwd_path.as_deref()
+                || args.iter().any(|argument| argument_has_host_path(argument))
+                || !env_vars.is_empty()
+                || env.keys().any(|name| sensitive_credential_field(name))
+                || env.values().any(|value| argument_has_host_path(value))
+                || env.values().any(|value| url_contains_credentials(value))
+                || env.keys().any(|name| credential_env.contains_key(name))
+            {
+                return Err(kernel_context_error(format!(
+                    "stdio MCP `{}` portable runtime contract is invalid",
+                    config.name
+                )));
+            }
+            let command_file = runtime
+                .files
+                .iter()
+                .find(|file| file.path == runtime.command_path)
+                .ok_or_else(|| {
+                    kernel_context_error(format!(
+                        "stdio MCP `{}` command is absent from its portable package",
+                        config.name
+                    ))
+                })?;
+            if !command_file.executable {
+                return Err(kernel_context_error(format!(
+                    "stdio MCP `{}` packaged command is not executable",
+                    config.name
+                )));
+            }
         }
         CharioxMcpTransportConfig::StreamableHttp {
             url,
@@ -1011,6 +1170,12 @@ pub(super) fn validate_portable_mcp(config: &CharioxMcpServerConfig) -> Result<(
             env_http_headers,
             ..
         } => {
+            if runtime.is_some() {
+                return Err(kernel_context_error(format!(
+                    "HTTP MCP `{}` unexpectedly carries a stdio runtime",
+                    config.name
+                )));
+            }
             let parsed = url::Url::parse(url).map_err(|error| {
                 kernel_context_error(format!("MCP `{}` URL is invalid: {error}", config.name))
             })?;

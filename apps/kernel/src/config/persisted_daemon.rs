@@ -7,7 +7,7 @@ use super::paths::{default_config_dir, default_state_dir};
 use super::private_file::write_private_file;
 use crate::error::DaemonError;
 
-const HOSTED_STAGING_API_URL: &str = "https://chariox-cloud-staging.osc-fr1.scalingo.io";
+const HOSTED_STAGING_API_URL: &str = "https://staging.chariox.com";
 pub(super) const HOSTED_STAGING_RELAY_URL: &str = "wss://195.201.123.115.sslip.io";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -16,6 +16,10 @@ pub(super) struct PersistedDaemonConfig {
     pub(super) relay_url: Option<String>,
     #[serde(default)]
     pub(super) relay_token: Option<String>,
+    #[serde(default)]
+    pub(super) managed_slice_relay_recovery_token: Option<String>,
+    #[serde(default)]
+    pub(super) managed_slice_relay_owner_public_key: Option<String>,
     #[serde(default)]
     pub(super) cloud_relay: Option<PersistedCloudRelayProfile>,
     #[serde(default)]

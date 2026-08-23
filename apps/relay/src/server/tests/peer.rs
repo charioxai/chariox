@@ -224,8 +224,12 @@ async fn scoped_daemon_tokens_gate_peer_routing_actions() {
             "daemon-b",
             RelaySubjectKind::Kernel,
             "realm-a",
-            vec![RelayAction::DaemonRegister],
-            None,
+            vec![
+                RelayAction::DaemonRegister,
+                RelayAction::PeerRequest,
+                RelayAction::PeerEvent,
+            ],
+            Some(vec!["daemon-c"]),
         ),
     );
     let auth_verifier =
@@ -352,6 +356,69 @@ async fn scoped_daemon_tokens_gate_peer_routing_actions() {
     match timeout(Duration::from_millis(100), daemon_b.next()).await {
         Err(_) => {}
         Ok(other) => panic!("unauthorized peer event reached target daemon: {other:?}"),
+    }
+
+    let target_restricted_request = EncryptedRelayPayload {
+        sender_public_key: "daemon-b-public".to_string(),
+        nonce: "nonce-target".to_string(),
+        ciphertext: "ciphertext-target".to_string(),
+    };
+    daemon_b
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonPeerRequest {
+                request_id: "peer-target-denied".to_string(),
+                target: ClientTarget {
+                    daemon_id: Some("daemon-a".to_string()),
+                    daemon_alias: None,
+                },
+                encrypted_request: target_restricted_request.clone(),
+            })
+            .expect("target-restricted peer request should serialize")
+            .into(),
+        ))
+        .await
+        .expect("target-restricted peer request should send");
+    match daemon_b.next().await {
+        Some(Ok(Message::Text(text))) => {
+            match serde_json::from_str::<RelayEnvelope>(&text)
+                .expect("peer target denial should decode")
+            {
+                RelayEnvelope::DaemonPeerResponse {
+                    request_id,
+                    encrypted_response: None,
+                    error: Some(error),
+                    ..
+                } => {
+                    assert_eq!(request_id, "peer-target-denied");
+                    assert_eq!(error.code, "target_not_allowed");
+                }
+                other => panic!("unexpected peer target denial envelope: {other:?}"),
+            }
+        }
+        other => panic!("unexpected peer target denial frame: {other:?}"),
+    }
+    match timeout(Duration::from_millis(100), daemon_a.next()).await {
+        Err(_) => {}
+        Ok(other) => panic!("target-restricted peer request reached target daemon: {other:?}"),
+    }
+
+    daemon_b
+        .send(Message::Text(
+            serde_json::to_string(&RelayEnvelope::DaemonPeerEvent {
+                target: ClientTarget {
+                    daemon_id: Some("daemon-a".to_string()),
+                    daemon_alias: None,
+                },
+                encrypted_event: target_restricted_request,
+            })
+            .expect("target-restricted peer event should serialize")
+            .into(),
+        ))
+        .await
+        .expect("target-restricted peer event should send");
+    match timeout(Duration::from_millis(100), daemon_a.next()).await {
+        Err(_) => {}
+        Ok(other) => panic!("target-restricted peer event reached target daemon: {other:?}"),
     }
 
     let _ = daemon_a.close(None).await;

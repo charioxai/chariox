@@ -66,6 +66,37 @@ pub(super) fn require_bound_kernel_sender<'a>(
     Ok(identity)
 }
 
+pub(super) fn require_bound_daemon_sender<'a>(
+    caller_identity: Option<&'a RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<&'a RelayCallerIdentity, RelayError> {
+    let Some(identity) = caller_identity else {
+        return Err(unauthorized(
+            "relay request requires an authenticated daemon identity",
+        ));
+    };
+    validate_optional_daemon_identity(identity)?;
+    if !matches!(
+        identity.subject_kind,
+        RelaySubjectKind::Kernel | RelaySubjectKind::Machine
+    ) {
+        return Err(unauthorized(
+            "relay request requires a kernel or machine identity",
+        ));
+    }
+    let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() else {
+        return Err(unauthorized(
+            "relay request requires a sender-bound daemon identity",
+        ));
+    };
+    validate_sender_key(
+        expected_thumbprint,
+        encrypted_request,
+        daemon_identity_label(identity.subject_kind),
+    )?;
+    Ok(identity)
+}
+
 fn validate_kernel_identity(identity: &RelayCallerIdentity) -> Result<(), RelayError> {
     if identity.subject_kind != RelaySubjectKind::Kernel {
         return Err(unauthorized(
