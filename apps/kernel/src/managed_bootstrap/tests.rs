@@ -304,6 +304,152 @@ fn release_verifier_accepts_v2_identity_and_legacy_v1() {
     fixture.cleanup();
 }
 
+#[cfg(unix)]
+#[test]
+fn release_verifier_pins_installer_owned_release_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new("release-installer-symlinks");
+    let install_root = fixture.root.join("installed");
+    let chariox_root = install_root.join("usr/lib/chariox");
+    let kernel_facade = install_root.join("usr/local/bin/chariox-kernel");
+    let manifest_facade = chariox_root.join("release-manifest.json");
+    let signature_facade = chariox_root.join("release-manifest.sig");
+    let public_key_facade = chariox_root.join("release-public-key");
+    let kernel_bytes = fs::read(&fixture.config.kernel_binary).expect("read kernel fixture");
+    let kernel_sha256 = format!("sha256:{:x}", Sha256::digest(&kernel_bytes));
+    let release_digest = fixture.write_signed_manifest(serde_json::json!({
+        "schemaVersion": 2,
+        "sourceCommit": "a".repeat(40),
+        "sourceTree": "b".repeat(40),
+        "artifacts": [{
+            "name": "chariox-kernel",
+            "path": kernel_facade,
+            "sha256": kernel_sha256,
+        }],
+    }));
+    let release_name = release_digest
+        .strip_prefix("sha256:")
+        .expect("release digest prefix");
+    let versioned = chariox_root.join("releases").join(release_name);
+    let versioned_chariox = versioned.join("usr/lib/chariox");
+    let versioned_kernel = versioned.join("usr/local/bin/chariox-kernel");
+    fs::create_dir_all(&versioned_chariox).expect("create versioned release metadata");
+    fs::create_dir_all(versioned_kernel.parent().expect("kernel parent"))
+        .expect("create versioned release binary directory");
+    fs::create_dir_all(kernel_facade.parent().expect("kernel facade parent"))
+        .expect("create kernel facade directory");
+
+    for (source, destination) in [
+        (
+            &fixture.config.manifest_path,
+            versioned_chariox.join("release-manifest.json"),
+        ),
+        (
+            &fixture.config.signature_path,
+            versioned_chariox.join("release-manifest.sig"),
+        ),
+        (
+            &fixture.config.public_key_path,
+            versioned_chariox.join("release-public-key"),
+        ),
+        (&fixture.config.kernel_binary, versioned_kernel.clone()),
+    ] {
+        fs::rename(source, destination).expect("move file into versioned release");
+    }
+    symlink(
+        format!("releases/{release_name}"),
+        chariox_root.join("current"),
+    )
+    .expect("link current release");
+    symlink(
+        "current/usr/lib/chariox/release-manifest.json",
+        &manifest_facade,
+    )
+    .expect("link release manifest");
+    symlink(
+        "current/usr/lib/chariox/release-manifest.sig",
+        &signature_facade,
+    )
+    .expect("link release signature");
+    symlink(
+        "current/usr/lib/chariox/release-public-key",
+        &public_key_facade,
+    )
+    .expect("link release public key");
+    symlink(
+        "../../../usr/lib/chariox/current/usr/local/bin/chariox-kernel",
+        &kernel_facade,
+    )
+    .expect("link kernel binary");
+
+    let verified = verify_release(
+        &manifest_facade,
+        &signature_facade,
+        &public_key_facade,
+        &release_digest,
+        &kernel_facade,
+    )
+    .expect("installer-owned release symlinks should verify");
+    assert_eq!(
+        verified.kernel_binary,
+        fs::canonicalize(&versioned_kernel).expect("canonical versioned kernel")
+    );
+
+    let external = fixture
+        .root
+        .join("external")
+        .join("releases")
+        .join(release_name);
+    fs::create_dir_all(external.join("usr/lib/chariox"))
+        .expect("create external metadata directory");
+    fs::create_dir_all(external.join("usr/local/bin")).expect("create external binary directory");
+    for relative in [
+        "usr/lib/chariox/release-manifest.json",
+        "usr/lib/chariox/release-manifest.sig",
+        "usr/lib/chariox/release-public-key",
+        "usr/local/bin/chariox-kernel",
+    ] {
+        fs::copy(versioned.join(relative), external.join(relative))
+            .expect("copy external release file");
+    }
+    let next_current = chariox_root.join("current.external");
+    symlink(&external, &next_current).expect("link external release");
+    fs::rename(&next_current, chariox_root.join("current")).expect("pivot to external release");
+    let external_error = verify_release(
+        &manifest_facade,
+        &signature_facade,
+        &public_key_facade,
+        &release_digest,
+        &kernel_facade,
+    )
+    .expect_err("release paths outside the pinned versioned root must fail");
+    assert!(external_error
+        .to_string()
+        .contains("outside the pinned release"));
+
+    let second = chariox_root.join("releases").join("0".repeat(64));
+    fs::create_dir_all(second.join("usr/local/bin")).expect("create second release");
+    fs::write(
+        second.join("usr/local/bin/chariox-kernel"),
+        b"different kernel\n",
+    )
+    .expect("write second release kernel");
+    let next_current = chariox_root.join("current.second");
+    symlink(&second, &next_current).expect("link second release");
+    fs::rename(&next_current, chariox_root.join("current")).expect("pivot current release");
+    assert_eq!(
+        fs::read(&verified.kernel_binary).expect("read pinned kernel"),
+        kernel_bytes
+    );
+    assert_eq!(
+        fs::read(&kernel_facade).expect("read pivoted kernel facade"),
+        b"different kernel\n"
+    );
+
+    fixture.cleanup();
+}
+
 #[test]
 fn release_verifier_rejects_missing_or_invalid_v2_source_identity() {
     let fixture = Fixture::new("release-v2-identity");

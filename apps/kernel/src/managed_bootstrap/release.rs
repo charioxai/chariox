@@ -43,8 +43,15 @@ pub(super) fn verify_release(
     expected_digest: &str,
     expected_kernel_binary: &Path,
 ) -> Result<VerifiedRelease, DaemonError> {
+    let resolved = resolve_release_paths(
+        manifest_path,
+        signature_path,
+        public_key_path,
+        expected_kernel_binary,
+        expected_digest,
+    )?;
     let manifest_bytes =
-        read_bounded_regular_file(manifest_path, MAX_MANIFEST_BYTES, "release manifest")?;
+        read_bounded_regular_file(&resolved.manifest, MAX_MANIFEST_BYTES, "release manifest")?;
     let actual_digest = format!("sha256:{:x}", Sha256::digest(&manifest_bytes));
     if actual_digest != expected_digest {
         return Err(release_error(
@@ -52,9 +59,12 @@ pub(super) fn verify_release(
         ));
     }
     let key_bytes =
-        read_bounded_regular_file(public_key_path, MAX_KEY_BYTES, "release public key")?;
-    let signature_bytes =
-        read_bounded_regular_file(signature_path, MAX_SIGNATURE_BYTES, "release signature")?;
+        read_bounded_regular_file(&resolved.public_key, MAX_KEY_BYTES, "release public key")?;
+    let signature_bytes = read_bounded_regular_file(
+        &resolved.signature,
+        MAX_SIGNATURE_BYTES,
+        "release signature",
+    )?;
     let verifying_key = decode_verifying_key(&key_bytes)?;
     let signature = decode_signature(&signature_bytes)?;
     verifying_key
@@ -94,7 +104,7 @@ pub(super) fn verify_release(
         ));
     }
     validate_digest(&kernel.sha256)?;
-    let actual_kernel_digest = digest_regular_file(&kernel.path)?;
+    let actual_kernel_digest = digest_regular_file(&resolved.kernel)?;
     if actual_kernel_digest != kernel.sha256 {
         return Err(release_error(
             "kernel artifact digest does not match the signed release",
@@ -102,8 +112,95 @@ pub(super) fn verify_release(
     }
     Ok(VerifiedRelease {
         digest: actual_digest,
-        kernel_binary: kernel.path.clone(),
+        kernel_binary: resolved.kernel,
     })
+}
+
+struct ResolvedReleasePaths {
+    manifest: PathBuf,
+    signature: PathBuf,
+    public_key: PathBuf,
+    kernel: PathBuf,
+}
+
+fn resolve_release_paths(
+    manifest: &Path,
+    signature: &Path,
+    public_key: &Path,
+    kernel: &Path,
+    expected_digest: &str,
+) -> Result<ResolvedReleasePaths, DaemonError> {
+    let facades = [manifest, signature, public_key, kernel];
+    let symlinked = facades
+        .iter()
+        .map(|path| {
+            fs::symlink_metadata(path)
+                .map(|metadata| metadata.file_type().is_symlink())
+                .map_err(|error| release_io_error("release path", error))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if symlinked.iter().all(|value| !value) {
+        return Ok(ResolvedReleasePaths {
+            manifest: manifest.to_path_buf(),
+            signature: signature.to_path_buf(),
+            public_key: public_key.to_path_buf(),
+            kernel: kernel.to_path_buf(),
+        });
+    }
+    if !symlinked.iter().all(|value| *value) {
+        return Err(release_error(
+            "installed release path layout is inconsistent",
+        ));
+    }
+
+    let digest = expected_digest
+        .strip_prefix("sha256:")
+        .filter(|value| value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit()))
+        .ok_or_else(|| release_error("managed release digest is invalid"))?;
+    let resolved = facades
+        .iter()
+        .map(|path| fs::canonicalize(path).map_err(|error| release_io_error("release path", error)))
+        .collect::<Result<Vec<_>, _>>()?;
+    let expected_release_root = fs::canonicalize(
+        manifest
+            .parent()
+            .ok_or_else(|| release_error("release manifest path has no parent"))?,
+    )
+    .map_err(|error| release_io_error("release path", error))?
+    .join("releases")
+    .join(digest);
+    let release_root = release_root_for_manifest(&resolved[0])
+        .filter(|root| root == &expected_release_root)
+        .ok_or_else(|| release_error("installed release path is outside the pinned release"))?;
+    let expected = [
+        release_root.join("usr/lib/chariox/release-manifest.json"),
+        release_root.join("usr/lib/chariox/release-manifest.sig"),
+        release_root.join("usr/lib/chariox/release-public-key"),
+        release_root.join("usr/local/bin/chariox-kernel"),
+    ];
+    if resolved != expected {
+        return Err(release_error(
+            "installed release path is outside the pinned release",
+        ));
+    }
+    Ok(ResolvedReleasePaths {
+        manifest: resolved[0].clone(),
+        signature: resolved[1].clone(),
+        public_key: resolved[2].clone(),
+        kernel: resolved[3].clone(),
+    })
+}
+
+fn release_root_for_manifest(path: &Path) -> Option<PathBuf> {
+    let expected = ["release-manifest.json", "chariox", "lib", "usr"];
+    let mut current = path;
+    for name in expected {
+        if current.file_name()? != name {
+            return None;
+        }
+        current = current.parent()?;
+    }
+    Some(current.to_path_buf())
 }
 
 fn read_bounded_regular_file(
