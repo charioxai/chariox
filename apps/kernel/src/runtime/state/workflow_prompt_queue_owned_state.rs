@@ -707,7 +707,10 @@ impl KernelRuntimeOwnedState {
         Ok(session
             .workflow_runs()
             .iter()
-            .find(|workflow_run| workflow_run.queue_item_id() == Some(queued_prompt_id))
+            .find(|workflow_run| {
+                workflow_run.queue_item_id() == Some(queued_prompt_id)
+                    && !workflow_run.status().is_terminal()
+            })
             .cloned())
     }
 

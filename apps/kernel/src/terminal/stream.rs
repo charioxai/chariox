@@ -27,5 +27,6 @@ pub use service::TerminalStreamService;
 pub use store::TerminalStreamStore;
 
 const DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT: usize = 4096;
+const DEFAULT_PENDING_WORKFLOW_RUN_UPDATE_LIMIT_PER_ATTACHMENT: usize = 200;
 const DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT: usize = 16 * 1024;
 const DEFAULT_OUTPUT_DRAIN_JSON_LIMIT: usize = 128 * 1024;

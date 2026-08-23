@@ -171,6 +171,18 @@ fn owned_launch_reports_started_when_prompt_admitted_by_concurrent_dispatch() {
     assert_eq!(recovered.id(), started_run.id());
     assert_eq!(recovered.queue_item_id(), Some(queued.id()));
 
+    runtime
+        .owned
+        .session_store
+        .write()
+        .cancel_workflow_run(&session_id, started_run.id())
+        .expect("the admitted run should become terminal");
+    assert!(runtime
+        .owned
+        .workflow_started_run_for_queued_prompt(&session_id, queued.id())
+        .expect("terminal-run lookup should succeed")
+        .is_none());
+
     // A prompt that was never admitted has no Started run.
     assert!(runtime
         .owned

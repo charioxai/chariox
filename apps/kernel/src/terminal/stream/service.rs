@@ -22,6 +22,7 @@ pub struct TerminalStreamService {
     pub(super) pending_workflow_run_updates_by_attachment:
         BTreeMap<(String, String), VecDeque<u64>>,
     next_workflow_run_update_record_id: u64,
+    pending_workflow_run_update_limit_per_attachment: usize,
     pending_output_record_limit_per_attachment: usize,
     output_coalesce_byte_limit: usize,
     output_drain_json_limit: usize,
@@ -60,6 +61,8 @@ pub(super) struct TerminalOutputBatchFanout {
 impl TerminalStreamService {
     pub fn new() -> Self {
         let service = Self {
+            pending_workflow_run_update_limit_per_attachment:
+                DEFAULT_PENDING_WORKFLOW_RUN_UPDATE_LIMIT_PER_ATTACHMENT,
             pending_output_record_limit_per_attachment:
                 DEFAULT_PENDING_OUTPUT_RECORD_LIMIT_PER_ATTACHMENT,
             output_coalesce_byte_limit: DEFAULT_OUTPUT_COALESCE_BYTE_LIMIT,
@@ -74,6 +77,16 @@ impl TerminalStreamService {
     pub(super) fn with_pending_output_record_limit_per_attachment(limit: usize) -> Self {
         let service = Self {
             pending_output_record_limit_per_attachment: limit,
+            ..Self::new()
+        };
+        service.refresh_health();
+        service
+    }
+
+    #[cfg(test)]
+    pub(super) fn with_pending_workflow_run_update_limit_per_attachment(limit: usize) -> Self {
+        let service = Self {
+            pending_workflow_run_update_limit_per_attachment: limit,
             ..Self::new()
         };
         service.refresh_health();
@@ -915,6 +928,10 @@ impl TerminalStreamService {
                 .or_default()
                 .push_back(record_id);
         }
+        let pending_keys = recipient_attachment_ids
+            .iter()
+            .map(|attachment_id| (session_id.to_string(), attachment_id.clone()))
+            .collect();
         self.workflow_run_update_records.insert(
             record_id,
             WorkflowRunUpdateRecord {
@@ -923,6 +940,45 @@ impl TerminalStreamService {
                 workflow_run,
             },
         );
+        self.enforce_pending_workflow_run_update_limits_for_keys(pending_keys);
+    }
+
+    fn enforce_pending_workflow_run_update_limits_for_keys(
+        &mut self,
+        keys: BTreeSet<(String, String)>,
+    ) {
+        for key in keys {
+            while self
+                .pending_workflow_run_updates_by_attachment
+                .get(&key)
+                .is_some_and(|queue| {
+                    queue.len() > self.pending_workflow_run_update_limit_per_attachment
+                })
+            {
+                let Some(record_id) = self
+                    .pending_workflow_run_updates_by_attachment
+                    .get_mut(&key)
+                    .and_then(VecDeque::pop_front)
+                else {
+                    break;
+                };
+                if let Some(record) = self.workflow_run_update_records.get_mut(&record_id) {
+                    remove_pending_recipient_id(
+                        &mut record.pending_recipient_attachment_ids,
+                        &key.1,
+                    );
+                }
+                if self
+                    .workflow_run_update_records
+                    .get(&record_id)
+                    .is_some_and(|record| record.pending_recipient_attachment_ids.is_empty())
+                {
+                    self.workflow_run_update_records.remove(&record_id);
+                }
+            }
+        }
+        self.pending_workflow_run_updates_by_attachment
+            .retain(|_, queue| !queue.is_empty());
     }
 
     pub fn drain_workflow_run_updates(

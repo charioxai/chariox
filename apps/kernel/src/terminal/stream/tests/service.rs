@@ -1162,3 +1162,29 @@ fn workflow_run_updates_without_recipients_leave_no_pending_record() {
         .pending_workflow_run_updates_by_attachment
         .is_empty());
 }
+
+#[test]
+fn workflow_run_updates_are_bounded_per_attachment() {
+    let mut terminal =
+        TerminalStreamService::with_pending_workflow_run_update_limit_per_attachment(2);
+    let mut first = completed_workflow_run_fixture();
+    first.set_status(crate::session::WorkflowRunStatus::Failed);
+    let mut second = completed_workflow_run_fixture();
+    second.set_status(crate::session::WorkflowRunStatus::Stopped);
+    let third = completed_workflow_run_fixture();
+
+    for workflow_run in [first, second.clone(), third.clone()] {
+        terminal.record_workflow_run_update(
+            "session-1",
+            vec!["attachment-1".to_string()],
+            workflow_run,
+        );
+    }
+
+    assert_eq!(terminal.workflow_run_update_records.len(), 2);
+    assert_eq!(
+        terminal.drain_workflow_run_updates("session-1", "attachment-1"),
+        vec![second, third]
+    );
+    assert!(terminal.workflow_run_update_records.is_empty());
+}
