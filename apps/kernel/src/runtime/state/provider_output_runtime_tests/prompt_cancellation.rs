@@ -127,6 +127,14 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
     else {
         panic!("workflow prompt should remain queued");
     };
+    let agent_runtime_projection = app.agent_runtime_projection_store();
+    assert!(
+        agent_runtime_projection
+            .get(agent.id())
+            .and_then(|projection| projection.active_prompt)
+            .is_some(),
+        "the active prompt should be present before cancellation"
+    );
 
     let app = Arc::new(Mutex::new(app));
     let runtime = owned_runtime_state(&app).await;
@@ -145,6 +153,13 @@ async fn cancelling_a_workflow_prompt_promotes_the_next_run_before_provider_disp
         )
         .expect("provider abort acknowledgement should promote queued workflow prompt");
     assert!(cancellation.cancellation.started_next.is_some());
+    assert!(
+        agent_runtime_projection
+            .get(agent.id())
+            .and_then(|projection| projection.active_prompt)
+            .is_some_and(|prompt| prompt.workflow_run_id() == Some(queued_run.id())),
+        "runtime-owned cancellation settlement must refresh the promoted workflow prompt projection"
+    );
 
     let snapshot = runtime
         .owned

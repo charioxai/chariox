@@ -86,7 +86,11 @@ impl KernelRuntimeOwnedState {
         mut session: crate::session::RuntimeSession,
     ) -> crate::session::RuntimeSession {
         self.project_session_runtime_view(&mut session);
-        self.session_projection.update(session.clone());
+        crate::runtime::projection::publish_session_runtime_projection(
+            &self.session_projection,
+            &self.agent_runtime_projection,
+            &session,
+        );
         session
     }
 

@@ -70,6 +70,7 @@ struct KernelRuntimeOwnedState {
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
+    agent_runtime_projection: crate::runtime::projection::AgentRuntimeProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
     operational_history_store: OperationalHistoryStore,
@@ -421,6 +422,7 @@ impl KernelRuntimeState {
             provider_launch_failure_retries,
             relay_state,
             legacy_workflow_history,
+            agent_runtime_projection,
         ) = {
             let started = Instant::now();
             loop {
@@ -431,6 +433,7 @@ impl KernelRuntimeState {
                         app.provider_launch_failure_retry_store(),
                         app.relay_client_state(),
                         app.legacy_workflow_history_store(),
+                        app.agent_runtime_projection_store(),
                     );
                 }
                 if started.elapsed() >= Duration::from_secs(5) {
@@ -473,6 +476,7 @@ impl KernelRuntimeState {
                 attached_provider_transcript_cursors,
                 slice_store,
                 session_projection,
+                agent_runtime_projection,
                 provider_run_projection,
                 provider_process_projection,
                 operational_history_store,
