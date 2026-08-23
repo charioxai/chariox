@@ -572,8 +572,17 @@ set -eu
 [ -z "\${RUSTFLAGS:-}" ]
 case "$1" in
   build)
-    case " $* " in *" --pull --platform linux/amd64 --target rust-builder --tag chariox-managed-builder:"*) ;; *) exit 31 ;; esac
+    case " $* " in *" --pull --platform linux/amd64 --target rust-builder "*) ;; *) exit 31 ;; esac
+    case " $* " in *" --tag chariox-managed-builder:"*) ;; *) exit 31 ;; esac
     for source do :; done
+    dockerfile=
+    previous=
+    for argument do
+      if [ "$previous" = "--file" ]; then dockerfile=$argument; fi
+      previous=$argument
+    done
+    [ -f "$dockerfile" ]
+    [ "$dockerfile" = "$source/apps/kernel/slice-linux-docker/docker/Dockerfile" ]
     [ ! -e "$source/.git" ]
     [ ! -e "$source/working-tree-only" ]
     printf '%s\n' "$*" > '${trace}'
@@ -618,6 +627,10 @@ esac
   )
   assert.equal(result.status, 0, result.stderr)
   assert.match(await readFile(trace, "utf8"), /--target rust-builder/)
+  assert.match(
+    await readFile(trace, "utf8"),
+    /--file .*\/apps\/kernel\/slice-linux-docker\/docker\/Dockerfile/,
+  )
   const attestationBytes = await readFile(join(output, "build-attestation.json"))
   const attestation = JSON.parse(attestationBytes)
   assert.equal(attestation.sourceCommit, fixture.sourceCommit)

@@ -9,6 +9,7 @@ import { tmpdir } from "node:os"
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const BUILD_TARGET = "x86_64-unknown-linux-gnu"
 const BUILDER_STAGE = "rust-builder"
+const BUILDER_DOCKERFILE = "apps/kernel/slice-linux-docker/docker/Dockerfile"
 const REQUIRED_OPTIONS = ["source-repository", "source-commit", "builder-signing-key", "output"]
 
 function usage() {
@@ -125,6 +126,7 @@ async function build(options) {
       "docker",
       [
         "build", "--pull", "--platform", "linux/amd64", "--target", BUILDER_STAGE,
+        "--file", join(source, BUILDER_DOCKERFILE),
         "--tag", builderImage,
         source,
       ],
