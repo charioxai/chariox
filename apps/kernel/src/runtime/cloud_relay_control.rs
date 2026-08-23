@@ -47,17 +47,10 @@ pub(crate) fn cloud_runtime_token_subject(
     config: &DaemonConfig,
     profile: &PersistedCloudRelayProfile,
 ) -> CloudRuntimeTokenSubject {
-    if let Some(machine_id) = profile.machine_id.clone() {
-        return CloudRuntimeTokenSubject {
-            subject: machine_id.clone(),
-            subject_kind: "machine",
-            machine_id: Some(machine_id),
-        };
-    }
     CloudRuntimeTokenSubject {
         subject: config.daemon_id.clone(),
         subject_kind: "kernel",
-        machine_id: None,
+        machine_id: profile.machine_id.clone(),
     }
 }
 
@@ -227,12 +220,12 @@ mod tests {
     }
 
     #[test]
-    fn runtime_token_subject_prefers_machine_identity() {
+    fn runtime_token_subject_registers_the_kernel_and_binds_its_machine() {
         let machine_profile = profile();
         let subject =
             cloud_runtime_token_subject(&config(Some(machine_profile.clone())), &machine_profile);
-        assert_eq!(subject.subject, "machine-1");
-        assert_eq!(subject.subject_kind, "machine");
+        assert_eq!(subject.subject, "kernel-1");
+        assert_eq!(subject.subject_kind, "kernel");
         assert_eq!(subject.machine_id.as_deref(), Some("machine-1"));
 
         let mut kernel_profile = profile();

@@ -93,19 +93,15 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let daemon_id = config_projection.snapshot().daemon_id;
-    let (subject, subject_kind, machine_id) = if let Some(machine_id) = profile.machine_id.clone() {
-        (machine_id.clone(), "machine", Some(machine_id))
-    } else {
-        (daemon_id, "kernel", None)
-    };
+    let config = config_projection.snapshot();
+    let token_subject = cloud_runtime_token_subject(&config, &profile);
     let issued = issue_cloud_runtime_token(
         &profile,
-        &subject,
-        subject_kind,
+        &token_subject.subject,
+        token_subject.subject_kind,
         None,
         None,
-        machine_id,
+        token_subject.machine_id,
         None,
     )
     .await?;
