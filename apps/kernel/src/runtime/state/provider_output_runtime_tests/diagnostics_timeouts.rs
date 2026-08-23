@@ -249,7 +249,7 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
         .expect("agent activity should be projected");
     assert_eq!(
         agent_activity.status,
-        crate::runtime::projection::AgentRuntimeStatus::Idle
+        crate::runtime::projection::AgentRuntimeStatus::Error
     );
     assert_eq!(
         agent_activity

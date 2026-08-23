@@ -304,10 +304,12 @@ fn retry_stalled_claude_turn(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.record_restart(Instant::now());
-    batch.notices.push(
-        "Claude Code emitted no runtime events; restarted it and retried the unacknowledged turn once"
-            .to_string(),
-    );
+    batch.chunks.push(crate::provider::ProviderPromptChunk {
+        kind: TerminalOutputKind::ProviderStatus,
+        merge_key: Some("__provider_status__".to_string()),
+        bytes: crate::provider::provider_retry_status("Claude", Some("runtime unresponsive"))
+            .into_bytes(),
+    });
     Ok(())
 }
 

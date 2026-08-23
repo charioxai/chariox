@@ -46,6 +46,8 @@ impl KernelRuntimeOwnedState {
             }
         }
         let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
+        self.agent_store
+            .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
         let completed_at_ms = crate::session::unix_epoch_ms();
         if !self.prompt_completion_recorded(provider_run_id) {
             self.record_assistant_message_completion(
@@ -161,6 +163,10 @@ impl KernelRuntimeOwnedState {
             settled_at_ms,
             settlement_status,
         );
+        if settlement_status == crate::git_observer::CompletedTurnSettlementStatus::Failed {
+            self.agent_store
+                .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
+        }
         let completion_record_key = provider_run_id.unwrap_or(agent_id);
         if !self.prompt_completion_recorded(completion_record_key) {
             let provider_run_id = completion_provider_run_id

@@ -142,6 +142,20 @@ pub(super) fn format_session_status(kind: &str) -> String {
     match kind {
         "busy" => "OpenCode is thinking...".to_string(),
         "idle" => "OpenCode is idle.".to_string(),
+        "retry" | "reconnecting" => crate::provider::provider_retry_status("OpenCode", None),
         other => format!("OpenCode status: {other}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn retry_and_reconnecting_statuses_use_the_shared_connection_message() {
+        for status in ["retry", "reconnecting"] {
+            assert_eq!(
+                super::format_session_status(status),
+                "OpenCode connection interrupted — retrying."
+            );
+        }
     }
 }

@@ -1455,7 +1455,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn failed_local_dispatch_emits_completion_and_settles_agent() {
+    async fn failed_local_dispatch_emits_completion_and_marks_agent_error() {
         let (runtime, session_id, agent_id, observer_id, provider_run_id, dispatch) =
             runtime_with_admitted_prompt().await;
 
@@ -1484,10 +1484,8 @@ mod tests {
             .iter()
             .find(|agent| agent.id() == agent_id)
             .expect("agent should remain in session");
-        assert!(
-            !agent.is_processing(),
-            "failed dispatch must leave the agent idle"
-        );
+        assert!(!agent.is_processing());
+        assert_eq!(agent.state(), crate::agent::AgentState::Error);
 
         let provider_errors = runtime
             .owned

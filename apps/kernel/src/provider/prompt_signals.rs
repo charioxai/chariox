@@ -32,6 +32,15 @@ pub struct ProviderPromptSignalBatch {
     pub resolved_resume_state: Option<ProviderResumeState>,
 }
 
+pub(crate) fn provider_retry_status(provider: &str, detail: Option<&str>) -> String {
+    let detail = detail
+        .map(str::trim)
+        .filter(|detail| !detail.is_empty())
+        .map(|detail| format!(" ({detail})"))
+        .unwrap_or_default();
+    format!("{provider} connection interrupted — retrying{detail}.")
+}
+
 pub(crate) fn classify_provider_terminal_failure_text(
     adapter_key: &str,
     text: &str,
@@ -208,7 +217,20 @@ mod tests {
     use super::{
         classify_provider_substitutable_failure_text,
         classify_provider_terminal_failure_output_text, classify_provider_terminal_failure_text,
+        provider_retry_status,
     };
+
+    #[test]
+    fn retry_status_uses_one_provider_neutral_message_shape() {
+        assert_eq!(
+            provider_retry_status("Codex", Some("2/5")),
+            "Codex connection interrupted — retrying (2/5)."
+        );
+        assert_eq!(
+            provider_retry_status("OpenCode", None),
+            "OpenCode connection interrupted — retrying."
+        );
+    }
 
     #[test]
     fn classifier_detects_provider_model_rejection_text() {
