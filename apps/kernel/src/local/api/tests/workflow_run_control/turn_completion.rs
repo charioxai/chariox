@@ -164,6 +164,8 @@ fn local_request_api_acks_workflow_turn_and_cleans_up_transient_inputs_after_val
     assert_eq!(active_prompt.prompt(), "kick off the ack flow");
     assert!(active_mechanics.contains("<node-instruction-reference>"));
     assert!(active_mechanics.contains("`ack_workflow_turn`"));
+    assert!(active_mechanics.contains("MUST parse as strict JSON"));
+    assert!(active_mechanics.contains("Never put literal line breaks inside a JSON string"));
     assert!(!active_mechanics.contains("Control mailbox (daemon-managed):"));
     assert!(active_mechanics.contains("UPSTREAM_PRIVATE_INSTRUCTION_TOKEN"));
     assert!(!active_prompt

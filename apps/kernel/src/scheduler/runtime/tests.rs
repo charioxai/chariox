@@ -807,6 +807,7 @@ fn workflow_instruction_reference_is_written_under_kernel_state_root() {
     let prompt_template_contents =
         fs::read_to_string(&expected_prompt_template).expect("template should read");
     assert!(prompt_template_contents.contains("ack_workflow_turn"));
+    assert!(prompt_template_contents.contains("MUST parse as strict JSON"));
     assert!(prompt_template_contents.contains("Do not ask the user which workflow runtime tool"));
     assert!(
         prompt.contains("If you do not remember them exactly, read that file before continuing.")

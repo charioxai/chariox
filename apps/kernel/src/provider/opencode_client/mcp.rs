@@ -51,7 +51,14 @@ impl OpenCodeClient {
         let deadline = Instant::now() + timeout;
 
         loop {
-            let statuses: serde_json::Value = self.send_json_request("GET", "/mcp", None)?;
+            let statuses: serde_json::Value = match self.send_json_request("GET", "/mcp", None) {
+                Ok(statuses) => statuses,
+                Err(_) if Instant::now() < deadline => {
+                    std::thread::sleep(retry_interval);
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
             let status = statuses
                 .get(name)
                 .and_then(|entry| entry.get("status"))
