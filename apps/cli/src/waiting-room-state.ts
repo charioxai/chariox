@@ -39,6 +39,7 @@ import {
 } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 import {
+  managedProviderAccountIsTransferable,
   normalizeWaitingRoomManagedDraft,
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
@@ -72,6 +73,7 @@ export function createWaitingRoomState(
       managedDevelopmentMode: "empty",
       managedRepositoryIndex: 0,
       managedProviderAccountSource: "none",
+      managedProviderAccountIndex: 0,
       managedGitCredentialSource: "none",
       managedAutoStopPreset: "idle_15m",
       managedCustomMinimumRuntimeSeconds: 0,
@@ -200,9 +202,16 @@ export function normalizeWaitingRoomState(
   }, remote)
   const selectedRepositoryTargetExists = normalized.managedDevelopmentMode === "current_project"
     && waitingRoomProjectRepositoryOptions(normalized, remote).length > 1
-  return normalized.focus === "managed-repositories" && !selectedRepositoryTargetExists
-    ? { ...normalized, focus: "managed-development" }
-    : normalized
+  if (normalized.focus === "managed-repositories" && !selectedRepositoryTargetExists) {
+    return { ...normalized, focus: "managed-development" }
+  }
+  if (normalized.focus === "managed-provider-account") {
+    const focusedProviderAccount = remote.providerAccounts?.[normalized.managedProviderAccountIndex ?? 0]
+    if (!focusedProviderAccount || !managedProviderAccountIsTransferable(focusedProviderAccount)) {
+      return { ...normalized, focus: "managed-provider-accounts" }
+    }
+  }
+  return normalized
 }
 
 export function waitingRoomExecutionMode(

@@ -55,6 +55,7 @@ export function waitingRoomRows(
     "Provider accounts source".length,
     "Git credentials source".length,
     "Selected repositories".length,
+    ...(remote.providerAccounts ?? []).map((profile) => profile.label.length),
     ...projects.map((project) => project.name.length),
   )
   const rows: WaitingRoomRow[] = waitingRoomStartRows(state, choice, {

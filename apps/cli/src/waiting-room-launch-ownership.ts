@@ -35,6 +35,7 @@ function waitingRoomLaunchIntentSignature(state: WaitingRoomState): string {
     state.managedDevelopmentMode,
     state.managedRepositorySelection,
     state.managedProviderAccountSource,
+    state.managedProviderAccountSelection,
     state.managedGitCredentialSource,
     state.managedAutoStopPreset,
     state.managedCustomMinimumRuntimeSeconds,

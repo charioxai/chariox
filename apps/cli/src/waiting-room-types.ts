@@ -19,6 +19,7 @@ export type WaitingRoomFocus =
   | "managed-development"
   | "managed-repositories"
   | "managed-provider-accounts"
+  | "managed-provider-account"
   | "managed-git-credentials"
   | "managed-auto-stop"
   | "managed-custom-minimum"
@@ -62,6 +63,11 @@ export type WaitingRoomManagedRepositorySelection = {
   supportingWorkspaceIds: string[]
 }
 
+export type WaitingRoomManagedProviderAccountSelection = {
+  provider: string
+  accountProfile: string
+}
+
 export type WaitingRoomState = {
   focus: WaitingRoomFocus
   sessionIndex: number
@@ -83,6 +89,8 @@ export type WaitingRoomState = {
   managedRepositorySelection?: WaitingRoomManagedRepositorySelection
   managedRepositoryIndex?: number
   managedProviderAccountSource?: "none" | "selected_account"
+  managedProviderAccountSelection?: WaitingRoomManagedProviderAccountSelection[]
+  managedProviderAccountIndex?: number
   managedGitCredentialSource?: "none" | "selected"
   managedAutoStopPreset?: "agents_done" | "idle_15m" | "idle_30m" | "minimum_3h" | "manual" | "custom"
   managedCustomMinimumRuntimeSeconds?: number

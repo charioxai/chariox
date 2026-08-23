@@ -34,6 +34,7 @@ import {
   cycleManagedProviderAccounts,
   cycleManagedRegion,
   toggleManagedRepositorySelection,
+  toggleManagedProviderAccountSelection,
 } from "./waiting-room-managed-environments.js"
 import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
@@ -139,7 +140,10 @@ export function cycleWaitingRoomFocusedValue(
     return context.normalizeState(toggleManagedRepositorySelection(state, remote))
   }
   if (state.focus === "managed-provider-accounts") {
-    return context.normalizeState(cycleManagedProviderAccounts(state))
+    return context.normalizeState(cycleManagedProviderAccounts(state, remote))
+  }
+  if (state.focus === "managed-provider-account") {
+    return context.normalizeState(toggleManagedProviderAccountSelection(state, remote))
   }
   if (state.focus === "managed-git-credentials") {
     return context.normalizeState(cycleManagedGitCredentials(state))

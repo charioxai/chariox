@@ -6,8 +6,12 @@ import type {
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { projectSelectionFromId } from "./waiting-room-projects.js"
-import { providerAccountFamily, selectedProviderAccount } from "./waiting-room-provider-accounts.js"
-import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
+import type {
+  WaitingRoomManagedProviderAccountSelection,
+  WaitingRoomRemoteState,
+  WaitingRoomState,
+} from "./waiting-room-types.js"
 export {
   NEW_MANAGED_MACHINE_REF,
   managedEnvironmentIdFromMachineRef,
@@ -59,6 +63,7 @@ export function normalizeWaitingRoomManagedDraft(
   const sources = remote.managedContextSources ?? []
   const selectedSource = state.managedContextSourceTargetId
     ?? preferredManagedContextSource(sources, remote)?.sourceTargetId
+  const providerAccounts = remote.providerAccounts ?? []
   const repositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
   const primaryWorkspaceId = repositoryOptions[0]?.workspaceId
   const project = selectedManagedProject(state, remote)
@@ -87,6 +92,9 @@ export function normalizeWaitingRoomManagedDraft(
       ? 0
       : modulo(state.managedRepositoryIndex ?? 0, supportingWorkspaceIds.length),
     managedProviderAccountSource: state.managedProviderAccountSource ?? "none",
+    managedProviderAccountIndex: providerAccounts.length === 0
+      ? 0
+      : modulo(state.managedProviderAccountIndex ?? 0, providerAccounts.length),
     managedGitCredentialSource: state.managedGitCredentialSource ?? "none",
     managedAutoStopPreset: state.managedAutoStopPreset ?? "idle_15m",
     managedCustomMinimumRuntimeSeconds: state.managedCustomMinimumRuntimeSeconds ?? 0,
@@ -194,13 +202,99 @@ export function toggleManagedRepositorySelection(
   }
 }
 
-export function cycleManagedProviderAccounts(state: WaitingRoomState): WaitingRoomState {
+export function cycleManagedProviderAccounts(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomState {
+  if (state.managedProviderAccountSource === "selected_account") {
+    return {
+      ...state,
+      managedProviderAccountSource: "none",
+      managedProviderAccountSelection: [],
+    }
+  }
+  const fallback = selectedProviderAccount(
+    remote.providerAccounts,
+    state.providerId,
+    state.accountProfileId,
+  )
   return {
     ...state,
-    managedProviderAccountSource: state.managedProviderAccountSource === "none"
+    managedProviderAccountSource: "selected_account",
+    managedProviderAccountSelection: fallback && managedProviderAccountIsTransferable(fallback)
+      ? [{
+          provider: fallback.provider,
+          accountProfile: fallback.profile_id,
+        }]
+      : [],
+  }
+}
+
+export function toggleManagedProviderAccountSelection(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomState {
+  const normalized = normalizeWaitingRoomManagedDraft(state, remote)
+  const option = remote.providerAccounts?.[normalized.managedProviderAccountIndex ?? 0]
+  if (!option) return normalized
+  const selected = new Map(managedProviderAccountSelections(normalized, remote).map((account) => (
+    [managedProviderAccountSelectionKey(account), account]
+  )))
+  const key = managedProviderAccountSelectionKey({
+    provider: option.provider,
+    accountProfile: option.profile_id,
+  })
+  if (selected.has(key)) selected.delete(key)
+  else if (managedProviderAccountIsTransferable(option)) {
+    selected.set(key, {
+      provider: option.provider,
+      accountProfile: option.profile_id,
+    })
+  }
+  const managedProviderAccountSelection = [
+    ...(remote.providerAccounts ?? []).flatMap((profile) => {
+      const selection = selected.get(managedProviderAccountSelectionKey({
+        provider: profile.provider,
+        accountProfile: profile.profile_id,
+      }))
+      return selection ? [selection] : []
+    }),
+    ...[...selected.values()].filter((selection) => !(remote.providerAccounts ?? []).some((profile) => (
+      profile.provider === selection.provider && profile.profile_id === selection.accountProfile
+    ))),
+  ]
+  return {
+    ...normalized,
+    managedProviderAccountSource: managedProviderAccountSelection.length > 0
       ? "selected_account"
       : "none",
+    managedProviderAccountSelection,
   }
+}
+
+export function managedProviderAccountSelections(
+  state: Pick<WaitingRoomState,
+    | "managedProviderAccountSelection"
+    | "managedProviderAccountSource"
+    | "providerId"
+    | "accountProfileId"
+  >,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomManagedProviderAccountSelection[] {
+  if (state.managedProviderAccountSource !== "selected_account") return []
+  if (state.managedProviderAccountSelection !== undefined) {
+    return [...new Map(state.managedProviderAccountSelection.map((account) => (
+      [managedProviderAccountSelectionKey(account), account]
+    ))).values()]
+  }
+  const account = selectedProviderAccount(
+    remote.providerAccounts,
+    state.providerId,
+    state.accountProfileId,
+  )
+  return account && managedProviderAccountIsTransferable(account)
+    ? [{ provider: account.provider, accountProfile: account.profile_id }]
+    : []
 }
 
 export function cycleManagedGitCredentials(state: WaitingRoomState): WaitingRoomState {
@@ -321,12 +415,16 @@ export function managedEnvironmentDraftBlockReason(
     if (!remote.workspaceId) return "The connected source kernel returned no primary Workspace."
   }
   if ((state.managedProviderAccountSource ?? "none") === "selected_account") {
-    const account = selectedProviderAccount(
-      remote.providerAccounts,
-      state.providerId,
-      state.accountProfileId,
-    )
-    if (!account) return "Choose an available provider account before transferring it."
+    const accounts = managedProviderAccountSelections(state, remote)
+    if (accounts.length === 0) return "Choose at least one available provider account before transferring it."
+    if (accounts.length > 16) return "Choose no more than 16 provider accounts."
+    if (accounts.some((account) => !(remote.providerAccounts ?? []).some((profile) => (
+      profile.provider === account.provider
+      && profile.profile_id === account.accountProfile
+      && managedProviderAccountIsTransferable(profile)
+    )))) {
+      return "One or more selected provider accounts are unavailable or not authenticated."
+    }
   }
   if ((state.managedGitCredentialSource ?? "none") === "selected"
     && !remote.gitCredentials?.some((credential) => credential.credentialId === "github")) {
@@ -356,10 +454,7 @@ export function managedEnvironmentContextPlanInput(
     providerAccounts: state.managedProviderAccountSource === "selected_account"
       ? {
           kind: "selected",
-          accounts: [{
-            provider: providerAccountFamily(state.providerId),
-            accountProfile: state.accountProfileId ?? "",
-          }],
+          accounts: managedProviderAccountSelections(state, remote),
         }
       : { kind: "none" },
     gitCredentials: state.managedGitCredentialSource === "selected"
@@ -433,4 +528,16 @@ function selectedManagedProject(
 function modulo(value: number, size: number): number {
   if (size <= 0) return 0
   return ((value % size) + size) % size
+}
+
+function managedProviderAccountSelectionKey(
+  account: WaitingRoomManagedProviderAccountSelection,
+): string {
+  return `${account.provider}\u0000${account.accountProfile}`
+}
+
+export function managedProviderAccountIsTransferable(
+  profile: NonNullable<WaitingRoomRemoteState["providerAccounts"]>[number],
+): boolean {
+  return profile.auth_state === "authenticated"
 }

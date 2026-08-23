@@ -22,6 +22,8 @@ import {
   managedDurationLabel,
   managedEnvironmentIsLaunchReady,
   managedKernelContextLabel,
+  managedProviderAccountIsTransferable,
+  managedProviderAccountSelections,
   selectedManagedEnvironment,
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
@@ -54,10 +56,14 @@ export function waitingRoomStartRows(
     | "managedRepositorySelection"
     | "managedRepositoryIndex"
     | "managedProviderAccountSource"
+    | "managedProviderAccountSelection"
+    | "managedProviderAccountIndex"
     | "managedGitCredentialSource"
     | "managedAutoStopPreset"
     | "managedCustomMinimumRuntimeSeconds"
     | "managedCustomIdleDelaySeconds"
+    | "providerId"
+    | "accountProfileId"
   >,
   choice: WaitingRoomStartRowsChoice,
   options: {
@@ -103,6 +109,7 @@ export function waitingRoomStartRows(
   const selectedManagedRepositoryCount = managedRepositoryOptions.filter((option) => (
     option.primary || selectedSupportingRepositories.has(option.workspaceId)
   )).length
+  const managedProviderAccountSelectionsList = managedProviderAccountSelections(state, remote)
   const managedRepositoryRows: WaitingRoomRow[] = state.managedDevelopmentMode === "current_project"
     ? [
         {
@@ -150,10 +157,31 @@ export function waitingRoomStartRows(
         startRow(
           "managed-provider-accounts",
           "Provider accounts source",
-          state.managedProviderAccountSource === "none" ? "None" : "Selected account",
+          state.managedProviderAccountSource === "none"
+            ? "None"
+            : `${managedProviderAccountSelectionsList.length} selected`,
           state,
           options.titleWidth,
         ),
+        ...(remote.providerAccounts ?? []).map((profile, managedProviderAccountIndex): WaitingRoomRow => {
+          const transferable = managedProviderAccountIsTransferable(profile)
+          const included = managedProviderAccountSelectionsList.some((selection) => (
+            selection.provider === profile.provider && selection.accountProfile === profile.profile_id
+          ))
+          return {
+            id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
+            title: profile.label,
+            value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
+              ? transferable ? "Included" : `Included, ${profile.auth_state}`
+              : transferable ? "Excluded" : `Unavailable, ${profile.auth_state}`}`,
+            titleWidth: options.titleWidth,
+            indent: 2,
+            focused: state.focus === "managed-provider-account"
+              && (state.managedProviderAccountIndex ?? 0) === managedProviderAccountIndex,
+            selectable: transferable,
+            scrollbar: "",
+          }
+        }),
         startRow(
           "managed-git-credentials",
           "Git credentials source",
@@ -400,6 +428,13 @@ function compactUsage(profile: ProviderAccountProfile): string | null {
 
 function formatTitleCase(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1)
+}
+
+function formatManagedProviderAccountFamily(provider: string): string {
+  if (provider === "opencode") return "OpenCode"
+  if (provider === "codex") return "Codex"
+  if (provider === "claude") return "Claude"
+  return formatTitleCase(provider)
 }
 
 function formatBackendProviderLabel(providerId: BackendProviderId) {

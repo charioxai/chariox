@@ -11,6 +11,7 @@ import { waitingRoomTerminals } from "./waiting-room-terminal-rows.js"
 import type { WaitingRoomFocus, WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
 import {
+  managedProviderAccountIsTransferable,
   waitingRoomConfiguresNewManagedMachine,
   waitingRoomProjectRepositoryOptions,
 } from "./waiting-room-managed-environments.js"
@@ -25,6 +26,7 @@ export type WaitingRoomFocusTarget = {
   terminalIndex: number
   externalSessionIndex: number
   managedRepositoryIndex: number
+  managedProviderAccountIndex: number
 }
 
 export function moveWaitingRoomFocus(
@@ -44,6 +46,8 @@ export function moveWaitingRoomFocus(
       target.focus === state.focus
       && (target.focus !== "managed-repositories"
         || target.managedRepositoryIndex === (state.managedRepositoryIndex ?? 0))
+      && (target.focus !== "managed-provider-account"
+        || target.managedProviderAccountIndex === (state.managedProviderAccountIndex ?? 0))
       && (target.focus !== "session" || target.sessionIndex === state.sessionIndex)
       && (target.focus !== "project-entry" || target.projectIndex === (state.projectIndex ?? 0))
       && (target.focus !== "machine" || target.machineIndex === state.machineIndex)
@@ -74,6 +78,11 @@ export function moveWaitingRoomFocus(
       ? { managedRepositoryIndex: next.managedRepositoryIndex }
       : state.managedRepositoryIndex !== undefined
         ? { managedRepositoryIndex: state.managedRepositoryIndex }
+        : {}),
+    ...(next.focus === "managed-provider-account"
+      ? { managedProviderAccountIndex: next.managedProviderAccountIndex }
+      : state.managedProviderAccountIndex !== undefined
+        ? { managedProviderAccountIndex: state.managedProviderAccountIndex }
         : {}),
     ...(next.focus === "external-session"
       ? { externalSessionIndex: next.externalSessionIndex }
@@ -129,6 +138,15 @@ export function waitingRoomFocusTargets(
             managedRepositoryIndex,
           })),
           { focus: "managed-provider-accounts" as const, sessionIndex: 0 },
+          ...(remote.providerAccounts ?? []).flatMap((profile, managedProviderAccountIndex) => (
+            managedProviderAccountIsTransferable(profile)
+              ? [{
+                  focus: "managed-provider-account" as const,
+                  sessionIndex: 0,
+                  managedProviderAccountIndex,
+                }]
+              : []
+          )),
           { focus: "managed-git-credentials" as const, sessionIndex: 0 },
           { focus: "managed-auto-stop" as const, sessionIndex: 0 },
           ...(state?.managedAutoStopPreset === "custom"
@@ -207,6 +225,7 @@ export function waitingRoomFocusTargets(
     externalSessionIndex: 0,
     projectIndex: 0,
     managedRepositoryIndex: 0,
+    managedProviderAccountIndex: 0,
     ...target,
   }))
 }
