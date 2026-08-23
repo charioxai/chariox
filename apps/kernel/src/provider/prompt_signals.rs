@@ -3,6 +3,8 @@ use crate::terminal::TerminalOutputKind;
 use super::launch_contract::ProviderResumeState;
 use super::runtime_run::ProviderRunTokenUsage;
 
+pub(crate) const PROVIDER_CONNECTION_RETRY_MERGE_KEY: &str = "__provider_connection_retry__";
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderPromptChunk {
     pub kind: TerminalOutputKind,

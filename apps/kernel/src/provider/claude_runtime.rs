@@ -306,7 +306,7 @@ fn retry_stalled_claude_turn(
     state.turn_watchdog.record_restart(Instant::now());
     batch.chunks.push(crate::provider::ProviderPromptChunk {
         kind: TerminalOutputKind::ProviderStatus,
-        merge_key: Some("__provider_status__".to_string()),
+        merge_key: Some(crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY.to_string()),
         bytes: crate::provider::provider_retry_status("Claude", Some("runtime unresponsive"))
             .into_bytes(),
     });

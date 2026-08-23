@@ -13,7 +13,9 @@ use super::snapshot::{
     record_snapshot_message_metadata, render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
-use super::transcript::{format_session_status, render_session_error_transcript_update};
+use super::transcript::{
+    format_session_status, render_session_error_transcript_update, session_status_merge_key,
+};
 use super::{OpenCodeAssistantCompletion, OpenCodeOutputChunk, OpenCodeRuntimeState};
 use crate::provider::{OpenCodeClient, OpenCodeEvent, RuntimeProviderRun};
 
@@ -176,7 +178,7 @@ pub(in crate::provider) fn drain_opencode_events(
                         state.last_status_kind = Some(kind.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some("__provider_status__".to_string()),
+                            merge_key: Some(session_status_merge_key(&kind).to_string()),
                             bytes: format_session_status(&kind).into_bytes(),
                         });
                     }
@@ -285,7 +287,7 @@ pub(in crate::provider) fn drain_opencode_events(
                         state.last_status_kind = Some(snapshot.status.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some("__provider_status__".to_string()),
+                            merge_key: Some(session_status_merge_key(&snapshot.status).to_string()),
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
@@ -338,7 +340,7 @@ pub(in crate::provider) fn drain_opencode_events(
                     state.last_status_kind = Some(status.clone());
                     chunks.push(OpenCodeOutputChunk {
                         kind: TerminalOutputKind::ProviderStatus,
-                        merge_key: Some("__provider_status__".to_string()),
+                        merge_key: Some(session_status_merge_key(&status).to_string()),
                         bytes: format_session_status(&status).into_bytes(),
                     });
                 }
@@ -420,7 +422,7 @@ pub(in crate::provider) fn drain_opencode_events(
                         state.last_status_kind = Some(status.clone());
                         chunks.push(OpenCodeOutputChunk {
                             kind: TerminalOutputKind::ProviderStatus,
-                            merge_key: Some("__provider_status__".to_string()),
+                            merge_key: Some(session_status_merge_key(&status).to_string()),
                             bytes: format_session_status(&status).into_bytes(),
                         });
                     }

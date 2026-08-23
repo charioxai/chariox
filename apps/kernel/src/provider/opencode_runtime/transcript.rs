@@ -147,6 +147,14 @@ pub(super) fn format_session_status(kind: &str) -> String {
     }
 }
 
+pub(super) fn session_status_merge_key(kind: &str) -> &'static str {
+    if matches!(kind, "retry" | "reconnecting") {
+        crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY
+    } else {
+        "__provider_status__"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -157,5 +165,19 @@ mod tests {
                 "OpenCode connection interrupted — retrying."
             );
         }
+    }
+
+    #[test]
+    fn retry_and_reconnecting_statuses_use_the_structured_retry_key() {
+        for status in ["retry", "reconnecting"] {
+            assert_eq!(
+                super::session_status_merge_key(status),
+                crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY,
+            );
+        }
+        assert_eq!(
+            super::session_status_merge_key("busy"),
+            "__provider_status__"
+        );
     }
 }

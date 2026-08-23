@@ -336,7 +336,9 @@ pub(super) fn apply_notification_with_manifest(
                 turn_tracker.note_activity();
                 chunks.push(CodexOutputChunk {
                     kind: TerminalOutputKind::ProviderStatus,
-                    merge_key: Some("__provider_status__".to_string()),
+                    merge_key: Some(
+                        crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY.to_string(),
+                    ),
                     bytes: crate::provider::provider_retry_status(
                         "Codex",
                         Some(&format!("{attempt}/{limit}")),
