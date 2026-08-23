@@ -112,6 +112,7 @@ export function createCliAppProcessRuntimeComposition(
     closingStateController: deps.closingStateController,
     isAttached: deps.isAttached,
     sessionState: deps.sessionState,
+    workflowScreenActive: deps.workflowScreenActive,
     resizeSession: deps.resizeSession,
     setDaemonDisconnected: deps.setDaemonDisconnected,
     setStatusLine: deps.setStatusLine,

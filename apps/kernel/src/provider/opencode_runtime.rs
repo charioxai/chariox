@@ -33,7 +33,10 @@ mod tests {
         drain_opencode_events,
         parts::{handle_message_part_delta, handle_message_part_updated},
         snapshot::{collect_new_completed_assistant_messages, latest_assistant_usage_tokens},
-        snapshot::{opencode_messages_active_prompt_failure, render_snapshot_output_chunks},
+        snapshot::{
+            opencode_messages_active_prompt_failure, opencode_messages_have_empty_active_assistant,
+            render_snapshot_output_chunks,
+        },
         transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
@@ -570,6 +573,50 @@ mod tests {
             .expect("second drain should succeed");
         assert!(second.prompt_completed);
         assert!(state.active_user_message_id.is_none());
+    }
+
+    #[test]
+    fn detects_only_an_incomplete_empty_assistant_for_the_active_prompt() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        let empty_active = serde_json::from_value::<OpenCodeMessage>(json!({
+            "info": {
+                "id": "message-empty",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "parentID": "msg_user",
+                "time": {}
+            },
+            "parts": []
+        }))
+        .expect("empty assistant should deserialize");
+        let unrelated = serde_json::from_value::<OpenCodeMessage>(json!({
+            "info": {
+                "id": "message-other",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "parentID": "another-user",
+                "time": {}
+            },
+            "parts": []
+        }))
+        .expect("unrelated assistant should deserialize");
+
+        assert!(opencode_messages_have_empty_active_assistant(
+            &state,
+            &[empty_active],
+        ));
+        assert!(!opencode_messages_have_empty_active_assistant(
+            &state,
+            &[unrelated],
+        ));
+        assert!(state.active_prompt_has_elapsed(std::time::Duration::ZERO));
     }
 
     #[test]

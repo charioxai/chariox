@@ -48,6 +48,7 @@ import { createWaitingRoomIntroAnimationController } from "./waiting-room-intro-
 import { createWaitingRoomRefreshIntervalController } from "./waiting-room-refresh-interval-controller.js"
 import { createWorkingAnimationController } from "./working-animation-controller.js"
 import { workflowsWithDesignOp } from "./workflow-design-op-state.js"
+import { workflowRuntimeSignature } from "./workflow-runtime-signature.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -64,6 +65,7 @@ export type CliBackgroundRuntimeCompositionDeps = {
   }
   isAttached: AnyFn
   sessionState: AnyFn
+  workflowScreenActive: AnyFn
   resizeSession: AnyFn
   setDaemonDisconnected: AnyFn
   setStatusLine: AnyFn
@@ -322,7 +324,22 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     recoverProviderRun: deps.recoverProviderRun,
     refreshAgentPanes: deps.refreshAgentPanes,
   })
-  const applyKernelSessionSnapshot = kernelSessionSnapshotController.apply
+  const applyKernelSessionSnapshotWithWorkflowRefresh = async (
+    nextSession: RuntimeSession,
+    nextProviderRun: RuntimeProviderRun | null,
+  ) => {
+    const shouldTrackWorkflowOutline = deps.workflowScreenActive()
+    const previousSignature = shouldTrackWorkflowOutline
+      ? workflowRuntimeSignature(deps.sessionState())
+      : null
+    await kernelSessionSnapshotController.apply(nextSession, nextProviderRun)
+    if (
+      shouldTrackWorkflowOutline
+      && workflowRuntimeSignature(deps.sessionState()) !== previousSignature
+    ) {
+      deps.rebuildTranscript()
+    }
+  }
 
   const kernelResyncController = createKernelResyncController({
     getAttachment: deps.attachmentState,
@@ -381,12 +398,13 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
   const resyncAttachedKernelState = (reason: string) => kernelResyncController.resync(reason)
   const applyDeltaSessionState = (sessionId: string, apply: (session: RuntimeSession) => RuntimeSession) => {
     if (!deps.isAttached() || deps.sessionState().id !== sessionId) {
-      return
+      return false
     }
     const nextSession = apply(deps.sessionState())
     deps.applySessionState(nextSession)
     deps.clearLocalBusyStateForAuthoritativeIdle(nextSession)
     deps.updateSessionChrome()
+    return true
   }
   const applyAgentActivityChanged = (
     sessionId: string,
@@ -453,7 +471,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     sessionId: string,
     workflowRun: WorkflowRun,
   ) => {
-    applyDeltaSessionState(sessionId, (session) => {
+    const applied = applyDeltaSessionState(sessionId, (session) => {
       const existingRuns = session.workflow_runs ?? []
       const index = existingRuns.findIndex((run) => run.id === workflowRun.id)
       const workflowRuns = index === -1
@@ -464,12 +482,18 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
         workflow_runs: workflowRuns,
       }
     })
+    if (applied && deps.workflowScreenActive()) {
+      deps.rebuildTranscript()
+    }
   }
   const applyWorkflowDesignOp = (event: WorkflowDesignOpForwarded) => {
-    applyDeltaSessionState(event.session_id, (session) => ({
+    const applied = applyDeltaSessionState(event.session_id, (session) => ({
       ...session,
       workflows: workflowsWithDesignOp(session.workflows ?? [], event.op),
     }))
+    if (applied && deps.workflowScreenActive()) {
+      deps.rebuildTranscript()
+    }
   }
 
   const kernelSessionUnavailableController = createKernelSessionUnavailableController({
@@ -509,7 +533,7 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     applyRuntimeNotices: kernelEventController.applyRuntimeNotices,
     applyAssistantMessageCompleted: kernelEventController.applyAssistantMessageCompleted,
     refreshAssistantMessageHistory,
-    applyKernelSessionSnapshot,
+    applyKernelSessionSnapshot: applyKernelSessionSnapshotWithWorkflowRefresh,
     applyAgentActivityChanged,
     applyProviderRunChanged,
     applySessionMetadataChanged,
@@ -557,6 +581,8 @@ export function createCliBackgroundRuntimeComposition(deps: CliBackgroundRuntime
     isAttached: deps.isAttached,
     getAttachment: deps.attachmentState,
     getSession: deps.sessionState,
+    workflowScreenActive: deps.workflowScreenActive,
+    rebuildTranscript: deps.rebuildTranscript,
     getProviderRun: deps.providerRunState,
     setProviderRun: deps.setProviderRunState,
     updateSessionChrome: deps.updateSessionChrome,

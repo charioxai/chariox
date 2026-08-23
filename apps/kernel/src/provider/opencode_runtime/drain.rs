@@ -9,8 +9,8 @@ use super::permission::handle_permission_request;
 use super::snapshot::{
     collect_new_completed_assistant_messages, latest_assistant_usage_tokens,
     opencode_message_completes_active_prompt, opencode_messages_active_prompt_failure,
-    opencode_messages_complete_active_prompt, record_snapshot_message_metadata,
-    render_snapshot_output_chunks,
+    opencode_messages_complete_active_prompt, opencode_messages_have_empty_active_assistant,
+    record_snapshot_message_metadata, render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
 use super::transcript::{format_session_status, render_session_error_transcript_update};
@@ -21,6 +21,9 @@ const OPENCODE_EVENT_RESUBSCRIBE_TIMEOUT: std::time::Duration = std::time::Durat
 const OPENCODE_EVENT_RESUBSCRIBE_RETRY_INTERVAL: std::time::Duration =
     std::time::Duration::from_millis(100);
 const OPENCODE_EVENT_DRAIN_MAX_EVENTS: usize = 256;
+const OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE: std::time::Duration = std::time::Duration::from_secs(5);
+const OPENCODE_EMPTY_IDLE_ASSISTANT_FAILURE: &str =
+    "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.";
 
 pub(in crate::provider) fn drain_opencode_events(
     run: &RuntimeProviderRun,
@@ -341,7 +344,10 @@ pub(in crate::provider) fn drain_opencode_events(
                 }
             } else {
                 let mut completion_confirmed = state.active_terminal_assistant_message_id.is_some();
+                let mut empty_active_assistant = false;
                 if let Ok(messages) = client.messages(&state.session_id) {
+                    empty_active_assistant =
+                        opencode_messages_have_empty_active_assistant(state, &messages);
                     completion_confirmed |=
                         opencode_messages_complete_active_prompt(state, &messages);
                     if resolved_model.is_none() {
@@ -392,6 +398,22 @@ pub(in crate::provider) fn drain_opencode_events(
                         completion_confirmed |=
                             state.active_terminal_assistant_message_id.is_some();
                     }
+                }
+                if !prompt_completed
+                    && !completion_confirmed
+                    && empty_active_assistant
+                    && state.active_prompt_has_elapsed(OPENCODE_EMPTY_IDLE_ASSISTANT_GRACE)
+                {
+                    record_terminal_failure(
+                        state,
+                        OPENCODE_EMPTY_IDLE_ASSISTANT_FAILURE.to_string(),
+                        &mut chunks,
+                        &mut completions,
+                        &mut notices,
+                        &mut terminal_failure,
+                        &mut prompt_completed,
+                        drain_active_user_message_id.as_deref(),
+                    );
                 }
                 if !prompt_completed && completion_confirmed {
                     if state.last_status_kind.as_deref() != Some(status.as_str()) {

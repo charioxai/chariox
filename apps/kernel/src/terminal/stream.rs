@@ -17,6 +17,7 @@ mod store;
 #[cfg(test)]
 mod tests;
 
+use records::WorkflowRunUpdateRecord;
 pub use records::{
     AssistantMessageCompletionRecord, RuntimeNoticeRecord, TerminalInputRecord,
     TerminalOutputAppend, TerminalOutputExternalObservationMetadata, TerminalOutputKind,

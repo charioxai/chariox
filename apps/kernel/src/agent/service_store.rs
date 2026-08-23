@@ -92,6 +92,15 @@ impl AgentServiceStore {
         self.write().remove_workflow_runtime_agent(agent_id)
     }
 
+    pub(crate) fn destroy_workflow_runtime_agent(
+        &self,
+        agent_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write()
+            .destroy_workflow_runtime_agent(agent_id, sessions)
+    }
+
     pub fn create_default_agent(
         &self,
         session_id: &str,
@@ -118,6 +127,15 @@ impl AgentServiceStore {
         sessions: &mut SessionService,
     ) -> Result<AgentInstance, DaemonError> {
         self.write().focus_agent(session_id, agent_id, sessions)
+    }
+
+    pub(crate) fn repair_stale_session_focus(
+        &self,
+        session_id: &str,
+        sessions: &mut SessionService,
+    ) -> Result<bool, DaemonError> {
+        self.write()
+            .repair_stale_session_focus(session_id, sessions)
     }
 
     pub fn cycle_focus(

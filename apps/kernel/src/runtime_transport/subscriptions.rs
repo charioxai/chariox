@@ -96,6 +96,7 @@ pub(super) async fn run_subscription_loop(
                 notices,
                 completions,
                 workflow_design_events,
+                workflow_run_updates,
                 snapshot,
             } => {
                 if !records.is_empty()
@@ -171,9 +172,32 @@ pub(super) async fn run_subscription_loop(
                         break;
                     }
                 }
+                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
+                for workflow_run in workflow_run_updates {
+                    if !emit_kernel_event(
+                        &runtime,
+                        &outgoing_tx,
+                        &close_tx,
+                        &close_requested,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: subscription.session_id.clone(),
+                            workflow_run,
+                        },
+                        Some(&event_stream_id),
+                        Some(&subscription.session_id),
+                        Some(&subscription.attachment_id),
+                    )
+                    .await
+                    {
+                        break;
+                    }
+                }
                 if let Some(snapshot) = *snapshot {
                     let previous_snapshot_ref = previous_snapshot.as_ref();
-                    let mut emitted_projection_delta = false;
+                    // A terminal run update is the authoritative replacement for the
+                    // archived run. Treat it as a projection delta so the fallback full
+                    // hot-session snapshot cannot immediately erase it in the client.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
                     for event in [
                         agent_activity_changed_event(&snapshot, previous_snapshot_ref),
@@ -390,6 +414,7 @@ pub(crate) enum WatchResult {
         notices: Vec<RuntimeNoticeRecord>,
         completions: Vec<AssistantMessageCompletionRecord>,
         workflow_design_events: Vec<crate::local::WorkflowDesignOpForwarded>,
+        workflow_run_updates: Vec<crate::session::WorkflowRun>,
         snapshot: Box<Option<SessionSnapshotProjection>>,
     },
     Unavailable(String),
@@ -444,6 +469,9 @@ pub(crate) fn watch_subscription_state(
     let completions = app
         .terminal_mut()
         .drain_completion_records(session_id, attachment_id);
+    let workflow_run_updates = app
+        .terminal()
+        .drain_workflow_run_updates(session_id, attachment_id);
     let workflow_design_events = app.workflow_design_event_store().events_since(
         session_id,
         last_workflow_design_sequence,
@@ -485,6 +513,7 @@ pub(crate) fn watch_subscription_state(
         notices,
         completions,
         workflow_design_events,
+        workflow_run_updates,
         snapshot,
     }
 }

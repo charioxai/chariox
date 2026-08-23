@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::{Duration, Instant};
 
 use crate::terminal::TerminalOutputKind;
 
@@ -46,6 +47,7 @@ pub(crate) struct OpenCodeRuntimeState {
     pub(super) completed_assistant_message_ids: BTreeSet<String>,
     pub(super) active_terminal_assistant_message_id: Option<String>,
     pub(super) active_user_message_id: Option<String>,
+    active_prompt_submitted_at: Option<Instant>,
 }
 
 impl OpenCodeRuntimeState {
@@ -70,6 +72,7 @@ impl OpenCodeRuntimeState {
             completed_assistant_message_ids: BTreeSet::new(),
             active_terminal_assistant_message_id: None,
             active_user_message_id: None,
+            active_prompt_submitted_at: None,
         }
     }
 
@@ -88,6 +91,12 @@ impl OpenCodeRuntimeState {
     pub(in crate::provider) fn note_prompt_submitted(&mut self, user_message_id: String) {
         self.active_user_message_id = Some(user_message_id);
         self.active_terminal_assistant_message_id = None;
+        self.active_prompt_submitted_at = Some(Instant::now());
+    }
+
+    pub(super) fn active_prompt_has_elapsed(&self, duration: Duration) -> bool {
+        self.active_prompt_submitted_at
+            .is_some_and(|submitted_at| submitted_at.elapsed() >= duration)
     }
 
     pub(in crate::provider) fn baseline_existing_messages(&mut self, messages: &[OpenCodeMessage]) {
@@ -126,6 +135,7 @@ impl OpenCodeRuntimeState {
         self.completed_assistant_message_ids.clear();
         self.active_user_message_id = None;
         self.active_terminal_assistant_message_id = None;
+        self.active_prompt_submitted_at = None;
         self.last_status_kind = Some("idle".to_string());
     }
 

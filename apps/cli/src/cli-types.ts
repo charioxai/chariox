@@ -111,6 +111,7 @@ import type {
   WorkflowDefinition as KernelWorkflowDefinition,
   WorkflowEdgeDefinition as KernelWorkflowEdgeDefinition,
   WorkflowEndpointDefinition as KernelWorkflowEndpointDefinition,
+  WorkflowEndpointRuntimeInstance as KernelWorkflowEndpointRuntimeInstance,
   WorkflowFailureEvent as KernelWorkflowFailureEvent,
   WorkflowMessage as KernelWorkflowMessage,
   WorkflowNodeDefinition as KernelWorkflowNodeDefinition,
@@ -365,6 +366,8 @@ export type WorkflowDefinition = KernelWorkflowDefinition
 export type WorkflowSchemaDefinition = KernelWorkflowSchemaDefinition
 
 export type WorkflowEndpointDefinition = KernelWorkflowEndpointDefinition
+
+export type WorkflowEndpointRuntimeInstance = KernelWorkflowEndpointRuntimeInstance
 
 export type WorkflowScheduleTrigger = KernelWorkflowScheduleTrigger
 

@@ -23,6 +23,7 @@ import { validateAgentAppConfig } from "./publication-agent-app-schema.js"
 import {
   publicationCallerForRequest,
   publicationInvocationCaller,
+  publicationInvocationRequestId,
 } from "./publication-caller-claims.js"
 import {
   forwardHumanHttpResult,
@@ -116,13 +117,11 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
       reply.code(400).headers({ "content-type": "application/json" })
       return { error: parsed.error }
     }
+    const caller = publicationCallerForRequest(request)
     const invocation: NormalizedInvocation = {
       publication_id: publication.publication_id,
-      request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-      caller: publicationInvocationCaller(
-        publicationCallerForRequest(request),
-        { transport: "human_http_form" },
-      ),
+      request_id: publicationInvocationRequestId(caller),
+      caller: publicationInvocationCaller(caller, { transport: "human_http_form" }),
       input: parsed.input,
       mode: publication.mode ?? "sync",
     }
@@ -161,7 +160,7 @@ export const buildServer = (config?: WorkflowPublicationConfig, deps: GatewayDep
           const caller = publicationCallerForRequest(request)
           const invocation: NormalizedInvocation = {
             publication_id: publication.publication_id,
-            request_id: `req_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+            request_id: publicationInvocationRequestId(caller),
             caller: caller
               ? publicationInvocationCaller(caller, { transport: "human_http" })
               : { type: "anonymous" },

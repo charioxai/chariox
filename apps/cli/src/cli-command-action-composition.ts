@@ -250,6 +250,7 @@ export type CliCommandActionCompositionDeps = {
   createWorkflowEndpoint: AnyFn
   assignWorkflowEndpointAlias: AnyFn
   bindWorkflowEndpoint: AnyFn
+  setWorkflowEndpointMaxInstances: AnyFn
   removeWorkflowEndpoint: AnyFn
   addWorkflowNode: AnyFn
   removeWorkflowNode: AnyFn
@@ -364,6 +365,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
     removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,
@@ -851,6 +853,7 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     createWorkflowEndpoint,
     assignWorkflowEndpointAlias,
     bindWorkflowEndpoint,
+    setWorkflowEndpointMaxInstances,
     removeWorkflowEndpoint,
     addWorkflowNode,
     removeWorkflowNode,

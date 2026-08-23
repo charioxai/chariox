@@ -130,6 +130,20 @@ export function publicationInvocationCaller(
   }
 }
 
+export function mintPublicationRequestId(): string {
+  return `req_${Date.now()}_${Math.random().toString(16).slice(2)}`
+}
+
+// Verified Cloud callers carry a Cloud-minted invocation id that Cloud uses to
+// correlate the public request back to the owner kernel workflow run; reuse it
+// as the invocation request id so both sides share one identifier. Direct or
+// unclaimed callers keep a locally minted req_* id.
+export function publicationInvocationRequestId(
+  caller: VerifiedPublicationCallerClaims | null,
+): string {
+  return caller ? caller.invocationId : mintPublicationRequestId()
+}
+
 export function publicationCallerAuthorizationFailure(error: PublicationCallerClaimsError): {
   readonly statusCode: 401 | 403
   readonly body: {

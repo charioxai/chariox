@@ -1,18 +1,21 @@
-import type { AgentInstance, WorkflowDefinition, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowEndpointRuntimeInstance, WorkflowNodeDefinition, WorkflowRun } from "../cli-types.js"
 import type { WorkflowComponentSelection } from "../workflow-component-selection.js"
 import { collaboratorAgentLabel, workflowAgentRefDisplayLabel } from "../workflow-collaboration-labels.js"
+import { buildWorkflowEndpointPoolStatus } from "../workflow-endpoint-pool-projection.js"
 import type { WorkflowOutline, WorkflowOutlineEdgeItem, WorkflowOutlineNodeItem } from "./types.js"
 
 export function buildWorkflowOutline(options: {
   workflow: WorkflowDefinition
   agents: AgentInstance[]
   workflowRuns?: WorkflowRun[]
+  workflowRuntimeInstances?: WorkflowEndpointRuntimeInstance[]
   selectedNodeId: string | null
   selectedComponent?: WorkflowComponentSelection | null
 }): WorkflowOutline {
   const nodes = options.workflow.nodes ?? []
   const edges = options.workflow.edges ?? []
   const endpoints = options.workflow.endpoints ?? []
+  const runtimeInstances = options.workflowRuntimeInstances ?? []
   const agentById = new Map(options.agents.map((agent) => [agent.id, agent] as const))
   const nodeById = new Map(nodes.map((node) => [node.id, node] as const))
   const nodeOrder = new Map(nodes.map((node, index) => [node.id, index] as const))
@@ -69,11 +72,22 @@ export function buildWorkflowOutline(options: {
       entryEndpoints: endpoints
         .filter((endpoint) => endpoint.entry_node_id === node.id)
         .sort((left, right) => compareByMapIndex(left.id, right.id, endpointIndexById))
-        .map((endpoint) => ({
-          id: endpoint.id,
-          alias: endpoint.alias,
-          entryNodeId: endpoint.entry_node_id,
-        })),
+        .map((endpoint) => {
+          const pool = buildWorkflowEndpointPoolStatus(
+            options.workflow.id,
+            endpoint,
+            runtimeInstances,
+            options.workflowRuns ?? [],
+          )
+          return {
+            id: endpoint.id,
+            alias: endpoint.alias,
+            entryNodeId: endpoint.entry_node_id,
+            maxInstances: pool.capacity,
+            busyCount: pool.busyCount,
+            activeRunCount: pool.activeRunIds.length,
+          }
+        }),
       failureCount: failureCountByNodeId.get(node.id) ?? 0,
       recentFailures,
     }

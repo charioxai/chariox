@@ -858,6 +858,29 @@ impl DaemonApp {
     }
 
     fn reconcile_restored_runtime_state_after_restart(&self) -> Result<(), DaemonError> {
+        let session_ids = self
+            .sessions
+            .read()
+            .store()
+            .list()
+            .into_iter()
+            .map(|session| session.id().to_string())
+            .collect::<Vec<_>>();
+        let mut repaired_session_focus_count = 0usize;
+        for session_id in session_ids {
+            if self
+                .agents
+                .repair_stale_session_focus(&session_id, &mut self.sessions.write())?
+            {
+                repaired_session_focus_count += 1;
+                crate::logging::info_with_fields(
+                    "durable_state.restore",
+                    "repaired stale focused agent after kernel restart",
+                    serde_json::json!({ "session_id": session_id }),
+                );
+            }
+        }
+
         let sessions = self.sessions.read().store().list();
         let mut reconciled_runtime_state = false;
         for mut session in sessions {
@@ -887,7 +910,7 @@ impl DaemonApp {
                 }),
             );
         }
-        if reconciled_runtime_state {
+        if reconciled_runtime_state || repaired_session_focus_count > 0 {
             self.save_durable_state_snapshot()?;
         }
         let reconciled_slices = self.slices.reconcile_after_kernel_restart_with_host_state(

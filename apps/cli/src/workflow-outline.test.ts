@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { AgentInstance, WorkflowDefinition, WorkflowRun } from "./cli-types.js"
+import type { AgentInstance, WorkflowDefinition, WorkflowEndpointRuntimeInstance, WorkflowRun } from "./cli-types.js"
 import { buildWorkflowGraphDrillCases } from "./workflow-graph-drills.js"
 import { buildWorkflowOutline } from "./workflow-outline/build.js"
 import { renderWorkflowOutlineToText } from "./workflow-outline/text.js"
@@ -120,6 +120,48 @@ test("renderWorkflowOutlineToText keeps graph structure visible while expanding 
   assert.match(rendered, /status running/)
   assert.match(rendered, /instructions\n  inspect diff/)
 })
+
+test("workflow outline projects endpoint capacity and live pool status", () => {
+  const outline = buildWorkflowOutline({
+    workflow: { ...workflow(), endpoints: [{ id: "endpoint-a", alias: "start", entry_node_id: "node-a", max_instances: 2 }] },
+    agents: [agent("agent-a")],
+    workflowRuns: [workflowRun()],
+    workflowRuntimeInstances: [
+      endpointInstance("instance-1", "busy", "run-1"),
+      endpointInstance("instance-2", "idle", null),
+    ],
+    selectedNodeId: "node-a",
+  })
+
+  const endpointItem = outline.nodes[0]?.entryEndpoints[0]
+  assert.equal(endpointItem?.maxInstances, 2)
+  assert.equal(endpointItem?.busyCount, 1)
+  assert.equal(endpointItem?.activeRunCount, 1)
+
+  const rendered = renderWorkflowOutlineToText(outline)
+  assert.match(rendered, /endpoint-a \(start\) • pool 1\/2 busy • 1 active run/)
+})
+
+function endpointInstance(
+  id: string,
+  status: "idle" | "busy" | "stale",
+  activeRunId: string | null,
+): WorkflowEndpointRuntimeInstance {
+  return {
+    id,
+    workflow_id: "flow-1",
+    endpoint_id: "endpoint-a",
+    workflow_revision: 1,
+    ordinal: 1,
+    primary: true,
+    node_agent_ids: {},
+    worktree_id: "worktree-1",
+    status,
+    active_run_id: activeRunId,
+    created_at_ms: 1,
+    updated_at_ms: 1,
+  }
+}
 
 test("workflow outline redacts collaborator-owned agent ids", () => {
   const outline = buildWorkflowOutline({

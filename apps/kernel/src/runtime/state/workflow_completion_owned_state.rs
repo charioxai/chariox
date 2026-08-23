@@ -17,9 +17,26 @@ impl KernelRuntimeOwnedState {
                 let session = self.session_snapshot(session_id)?;
                 self.durable_state_store
                     .persist_workflow_runtime_transition(&session, reason)?;
-                self.session_store
+                let archived = self
+                    .session_store
                     .write()
                     .archive_terminal_workflow_runs(session_id)?;
+                if !archived.is_empty() {
+                    // Terminal runs leave the hot snapshot after this point, so push
+                    // one authoritative update per run before the projection change
+                    // wakes subscribers; otherwise diffing never observes the
+                    // terminal status.
+                    let recipient_attachment_ids = self
+                        .attachment_store
+                        .list_session_attachment_ids(session_id);
+                    for workflow_run in archived {
+                        self.terminal_stream.record_workflow_run_update(
+                            session_id,
+                            recipient_attachment_ids.clone(),
+                            workflow_run,
+                        );
+                    }
+                }
                 if let Ok(hot_session) = self.session_store.read().get_session(session_id) {
                     self.session_projection.update(hot_session);
                 }

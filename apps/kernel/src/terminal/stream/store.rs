@@ -474,6 +474,30 @@ impl TerminalStreamStore {
             .drain_completion_records(session_id, attachment_id)
     }
 
+    pub fn record_workflow_run_update(
+        &self,
+        session_id: &str,
+        recipient_attachment_ids: Vec<String>,
+        workflow_run: crate::session::WorkflowRun,
+    ) {
+        self.shard(session_id)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_workflow_run_update(session_id, recipient_attachment_ids.clone(), workflow_run);
+        self.record_change_for_attachment_ids(session_id, &recipient_attachment_ids);
+    }
+
+    pub fn drain_workflow_run_updates(
+        &self,
+        session_id: &str,
+        attachment_id: &str,
+    ) -> Vec<crate::session::WorkflowRun> {
+        self.shard(session_id)
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .drain_workflow_run_updates(session_id, attachment_id)
+    }
+
     pub fn drain_notice_records(
         &self,
         session_id: &str,

@@ -4,6 +4,17 @@ use tokio::sync::Mutex;
 
 #[test]
 fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
+    // The admission race is timing dependent, so repeat the scenario several
+    // times within a single test run. The pre-fix behavior misattributes the
+    // Started outcome (reporting 0 Started / 32 Enqueued) on a large fraction of
+    // iterations, so repetition makes a regression fail deterministically here.
+    const SCENARIO_REPEATS: usize = 24;
+    for iteration in 0..SCENARIO_REPEATS {
+        run_single_run_admission_scenario(iteration);
+    }
+}
+
+fn run_single_run_admission_scenario(iteration: usize) {
     const INVOCATION_COUNT: usize = 32;
 
     let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
@@ -17,7 +28,7 @@ fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
         let endpoint_id = endpoint_id.clone();
         handles.push(
             std::thread::Builder::new()
-                .name(format!("owned-workflow-launch-{index}"))
+                .name(format!("owned-workflow-launch-{iteration}-{index}"))
                 .stack_size(8 * 1024 * 1024)
                 .spawn(move || {
                     barrier.wait();
@@ -46,7 +57,10 @@ fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
         .iter()
         .filter_map(|outcome| outcome.as_ref().err().map(ToString::to_string))
         .collect::<Vec<_>>();
-    assert!(errors.is_empty(), "concurrent invokes failed: {errors:?}");
+    assert!(
+        errors.is_empty(),
+        "iteration {iteration}: concurrent invokes failed: {errors:?}"
+    );
     let started = outcomes
         .iter()
         .filter(|outcome| {
@@ -71,9 +85,6 @@ fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
             )
         })
         .count();
-    assert_eq!(started, 1, "exactly one concurrent invoke should start");
-    assert_eq!(enqueued, INVOCATION_COUNT - 1);
-
     let session = runtime
         .owned
         .session_store
@@ -91,11 +102,81 @@ fn concurrent_owned_workflow_launches_preserve_single_run_admission() {
             )
         })
         .count();
-    assert_eq!(active_runs, 1, "concurrent admission created extra runs");
+    assert_eq!(
+        started, 1,
+        "iteration {iteration}: exactly one concurrent invoke should report Started \
+         (started={started}, enqueued={enqueued}, active_runs={active_runs})"
+    );
+    assert_eq!(
+        enqueued,
+        INVOCATION_COUNT - 1,
+        "iteration {iteration}: the losing invocations should report Enqueued"
+    );
+    assert_eq!(
+        active_runs, 1,
+        "iteration {iteration}: concurrent admission created extra runs"
+    );
     assert_eq!(
         session.workflow_queued_prompts().len(),
-        INVOCATION_COUNT - 1
+        INVOCATION_COUNT - 1,
+        "iteration {iteration}: exactly one prompt should be admitted"
     );
+}
+
+#[test]
+fn owned_launch_reports_started_when_prompt_admitted_by_concurrent_dispatch() {
+    // Deterministically model the losing invocation: its prompt is enqueued and
+    // then admitted into the single primary run by a *different* invocation's
+    // dispatch loop before it runs its own. The owning invocation must still be
+    // able to recover the Started attribution for its prompt instead of a
+    // spurious Enqueued.
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let queued = runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("owning invocation".to_string()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("prompt should enqueue");
+
+    // A concurrent invocation's dispatch loop admits the oldest queued prompt.
+    let (claimed_outcome, _dispatches) = runtime
+        .owned
+        .workflow_start_next_queued_prompt_for_response(&session_id)
+        .expect("dispatch should succeed")
+        .expect("the idle primary instance should admit exactly one run");
+    let started_run = match claimed_outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
+            workflow_run
+        }
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. } => {
+            panic!("the admitted prompt should start")
+        }
+    };
+    assert_eq!(started_run.queue_item_id(), Some(queued.id()));
+
+    // The owning invocation recovers its Started run rather than mis-reporting.
+    let recovered = runtime
+        .owned
+        .workflow_started_run_for_queued_prompt(&session_id, queued.id())
+        .expect("started-run lookup should succeed")
+        .expect("the owning invocation must observe its admitted run");
+    assert_eq!(recovered.id(), started_run.id());
+    assert_eq!(recovered.queue_item_id(), Some(queued.id()));
+
+    // A prompt that was never admitted has no Started run.
+    assert!(runtime
+        .owned
+        .workflow_started_run_for_queued_prompt(&session_id, "workflow-queued-prompt-missing")
+        .expect("started-run lookup should succeed")
+        .is_none());
 }
 
 #[test]
@@ -325,6 +406,72 @@ fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
         .owned
         .workflow_prompt_requires_fresh_provider_context(&session_id, agent_id, &queued_prompt)
         .expect("freshness check should succeed"));
+}
+
+#[test]
+fn runtime_cleanup_removes_unreferenced_hidden_agents_and_worktrees() {
+    let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
+        runtime_with_idle_workflow();
+    let source = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.visible_in_freeform())
+        .expect("visible source agent should exist");
+    let initial_focus = runtime
+        .owned
+        .session_store
+        .read()
+        .get_session(&session_id)
+        .expect("session should exist")
+        .focused_agent_id()
+        .map(str::to_string);
+    let orphan_worktree = runtime
+        .owned
+        .config_projection
+        .snapshot()
+        .workflow_runtime_artifact_root()
+        .join("instances")
+        .join(&session_id)
+        .join("unreferenced-instance");
+    std::fs::create_dir_all(&orphan_worktree).expect("orphan worktree fixture should be created");
+    let orphan = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(
+            source.clone(),
+            &session_id,
+            &orphan_worktree.to_string_lossy(),
+        );
+    assert!(!orphan.visible_in_freeform());
+    assert!(runtime
+        .owned
+        .session_store
+        .read()
+        .get_session(&session_id)
+        .expect("session should exist")
+        .workflow_runtime_instances()
+        .iter()
+        .all(|instance| instance.worktree_id() != orphan_worktree.to_string_lossy()));
+
+    runtime
+        .owned
+        .workflow_cleanup_runtime_instances_exclusive(&session_id)
+        .expect("orphan cleanup should succeed");
+
+    assert!(runtime.owned.agent_store.get_agent(orphan.id()).is_err());
+    assert!(!orphan_worktree.exists());
+    assert_eq!(
+        runtime
+            .owned
+            .session_store
+            .read()
+            .get_session(&session_id)
+            .expect("session should remain")
+            .focused_agent_id(),
+        initial_focus.as_deref()
+    );
 }
 
 struct TestRoot(std::path::PathBuf);

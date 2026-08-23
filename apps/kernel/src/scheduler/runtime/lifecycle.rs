@@ -10,8 +10,24 @@ fn persist_workflow_session_state(
         let session =
             crate::app::KernelSessionReadService::new(app).session_snapshot(session_id)?;
         durable_state.persist_workflow_runtime_transition(&session, reason)?;
-        app.sessions_mut()
+        let archived = app
+            .sessions_mut()
             .archive_terminal_workflow_runs(session_id)?;
+        if !archived.is_empty() {
+            // Terminal runs leave the hot snapshot after this point, so push
+            // one authoritative update per run before the projection change
+            // wakes subscribers; otherwise diffing never observes the
+            // terminal status.
+            let recipient_attachment_ids =
+                app.attachments().list_session_attachment_ids(session_id);
+            for workflow_run in archived {
+                app.terminal().record_workflow_run_update(
+                    session_id,
+                    recipient_attachment_ids.clone(),
+                    workflow_run,
+                );
+            }
+        }
         if let Ok(hot_session) = app.sessions().get_session(session_id) {
             app.update_session_projection(hot_session);
         }

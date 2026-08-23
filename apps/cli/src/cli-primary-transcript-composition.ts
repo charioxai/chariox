@@ -130,6 +130,7 @@ export function createCliPrimaryTranscriptComposition(deps: CliPrimaryTranscript
       workflows: deps.sessionState().workflows ?? [],
       agents: deps.sessionState().agents,
       workflowRuns: deps.sessionState().workflow_runs ?? [],
+      workflowRuntimeInstances: deps.sessionState().workflow_runtime_instances ?? [],
       selectedWorkflowId: deps.selectedWorkflowId(),
       selectedNodeId: deps.selectedWorkflowNodeId(),
       selectedComponent: deps.selectedWorkflowComponent(),

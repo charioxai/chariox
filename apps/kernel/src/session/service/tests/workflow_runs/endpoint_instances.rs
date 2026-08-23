@@ -189,6 +189,196 @@ fn saturated_endpoint_does_not_block_an_unrelated_endpoint() {
         .any(|item| item.id() == blocked.id()));
 }
 
+fn register_clone_instance(
+    service: &mut SessionService,
+    session_id: &str,
+    workflow: &crate::session::WorkflowDefinition,
+    endpoint: &crate::session::WorkflowEndpointDefinition,
+    instance_id: &str,
+    worktree_path: &str,
+) {
+    let node_agent_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<BTreeMap<_, _>>();
+    service
+        .register_workflow_runtime_instance(
+            session_id,
+            crate::session::WorkflowEndpointRuntimeInstance::new(
+                instance_id,
+                workflow.id(),
+                endpoint.id(),
+                workflow.revision(),
+                2,
+                false,
+                node_agent_ids,
+                worktree_path,
+            ),
+        )
+        .expect("clone instance should register");
+}
+
+fn plain_temp_directory(label: &str) -> std::path::PathBuf {
+    let directory = std::env::temp_dir().join(format!(
+        "chariox-{label}-{}-{}",
+        std::process::id(),
+        crate::session::unix_epoch_ms()
+    ));
+    std::fs::create_dir_all(&directory).expect("temporary directory should exist");
+    directory
+}
+
+#[test]
+fn missing_clone_worktree_never_dispatches_as_healthy_idle_and_sweeps_clean() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    {
+        let session = service
+            .store
+            .get_mut(session.id())
+            .expect("session should exist");
+        let workflow_mut = session
+            .workflow_mut(workflow.id())
+            .expect("workflow should exist");
+        workflow_mut
+            .endpoint_mut(endpoint.id())
+            .expect("endpoint should exist")
+            .set_max_instances(2);
+    }
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    let endpoint = workflow.endpoint(endpoint.id()).expect("endpoint").clone();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    let clone_worktree = plain_temp_directory("clone-worktree");
+    register_clone_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-clone",
+        &clone_worktree.display().to_string(),
+    );
+
+    // A live direct clone stays healthy idle and needs no cleanup.
+    let status_of = |service: &SessionService, instance_id: &str| {
+        service
+            .get_session(session.id())
+            .expect("session should exist")
+            .workflow_runtime_instance(instance_id)
+            .expect("instance should exist")
+            .status()
+    };
+    assert_eq!(
+        status_of(&service, "instance-clone"),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+    assert_eq!(
+        service
+            .cleanup_ready_workflow_runtime_instances(session.id())
+            .expect("cleanup should succeed")
+            .len(),
+        0
+    );
+
+    // Once the clone directory vanishes, the instance must go stale and be
+    // returned by the cleanup sweep instead of dispatching as healthy idle.
+    std::fs::remove_dir(&clone_worktree).expect("clone directory should be removable");
+    let ready = service
+        .cleanup_ready_workflow_runtime_instances(session.id())
+        .expect("cleanup should succeed");
+    assert_eq!(
+        ready
+            .iter()
+            .map(|instance| instance.id())
+            .collect::<Vec<_>>(),
+        vec!["instance-clone"]
+    );
+    assert_eq!(
+        status_of(&service, "instance-clone"),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Stale
+    );
+    assert_eq!(
+        status_of(&service, "instance-primary"),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+    std::fs::remove_dir(&clone_worktree).ok();
+
+    // Dispatch provisioning must plan a fresh clone rather than reuse the ghost.
+    // Occupy the primary first so the queued prompt needs a second instance.
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "occupy primary",
+    );
+    service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("queue should advance")
+        .expect("primary should start");
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "after ghost",
+    );
+    let candidate = service
+        .workflow_runtime_instance_provision_candidate(session.id())
+        .expect("candidate lookup should succeed")
+        .expect("a replacement clone should be provisionable");
+    assert!(!candidate.primary);
+}
+
+#[test]
+fn primary_session_worktree_is_never_treated_as_a_disposable_clone() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-1",
+    );
+
+    let ready = service
+        .cleanup_ready_workflow_runtime_instances(session.id())
+        .expect("cleanup should succeed");
+    assert_eq!(ready.len(), 0);
+    let restored = service
+        .get_session(session.id())
+        .expect("session should exist");
+    let instance = restored
+        .workflow_runtime_instance("instance-1")
+        .expect("primary instance should remain");
+    assert_eq!(
+        instance.status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+}
+
 #[test]
 fn provision_candidate_respects_endpoint_cap_and_ordinal() {
     let mut service = SessionService::new(&test_config());
@@ -361,6 +551,85 @@ fn runtime_instance_and_attribution_reconcile_after_session_restart() {
         restored
             .workflow_runtime_instance("instance-1")
             .expect("instance should remain reusable")
+            .status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+}
+
+#[test]
+fn restored_hot_state_sweeps_missing_clone_worktrees_after_restart() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    let clone_worktree = plain_temp_directory("restart-clone-worktree");
+    register_clone_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-clone",
+        &clone_worktree.display().to_string(),
+    );
+
+    let encoded = serde_json::to_value(
+        service
+            .get_session(session.id())
+            .expect("session should exist"),
+    )
+    .expect("session should serialize");
+    std::fs::remove_dir(&clone_worktree).expect("clone directory should be removable");
+    let restored: crate::session::RuntimeSession =
+        serde_json::from_value(encoded).expect("session should restore");
+
+    assert_eq!(
+        restored
+            .workflow_runtime_instance("instance-clone")
+            .expect("clone instance should survive restart")
+            .status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+    let restored_session_id = restored.id().to_string();
+    let mut restarted_service = SessionService::new(&test_config());
+    restarted_service.restore_session(restored);
+    let ready = restarted_service
+        .cleanup_ready_workflow_runtime_instances(&restored_session_id)
+        .expect("restored cleanup should succeed");
+    assert_eq!(
+        ready
+            .iter()
+            .map(|instance| instance.id())
+            .collect::<Vec<_>>(),
+        vec!["instance-clone"]
+    );
+    assert_eq!(
+        restarted_service
+            .get_session(&restored_session_id)
+            .expect("restored session should exist")
+            .workflow_runtime_instance("instance-clone")
+            .expect("instance record should remain for cleanup")
+            .status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Stale
+    );
+    assert_eq!(
+        restarted_service
+            .get_session(&restored_session_id)
+            .expect("restored session should exist")
+            .workflow_runtime_instance("instance-primary")
+            .expect("primary instance should survive restart")
             .status(),
         crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
     );

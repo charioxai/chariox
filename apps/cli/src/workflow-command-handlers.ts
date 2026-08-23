@@ -118,6 +118,11 @@ export type WorkflowCommandHandlerDeps = {
     endpointRef: string,
     entryNodeId: string,
   ) => Promise<WorkflowEndpointPayload>
+  setWorkflowEndpointMaxInstances?: (
+    workflowRef: string,
+    endpointRef: string,
+    maxInstances: number,
+  ) => Promise<WorkflowEndpointPayload>
   removeWorkflowEndpoint?: (
     workflowRef: string,
     endpointRef: string,

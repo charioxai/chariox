@@ -825,6 +825,20 @@ impl SessionService {
                 .ok_or_else(|| DaemonError::SessionNotFound {
                     session_id: session_id.to_string(),
                 })?;
+        session.reconcile_workflow_runtime_instances();
+        let missing_clone_ids = session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary())
+            .filter(|instance| {
+                instance.status() == crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+            })
+            .filter(|instance| !std::path::Path::new(instance.worktree_id()).is_dir())
+            .map(|instance| instance.id().to_string())
+            .collect::<Vec<_>>();
+        for instance_id in missing_clone_ids {
+            session.mark_workflow_runtime_instance_stale(&instance_id);
+        }
         Ok(session.cleanup_ready_workflow_runtime_instances())
     }
 

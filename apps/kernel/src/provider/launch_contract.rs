@@ -258,6 +258,9 @@ impl ProviderResumeState {
             ("opencode", "provider_stream/network_error") => {
                 Some(self.without_provider_session_id(provider))
             }
+            ("opencode", "provider_stream/empty_idle_assistant") => {
+                Some(self.without_provider_session_id(provider))
+            }
             _ => None,
         }
     }

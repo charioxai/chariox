@@ -415,6 +415,7 @@ pub(super) async fn run_relay_subscription_loop(
                 notices,
                 completions,
                 workflow_design_events,
+                workflow_run_updates,
                 snapshot,
             } => {
                 if !records.is_empty() {
@@ -498,9 +499,32 @@ pub(super) async fn run_relay_subscription_loop(
                         return;
                     }
                 }
+                let emitted_terminal_workflow_run_update = !workflow_run_updates.is_empty();
+                for workflow_run in workflow_run_updates {
+                    if emit_relay_event(
+                        &router,
+                        &outgoing_tx,
+                        &subscription_id,
+                        &client_public_key,
+                        &event_runtime,
+                        &event_stream_id,
+                        KernelEvent::WorkflowRunUpdated {
+                            session_id: session_id.clone(),
+                            workflow_run,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                }
                 if let Some(snapshot) = *snapshot {
                     let previous_snapshot_ref = previous_snapshot.as_ref();
-                    let mut emitted_projection_delta = false;
+                    // A terminal run update is the authoritative replacement for the
+                    // archived run. Treat it as a projection delta so the fallback full
+                    // hot-session snapshot cannot immediately erase it in the client.
+                    let mut emitted_projection_delta = emitted_terminal_workflow_run_update;
                     let mut emit_failed = false;
                     for event in [
                         agent_activity_changed_event(&snapshot, previous_snapshot_ref),

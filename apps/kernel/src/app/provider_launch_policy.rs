@@ -141,6 +141,10 @@ pub(crate) fn failed_provider_resume_state_replacement_from_message(
         && provider_message.starts_with("Provider finish_reason: network_error")
     {
         "provider_stream/network_error"
+    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
+        && provider_message.starts_with("OpenCode became idle without producing assistant output")
+    {
+        "provider_stream/empty_idle_assistant"
     } else {
         return None;
     };
@@ -225,6 +229,19 @@ mod tests {
             "Provider prompt dispatch failed: Provider finish_reason: network_error (retries exhausted)",
         )
         .expect("retry-exhausted OpenCode stream failures should retire the session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_empty_idle_assistant_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.",
+        )
+        .expect("an empty idle assistant poisons the resumed OpenCode session");
 
         assert_eq!(replacement.opencode_session_id(), None);
     }
