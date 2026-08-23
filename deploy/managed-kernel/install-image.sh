@@ -217,9 +217,9 @@ if [ -L "$install_root/usr/lib/chariox/current" ]; then
 fi
 atomic_symlink "releases/$release_name" "$install_root/usr/lib/chariox/current"
 
-if ! systemctl daemon-reload \
+if ! rm -f -- "$install_root/etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service" \
+  || ! systemctl daemon-reload \
   || ! systemctl enable chariox-rootless-docker.service \
-  || ! systemctl disable chariox-slice-broker.service \
   || ! systemctl enable chariox-managed-bootstrap.service; then
   if [ -n "$previous_current_target" ]; then
     atomic_symlink "$previous_current_target" "$install_root/usr/lib/chariox/current"

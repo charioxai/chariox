@@ -808,6 +808,12 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.equal(badDigest.status, 1)
   assert.match(badDigest.stderr, /release manifest digest does not match/)
   assert.equal(await lstat(harness.installRoot).then(() => true, () => false), false)
+  const brokerWantsLink = join(
+    harness.installRoot,
+    "etc/systemd/system/multi-user.target.wants/chariox-slice-broker.service",
+  )
+  await mkdir(join(brokerWantsLink, ".."), { recursive: true })
+  await symlink("../chariox-slice-broker.service", brokerWantsLink)
   const sourceKernel = join(args[0], "usr/local/bin/chariox-kernel")
   const first = spawnSync("/bin/sh", ["-c", 'umask 077; exec "$@"', "managed-installer", installer, ...args], {
     encoding: "utf8",
@@ -876,6 +882,10 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
     await readFile(join(harness.installRoot, "etc/systemd/system/chariox-managed-bootstrap.service"), "utf8"),
     fixture.serviceBytes.toString("utf8"),
   )
+  const installedBrokerService = join(harness.installRoot, "etc/systemd/system/chariox-slice-broker.service")
+  assert.equal((await lstat(installedBrokerService)).isSymbolicLink(), true)
+  assert.equal(await readFile(installedBrokerService, "utf8"), fixture.sliceBrokerServiceBytes.toString("utf8"))
+  assert.equal(await lstat(brokerWantsLink).then(() => true, () => false), false)
   assert.equal(await readlink(join(harness.installRoot, "usr/lib/chariox/slice-build-context")), "current/usr/lib/chariox/slice-build-context")
   assert.match(await readlink(join(harness.installRoot, "usr/lib/chariox/current")), /^releases\/[a-f0-9]{64}$/)
   assert.equal(
@@ -887,19 +897,15 @@ test("managed image installer verifies, installs twice, and rejects seeded runti
   assert.deepEqual(systemctl, [
     "daemon-reload",
     "enable chariox-rootless-docker.service",
-    "disable chariox-slice-broker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
-    "disable chariox-slice-broker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
-    "disable chariox-slice-broker.service",
     "enable chariox-managed-bootstrap.service",
     "daemon-reload",
     "enable chariox-rootless-docker.service",
-    "disable chariox-slice-broker.service",
     "enable chariox-managed-bootstrap.service",
   ])
 
