@@ -32,8 +32,8 @@ mod tests {
     use super::{
         drain_opencode_events,
         parts::{handle_message_part_delta, handle_message_part_updated},
-        snapshot::render_snapshot_output_chunks,
         snapshot::{collect_new_completed_assistant_messages, latest_assistant_usage_tokens},
+        snapshot::{opencode_messages_active_prompt_failure, render_snapshot_output_chunks},
         transcript::render_tool_transcript_update,
         OpenCodeAssistantCompletion, OpenCodeRuntimeState, ToolTranscriptUpdate,
     };
@@ -817,6 +817,84 @@ mod tests {
                 .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderError)
                 .count(),
             1
+        );
+    }
+
+    #[test]
+    fn assistant_message_error_ends_active_prompt_with_authoritative_failure() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-error",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "error": {
+                        "name": "APIError",
+                        "data": { "message": "Provider finish_reason: network_error" }
+                    }
+                }))
+                .expect("message info should deserialize"),
+            },
+        )
+        .expect("message update should send");
+
+        let result =
+            drain_opencode_events(&test_run(), &mut state, None).expect("drain should succeed");
+
+        assert!(result.prompt_completed);
+        assert_eq!(state.active_user_message_id, None);
+        assert_eq!(
+            result.terminal_failure.as_deref(),
+            Some("Provider finish_reason: network_error")
+        );
+        assert_eq!(
+            result
+                .chunks
+                .iter()
+                .filter(|chunk| chunk.kind == TerminalOutputKind::ProviderError)
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn snapshot_error_is_not_a_successful_assistant_completion() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        let messages = vec![OpenCodeMessage {
+            info: serde_json::from_value(json!({
+                "id": "message-error",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "parentID": "msg_user",
+                "error": {
+                    "name": "APIError",
+                    "data": { "message": "Provider finish_reason: network_error" }
+                }
+            }))
+            .expect("message info should deserialize"),
+            parts: Vec::new(),
+        }];
+        state.baseline_existing_messages(&[]);
+        super::snapshot::record_snapshot_message_metadata(&mut state, &messages);
+
+        assert_eq!(
+            opencode_messages_active_prompt_failure(&state, &messages).as_deref(),
+            Some("Provider finish_reason: network_error")
         );
     }
 

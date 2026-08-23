@@ -8,8 +8,9 @@ use super::parts::{handle_message_part_delta, handle_message_part_updated};
 use super::permission::handle_permission_request;
 use super::snapshot::{
     collect_new_completed_assistant_messages, latest_assistant_usage_tokens,
-    opencode_message_completes_active_prompt, opencode_messages_complete_active_prompt,
-    record_snapshot_message_metadata, render_snapshot_output_chunks,
+    opencode_message_completes_active_prompt, opencode_messages_active_prompt_failure,
+    opencode_messages_complete_active_prompt, record_snapshot_message_metadata,
+    render_snapshot_output_chunks,
 };
 use super::state::OpenCodeEventDrainResult;
 use super::transcript::{format_session_status, render_session_error_transcript_update};
@@ -64,6 +65,19 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_parent_ids
                     .insert(info.id.clone(), info.parent_id.clone());
+                if info.role == "assistant" && state.message_belongs_to_active_prompt(&info.id) {
+                    if let Some(message) = info.terminal_error_message() {
+                        record_terminal_failure(
+                            state,
+                            message,
+                            &mut chunks,
+                            &mut notices,
+                            &mut terminal_failure,
+                            &mut prompt_completed,
+                        );
+                        continue;
+                    }
+                }
                 if info.session_id == state.session_id
                     && info.role == "assistant"
                     && state.message_belongs_to_active_prompt(&info.id)
@@ -135,16 +149,14 @@ pub(in crate::provider) fn drain_opencode_events(
                 message,
             }) => {
                 if session_id == state.session_id {
-                    chunks.push(OpenCodeOutputChunk {
-                        kind: TerminalOutputKind::ProviderError,
-                        merge_key: None,
-                        bytes: render_session_error_transcript_update(&message).into_bytes(),
-                    });
-                    terminal_failure = Some(message.clone());
-                    notices.push(message);
-                    prompt_completed = true;
-                    state.active_terminal_assistant_message_id = None;
-                    state.active_user_message_id = None;
+                    record_terminal_failure(
+                        state,
+                        message,
+                        &mut chunks,
+                        &mut notices,
+                        &mut terminal_failure,
+                        &mut prompt_completed,
+                    );
                 }
             }
             Ok(OpenCodeEvent::SessionStatus { session_id, kind }) => {
@@ -170,17 +182,30 @@ pub(in crate::provider) fn drain_opencode_events(
                                 &messages,
                             );
                             chunks.extend(snapshot_chunks.chunks);
-                            let status_completions =
-                                collect_new_completed_assistant_messages(state, &messages);
-                            if !status_completions.is_empty() {
-                                completions.extend(status_completions);
-                            }
-                            if kind == "idle"
-                                && opencode_messages_complete_active_prompt(state, &messages)
+                            if let Some(message) =
+                                opencode_messages_active_prompt_failure(state, &messages)
                             {
-                                prompt_completed = true;
-                                state.active_terminal_assistant_message_id = None;
-                                state.active_user_message_id = None;
+                                record_terminal_failure(
+                                    state,
+                                    message,
+                                    &mut chunks,
+                                    &mut notices,
+                                    &mut terminal_failure,
+                                    &mut prompt_completed,
+                                );
+                            } else {
+                                let status_completions =
+                                    collect_new_completed_assistant_messages(state, &messages);
+                                if !status_completions.is_empty() {
+                                    completions.extend(status_completions);
+                                }
+                                if kind == "idle"
+                                    && opencode_messages_complete_active_prompt(state, &messages)
+                                {
+                                    prompt_completed = true;
+                                    state.active_terminal_assistant_message_id = None;
+                                    state.active_user_message_id = None;
+                                }
                             }
                         }
                     }
@@ -249,23 +274,36 @@ pub(in crate::provider) fn drain_opencode_events(
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
-                    let snapshot_completions =
-                        collect_new_completed_assistant_messages(state, &snapshot.messages);
-                    if !snapshot_completions.is_empty() {
-                        completions.extend(snapshot_completions);
-                    }
-                    if snapshot.status == "idle"
-                        && opencode_messages_complete_active_prompt(state, &snapshot.messages)
-                    {
-                        prompt_completed = true;
-                        state.active_terminal_assistant_message_id = None;
-                        state.active_user_message_id = None;
-                    } else if snapshot.status == "idle"
-                        && state.active_terminal_assistant_message_id.is_some()
-                    {
-                        prompt_completed = true;
-                        state.active_terminal_assistant_message_id = None;
-                        state.active_user_message_id = None;
+                    let snapshot_failure =
+                        opencode_messages_active_prompt_failure(state, &snapshot.messages);
+                    if let Some(message) = snapshot_failure {
+                        record_terminal_failure(
+                            state,
+                            message,
+                            &mut chunks,
+                            &mut notices,
+                            &mut terminal_failure,
+                            &mut prompt_completed,
+                        );
+                    } else {
+                        let snapshot_completions =
+                            collect_new_completed_assistant_messages(state, &snapshot.messages);
+                        if !snapshot_completions.is_empty() {
+                            completions.extend(snapshot_completions);
+                        }
+                        if snapshot.status == "idle"
+                            && opencode_messages_complete_active_prompt(state, &snapshot.messages)
+                        {
+                            prompt_completed = true;
+                            state.active_terminal_assistant_message_id = None;
+                            state.active_user_message_id = None;
+                        } else if snapshot.status == "idle"
+                            && state.active_terminal_assistant_message_id.is_some()
+                        {
+                            prompt_completed = true;
+                            state.active_terminal_assistant_message_id = None;
+                            state.active_user_message_id = None;
+                        }
                     }
                 }
             }
@@ -316,10 +354,24 @@ pub(in crate::provider) fn drain_opencode_events(
                         )
                         .chunks,
                     );
-                    completions.extend(collect_new_completed_assistant_messages(state, &messages));
-                    completion_confirmed |= state.active_terminal_assistant_message_id.is_some();
+                    if let Some(message) = opencode_messages_active_prompt_failure(state, &messages)
+                    {
+                        record_terminal_failure(
+                            state,
+                            message,
+                            &mut chunks,
+                            &mut notices,
+                            &mut terminal_failure,
+                            &mut prompt_completed,
+                        );
+                    } else {
+                        completions
+                            .extend(collect_new_completed_assistant_messages(state, &messages));
+                        completion_confirmed |=
+                            state.active_terminal_assistant_message_id.is_some();
+                    }
                 }
-                if completion_confirmed {
+                if !prompt_completed && completion_confirmed {
                     if state.last_status_kind.as_deref() != Some(status.as_str()) {
                         state.last_status_kind = Some(status.clone());
                         chunks.push(OpenCodeOutputChunk {
@@ -347,4 +399,27 @@ pub(in crate::provider) fn drain_opencode_events(
         resolved_variant,
         resolved_usage_tokens_total,
     })
+}
+
+fn record_terminal_failure(
+    state: &mut OpenCodeRuntimeState,
+    message: String,
+    chunks: &mut Vec<OpenCodeOutputChunk>,
+    notices: &mut Vec<String>,
+    terminal_failure: &mut Option<String>,
+    prompt_completed: &mut bool,
+) {
+    if terminal_failure.is_some() || state.active_user_message_id.is_none() {
+        return;
+    }
+    chunks.push(OpenCodeOutputChunk {
+        kind: TerminalOutputKind::ProviderError,
+        merge_key: None,
+        bytes: render_session_error_transcript_update(&message).into_bytes(),
+    });
+    notices.push(message.clone());
+    *terminal_failure = Some(message);
+    *prompt_completed = true;
+    state.active_terminal_assistant_message_id = None;
+    state.active_user_message_id = None;
 }

@@ -37,6 +37,18 @@ pub struct OpenCodeMessageInfo {
 }
 
 impl OpenCodeMessageInfo {
+    pub fn terminal_error_message(&self) -> Option<String> {
+        let error = self.error.as_ref()?;
+        error
+            .get("data")
+            .and_then(|value| value.get("message"))
+            .and_then(Value::as_str)
+            .or_else(|| error.get("message").and_then(Value::as_str))
+            .or_else(|| error.as_str())
+            .map(str::to_string)
+            .or_else(|| Some("OpenCode reported an unknown assistant error".to_string()))
+    }
+
     pub fn is_terminal_assistant_completion(&self) -> bool {
         if self.error.is_some() {
             return true;

@@ -35,6 +35,18 @@ pub(super) fn opencode_messages_complete_active_prompt(
         .any(|message| opencode_message_completes_active_prompt(state, &message.info))
 }
 
+pub(super) fn opencode_messages_active_prompt_failure(
+    state: &OpenCodeRuntimeState,
+    messages: &[OpenCodeMessage],
+) -> Option<String> {
+    messages.iter().rev().find_map(|message| {
+        (message.info.role == "assistant"
+            && state.message_belongs_to_active_prompt(&message.info.id))
+        .then(|| message.info.terminal_error_message())
+        .flatten()
+    })
+}
+
 pub(super) fn refresh_opencode_message_metadata(
     state: &mut OpenCodeRuntimeState,
     provider_run_id: &str,
