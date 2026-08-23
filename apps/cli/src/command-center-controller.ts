@@ -12,6 +12,7 @@ import type {
   CommandCenterWorkflowRegistryEntry,
 } from "./command-center-context.js"
 import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
+import type { ProviderAccountProfile } from "./cli-types.js"
 import type { ProviderCommandCatalogs } from "./provider-command-catalog.js"
 
 export type CommandCenterKeyEvent = {
@@ -34,6 +35,8 @@ type CommandCenterControllerOptions<TBox = unknown> = {
   getProviderCatalog: () => ProviderCatalog
   getProviderCommandCatalogs: () => ProviderCommandCatalogs
   getCurrentProvider: () => BackendProviderId
+  getProviderAccounts?: () => readonly ProviderAccountProfile[]
+  getCurrentAccount?: () => string
   getFocusedProvider: () => BackendProviderId | null
   getCurrentModel: () => string
   getCurrentVariant: () => string
@@ -94,6 +97,8 @@ export function createCommandCenterController<TBox = unknown>(
       commandTree: options.getCommandTree(),
       providerCommandCatalogs: options.getProviderCommandCatalogs(),
       currentProvider: options.getCurrentProvider(),
+      providerAccounts: options.getProviderAccounts?.() ?? [],
+      currentAccount: options.getCurrentAccount?.() ?? "default",
       focusedProvider: options.getFocusedProvider(),
       currentModel: options.getCurrentModel(),
       currentVariant: options.getCurrentVariant(),

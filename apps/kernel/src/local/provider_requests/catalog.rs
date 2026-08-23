@@ -574,15 +574,11 @@ fn claude_auth_status_from_value(
         .and_then(serde_json::Value::as_bool)
         .unwrap_or(false);
     let identity_summary = if logged_in {
-        let mut parts = Vec::new();
-        for key in ["email", "orgName"] {
-            if let Some(text) = value.get(key).and_then(serde_json::Value::as_str) {
-                if !text.is_empty() {
-                    parts.push(text.to_string());
-                }
-            }
-        }
-        (!parts.is_empty()).then(|| parts.join(" / "))
+        value
+            .get("email")
+            .and_then(serde_json::Value::as_str)
+            .filter(|email| !email.is_empty())
+            .map(str::to_string)
     } else {
         None
     };
@@ -1074,6 +1070,24 @@ exit 2
         assert_eq!(status.auth_state, "not_logged_in");
         assert_eq!(status.account_profile, "work");
         assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
+    }
+
+    #[test]
+    fn claude_auth_status_uses_email_as_the_account_identity() {
+        let status = claude_auth_status_from_value(
+            "claude-headless",
+            "work",
+            &json!({
+                "loggedIn": true,
+                "email": "dev@example.test",
+                "orgName": "dev@example.test's Organization",
+                "subscriptionType": "pro"
+            }),
+            Some("claude 1.2.3".to_string()),
+        );
+
+        assert_eq!(status.identity_summary.as_deref(), Some("dev@example.test"));
+        assert_eq!(status.plan.as_deref(), Some("pro"));
     }
 
     #[test]

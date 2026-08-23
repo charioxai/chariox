@@ -56,6 +56,7 @@ export type CliInputRoutingCompositionDeps = {
   handleAttachmentCommand: AnyFn
   handleSessionCommand: AnyFn
   handleProviderCommand: AnyFn
+  handleAccountCommand: AnyFn
   handleModelCommand: AnyFn
   handleVariantCommand: AnyFn
   handleModeCommand: AnyFn
@@ -219,6 +220,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     handleAttachmentCommand: deps.handleAttachmentCommand,
     handleSessionCommand: deps.handleSessionCommand,
     handleProviderCommand: deps.handleProviderCommand,
+    handleAccountCommand: deps.handleAccountCommand,
     handleModelCommand: deps.handleModelCommand,
     handleVariantCommand: deps.handleVariantCommand,
     handleModeCommand: deps.handleModeCommand,

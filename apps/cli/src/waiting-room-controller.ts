@@ -27,6 +27,7 @@ import {
   stageWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
   provider: BackendProviderId
@@ -402,10 +403,11 @@ export function deriveWaitingRoomControlActivationDecision(options: {
           : "Create the session first, then use /relay invite create. Chariox Cloud adds saved collaborators and pre-session invites.",
       }
     case "account": {
-      const account = remote.providerAccounts?.find((profile) => (
-        profile.provider === options.state.providerId
-        && profile.profile_id === options.state.accountProfileId
-      ))
+      const account = selectedProviderAccount(
+        remote.providerAccounts,
+        options.state.providerId,
+        options.state.accountProfileId,
+      )
       return {
         action: "info",
         message: account

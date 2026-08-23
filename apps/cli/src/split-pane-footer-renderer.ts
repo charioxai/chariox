@@ -44,6 +44,7 @@ type SplitPaneFooterTaskGroup = {
 
 type ProviderSelection = {
   provider?: string
+  accountProfile?: string
   model: string
   effort: string
 }
@@ -68,6 +69,7 @@ export type SplitPaneFooterRenderOptions = {
   agentBusyLatch: (agentId: string) => boolean
   sessionConfigValues: Record<string, string> | undefined
   agentLocationLabel: (agent: AgentInstance | null | undefined) => string | null
+  providerAccountLabel: (provider: string, accountProfile: string) => string
   badgeWidth: number
   animationFrame: number
 }
@@ -245,10 +247,19 @@ function renderFooter(
     ? {
         agentInstanceId: options.providerRun.agent_instance_id,
         provider: options.providerRun.provider,
+        accountProfile: options.providerRun.account_profile,
         model: options.providerRun.model,
         variant: options.providerRun.variant,
       }
     : null
+  const provider = activeRun?.provider
+    ?? selectionOverride?.provider
+    ?? agent?.provider
+    ?? "opencode"
+  const accountProfile = activeRun?.accountProfile
+    ?? selectionOverride?.accountProfile
+    ?? agent?.account_profile
+    ?? "default"
   const nextParts = formatSplitPaneFooterParts(
     agent
       ? {
@@ -262,9 +273,13 @@ function renderFooter(
       : null,
     activeRun,
     null,
-    selectionOverride
-      ? { provider: selectionOverride.provider ?? null, model: selectionOverride.model, variant: selectionOverride.effort }
-      : undefined,
+    {
+      ...(selectionOverride
+        ? { provider: selectionOverride.provider ?? null, model: selectionOverride.model, variant: selectionOverride.effort }
+        : {}),
+      accountProfile,
+      accountLabel: options.providerAccountLabel(provider, accountProfile),
+    },
   )
   const setPart = (
     text: TextRenderable | undefined,

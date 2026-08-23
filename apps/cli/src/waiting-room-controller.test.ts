@@ -444,6 +444,40 @@ test("deriveWaitingRoomControlActivationDecision stages workspace and worktree c
   })
 })
 
+test("deriveWaitingRoomControlActivationDecision resolves Claude adapter account families", () => {
+  const decision = deriveWaitingRoomControlActivationDecision({
+    state: waitingRoomState({
+      focus: "account",
+      providerId: "claude-headless",
+      accountProfileId: "claude-work",
+    }),
+    workspacePath: "/repo",
+    worktreePath: "/repo",
+    remote: {
+      providerAccounts: [{
+        owner_user_id: "local",
+        provider: "claude",
+        profile_id: "claude-work",
+        label: "Claude Work",
+        origin: "linked",
+        is_default: true,
+        auth_state: "authenticated",
+        usage: {
+          profile_id: "claude-work",
+          provider: "claude",
+          availability: "unavailable",
+          source: "test",
+        },
+      }],
+    },
+  })
+
+  assert.deepEqual(decision, {
+    action: "info",
+    message: "claude/Claude Work: authenticated; usage unavailable",
+  })
+})
+
 test("deriveWaitingRoomControlActivationDecision handles machine activation", () => {
   const approved = deriveWaitingRoomControlActivationDecision({
     state: waitingRoomState({ focus: "machine" }),

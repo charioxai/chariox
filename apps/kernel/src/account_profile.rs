@@ -597,8 +597,60 @@ impl ProviderAccountProfileRegistry {
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
         let mut document = self.write_document()?;
-        let profile =
-            resolve_stored_profile_mut(&mut document, owner_user_id, provider, profile_id)?;
+        let profile_index = resolved_profile_index(&document, owner_user_id, provider, profile_id)?;
+        if auth_state == ProviderAccountAuthState::Authenticated {
+            if let Some(identity) = normalized_account_identity(identity_summary.as_deref()) {
+                let duplicate_index =
+                    document
+                        .profiles
+                        .iter()
+                        .enumerate()
+                        .find_map(|(index, candidate)| {
+                            (index != profile_index
+                                && candidate.public.owner_user_id == owner_user_id
+                                && candidate.public.provider == provider
+                                && candidate.public.auth_state
+                                    == ProviderAccountAuthState::Authenticated
+                                && normalized_account_identity(
+                                    candidate.public.identity_summary.as_deref(),
+                                )
+                                .is_some_and(
+                                    |candidate_identity| {
+                                        candidate_identity.eq_ignore_ascii_case(identity)
+                                    },
+                                ))
+                            .then_some(index)
+                        });
+                if let Some(duplicate_index) = duplicate_index {
+                    let incoming_wins = document.profiles[profile_index].public.is_default
+                        && !document.profiles[duplicate_index].public.is_default;
+                    let losing_index = if incoming_wins {
+                        duplicate_index
+                    } else {
+                        profile_index
+                    };
+                    document.profiles[losing_index].public.auth_state =
+                        ProviderAccountAuthState::Error;
+                    document.profiles[losing_index].public.last_validated_at_ms =
+                        Some(crate::session::unix_epoch_ms());
+                    mark_profile_materializations_stale(
+                        &mut document.profiles[losing_index].public,
+                    );
+                    if !incoming_wins {
+                        let existing_label =
+                            document.profiles[duplicate_index].public.label.clone();
+                        self.persist_locked(&document)?;
+                        return Err(registry_error(
+                            "validate account profile",
+                            format!(
+                                "this {provider} account is already authenticated as `{existing_label}`"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+        let profile = &mut document.profiles[profile_index];
         let identity_changed = profile.public.identity_summary.is_some()
             && identity_summary.is_some()
             && profile.public.identity_summary != identity_summary;
@@ -1357,6 +1409,12 @@ fn resolved_profile_index(
         .ok_or_else(|| registry_error("resolve account profile", "profile index disappeared"))
 }
 
+fn normalized_account_identity(identity: Option<&str>) -> Option<&str> {
+    identity
+        .map(str::trim)
+        .filter(|identity| !identity.is_empty())
+}
+
 fn effective_xdg(name: &str, fallback: PathBuf) -> PathBuf {
     std::env::var_os(name)
         .filter(|value| !value.is_empty())
@@ -2031,6 +2089,113 @@ mod tests {
             .resolve_environment("owner-a", "claude", "default")
             .unwrap();
         assert!(environment["CLAUDE_CONFIG_DIR"].contains(&work.profile_id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_authenticating_the_same_identity_in_two_profiles() {
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        let secondary = registry
+            .create_managed("owner-a", "codex", "Secondary")
+            .unwrap();
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("dev@example.test".to_string()),
+                Some("plus".to_string()),
+                None,
+                None,
+            )
+            .unwrap();
+
+        let error = registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &secondary.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("DEV@example.test".to_string()),
+                Some("plus".to_string()),
+                None,
+                None,
+            )
+            .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("already authenticated as `Default`"));
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &secondary.profile_id)
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Error,
+        );
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", "default")
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Authenticated,
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_selected_default_profile_wins_an_existing_identity_collision() {
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        let secondary = registry
+            .create_managed("owner-a", "codex", "Secondary")
+            .unwrap();
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                &secondary.profile_id,
+                ProviderAccountAuthState::Authenticated,
+                Some("dev@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        registry
+            .update_observation(
+                "owner-a",
+                "codex",
+                "default",
+                ProviderAccountAuthState::Authenticated,
+                Some("dev@example.test".to_string()),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", "default")
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Authenticated,
+        );
+        assert_eq!(
+            registry
+                .get("owner-a", "codex", &secondary.profile_id)
+                .unwrap()
+                .auth_state,
+            ProviderAccountAuthState::Error,
+        );
         let _ = fs::remove_dir_all(root);
     }
 

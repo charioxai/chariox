@@ -38,6 +38,10 @@ import { buildEmptyTranscriptRenderable } from "./workspace-renderables.js"
 import { HOTKEY_TOGGLE_LABEL } from "./hotkeys.js"
 import { STATUS_BADGE_WIDTH } from "./runtime.js"
 import { renderAgentInteractionStrips } from "./interaction-strip-renderer.js"
+import {
+  providerAccountDisplayLabel,
+  selectedProviderAccount,
+} from "./waiting-room-provider-accounts.js"
 
 type AnyFn = (...args: any[]) => any
 
@@ -72,6 +76,7 @@ export type CliResponseShellCompositionDeps = {
   focusedAgentId: AnyFn
   providerRunState: AnyFn
   currentProviderSelection: AnyFn
+  providerAccountsState: AnyFn
   agentActivityLabels: AnyFn
   streamingAgentId: AnyFn
   agentBusyLatch: AnyFn
@@ -154,6 +159,11 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     agentBusyLatch: deps.agentBusyLatch,
     sessionConfigValues: () => deps.sessionState().config_state?.values,
     agentLocationLabel: deps.agentLocationLabel,
+    providerAccountLabel: (provider, accountProfile) => {
+      const profile = selectedProviderAccount(deps.providerAccountsState(), provider, accountProfile)
+      if (profile) return providerAccountDisplayLabel(profile)
+      return accountProfile === "default" ? "Default" : "Account unavailable"
+    },
     badgeWidth: STATUS_BADGE_WIDTH,
     animationFrame: deps.workingAnimationFrame,
     renderFooters: renderSplitPaneFootersView,

@@ -25,6 +25,7 @@ export function createCliAppCommandRoutingComposition(
     handleAttachmentCommand: deps.handleAttachmentCommand,
     onSession: commandHandlers.handleSessionCommand,
     onProvider: commandHandlers.handleProviderCommand,
+    onAccount: commandHandlers.handleAccountCommand,
     onModel: commandHandlers.handleModelCommand,
     onVariant: commandHandlers.handleVariantCommand,
     onMode: commandHandlers.handleModeCommand,

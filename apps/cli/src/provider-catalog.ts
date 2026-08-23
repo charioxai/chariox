@@ -206,6 +206,12 @@ export function selectConfiguredModel(
   if (exact) {
     return exact
   }
+  const unqualified = configured
+    ? options.find((option) => option.id.endsWith(`/${configured}`))
+    : null
+  if (unqualified) {
+    return unqualified
+  }
   for (const provider of catalog.all) {
     if (!providerBelongsToBackend(provider.id, backendProviderId)) {
       continue

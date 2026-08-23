@@ -376,7 +376,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const describeRenderableDebug = rendererFocusController.describe
   const currentFocusedRenderable = rendererFocusController.current
   const {
-    activateWaitingRoom, applyModelSelection, applyModeSelection, applyPermissionSelection,
+    activateWaitingRoom, applyAccountSelection, applyModelSelection, applyModeSelection, applyPermissionSelection,
     applyProviderCatalogChanged, applyProviderSelection,
     applyRelayStatusChanged, applyRemoteMachinesChanged, applySlicesChanged, applyVariantSelection,
     applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
@@ -438,6 +438,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     getProviderCatalog: providerCatalogState,
     getProviderCommandCatalogs: providerCommandCatalogState,
     getCurrentProvider: () => normalizeBackendProviderId(currentProviderSelection().provider),
+    getProviderAccounts: providerAccountsState,
+    getCurrentAccount: () => currentProviderSelection().accountProfile,
     getFocusedProvider: focusedBackendProvider,
     getCurrentModel: currentModelId,
     getCurrentVariant: currentVariantId,
@@ -654,7 +656,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     transcriptEntryProjectionController, transcriptRenderDeferralController, isAttached,
     workflowScreenActive: () => workflowActions.workflowScreenActive(),
     maxAgentsPerScreen, responseVisibleAgents, focusedAgentId, providerRunState,
-    currentProviderSelection, agentActivityLabels, streamingAgentId, agentBusyLatch,
+    currentProviderSelection, providerAccountsState, agentActivityLabels, streamingAgentId, agentBusyLatch,
     agentBusyLatches, sessionState, workspaceLiveSyncStatus, agentLocationLabel,
     workingAnimationFrame, activeInteractionForAgent,
     queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => queuedPromptStripItemsForAgentId(agentId),
@@ -832,7 +834,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     currentModelId, currentVariantId, focusedAgentId, multiAgentResponseLayout,
     currentAccountProfileId: () => waitingRoomState().accountProfileId || options.accountProfile || "default",
     maxAgentsPerScreen, flashFooter, appendNotice, appendCloudNotice,
-    attachBinding, transitionToNoSession, applyProviderSelection, applyModelSelection,
+    attachBinding, transitionToNoSession, applyProviderSelection, applyAccountSelection, applyModelSelection,
     applyVariantSelection, applyModeSelection, applyPermissionSelection,
     currentExecutionMode: () => waitingRoomState().executionMode ?? "build",
     currentPermissionLevel: () => waitingRoomState().permissionLevel ?? "yolo",

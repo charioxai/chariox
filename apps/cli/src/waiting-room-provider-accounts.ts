@@ -20,3 +20,19 @@ export function selectedProviderAccount(
   return providerAccountsForProvider(profiles, provider)
     .find((profile) => profile.profile_id === profileId) ?? null
 }
+
+export function defaultProviderAccountProfileId(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+): string {
+  const accounts = providerAccountsForProvider(profiles, provider)
+  return accounts.find((profile) => profile.is_default)?.profile_id
+    ?? accounts[0]?.profile_id
+    ?? "default"
+}
+
+export function providerAccountDisplayLabel(profile: ProviderAccountProfile): string {
+  const identity = profile.identity_summary?.trim()
+  const suffix = identity && identity !== profile.label ? ` · ${identity}` : ""
+  return `${profile.label}${profile.is_default ? " (default)" : ""}${suffix}`
+}

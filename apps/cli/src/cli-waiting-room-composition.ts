@@ -447,6 +447,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     getWaitingRoomState: deps.waitingRoomState,
     getDefaults: () => ({
       provider: deps.options.provider ?? "opencode",
+      accountProfile: deps.options.accountProfile ?? "default",
       model: deps.options.model,
       effort: deps.options.effort,
     }),
@@ -459,15 +460,34 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     waitingRoomState: deps.waitingRoomState,
     availableSessions: deps.availableSessions,
     providerCatalog: deps.providerCatalogState,
+    providerAccounts: deps.providerAccountsState,
+    loadProviderCatalog: async (provider, accountProfile) => {
+      const agent = deps.focusedAgent()
+      const sliceRef = agent?.runtime_placement?.slice_id?.trim()
+      const workerRef = agent?.remote_execution?.worker_kernel_id?.trim()
+        || (!sliceRef && agent?.remote_execution ? agent.runtime_placement?.kernel_id?.trim() : "")
+      return getProviderCatalog(deps.client, deps.appLogger, {
+        provider,
+        accountProfile,
+        executionLocation: sliceRef
+          ? { kind: "slice", slice_ref: sliceRef }
+          : workerRef
+            ? { kind: "worker", kernel_ref: workerRef }
+            : { kind: "local" },
+      }, false)
+    },
+    setProviderCatalog: deps.setProviderCatalogState,
     themeRegistry: deps.themeRegistryState,
     preferences: deps.preferencesState,
     defaults: () => ({
       provider: deps.options.provider ?? "opencode",
+      accountProfile: deps.options.accountProfile ?? "default",
       model: deps.options.model,
       effort: deps.options.effort,
     }),
     setDefaults: (selection) => {
       deps.options.provider = selection.provider
+      deps.options.accountProfile = selection.accountProfile ?? deps.options.accountProfile ?? "default"
       deps.options.model = selection.model
       deps.options.effort = selection.effort
     },
@@ -480,7 +500,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     updateAgentConfig: (sessionId, agentId, config) => updateAgentConfig(deps.client, sessionId, agentId, config),
     applySessionState: deps.applySessionState,
     clearProviderRunState: () => deps.setProviderRunState(null),
-    getProviderAuthStatus: (provider) => getProviderAuthStatus(deps.client, provider),
+    getProviderAuthStatus: (provider, accountProfile) => getProviderAuthStatus(deps.client, provider, accountProfile),
     appendNotice: deps.appendNotice,
     flashFooter: (message, tone) => deps.flashFooter(message, tone),
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
@@ -494,6 +514,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
 
   return {
     activateWaitingRoom,
+    applyAccountSelection: providerSelectionController.applyAccountSelection,
     applyModelSelection: providerSelectionController.applyModelSelection,
     applyModeSelection: providerSelectionController.applyModeSelection,
     applyPermissionSelection: providerSelectionController.applyPermissionSelection,

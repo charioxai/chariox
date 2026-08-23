@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type {
   AgentInstance,
+  ProviderAccountProfile,
   RuntimeSession,
 } from "./cli-types.js"
 import {
@@ -90,6 +91,72 @@ test("agent model command updates the targeted agent profile", async () => {
 
   assert.deepEqual(updateOptions, { model: "gpt-5.4" })
   assert.equal(panesRefreshed, true)
+})
+
+test("agent account command loads its scoped catalog and applies a compatible profile atomically", async () => {
+  const currentAgent = agent({ provider: "codex", model: "gpt-5.4", effort: "high", account_profile: "default" })
+  const updatedAgent = agent({
+    provider: "codex",
+    model: "codex/gpt-5.6-luna",
+    effort: "low",
+    account_profile: "secondary",
+  })
+  let updateOptions: Record<string, unknown> | null = null
+  const catalogLoads: unknown[] = []
+  let flashedMessage = ""
+
+  await handleAgentProfileCommand({
+    ...deps(currentAgent),
+    flashFooter: (message) => { flashedMessage = message },
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "user-1",
+      provider: "codex",
+      profile_id: "secondary",
+      label: "Validation",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      identity_summary: "validation@example.com",
+      usage: {
+        profile_id: "secondary",
+        provider: "codex",
+        availability: "unavailable",
+        source: "test",
+      },
+    } satisfies ProviderAccountProfile],
+    getProviderCatalogForAgent: async (_agent, provider, accountProfile) => {
+      catalogLoads.push({ provider, accountProfile })
+      return {
+        all: [{
+          id: "codex",
+          name: "Codex",
+          models: {
+            "gpt-5.6-luna": {
+              id: "gpt-5.6-luna",
+              name: "Luna",
+              status: "active",
+              variants: { low: {} },
+            },
+          },
+        }],
+        default: { codex: "gpt-5.6-luna" },
+        connected: ["codex"],
+      }
+    },
+    updateAgentProfile: async (_sessionId, _agentId, options) => {
+      updateOptions = options
+      return { agent: updatedAgent, session: session({ agents: [updatedAgent] }) }
+    },
+  }, ["account", "agent-1", "secondary"], "account")
+
+  assert.deepEqual(catalogLoads, [{ provider: "codex", accountProfile: "secondary" }])
+  assert.deepEqual(updateOptions, {
+    provider: "codex",
+    accountProfile: "secondary",
+    model: "codex/gpt-5.6-luna",
+    effort: "low",
+  })
+  assert.equal(flashedMessage, "agent-1 account: Validation · validation@example.com")
 })
 
 function deps(currentAgent: AgentInstance) {

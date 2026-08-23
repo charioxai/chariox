@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import type { ProviderAuthStatus, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
+import type { ProviderAccountProfile, ProviderAuthStatus, RuntimeProviderRun, RuntimeSession } from "./cli-types.js"
 import { createProviderSelectionController } from "./provider-selection-controller.js"
 import { fallbackProviderCatalog, type BackendProviderId } from "./provider-catalog.js"
 import type { CharioxPreferences } from "./preferences.js"
@@ -106,6 +106,48 @@ test("provider selection controller updates attached agent models through profil
   assert.equal(harness.providerRunCleared(), true)
 })
 
+test("provider selection controller loads the chosen account catalog before one atomic agent update", async () => {
+  const secondaryCatalog = {
+    all: [{
+      id: "codex",
+      name: "Codex",
+      models: {
+        "gpt-5.6-luna": {
+          id: "gpt-5.6-luna",
+          name: "Luna",
+          status: "active",
+          variants: { low: {} },
+        },
+      },
+    }],
+    default: { codex: "gpt-5.6-luna" },
+    connected: ["codex"],
+  }
+  const harness = createHarness({
+    attached: true,
+    currentSelection: { provider: "codex", accountProfile: "default", model: "codex/gpt-5.4", effort: "high" },
+    providerAccounts: [{
+      provider: "codex",
+      profile_id: "secondary",
+      label: "Validation",
+      auth_state: "authenticated",
+      is_default: false,
+    } as ProviderAccountProfile],
+    scopedCatalog: secondaryCatalog,
+  })
+
+  await harness.controller.applyAccountSelection("secondary")
+
+  assert.deepEqual(harness.catalogLoads(), [{ provider: "codex", accountProfile: "secondary" }])
+  assert.deepEqual(harness.profileUpdates().at(-1)?.profile, {
+    provider: "codex",
+    accountProfile: "secondary",
+    model: "codex/gpt-5.6-luna",
+    effort: "low",
+  })
+  assert.deepEqual(harness.footerMessages().at(-1), { message: "account set to Validation", tone: "info" })
+})
+
 test("provider selection controller marks attached profile updates from local provider fallback", async () => {
   const harness = createHarness({
     attached: true,
@@ -164,11 +206,13 @@ test("provider selection controller applies saved provider defaults and auth not
 
   assert.deepEqual(harness.defaults(), {
     provider: "codex",
+    accountProfile: "default",
     model: "codex/gpt-5.4",
     effort: "high",
   })
   assert.deepEqual(harness.profileUpdates().at(-1)?.profile, {
     provider: "codex",
+    accountProfile: "default",
     model: "codex/gpt-5.4",
     effort: "high",
   })
@@ -198,28 +242,36 @@ test("provider selection controller reports provider update failures", async () 
 
 function createHarness(options: {
   attached?: boolean
-  currentSelection?: { provider: string; model: string; effort: string }
+  currentSelection?: { provider: string; accountProfile?: string; model: string; effort: string }
   providerRun?: RuntimeProviderRun | null
   preferences?: CharioxPreferences
   authStatus?: ProviderAuthStatus
   providerCatalog?: ReturnType<typeof fallbackProviderCatalog>
+  scopedCatalog?: ReturnType<typeof fallbackProviderCatalog> | { all: any[]; default: Record<string, string>; connected: string[] }
+  providerAccounts?: ProviderAccountProfile[]
   updateAgentProfile?: (
     sessionId: string,
     agentId: string,
-    profile: { provider: BackendProviderId; model: string; effort: string },
+    profile: { provider: BackendProviderId; accountProfile?: string; model: string; effort: string },
   ) => Promise<{ session: RuntimeSession }>
 } = {}) {
   const catalog = options.providerCatalog ?? fallbackProviderCatalog()
   let waitingRoomState = createWaitingRoomState([], catalog, "opencode", "opencode/gpt-5.4", "medium", "opencode", DEFAULT_THEME_REGISTRY)
-  let defaults = { provider: "opencode" as BackendProviderId, model: "opencode/gpt-5.4", effort: "medium" }
+  let defaults: { provider: BackendProviderId; accountProfile?: string; model: string; effort: string } = {
+    provider: "opencode",
+    accountProfile: "default",
+    model: "opencode/gpt-5.4",
+    effort: "medium",
+  }
   let providerRun = options.providerRun ?? null
   const footerMessages: Array<{ message: string; tone: "info" | "error" }> = []
   const reconciledStates: WaitingRoomState[] = []
   const profileUpdates: Array<{
     sessionId: string
     agentId: string
-    profile: { provider: BackendProviderId; model: string; effort: string }
+    profile: { provider: BackendProviderId; accountProfile?: string; model: string; effort: string }
   }> = []
+  const catalogLoads: Array<{ provider: BackendProviderId; accountProfile: string }> = []
   const notices: string[] = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
   const configUpdates: Array<{
@@ -234,6 +286,11 @@ function createHarness(options: {
     waitingRoomState: () => waitingRoomState,
     availableSessions: () => [],
     providerCatalog: () => catalog,
+    providerAccounts: () => options.providerAccounts ?? [],
+    loadProviderCatalog: async (provider, accountProfile) => {
+      catalogLoads.push({ provider, accountProfile })
+      return options.scopedCatalog ?? catalog
+    },
     themeRegistry: () => DEFAULT_THEME_REGISTRY,
     preferences: () => options.preferences ?? {},
     defaults: () => defaults,
@@ -289,6 +346,7 @@ function createHarness(options: {
     reconciledStates: () => reconciledStates,
     profileUpdates: () => profileUpdates,
     configUpdates: () => configUpdates,
+    catalogLoads: () => catalogLoads,
     providerRunCleared: () => providerRunCleared,
     notices: () => notices,
     warnings: () => warnings,
