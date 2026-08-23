@@ -30,7 +30,10 @@ pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub use codex::{
     codex_catalog_endpoint, logout_codex, plan_codex_launch, resolve_codex_executable,
 };
-pub(crate) use codex::{ensure_codex_account_endpoint, invalidate_codex_account_endpoint};
+pub(crate) use codex::{
+    ensure_codex_account_endpoint, invalidate_codex_account_endpoint,
+    shutdown_codex_account_endpoints,
+};
 pub use codex_client::{
     CodexClient, CodexNotification, CodexRunSelection, CodexSocket, CodexThread,
     CodexThreadStartResponse, ProviderAuthStatus, ProviderLoginStart,
@@ -57,7 +60,10 @@ pub use launch_contract::{
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,
 };
-pub(crate) use opencode::{ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint};
+pub(crate) use opencode::{
+    ensure_opencode_account_endpoint, invalidate_opencode_account_endpoint,
+    shutdown_opencode_account_endpoints,
+};
 pub use opencode::{opencode_catalog_endpoint, plan_opencode_launch, resolve_opencode_executable};
 pub use opencode_client::{
     OpenCodeClient, OpenCodeEvent, OpenCodeEventSubscription, OpenCodeMessage,

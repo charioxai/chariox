@@ -140,6 +140,22 @@ pub(crate) fn invalidate_opencode_account_endpoint(owner_user_id: &str, account_
     }
 }
 
+pub(crate) fn shutdown_opencode_account_endpoints() {
+    let Some(endpoints) = OPENCODE_ACCOUNT_ENDPOINTS.get() else {
+        return;
+    };
+    let Ok(mut endpoints) = endpoints.lock() else {
+        return;
+    };
+    let drained = std::mem::take(&mut *endpoints);
+    drop(endpoints);
+
+    for (_, mut endpoint) in drained {
+        let _ = crate::runtime::process_health::terminate_process_tree(endpoint.child.id());
+        let _ = endpoint.child.wait();
+    }
+}
+
 fn endpoint_is_healthy(base_url: &str) -> bool {
     OpenCodeClient::new("catalog", base_url)
         .and_then(|client| client.check_health())

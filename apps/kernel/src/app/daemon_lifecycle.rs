@@ -39,6 +39,9 @@ impl DaemonApp {
             }
         }
 
+        crate::provider::shutdown_opencode_account_endpoints();
+        crate::provider::shutdown_codex_account_endpoints();
+
         if let Some(error) = first_error {
             return Err(error);
         }
@@ -197,7 +200,7 @@ impl DaemonApp {
         let _ = runtime_state;
 
         let shutdown = async {
-            let _ = tokio::signal::ctrl_c().await;
+            wait_for_shutdown_signal().await;
             let _ = shutdown_tx.send(true);
         };
         let result = match listener {
@@ -223,6 +226,55 @@ impl DaemonApp {
         }
         result
     }
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown_signal() {
+    use tokio::signal::unix::{signal, SignalKind};
+
+    let mut terminate = match signal(SignalKind::terminate()) {
+        Ok(signal) => Some(signal),
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.shutdown",
+                "failed to register SIGTERM handler",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            None
+        }
+    };
+    let mut hangup = match signal(SignalKind::hangup()) {
+        Ok(signal) => Some(signal),
+        Err(error) => {
+            crate::logging::warn_with_fields(
+                "daemon.shutdown",
+                "failed to register SIGHUP handler",
+                serde_json::json!({ "error": error.to_string() }),
+            );
+            None
+        }
+    };
+
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {}
+        _ = wait_for_unix_signal(&mut terminate) => {}
+        _ = wait_for_unix_signal(&mut hangup) => {}
+    }
+}
+
+#[cfg(unix)]
+async fn wait_for_unix_signal(signal: &mut Option<tokio::signal::unix::Signal>) {
+    match signal {
+        Some(signal) => {
+            let _ = signal.recv().await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown_signal() {
+    let _ = tokio::signal::ctrl_c().await;
 }
 
 async fn run_legacy_workflow_history_migration(

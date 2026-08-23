@@ -665,9 +665,14 @@ Workflow trigger and deployment direction:
 - accepting a trigger invocation MUST enqueue it through the workflow endpoint's
   normal queue path; it MUST NOT create a hidden session, cloned agents, or a
   separate queue namespace
-- all workflows in one session continue to share the session-level serial
-  execution arbiter, so prompts from different endpoints and triggers cannot run
-  concurrently against shared agents
+- workflows in one session run independently. Prompts and handoffs are scheduled
+  per agent, so unrelated agents may execute concurrently while work targeting a
+  busy shared agent queues durably with its workflow, run, node, edge, and
+  occurrence identity preserved
+- an endpoint may maintain a bounded pool of runtime instances. It reuses an idle
+  instance before cloning another, and every clone preserves the source agents'
+  execution configuration and extension grants without copying active runs,
+  transcripts, or credentials
 - a local HTTP gateway is an ingress process for a source workflow trigger. It
   resolves the current publication definition from the kernel for each request
   and invokes the existing source session; starting the gateway does not export

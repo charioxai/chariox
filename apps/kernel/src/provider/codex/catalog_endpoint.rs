@@ -139,3 +139,19 @@ pub(crate) fn invalidate_codex_account_endpoint(owner_user_id: &str, account_pro
         let _ = endpoint.child.wait();
     }
 }
+
+pub(crate) fn shutdown_codex_account_endpoints() {
+    let Some(endpoints) = CODEX_ACCOUNT_ENDPOINTS.get() else {
+        return;
+    };
+    let Ok(mut endpoints) = endpoints.lock() else {
+        return;
+    };
+    let drained = std::mem::take(&mut *endpoints);
+    drop(endpoints);
+
+    for (_, mut endpoint) in drained {
+        let _ = crate::runtime::process_health::terminate_process_tree(endpoint.child.id());
+        let _ = endpoint.child.wait();
+    }
+}
