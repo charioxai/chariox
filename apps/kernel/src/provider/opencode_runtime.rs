@@ -893,9 +893,99 @@ mod tests {
         super::snapshot::record_snapshot_message_metadata(&mut state, &messages);
 
         assert_eq!(
-            opencode_messages_active_prompt_failure(&state, &messages).as_deref(),
+            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
             Some("Provider finish_reason: network_error")
         );
+    }
+
+    #[test]
+    fn preexisting_snapshot_error_for_recovered_prompt_is_authoritative() {
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(
+                std::sync::mpsc::channel().1,
+            ),
+        );
+        let messages = vec![OpenCodeMessage {
+            info: serde_json::from_value(json!({
+                "id": "message-error-while-kernel-was-down",
+                "sessionID": "session-1",
+                "role": "assistant",
+                "parentID": "msg_user",
+                "error": {
+                    "name": "APIError",
+                    "data": { "message": "Provider finish_reason: network_error" }
+                }
+            }))
+            .expect("message info should deserialize"),
+            parts: Vec::new(),
+        }];
+        state.baseline_existing_messages(&messages);
+        state.note_prompt_submitted("msg_user".to_string());
+
+        assert_eq!(
+            opencode_messages_active_prompt_failure(&state, &messages, Some("msg_user")).as_deref(),
+            Some("Provider finish_reason: network_error")
+        );
+    }
+
+    #[test]
+    fn later_sibling_error_overrides_completion_in_the_same_drain() {
+        let (tx, rx) = mpsc::channel();
+        let mut state = OpenCodeRuntimeState::new(
+            "http://localhost:1".to_string(),
+            "session-1".to_string(),
+            crate::provider::opencode_client::OpenCodeEventSubscription::for_tests(rx),
+        );
+        state.note_prompt_submitted("msg_user".to_string());
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-completed",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "finish": "stop",
+                    "time": { "completed": 42 }
+                }))
+                .expect("completed message should deserialize"),
+            },
+        )
+        .expect("completed message should send");
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::SessionStatus {
+                session_id: "session-1".to_string(),
+                kind: "idle".to_string(),
+            },
+        )
+        .expect("idle status should send");
+        tx.send(
+            crate::provider::opencode_client::OpenCodeEvent::MessageUpdated {
+                info: serde_json::from_value(json!({
+                    "id": "message-retry-error",
+                    "sessionID": "session-1",
+                    "role": "assistant",
+                    "parentID": "msg_user",
+                    "error": {
+                        "name": "APIError",
+                        "data": { "message": "Provider finish_reason: network_error" }
+                    }
+                }))
+                .expect("error message should deserialize"),
+            },
+        )
+        .expect("error message should send");
+
+        let result =
+            drain_opencode_events(&test_run(), &mut state, None).expect("drain should succeed");
+
+        assert_eq!(
+            result.terminal_failure.as_deref(),
+            Some("Provider finish_reason: network_error")
+        );
+        assert!(result.completions.is_empty());
+        assert!(result.prompt_completed);
     }
 
     #[test]

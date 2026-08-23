@@ -250,53 +250,6 @@ impl KernelRuntimeOwnedState {
         Ok(Some(restored))
     }
 
-    pub(super) fn update_active_prompt_delivery_session(
-        &self,
-        session_id: &str,
-        agent_id: &str,
-        prompt_id: &str,
-        provider_run_id: &str,
-        expected_provider_session_id: &str,
-        current_provider_session_id: &str,
-    ) -> Result<Option<crate::session::PromptQueueItem>, DaemonError> {
-        let session = self.session_store.get_session(session_id)?;
-        let Some((previous, updated)) = self
-            .prompt_state_owner
-            .compare_and_update_active_prompt_delivery_session(
-                &session,
-                agent_id,
-                prompt_id,
-                provider_run_id,
-                expected_provider_session_id,
-                current_provider_session_id,
-            )
-        else {
-            return Ok(None);
-        };
-        let (active_prompt, queued_prompts) =
-            self.prompt_state_owner.state_parts(&session, agent_id);
-        if let Err(error) = self.mirror_prompt_owner_agent_state(
-            session_id,
-            agent_id,
-            active_prompt,
-            queued_prompts,
-        ) {
-            let _ = self
-                .prompt_state_owner
-                .replace_active_prompt_if_matches(&session, agent_id, &updated, previous);
-            let (active_prompt, queued_prompts) =
-                self.prompt_state_owner.state_parts(&session, agent_id);
-            self.session_store.mirror_agent_prompt_state(
-                session_id,
-                agent_id,
-                active_prompt,
-                queued_prompts,
-            )?;
-            return Err(error);
-        }
-        Ok(Some(updated))
-    }
-
     pub(super) fn begin_active_prompt_recovery(
         &self,
         session_id: &str,

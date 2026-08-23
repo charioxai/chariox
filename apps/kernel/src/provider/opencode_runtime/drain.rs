@@ -37,6 +37,7 @@ pub(in crate::provider) fn drain_opencode_events(
     let mut resolved_model_source = None;
     let mut resolved_variant = None;
     let mut resolved_usage_tokens_total = None;
+    let drain_active_user_message_id = state.active_user_message_id.clone();
 
     for _ in 0..OPENCODE_EVENT_DRAIN_MAX_EVENTS {
         match state.event_subscription.receiver.try_recv() {
@@ -65,15 +66,19 @@ pub(in crate::provider) fn drain_opencode_events(
                 state
                     .message_parent_ids
                     .insert(info.id.clone(), info.parent_id.clone());
-                if info.role == "assistant" && state.message_belongs_to_active_prompt(&info.id) {
+                if info.role == "assistant"
+                    && info.parent_id.as_deref() == drain_active_user_message_id.as_deref()
+                {
                     if let Some(message) = info.terminal_error_message() {
                         record_terminal_failure(
                             state,
                             message,
                             &mut chunks,
+                            &mut completions,
                             &mut notices,
                             &mut terminal_failure,
                             &mut prompt_completed,
+                            drain_active_user_message_id.as_deref(),
                         );
                         continue;
                     }
@@ -153,9 +158,11 @@ pub(in crate::provider) fn drain_opencode_events(
                         state,
                         message,
                         &mut chunks,
+                        &mut completions,
                         &mut notices,
                         &mut terminal_failure,
                         &mut prompt_completed,
+                        drain_active_user_message_id.as_deref(),
                     );
                 }
             }
@@ -182,16 +189,20 @@ pub(in crate::provider) fn drain_opencode_events(
                                 &messages,
                             );
                             chunks.extend(snapshot_chunks.chunks);
-                            if let Some(message) =
-                                opencode_messages_active_prompt_failure(state, &messages)
-                            {
+                            if let Some(message) = opencode_messages_active_prompt_failure(
+                                state,
+                                &messages,
+                                drain_active_user_message_id.as_deref(),
+                            ) {
                                 record_terminal_failure(
                                     state,
                                     message,
                                     &mut chunks,
+                                    &mut completions,
                                     &mut notices,
                                     &mut terminal_failure,
                                     &mut prompt_completed,
+                                    drain_active_user_message_id.as_deref(),
                                 );
                             } else {
                                 let status_completions =
@@ -274,16 +285,21 @@ pub(in crate::provider) fn drain_opencode_events(
                             bytes: format_session_status(&snapshot.status).into_bytes(),
                         });
                     }
-                    let snapshot_failure =
-                        opencode_messages_active_prompt_failure(state, &snapshot.messages);
+                    let snapshot_failure = opencode_messages_active_prompt_failure(
+                        state,
+                        &snapshot.messages,
+                        drain_active_user_message_id.as_deref(),
+                    );
                     if let Some(message) = snapshot_failure {
                         record_terminal_failure(
                             state,
                             message,
                             &mut chunks,
+                            &mut completions,
                             &mut notices,
                             &mut terminal_failure,
                             &mut prompt_completed,
+                            drain_active_user_message_id.as_deref(),
                         );
                     } else {
                         let snapshot_completions =
@@ -354,15 +370,20 @@ pub(in crate::provider) fn drain_opencode_events(
                         )
                         .chunks,
                     );
-                    if let Some(message) = opencode_messages_active_prompt_failure(state, &messages)
-                    {
+                    if let Some(message) = opencode_messages_active_prompt_failure(
+                        state,
+                        &messages,
+                        drain_active_user_message_id.as_deref(),
+                    ) {
                         record_terminal_failure(
                             state,
                             message,
                             &mut chunks,
+                            &mut completions,
                             &mut notices,
                             &mut terminal_failure,
                             &mut prompt_completed,
+                            drain_active_user_message_id.as_deref(),
                         );
                     } else {
                         completions
@@ -405,13 +426,16 @@ fn record_terminal_failure(
     state: &mut OpenCodeRuntimeState,
     message: String,
     chunks: &mut Vec<OpenCodeOutputChunk>,
+    completions: &mut Vec<OpenCodeAssistantCompletion>,
     notices: &mut Vec<String>,
     terminal_failure: &mut Option<String>,
     prompt_completed: &mut bool,
+    drain_active_user_message_id: Option<&str>,
 ) {
-    if terminal_failure.is_some() || state.active_user_message_id.is_none() {
+    if terminal_failure.is_some() || drain_active_user_message_id.is_none() {
         return;
     }
+    completions.clear();
     chunks.push(OpenCodeOutputChunk {
         kind: TerminalOutputKind::ProviderError,
         merge_key: None,

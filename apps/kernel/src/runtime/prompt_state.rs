@@ -180,48 +180,6 @@ impl PromptStateOwner {
         Some((previous, active.clone()))
     }
 
-    pub(crate) fn compare_and_update_active_prompt_delivery_session(
-        &self,
-        session: &RuntimeSession,
-        agent_id: &str,
-        prompt_id: &str,
-        provider_run_id: &str,
-        expected_provider_session_id: &str,
-        current_provider_session_id: &str,
-    ) -> Option<(PromptQueueItem, PromptQueueItem)> {
-        let mut owner = self
-            .state
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let active = owner
-            .ensure_agent_state(session, agent_id)
-            .active_prompt
-            .as_mut()?;
-        let delivery_phase = active.durable_delivery_phase()?;
-        if active.id() != prompt_id
-            || !matches!(
-                active.status(),
-                PromptStatus::Running | PromptStatus::Dispatching
-            )
-            || !matches!(
-                delivery_phase,
-                crate::session::DurablePromptDeliveryPhase::Dispatching
-                    | crate::session::DurablePromptDeliveryPhase::Delivered
-            )
-            || active.durable_delivery_provider_run_id() != Some(provider_run_id)
-            || active.durable_delivery_provider_session_id() != Some(expected_provider_session_id)
-        {
-            return None;
-        }
-        let previous = active.clone();
-        active.set_durable_delivery(
-            delivery_phase,
-            Some(provider_run_id.to_string()),
-            Some(current_provider_session_id.to_string()),
-        );
-        Some((previous, active.clone()))
-    }
-
     pub(crate) fn replay_durable_submission(
         &self,
         session: &RuntimeSession,

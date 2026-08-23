@@ -38,10 +38,13 @@ pub(super) fn opencode_messages_complete_active_prompt(
 pub(super) fn opencode_messages_active_prompt_failure(
     state: &OpenCodeRuntimeState,
     messages: &[OpenCodeMessage],
+    active_user_message_id: Option<&str>,
 ) -> Option<String> {
+    let active_user_message_id = active_user_message_id?;
     messages.iter().rev().find_map(|message| {
         (message.info.role == "assistant"
-            && state.message_belongs_to_active_prompt(&message.info.id))
+            && message.info.session_id == state.session_id
+            && message.info.parent_id.as_deref() == Some(active_user_message_id))
         .then(|| message.info.terminal_error_message())
         .flatten()
     })

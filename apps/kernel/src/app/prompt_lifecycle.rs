@@ -539,6 +539,19 @@ impl DaemonApp {
         )
     }
 
+    pub(crate) fn fail_active_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        crate::app::KernelAgentService::new(self).fail_active_prompt(
+            session_id,
+            agent_id,
+            provider_run_id,
+        )
+    }
+
     #[doc(hidden)]
     pub fn cancel_active_prompt(
         &mut self,

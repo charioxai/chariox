@@ -29,6 +29,7 @@ pub(super) struct KernelPromptOwnerCompletion {
     pub(super) remote_execution: Option<RemoteAgentBinding>,
     pub(super) remote_provider_run_id: Option<String>,
     pub(super) next_queued_prompt: Option<PromptQueueItem>,
+    pub(super) settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
 }
 
 impl<'a> KernelAgentService<'a> {
@@ -38,7 +39,28 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
     ) -> Result<PromptCompletion, DaemonError> {
-        self.complete_active_prompt_for_kernel(session_id, agent_id, provider_run_id, None)
+        self.complete_active_prompt_for_kernel(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            crate::git_observer::CompletedTurnSettlementStatus::Completed,
+        )
+    }
+
+    pub(crate) fn fail_active_prompt(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+        provider_run_id: Option<&str>,
+    ) -> Result<PromptCompletion, DaemonError> {
+        self.complete_active_prompt_for_kernel(
+            session_id,
+            agent_id,
+            provider_run_id,
+            None,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed,
+        )
     }
 
     pub(crate) fn complete_active_prompt_for_kernel(
@@ -47,6 +69,7 @@ impl<'a> KernelAgentService<'a> {
         agent_id: &str,
         provider_run_id: Option<&str>,
         next_queued_prompt: Option<&PromptQueueItem>,
+        settlement_status: crate::git_observer::CompletedTurnSettlementStatus,
     ) -> Result<PromptCompletion, DaemonError> {
         let admission = self.prepare_prompt_completion_admission(
             session_id,
@@ -56,11 +79,13 @@ impl<'a> KernelAgentService<'a> {
         )?;
         let completion = match admission {
             KernelPromptCompletionAdmission::Remote { .. } => {
-                let completed = self.complete_remote_prompt_from_admission(admission)?;
+                let mut completed = self.complete_remote_prompt_from_admission(admission)?;
+                completed.settlement_status = settlement_status;
                 self.finish_remote_prompt_completion(completed)?
             }
             KernelPromptCompletionAdmission::Local { .. } => {
-                let completed = self.complete_local_prompt_from_admission(admission)?;
+                let mut completed = self.complete_local_prompt_from_admission(admission)?;
+                completed.settlement_status = settlement_status;
                 self.finish_local_prompt_completion(completed)?
             }
         };
@@ -126,6 +151,7 @@ impl<'a> KernelAgentService<'a> {
             remote_execution: None,
             remote_provider_run_id: None,
             next_queued_prompt,
+            settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
         })
     }
 
@@ -158,7 +184,7 @@ impl<'a> KernelAgentService<'a> {
                 completion.completed.id(),
                 completion_provider_run_id.as_deref(),
                 settled_at_ms,
-                "completed",
+                completion.settlement_status.as_str(),
             );
         self.app
             .completed_git_turn_snapshot_store()
@@ -171,7 +197,7 @@ impl<'a> KernelAgentService<'a> {
                 &completion.completed,
                 settled_at_ms,
                 started_at_ms,
-                crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                completion.settlement_status,
             );
         if !flow_control::prompt_completion_recorded(
             self.app,

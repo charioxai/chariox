@@ -332,6 +332,7 @@ impl<'a> KernelAgentService<'a> {
             remote_execution: Some(remote_execution),
             remote_provider_run_id,
             next_queued_prompt,
+            settlement_status: crate::git_observer::CompletedTurnSettlementStatus::Completed,
         })
     }
 
@@ -359,7 +360,7 @@ impl<'a> KernelAgentService<'a> {
                 completion.completed.id(),
                 Some(&remote_provider_run_id),
                 settled_at_ms,
-                "completed",
+                completion.settlement_status.as_str(),
             );
         self.app
             .completed_git_turn_snapshot_store()
@@ -370,7 +371,7 @@ impl<'a> KernelAgentService<'a> {
                 &completion.completed,
                 settled_at_ms,
                 started_at_ms,
-                crate::git_observer::CompletedTurnSettlementStatus::Completed,
+                completion.settlement_status,
             );
         let recipient_attachment_ids = self
             .app

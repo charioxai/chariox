@@ -204,7 +204,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         }
         let _ = self
             .app
-            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+            .fail_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         self.clear_active_turn(provider_run_id);
         Ok(())
     }
@@ -258,7 +258,7 @@ impl<'a> ProviderOutputPromptSettlement<'a> {
         }
         let _ = self
             .app
-            .complete_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
+            .fail_active_prompt(session_id, &agent_id, Some(provider_run_id))?;
         self.clear_active_turn(provider_run_id);
         Ok(())
     }
@@ -468,6 +468,13 @@ mod tests {
                 .expect("session should exist")
                 .active_provider_run_id(),
             None
+        );
+        assert_eq!(
+            app.completed_git_turn_snapshot_store()
+                .latest_projection_for_agent(session.id(), agent.id())
+                .expect("failed prompt should remain visible")
+                .settlement_status,
+            crate::git_observer::CompletedTurnSettlementStatus::Failed
         );
     }
 

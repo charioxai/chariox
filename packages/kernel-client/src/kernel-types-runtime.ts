@@ -73,7 +73,7 @@ export type CompletedGitTurnActionProjection = {
   external_provider_session_id?: string | null
   external_provider_turn_id?: string | null
   completed_at_ms: number
-  settlement_status: "completed" | "cancelled"
+  settlement_status: "completed" | "cancelled" | "failed"
   duration_ms?: number | null
   changed_paths: string[]
   undo_available: boolean

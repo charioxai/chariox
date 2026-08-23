@@ -243,13 +243,21 @@ async fn structured_terminal_failure_settles_and_persists_single_provider_error(
             .state(),
         crate::provider::ProviderRunState::Ended
     );
+    let activity = runtime.agent_activity_for_session(&session_state);
+    let agent_activity = activity
+        .get(agent.id())
+        .expect("agent activity should be projected");
     assert_eq!(
-        runtime
-            .agent_activity_for_session(&session_state)
-            .get(agent.id())
-            .expect("agent activity should be projected")
-            .status,
+        agent_activity.status,
         crate::runtime::projection::AgentRuntimeStatus::Idle
+    );
+    assert_eq!(
+        agent_activity
+            .last_completed_turn
+            .as_ref()
+            .expect("failed turn should remain visible")
+            .settlement_status,
+        crate::git_observer::CompletedTurnSettlementStatus::Failed
     );
 }
 

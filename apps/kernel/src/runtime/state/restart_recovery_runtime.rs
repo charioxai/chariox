@@ -772,7 +772,6 @@ impl KernelRuntimeState {
         prompt: &crate::session::PromptQueueItem,
         _delivery_phase: crate::session::DurablePromptDeliveryPhase,
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
-        let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
         if adapter_key == "dev-stub" {
             self.redispatch_local_prompt(session_id, agent.id(), &prompt)
@@ -786,12 +785,16 @@ impl KernelRuntimeState {
         }
         let existing_recovery_operation =
             prompt.durable_recovery_operation_id().map(str::to_string);
-        let prompt_text = prompt.prompt().to_string();
+        let session = self.owned.session_store.get_session(session_id).ok();
+        let workflow_rendered_prompt = session
+            .as_ref()
+            .and_then(|session| workflow_turn_rendered_prompt(session, prompt));
+        let recovery_material =
+            restart_recovery_prompt_material(prompt, workflow_rendered_prompt.as_deref());
+        let prompt_text = recovery_material.transcript_match_text.clone();
         let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
-            self.owned
-                .session_store
-                .get_session(session_id)
-                .ok()
+            session
+                .as_ref()
                 .map(|session| session.worktree_id().to_string())
         });
         let mut matched = None;
@@ -825,45 +828,13 @@ impl KernelRuntimeState {
             .provider_resume_state()
             .provider_session_id(adapter_key)
             .map(str::to_string);
-        if let (Some(dispatch_session_id), Some(current_session_id)) = (
-            prompt_provider_session_id.as_deref(),
-            agent_provider_session_id.as_deref(),
-        ) {
-            if dispatch_session_id != current_session_id {
-                let provider_run_id = prompt.durable_delivery_provider_run_id().ok_or_else(|| {
-                    DaemonError::LocalTransport {
-                        operation: "reconcile provider restart session",
-                        message: format!(
-                            "prompt `{}` has mismatched provider sessions without a durable provider run",
-                            prompt.id()
-                        ),
-                    }
-                })?;
-                prompt = self
-                    .owned
-                    .update_active_prompt_delivery_session(
-                        session_id,
-                        agent.id(),
-                        prompt.id(),
-                        provider_run_id,
-                        dispatch_session_id,
-                        current_session_id,
-                    )?
-                    .ok_or_else(|| DaemonError::LocalTransport {
-                        operation: "reconcile provider restart session",
-                        message: format!(
-                            "prompt `{}` changed before provider session `{current_session_id}` could be preserved",
-                            prompt.id()
-                        ),
-                    })?;
-            }
-        }
         let provider_session_id = preferred_restart_recovery_provider_session_id(
-            agent_provider_session_id.as_deref(),
-            prompt.durable_delivery_provider_session_id(),
             matched
                 .as_ref()
                 .map(|matched| matched.provider_session_id.as_str()),
+            prompt_provider_session_id.as_deref(),
+            agent_provider_session_id.as_deref(),
+            prompt.workflow_run_id().is_some(),
         );
         let Some(provider_session_id) = provider_session_id else {
             // Dispatching means the provider call may already have succeeded.
@@ -937,7 +908,6 @@ impl KernelRuntimeState {
                     .provider_store
                     .run_uses_structured_prompt_io(&run)
             });
-        let continuation = provider_restart_continuation_prompt(&operation_id);
         let dispatch = crate::app::KernelPromptDispatch {
             session_id: session_id.to_string(),
             provider_run_id,
@@ -945,9 +915,9 @@ impl KernelRuntimeState {
             prompt_id: prompt.id().to_string(),
             target_active_prompt_id: None,
             source_attachment_id: format!("{KERNEL_RECOVERY_ATTACHMENT_PREFIX}{operation_id}"),
-            prompt: continuation,
-            hidden_system_context: String::new(),
-            attachments: Vec::new(),
+            prompt: provider_restart_continuation_prompt(&operation_id),
+            hidden_system_context: recovery_material.hidden_system_context,
+            attachments: recovery_material.attachments,
             prompt_origin: crate::session::PromptOrigin::Chariox,
             external_provider: None,
             external_provider_session_id: None,
@@ -1012,14 +982,72 @@ impl KernelRuntimeState {
 }
 
 fn preferred_restart_recovery_provider_session_id(
-    durable_agent_session_id: Option<&str>,
-    dispatch_session_id: Option<&str>,
     observed_session_id: Option<&str>,
+    dispatch_session_id: Option<&str>,
+    durable_agent_session_id: Option<&str>,
+    workflow_prompt: bool,
 ) -> Option<String> {
-    durable_agent_session_id
+    observed_session_id
         .or(dispatch_session_id)
-        .or(observed_session_id)
+        .or((!workflow_prompt)
+            .then_some(durable_agent_session_id)
+            .flatten())
         .map(str::to_string)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RestartRecoveryPromptMaterial {
+    transcript_match_text: String,
+    hidden_system_context: String,
+    attachments: Vec<crate::session::PromptAttachment>,
+}
+
+fn restart_recovery_prompt_material(
+    prompt: &crate::session::PromptQueueItem,
+    workflow_rendered_prompt: Option<&str>,
+) -> RestartRecoveryPromptMaterial {
+    let transcript_match_text = workflow_rendered_prompt
+        .unwrap_or_else(|| prompt.prompt())
+        .to_string();
+    let hidden_system_context = match workflow_rendered_prompt {
+        Some(rendered_prompt) => join_restart_recovery_context(
+            prompt.hidden_system_context(),
+            &format!(
+                "Authoritative durable workflow turn interrupted by a kernel restart:\n\n{rendered_prompt}"
+            ),
+        ),
+        None => prompt.hidden_system_context().to_string(),
+    };
+    RestartRecoveryPromptMaterial {
+        transcript_match_text,
+        hidden_system_context,
+        attachments: prompt.attachments().to_vec(),
+    }
+}
+
+fn workflow_turn_rendered_prompt(
+    session: &crate::session::RuntimeSession,
+    prompt: &crate::session::PromptQueueItem,
+) -> Option<String> {
+    let workflow_run_id = prompt.workflow_run_id()?;
+    let workflow_node_run_id = prompt.workflow_node_run_id()?;
+    session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == workflow_run_id)?
+        .node_runs()
+        .iter()
+        .find(|node_run| node_run.id() == workflow_node_run_id)?
+        .turn_envelope()?
+        .rendered_prompt()
+        .map(str::to_string)
+}
+
+fn join_restart_recovery_context(existing: &str, recovery: &str) -> String {
+    match existing.trim() {
+        "" => recovery.to_string(),
+        existing => format!("{existing}\n\n{recovery}"),
+    }
 }
 
 fn recoverable_queued_publication_prompt(
@@ -1187,6 +1215,70 @@ mod tests {
             crate::runtime::router::INTERACTIVE_COMMAND_QUEUE_LIMIT,
         );
         (router.runtime_state(), session_id, agent_id, prompt_id)
+    }
+
+    #[test]
+    fn workflow_restart_recovery_never_uses_an_agent_level_session() {
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                None,
+                Some("prompt-session"),
+                Some("stale-agent-session"),
+                true,
+            ),
+            Some("prompt-session".to_string())
+        );
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                None,
+                None,
+                Some("stale-agent-session"),
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                Some("observed-session"),
+                Some("prompt-session"),
+                Some("stale-agent-session"),
+                true,
+            ),
+            Some("observed-session".to_string())
+        );
+    }
+
+    #[test]
+    fn workflow_restart_recovery_preserves_durable_context_and_attachments() {
+        let attachment = crate::session::PromptAttachment::new(
+            "file:///tmp/review.patch",
+            "text/plain",
+            Some("review.patch".to_string()),
+        );
+        let prompt = PromptQueueItem::new(
+            "pending-workflow-recovery",
+            "workflow-run:test",
+            "agent-1",
+            "raw queued prompt",
+            PromptStatus::Running,
+        )
+        .with_hidden_system_context("existing hidden context")
+        .with_attachments(vec![attachment.clone()]);
+
+        let material =
+            restart_recovery_prompt_material(&prompt, Some("authoritative rendered workflow turn"));
+
+        assert_eq!(
+            material.transcript_match_text,
+            "authoritative rendered workflow turn"
+        );
+        assert!(material
+            .hidden_system_context
+            .starts_with("existing hidden context\n\n"));
+        assert!(material
+            .hidden_system_context
+            .contains("authoritative rendered workflow turn"));
+        assert_eq!(material.attachments, vec![attachment]);
     }
 
     fn runtime_with_queued_metaagent_task() -> (KernelRuntimeState, String, String) {

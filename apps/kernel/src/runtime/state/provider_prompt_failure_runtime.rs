@@ -65,7 +65,7 @@ impl KernelRuntimeState {
         } else {
             WorkflowPromptDispatches::default()
         };
-        let completion = owned.complete_local_prompt_without_advance(
+        let completion = owned.fail_local_prompt_without_advance(
             session_id,
             &agent_id,
             Some(provider_run_id),
