@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
+import { once } from "node:events"
+import { access, mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { spawn, spawnSync } from "node:child_process"
@@ -87,14 +88,80 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.doesNotMatch(script, /\.arroba/)
 })
 
-test("provider probes run from the managed user's accessible home", async () => {
+test("provider probes use a credential-free disposable home and remove it", async () => {
   const script = await readFile(scriptUrl, "utf8")
   const helper = script.match(/provider_tool_as_chariox\(\) \{(?<body>[\s\S]*?)\n\}/)?.groups?.body
 
   assert.ok(helper, "provider_tool_as_chariox helper must exist")
-  assert.match(helper, /HOME=\/var\/lib\/chariox\/home/)
+  assert.match(script, /provider_probe_home=\$\(mktemp -d \/tmp\/chariox-provider-probe\.XXXXXX\)/)
+  assert.match(
+    script,
+    /provider_probe_home=\$\(mktemp -d \/tmp\/chariox-provider-probe\.XXXXXX\)\ntrap provider_probe_exit_cleanup 0/,
+  )
+  assert.match(script, /chown chariox:chariox "\$provider_probe_home"/)
+  assert.match(script, /chmod 0700 "\$provider_probe_home"/)
+  for (const signal of ["HUP", "INT", "TERM"]) {
+    assert.match(script, new RegExp(`trap 'provider_probe_signal_cleanup ${signal}' ${signal}`))
+  }
+  assert.match(helper, /env -i/)
+  assert.match(helper, /HOME="\$provider_probe_home"/)
   assert.match(helper, /PATH=\/usr\/local\/bin:\/usr\/bin:\/bin/)
   assert.match(helper, /sh -c 'cd "\$HOME" && exec "\$@"' sh "\$@"/)
+  assert.match(
+    script,
+    /provider_tool_as_chariox pnpm --version[\s\S]*rm -rf "\$provider_probe_home"\ntrap - 0 HUP INT TERM[\s\S]*managed runtime state entered the image/,
+  )
+})
+
+test("provider probe cleanup preserves failures and termination signals", async () => {
+  const script = await readFile(scriptUrl, "utf8")
+  const cleanupBlock = script.match(
+    /cleanup_provider_probe_home\(\) \{[\s\S]*?trap 'provider_probe_signal_cleanup TERM' TERM/,
+  )?.[0]
+
+  assert.ok(cleanupBlock, "provider probe cleanup and signal traps must exist")
+  const fixtureRoot = await mkdtemp(join(tmpdir(), "chariox-provider-probe-cleanup-"))
+  const harness = join(fixtureRoot, "cleanup-harness.sh")
+  const dash = spawnSync("sh", ["-c", "command -v dash"], { encoding: "utf8" }).stdout.trim()
+  const cleanupShell = dash || "sh"
+  await writeFile(
+    harness,
+    `#!/bin/sh
+set -eu
+${cleanupBlock}
+printf '%s\\n' "$provider_probe_home"
+case $1 in
+  fail) exit 37 ;;
+  terminate) sleep 1 ;;
+esac
+`,
+  )
+
+  try {
+    const failure = spawnSync(cleanupShell, [harness, "fail"], { encoding: "utf8" })
+    assert.equal(failure.status, 37, failure.stderr)
+    const failedProbeHome = failure.stdout.trim()
+    assert.ok(failedProbeHome.startsWith("/tmp/chariox-provider-probe."))
+    await assert.rejects(access(failedProbeHome))
+
+    const termination = spawn(cleanupShell, [harness, "terminate"], {
+      stdio: ["ignore", "pipe", "pipe"],
+    })
+    try {
+      const [chunk] = await once(termination.stdout, "data")
+      const terminatedProbeHome = chunk.toString().trim()
+      assert.ok(terminatedProbeHome.startsWith("/tmp/chariox-provider-probe."))
+      termination.kill("SIGTERM")
+      const [exitCode, exitSignal] = await once(termination, "exit")
+      assert.equal(exitCode, null)
+      assert.equal(exitSignal, "SIGTERM")
+      await assert.rejects(access(terminatedProbeHome))
+    } finally {
+      termination.kill("SIGKILL")
+    }
+  } finally {
+    await rm(fixtureRoot, { recursive: true, force: true })
+  }
 })
 
 test("rootful Docker socket cleanup fails closed and removes only stale sockets", async () => {

@@ -125,9 +125,33 @@ ln -sfn "$provider_toolchain_root/node_modules/.bin/codex" /usr/local/bin/codex
 ln -sfn "$provider_toolchain_root/node_modules/.bin/opencode" /usr/local/bin/opencode
 ln -sfn "$provider_toolchain_root/node_modules/.bin/claude" /usr/local/bin/claude
 ln -sfn "$provider_toolchain_root/node_modules/.bin/pnpm" /usr/local/bin/pnpm
+cleanup_provider_probe_home() {
+  [ -z "$provider_probe_home" ] || rm -rf "$provider_probe_home"
+}
+provider_probe_exit_cleanup() {
+  provider_probe_exit_status=$?
+  trap - 0 HUP INT TERM
+  cleanup_provider_probe_home || :
+  exit "$provider_probe_exit_status"
+}
+provider_probe_signal_cleanup() {
+  provider_probe_signal=$1
+  trap - 0 HUP INT TERM
+  cleanup_provider_probe_home || :
+  trap - "$provider_probe_signal"
+  kill -s "$provider_probe_signal" "$$"
+  exit 1
+}
+provider_probe_home=$(mktemp -d /tmp/chariox-provider-probe.XXXXXX)
+trap provider_probe_exit_cleanup 0
+trap 'provider_probe_signal_cleanup HUP' HUP
+trap 'provider_probe_signal_cleanup INT' INT
+trap 'provider_probe_signal_cleanup TERM' TERM
+chown chariox:chariox "$provider_probe_home"
+chmod 0700 "$provider_probe_home"
 provider_tool_as_chariox() {
-  runuser -u chariox -- env \
-    HOME=/var/lib/chariox/home \
+  runuser -u chariox -- env -i \
+    HOME="$provider_probe_home" \
     PATH=/usr/local/bin:/usr/bin:/bin \
     sh -c 'cd "$HOME" && exec "$@"' sh "$@"
 }
@@ -139,6 +163,8 @@ provider_tool_as_chariox() {
   || fail "installed Claude Code version does not match"
 [ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
+rm -rf "$provider_probe_home"
+trap - 0 HUP INT TERM
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \
   || fail "Docker package has no rootless daemon launcher"
 if id -nG chariox | tr ' ' '\n' | grep -qx docker; then
