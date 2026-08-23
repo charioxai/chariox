@@ -26,9 +26,9 @@ use crate::runtime_transport::{
 use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
     runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, terminal_output_event_batches, waiting_room_rows_changed_event,
-    workflow_run_only_changed, workflow_run_updated_events, KernelEvent,
-    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
+    workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;

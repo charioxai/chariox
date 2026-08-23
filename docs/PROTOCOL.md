@@ -421,14 +421,14 @@ Current pushed event contract:
 - `provider_run_changed` carries `session_id` and the current provider run, or `null` when no provider run is active
 - `session_metadata_changed` carries `session_id` and a `metadata` patch with alias, last-used timestamps, hidden state, focused agent, and workspace live-sync mode
 - `runtime_interactions_changed` carries `session_id` and the current active runtime interactions for permission/choice prompts
-- `waiting_room_inventory_changed` carries only `inventory_version` and is retained as a lightweight compatibility/fallback signal
+- `waiting_room_inventory_changed` carries only `inventory_version` and requires clients to refetch the full waiting-room snapshot when fields outside the row patch change, including provider accounts, Git credentials, external provider sessions, relay inventory, remote kernels, and terminals
 - `waiting_room_rows_changed` carries `inventory_version`, `schema_version`, `generated_at_ms`, optional `launch_target`, changed session rows, and `removed_session_ids`; clients should apply it as a row patch instead of refetching the full waiting-room snapshot
 - `provider_catalog_changed` carries `generated_at_ms` and the current provider catalog
 - `slices_changed` carries `generated_at_ms` and the current slice list
 - `workflow_run_updated` carries `session_id` and the updated workflow run for workflow-run-only updates
 - `heartbeat`, `transport_resumed`, `replay_gap`, `session_unavailable`, and `transport_closed` are transport/recovery signals; heartbeat and successful resume should not force full session, waiting-room, or prompt-history reads, while replay gaps require clients to discard optimistic deltas and request a fresh projection
 
-Managed remote-kernel control uses local daemon protocol version 279. The kernel
+Managed remote-kernel control uses local daemon protocol version 280. The kernel
 client surface includes:
 
 - Waiting Room inventory fields for provider accounts and safe Git credential

@@ -5,6 +5,7 @@ use std::future::Future;
 use super::request_errors::map_relay_error;
 use super::*;
 use crate::runtime::projection::SessionSnapshotProjection;
+use crate::transport::kernel_protocol::WaitingRoomInventoryEventProjection;
 use chariox_relay::protocol::RelayCallerIdentity;
 
 pub(super) type RelaySubscriptionTasks = Arc<Mutex<BTreeMap<String, RelaySubscriptionTask>>>;
@@ -745,7 +746,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
     resumed: bool,
     caller_user_id: String,
 ) {
-    let mut previous_waiting_room_snapshot = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status = if resumed {
         Some(router.transport_relay_status_snapshot().await)
     } else {
@@ -768,11 +769,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
             match router.waiting_room_public_snapshot(&caller_user_id).await {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    if let Some(event) = waiting_room_rows_changed_event(
-                        snapshot.clone(),
-                        previous_waiting_room_snapshot.as_ref(),
-                    ) {
-                        previous_waiting_room_snapshot = Some(snapshot);
+                    for event in waiting_room_event_projection.project(snapshot) {
                         if emit_relay_event(
                             &router,
                             &outgoing_tx,
@@ -785,7 +782,7 @@ async fn run_relay_waiting_room_inventory_subscription_loop(
                         .await
                         .is_err()
                         {
-                            break;
+                            return;
                         }
                     }
                 }

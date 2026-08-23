@@ -162,7 +162,7 @@ state before it reports zero.
 
 ## 10. Protocol and validation
 
-The local daemon protocol is version 279 for this implementation. Shape tests cover
+The local daemon protocol is version 280 for this implementation. Shape tests cover
 managed environment summaries and control, transfer preparation and status,
 explicit launch-target requests, multi-Workspace Projects, slice repository
 topology, and provider and SCM selection. Managed activity uses a separately
