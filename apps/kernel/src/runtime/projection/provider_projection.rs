@@ -332,7 +332,13 @@ fn provider_run_health_snapshot(
             if let (Some(focused_agent_id), Some(run_agent_id)) =
                 (session.focused_agent_id(), run.agent_instance_id())
             {
-                if focused_agent_id != run_agent_id {
+                let focused_agent_has_live_run = focused_agent_id != run_agent_id
+                    && runs.iter().any(|candidate| {
+                        candidate.session_id() == session.id()
+                            && candidate.state() != ProviderRunState::Ended
+                            && candidate.agent_instance_id() == Some(focused_agent_id)
+                    });
+                if focused_agent_id != run_agent_id && !focused_agent_has_live_run {
                     return Some(ProviderRunSessionPointerIssue {
                         session_id: session.id().to_string(),
                         active_provider_run_id: Some(active_provider_run_id.to_string()),
