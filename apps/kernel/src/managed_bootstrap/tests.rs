@@ -606,6 +606,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "Environment=CHARIOX_SLICE_ROOT=/var/lib/chariox-slice-share/slices",
         "Environment=CHARIOX_MANAGED_VAULT_PATH=/var/lib/chariox/home/.chariox/vault/vault.json",
         "Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock",
+        "Environment=PATH=/usr/local/bin:/usr/bin:/bin",
         "After=chariox-rootless-docker.service",
         "Wants=network-online.target chariox-rootless-docker.service",
         "ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service",

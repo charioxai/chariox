@@ -24,6 +24,7 @@ Environment=CHARIOX_MANAGED_RELEASE_SIGNATURE=/usr/lib/chariox/release-manifest.
 Environment=CHARIOX_MANAGED_RELEASE_PUBLIC_KEY=/usr/lib/chariox/release-public-key
 Environment=CHARIOX_MANAGED_KERNEL_BINARY=/usr/local/bin/chariox-kernel
 Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 ExecStartPre=-+/usr/bin/systemctl restart chariox-slice-broker.service
 ExecStart=/usr/local/bin/chariox-managed-bootstrap
 Restart=always

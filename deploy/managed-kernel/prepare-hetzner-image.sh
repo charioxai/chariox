@@ -120,17 +120,21 @@ npm_cache=/tmp/chariox-provider-npm-cache
 rm -rf "$npm_cache"
 (cd "$provider_toolchain_root" && npm_config_cache="$npm_cache" npm ci --omit=dev)
 rm -rf "$npm_cache" /root/.npm
+chmod -R u=rwX,go=rX "$provider_toolchain_root"
 ln -sfn "$provider_toolchain_root/node_modules/.bin/codex" /usr/local/bin/codex
 ln -sfn "$provider_toolchain_root/node_modules/.bin/opencode" /usr/local/bin/opencode
 ln -sfn "$provider_toolchain_root/node_modules/.bin/claude" /usr/local/bin/claude
 ln -sfn "$provider_toolchain_root/node_modules/.bin/pnpm" /usr/local/bin/pnpm
-[ "$(codex --version)" = "codex-cli $codex_version" ] \
+provider_tool_as_chariox() {
+  runuser -u chariox -- env PATH=/usr/local/bin:/usr/bin:/bin "$@"
+}
+[ "$(provider_tool_as_chariox codex --version)" = "codex-cli $codex_version" ] \
   || fail "installed Codex version does not match"
-[ "$(opencode --version)" = "$opencode_version" ] \
+[ "$(provider_tool_as_chariox opencode --version)" = "$opencode_version" ] \
   || fail "installed OpenCode version does not match"
-[ "$(claude --version)" = "$claude_version (Claude Code)" ] \
+[ "$(provider_tool_as_chariox claude --version)" = "$claude_version (Claude Code)" ] \
   || fail "installed Claude Code version does not match"
-[ "$(pnpm --version)" = "11.22.0" ] \
+[ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \
   || fail "Docker package has no rootless daemon launcher"
