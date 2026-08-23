@@ -1383,7 +1383,10 @@ fn reconnect_progress_keeps_active_turn_running() {
         chunks[0].kind,
         crate::terminal::TerminalOutputKind::ProviderStatus
     );
-    assert_eq!(chunks[0].merge_key.as_deref(), Some("__provider_status__"));
+    assert_eq!(
+        chunks[0].merge_key.as_deref(),
+        Some(crate::provider::PROVIDER_CONNECTION_RETRY_MERGE_KEY)
+    );
     assert_eq!(
         String::from_utf8_lossy(&chunks[0].bytes),
         "Codex connection interrupted — retrying (2/5)."
