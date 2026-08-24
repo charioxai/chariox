@@ -288,6 +288,101 @@ async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification(
 }
 
 #[tokio::test]
+async fn structured_output_usage_resolves_the_cloud_owners_local_account_authority() {
+    let cloud_owner_user_id = "cloud-owner";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: cloud_owner_user_id.to_string(),
+        ..Default::default()
+    });
+    let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "workspace-cloud-owner-usage",
+                "worktree-cloud-owner-usage",
+            )
+            .with_owner_user_id(cloud_owner_user_id),
+        )
+        .expect("cloud-owned session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            "client-cloud-owner-usage",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            cloud_owner_user_id,
+        ))
+        .expect("cloud owner should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch through the local account authority");
+    app.update_provider_run_projection(run.clone());
+    app.submit_prompt(
+        session.id(),
+        attachment.id(),
+        Some(agent.id()),
+        "status\n",
+        Vec::new(),
+    )
+    .expect("prompt should start");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime
+        .apply_owned_structured_output_batch(
+            session.id(),
+            run.id(),
+            vec![attachment.id().to_string()],
+            crate::provider::ProviderPromptSignalBatch {
+                chunks: vec![crate::provider::ProviderPromptChunk {
+                    kind: crate::terminal::TerminalOutputKind::ProviderOutput,
+                    merge_key: Some("cloud-owner-usage-output".to_string()),
+                    bytes: b"continued output".to_vec(),
+                }],
+                account_usage: Some(crate::account_profile::ProviderAccountUsageSnapshot {
+                    profile_id: "default".to_string(),
+                    provider: "claude".to_string(),
+                    availability:
+                        crate::account_profile::ProviderAccountUsageAvailability::Available,
+                    meters: Vec::new(),
+                    observed_at_ms: Some(1_000),
+                    source: "cloud-owner-usage-test".to_string(),
+                    management_url: None,
+                }),
+                ..crate::provider::ProviderPromptSignalBatch::default()
+            },
+        )
+        .await
+        .expect("usage should update without aborting the output batch");
+
+    let profile = runtime
+        .owned
+        .provider_account_profiles
+        .get(crate::session::DEFAULT_LOCAL_USER_ID, "claude", "default")
+        .expect("the local account authority profile should remain resolvable");
+    assert_eq!(profile.usage.source, "cloud-owner-usage-test");
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .drain_output_records(session.id(), attachment.id())
+            .into_iter()
+            .map(|record| record.bytes)
+            .collect::<Vec<_>>(),
+        vec![b"continued output".to_vec()]
+    );
+}
+
+#[tokio::test]
 async fn structured_output_and_completion_fanout_respect_collaborator_trace_visibility() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
