@@ -159,6 +159,121 @@ fn substitute_without_bound_account_falls_back_to_default_and_restore_is_exact()
 }
 
 #[test]
+fn default_primary_round_trips_persistence_and_restores_default_account() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        Some("gpt-5.4".to_string()),
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
+    agent.add_substitute(
+        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+            .with_account_profile(Some("substitute-personal".to_string())),
+    );
+    agent.activate_substitute(0, "manual");
+
+    // Persistence round-trip: the stored primary snapshot (including its
+    // default account) survives serialize/deserialize.
+    let serialized = serde_json::to_string(&agent).expect("agent should serialize");
+    let mut restored: AgentInstance =
+        serde_json::from_str(&serialized).expect("agent should deserialize");
+    restored.deactivate_substitute();
+    assert_eq!(restored.provider(), "opencode");
+    assert_eq!(restored.model(), Some("gpt-5.4"));
+    assert_eq!(restored.account_profile(), None);
+    assert_eq!(restored.provider_account_profile(), "default");
+}
+
+#[test]
+fn named_primary_round_trips_persistence_and_restores_named_account() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        Some("gpt-5.4".to_string()),
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_account_profile(Some("primary-work".to_string()));
+    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
+    agent.add_substitute(
+        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+            .with_account_profile(Some("substitute-personal".to_string())),
+    );
+    agent.activate_substitute(0, "manual");
+    assert_eq!(agent.provider(), "codex");
+    assert_eq!(agent.account_profile(), Some("substitute-personal"));
+
+    let serialized = serde_json::to_string(&agent).expect("agent should serialize");
+    let mut restored: AgentInstance =
+        serde_json::from_str(&serialized).expect("agent should deserialize");
+    restored.deactivate_substitute();
+    assert_eq!(restored.provider(), "opencode");
+    assert_eq!(restored.model(), Some("gpt-5.4"));
+    assert_eq!(restored.effort(), None);
+    assert_eq!(restored.account_profile(), Some("primary-work"));
+}
+
+#[test]
+fn switching_substitutes_does_not_overwrite_stored_primary_and_removing_active_restores() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        Some("gpt-5.4".to_string()),
+        Some("high".to_string()),
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_account_profile(Some("primary-work".to_string()));
+    agent.set_primary_profile(
+        "opencode",
+        Some("gpt-5.4".to_string()),
+        Some("high".to_string()),
+    );
+    agent.add_substitute(
+        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+            .with_account_profile(Some("substitute-a".to_string())),
+    );
+    agent.add_substitute(
+        AgentSubstituteProfile::new("claude", "sonnet", None)
+            .with_account_profile(Some("substitute-b".to_string())),
+    );
+
+    agent.activate_substitute(0, "manual");
+    agent.activate_substitute(1, "manual");
+    assert_eq!(agent.provider(), "claude");
+    assert_eq!(agent.account_profile(), Some("substitute-b"));
+
+    // Removing the ACTIVE substitute returns to the exact primary profile.
+    agent.remove_substitute(1);
+    assert_eq!(agent.active_substitute_index(), None);
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.model(), Some("gpt-5.4"));
+    assert_eq!(agent.effort(), Some("high"));
+    assert_eq!(agent.account_profile(), Some("primary-work"));
+
+    // Clearing with an active substitute also restores atomically.
+    agent.activate_substitute(0, "manual");
+    agent.clear_substitutes();
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.model(), Some("gpt-5.4"));
+    assert_eq!(agent.effort(), Some("high"));
+    assert_eq!(agent.account_profile(), Some("primary-work"));
+}
+
+#[test]
 fn workflow_runtime_materialization_preserves_config_without_live_state() {
     let mut source = AgentInstance::new(
         "agent-1",

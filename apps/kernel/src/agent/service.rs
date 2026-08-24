@@ -737,6 +737,24 @@ impl AgentService {
         Ok(agent.clone())
     }
 
+    pub fn set_agent_primary_profile_snapshot(
+        &mut self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        let agent = self
+            .store
+            .get_mut(agent_id)
+            .ok_or_else(|| DaemonError::AgentNotFound {
+                agent_id: agent_id.to_string(),
+            })?;
+        agent.set_primary_profile_snapshot(provider, model, effort, account_profile);
+        Ok(agent.clone())
+    }
+
     pub fn alias_agent(
         &mut self,
         agent_id: &str,

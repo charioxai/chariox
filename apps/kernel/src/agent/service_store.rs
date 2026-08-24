@@ -378,6 +378,23 @@ impl AgentServiceStore {
         self.write().clear_agent_substitutes(agent_id)
     }
 
+    pub fn set_agent_primary_profile_snapshot(
+        &self,
+        agent_id: &str,
+        provider: &str,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+    ) -> Result<AgentInstance, DaemonError> {
+        self.write().set_agent_primary_profile_snapshot(
+            agent_id,
+            provider,
+            model,
+            effort,
+            account_profile,
+        )
+    }
+
     pub fn set_agent_substitution_timeout(
         &self,
         agent_id: &str,

@@ -439,6 +439,135 @@ async fn agent_profile_update_still_blocks_active_prompt_owner() {
     assert_active_turn_error(error, "update agent profile");
 }
 
+#[tokio::test]
+async fn substitute_add_rejects_account_not_registered_for_provider() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let _ = app;
+
+    let error = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: Some("ghost-profile".to_string()),
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect_err("unregistered substitute account must be rejected");
+
+    match error {
+        DaemonError::LocalTransport { message, .. } => {
+            assert!(
+                message.contains("ghost-profile"),
+                "error should name the rejected account: {message}"
+            );
+        }
+        other => panic!("expected registry rejection, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn substitute_lifecycle_binds_stable_account_and_primary_edit_targets_snapshot() {
+    let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
+    let stable_profile_id = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Sub Work")
+        .expect("host account profile should be created")
+        .profile_id;
+
+    // Establish a concrete primary profile before substituting.
+    let primary = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            Some("opencode".to_string()),
+            None,
+            Some("gpt-5.4".to_string()),
+            Some(Some("high".to_string())),
+        )
+        .await
+        .expect("initial primary profile should apply");
+    let primary_account = primary.account_profile().map(str::to_string);
+
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: Some(stable_profile_id.clone()),
+                kernel_id: None,
+                worktree_id: None,
+            },
+        )
+        .await
+        .expect("registered substitute account should bind");
+
+    runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Activate {
+                index: 0,
+                reason: Some("manual".to_string()),
+            },
+        )
+        .await
+        .expect("manual activation should succeed");
+    {
+        let app = app.lock().await;
+        let agent = app.agents().get_agent(&agent_id).expect("agent exists");
+        assert_eq!(agent.provider(), "codex");
+        assert_eq!(agent.provider_account_profile(), stable_profile_id);
+    }
+
+    // Primary edit while substituted retargets the primary snapshot only.
+    let agent = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            None,
+            None,
+            Some("gpt-5.6-edited".to_string()),
+            None,
+        )
+        .await
+        .expect("primary edit while substituted should update the snapshot");
+    assert_eq!(agent.model(), Some("gpt-5.4"));
+    assert_eq!(agent.primary_model(), Some("gpt-5.6-edited"));
+    assert_eq!(agent.active_substitute_index(), Some(0));
+
+    // Returning to primary lands on the edited values with the exact
+    // primary account.
+    let agent = runtime
+        .update_agent_substitutes(
+            &session_id,
+            &agent_id,
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            crate::local::AgentSubstituteAction::Primary {},
+        )
+        .await
+        .expect("return to primary should succeed");
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.model(), Some("gpt-5.6-edited"));
+    assert_eq!(agent.effort(), Some("high"));
+    assert_eq!(agent.account_profile().map(str::to_string), primary_account);
+}
+
 async fn agent_config_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
     agent_config_runtime_with_config(crate::config::DaemonConfig::for_tests()).await
 }

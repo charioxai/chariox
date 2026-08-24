@@ -248,8 +248,12 @@ pub struct AgentInstance {
     active_substitute_index: Option<usize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_substitution: Option<AgentSubstitutionRecord>,
+    /// Account bound to the stored primary profile. Captured whenever the
+    /// primary profile is snapshotted so returning from a substitute restores
+    /// the exact primary account. Absent on legacy records means the default
+    /// account.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    substitution_previous_account_profile: Option<Option<String>>,
+    primary_account_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
     #[serde(
@@ -308,7 +312,7 @@ impl AgentInstance {
             substitutes: Vec::new(),
             active_substitute_index: None,
             last_substitution: None,
-            substitution_previous_account_profile: None,
+            primary_account_profile: None,
             substitution_timeout_ms: None,
             visible_in_freeform: true,
             state: AgentState::Idle,
@@ -403,6 +407,14 @@ impl AgentInstance {
             self.primary_effort.as_deref()
         } else {
             self.effort.as_deref()
+        }
+    }
+
+    pub fn primary_account_profile(&self) -> Option<&str> {
+        if self.primary_provider.is_some() {
+            self.primary_account_profile.as_deref()
+        } else {
+            self.account_profile.as_deref()
         }
     }
 
@@ -641,6 +653,26 @@ impl AgentInstance {
         self.primary_provider = Some(provider.into());
         self.primary_model = model;
         self.primary_effort = effort;
+        self.primary_account_profile = self.account_profile.clone();
+    }
+
+    /// Directly rewrites the stored primary snapshot (used for primary-profile
+    /// edits while a substitute is active; the running substitute is untouched).
+    /// A literal `default` sentinel is normalized away so stored snapshots keep
+    /// `None` for the default account.
+    pub fn set_primary_profile_snapshot(
+        &mut self,
+        provider: impl Into<String>,
+        model: Option<String>,
+        effort: Option<String>,
+        account_profile: Option<String>,
+    ) {
+        self.primary_provider = Some(provider.into());
+        self.primary_model = model;
+        self.primary_effort = effort;
+        self.primary_account_profile =
+            normalized_agent_account_profile(account_profile.filter(|value| value != "default"));
+        self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
     pub fn set_execution_mode_override(&mut self, execution_mode: Option<AgentExecutionMode>) {
@@ -804,28 +836,24 @@ impl AgentInstance {
             return None;
         }
         let removed = self.substitutes.remove(index);
-        self.active_substitute_index = match self.active_substitute_index {
-            Some(active) if active == index => {
-                if let Some(previous_account) = self.substitution_previous_account_profile.take() {
-                    self.account_profile = previous_account;
-                }
-                None
-            }
-            Some(active) if active > index => Some(active - 1),
-            other => other,
-        };
-        self.last_activity_at_ms = crate::session::unix_epoch_ms();
+        match self.active_substitute_index {
+            Some(active) if active == index => self.deactivate_substitute(),
+            Some(active) if active > index => self.active_substitute_index = Some(active - 1),
+            _ => {}
+        }
         Some(removed)
     }
 
     pub fn clear_substitutes(&mut self) {
+        let had_active = self.active_substitute_index.is_some();
         self.substitutes.clear();
-        if let Some(previous_account) = self.substitution_previous_account_profile.take() {
-            self.account_profile = previous_account;
+        if had_active {
+            self.deactivate_substitute();
+        } else {
+            self.active_substitute_index = None;
+            self.last_substitution = None;
+            self.last_activity_at_ms = crate::session::unix_epoch_ms();
         }
-        self.active_substitute_index = None;
-        self.last_substitution = None;
-        self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 
     pub fn set_substitution_timeout_ms(&mut self, timeout_ms: Option<u64>) {
@@ -840,9 +868,13 @@ impl AgentInstance {
     ) -> Option<AgentSubstituteProfile> {
         let profile = self.substitutes.get(index)?.clone();
         if self.active_substitute_index.is_none() {
-            // Entering substitution from the primary profile: remember the
-            // primary account so returning to primary restores it exactly.
-            self.substitution_previous_account_profile = Some(self.account_profile.clone());
+            // Entering substitution from the primary profile: snapshot the full
+            // primary profile so returning to primary restores it exactly, even
+            // across persistence restarts.
+            self.primary_provider = Some(self.provider.clone());
+            self.primary_model = self.model.clone();
+            self.primary_effort = self.effort.clone();
+            self.primary_account_profile = self.account_profile.clone();
         }
         let account_profile = normalized_agent_account_profile(profile.account_profile.clone());
         self.provider = profile.provider.clone();
@@ -860,14 +892,16 @@ impl AgentInstance {
     }
 
     pub fn deactivate_substitute(&mut self) {
-        self.active_substitute_index = None;
-        self.last_substitution = None;
+        let was_active = self.active_substitute_index.take().is_some();
         self.provider = self.primary_provider().to_string();
         self.model = self.primary_model().map(str::to_string);
         self.effort = self.primary_effort().map(str::to_string);
-        if let Some(previous_account) = self.substitution_previous_account_profile.take() {
-            self.account_profile = previous_account;
+        if was_active || self.primary_provider.is_some() {
+            self.account_profile = normalized_agent_account_profile(
+                self.primary_account_profile().map(str::to_string),
+            );
         }
+        self.last_substitution = None;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 }
