@@ -179,6 +179,30 @@ fn record_relay_reconnect(router: &CommandRouter, relay_url: &str, reason: &str,
         .record_relay_reconnect_attempt(relay_url, reason, delay);
 }
 
+async fn dynamic_relay_heartbeat_registration<F, Fut>(
+    active_relay_url: &str,
+    active_relay_token: &mut String,
+    config: &crate::config::DaemonConfig,
+    registration: F,
+) -> Result<Option<chariox_relay::protocol::DaemonRegistration>, &'static str>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = chariox_relay::protocol::DaemonRegistration>,
+{
+    match relay_config_continuity(active_relay_url, active_relay_token, config) {
+        RelayConfigContinuity::Continue => Ok(None),
+        RelayConfigContinuity::Reconnect(reason) => Err(reason),
+        RelayConfigContinuity::Reauthenticate => {
+            let registration = registration().await;
+            if config.relay_token.as_deref() != Some(registration.auth_token.as_str()) {
+                return Err("relay token changed while building registration");
+            }
+            *active_relay_token = registration.auth_token.clone();
+            Ok(Some(registration))
+        }
+    }
+}
+
 fn abort_leased_projection_pump_task(task: &mut Option<JoinHandle<()>>) {
     if let Some(handle) = task.take() {
         handle.abort();
@@ -516,7 +540,7 @@ async fn run_daemon_relay_connector_inner(
             }
         }
 
-        let (relay_url, active_relay_token, heartbeat) = {
+        let (relay_url, mut active_relay_token, heartbeat) = {
             let config = router.relay_config_snapshot();
             if let Some(static_relay) = static_relay.as_ref() {
                 (
@@ -930,13 +954,40 @@ async fn run_daemon_relay_connector_inner(
                                     relay_url.clone(),
                                 ));
                             }
-                            match relay_config_continuity(
+                            let config = router.relay_config_snapshot();
+                            let continuity = dynamic_relay_heartbeat_registration(
                                 &relay_url,
-                                &active_relay_token,
-                                &router.relay_config_snapshot(),
-                            ) {
-                                RelayConfigContinuity::Continue => {}
-                                RelayConfigContinuity::Reconnect(reason) => {
+                                &mut active_relay_token,
+                                &config,
+                                || router.relay_registration(),
+                            )
+                            .await;
+                            let reconnect_reason = match continuity {
+                                Ok(None) => None,
+                                Ok(Some(registration)) => {
+                                    let reauthentication = RelayEnvelope::DaemonHeartbeat {
+                                        daemon_id: daemon_id.clone(),
+                                        registration: Some(registration),
+                                    };
+                                    if send_outgoing_envelope(&outgoing_tx, reauthentication)
+                                        .is_err()
+                                    {
+                                        Some("relay reauthentication send failed")
+                                    } else {
+                                        crate::logging::info_with_fields(
+                                            "daemon.relay_client",
+                                            "relay socket reauthentication queued",
+                                            serde_json::json!({
+                                                "relay_url": relay_url,
+                                                "phase": "token_refresh",
+                                            }),
+                                        );
+                                        None
+                                    }
+                                }
+                                Err(reason) => Some(reason),
+                            };
+                            if let Some(reason) = reconnect_reason {
                                     crate::logging::warn_with_fields(
                                         "daemon.relay_client",
                                         "relay socket reconnect requested",
@@ -956,19 +1007,25 @@ async fn run_daemon_relay_connector_inner(
                                     clear_remote_inventory_projection(&router);
                                     disconnect_relay(&router, &state, "relay configuration changed", true).await;
                                     break "relay configuration changed";
-                                }
                             }
                         }
                         _ = heartbeat_interval.tick() => {
                             heartbeat_tick = heartbeat_tick.wrapping_add(1);
+                            let mut heartbeat_registration = None;
                             if static_relay.is_none() {
-                                match relay_config_continuity(
+                                let config = router.relay_config_snapshot();
+                                match dynamic_relay_heartbeat_registration(
                                     &relay_url,
-                                    &active_relay_token,
-                                    &router.relay_config_snapshot(),
-                                ) {
-                                    RelayConfigContinuity::Continue => {}
-                                    RelayConfigContinuity::Reconnect(reason) => {
+                                    &mut active_relay_token,
+                                    &config,
+                                    || router.relay_registration(),
+                                )
+                                .await
+                                {
+                                    Ok(registration) => {
+                                        heartbeat_registration = registration;
+                                    }
+                                    Err(reason) => {
                                         crate::logging::warn_with_fields(
                                             "daemon.relay_client",
                                             "relay socket reconnect requested",
@@ -992,6 +1049,16 @@ async fn run_daemon_relay_connector_inner(
                                         break "relay configuration changed";
                                     }
                                 }
+                                if heartbeat_registration.is_some() {
+                                    crate::logging::info_with_fields(
+                                        "daemon.relay_client",
+                                        "relay socket reauthentication queued",
+                                        serde_json::json!({
+                                            "relay_url": relay_url,
+                                            "phase": "heartbeat",
+                                        }),
+                                    );
+                                }
                             }
                             if static_relay.is_none()
                                 && heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
@@ -1007,7 +1074,7 @@ async fn run_daemon_relay_connector_inner(
                             }
                             let heartbeat_frame = RelayEnvelope::DaemonHeartbeat {
                                 daemon_id: daemon_id.clone(),
-                                registration: None,
+                                registration: heartbeat_registration,
                             };
                             if send_outgoing_envelope(&outgoing_tx, heartbeat_frame).is_err() {
                                 abort_leased_projection_pump_task(&mut leased_projection_pump_task);

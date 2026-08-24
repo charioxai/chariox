@@ -251,6 +251,15 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
 ) -> Result<Option<&'static str>, DaemonError> {
     match relay_config_continuity(active_relay_url, active_relay_token, config) {
         RelayConfigContinuity::Continue => Ok(None),
+        RelayConfigContinuity::Reauthenticate => {
+            send_outgoing_envelope(
+                outgoing_tx,
+                RelayEnvelope::Close {
+                    reason: "relay configuration changed after peer response".to_string(),
+                },
+            )?;
+            Ok(Some("relay token changed"))
+        }
         RelayConfigContinuity::Reconnect(reason) => {
             send_outgoing_envelope(
                 outgoing_tx,

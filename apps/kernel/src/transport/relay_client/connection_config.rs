@@ -3,6 +3,7 @@
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum RelayConfigContinuity {
     Continue,
+    Reauthenticate,
     Reconnect(&'static str),
 }
 
@@ -16,7 +17,7 @@ pub(super) fn relay_config_continuity(
     }
     match config.relay_token.as_deref() {
         Some(token) if token == active_relay_token => RelayConfigContinuity::Continue,
-        Some(_) => RelayConfigContinuity::Reconnect("relay token changed"),
+        Some(_) => RelayConfigContinuity::Reauthenticate,
         None => RelayConfigContinuity::Reconnect("relay token missing"),
     }
 }
@@ -28,14 +29,14 @@ mod tests {
     use crate::config::DaemonConfig;
 
     #[test]
-    fn relay_config_continuity_reconnects_for_token_rotation() {
+    fn relay_config_continuity_reauthenticates_for_token_rotation() {
         let mut config = DaemonConfig::for_tests();
         config.relay_url = Some("wss://relay.example/ws".to_string());
         config.relay_token = Some("new-token".to_string());
 
         assert_eq!(
             relay_config_continuity("wss://relay.example/ws", "old-token", &config),
-            RelayConfigContinuity::Reconnect("relay token changed")
+            RelayConfigContinuity::Reauthenticate
         );
     }
 

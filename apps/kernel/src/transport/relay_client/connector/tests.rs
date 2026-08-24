@@ -87,6 +87,38 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
 }
 
 #[tokio::test]
+async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
+    let relay_url = "wss://relay.example.test";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.relay_url = Some(relay_url.to_string());
+    config.relay_token = Some("new-token".to_string());
+    let mut app = DaemonApp::bootstrap(config.clone()).expect("daemon should bootstrap");
+    let registration = app.relay_registration();
+    let mut active_token = "old-token".to_string();
+
+    let heartbeat_registration =
+        dynamic_relay_heartbeat_registration(relay_url, &mut active_token, &config, || {
+            std::future::ready(registration.clone())
+        })
+        .await
+        .expect("rotation should preserve the socket")
+        .expect("rotation should return an authenticated heartbeat registration");
+
+    assert_eq!(active_token, "new-token");
+    assert_eq!(heartbeat_registration.auth_token, "new-token");
+
+    let steady_state =
+        dynamic_relay_heartbeat_registration(relay_url, &mut active_token, &config, || async {
+            panic!("steady state must not rebuild registration")
+        })
+        .await
+        .expect("steady state should preserve the socket");
+
+    assert!(steady_state.is_none());
+    assert_eq!(active_token, "new-token");
+}
+
+#[tokio::test]
 async fn cloud_presence_publish_gate_skips_running_task() {
     let (_tx, rx) = oneshot::channel::<()>();
     let task = tokio::spawn(async move {
