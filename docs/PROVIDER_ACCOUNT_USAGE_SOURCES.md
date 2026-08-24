@@ -72,6 +72,17 @@ streamed `rate_limit_event` observations by meter identity, retaining both the
 5-hour and weekly windows instead of replacing the whole account snapshot with
 the newest event.
 
+Both seams are run-gated, so a never-run account correctly reports
+`provider_not_observed`: there is no documented pull-based subscription usage
+API, and fetching the experimental endpoint would require reading the
+provider-owned OAuth credential (Keychain-backed on macOS), which violates the
+credential seam. Every client-facing read (list/get) projects freshness onto
+the stored meters, and refresh additionally re-issues the persisted
+run-observed snapshot, downgrading both to `stale` after
+`PROVIDER_USAGE_STALE_AFTER_MS` instead of presenting aged meters as fresh.
+Read-side projection never rewrites stored state, so a later provider run can
+restore `available` from real observations.
+
 Community tools such as [ccusage](https://github.com/ryoppippi/ccusage) and
 [claude-code-statusline](https://github.com/ohugonnot/claude-code-statusline)
 also call `GET https://api.anthropic.com/api/oauth/usage` for subscription

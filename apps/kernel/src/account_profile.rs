@@ -236,6 +236,11 @@ pub struct ProviderAccountUsageSnapshot {
     pub management_url: Option<String>,
 }
 
+/// Subscription usage is provider-observed during runs, so a persisted
+/// snapshot that has not been re-observed within this horizon must no longer
+/// be presented as fresh provider data. Missing data is never fabricated.
+pub const PROVIDER_USAGE_STALE_AFTER_MS: u64 = 24 * 60 * 60 * 1000;
+
 impl ProviderAccountUsageSnapshot {
     pub fn unavailable(profile_id: impl Into<String>, provider: impl Into<String>) -> Self {
         let provider = provider.into();
@@ -254,6 +259,47 @@ impl ProviderAccountUsageSnapshot {
             },
         }
     }
+
+    /// Downgrades observed-but-aging snapshots to `stale`. Client-facing
+    /// reads (list/get) and refresh paths whose provider has no pull-based
+    /// usage seam both apply it, so aged meters are never presented as fresh.
+    /// Snapshots without meters (including `provider_not_observed`) are honest
+    /// missing data and stay untouched; error states are never masked.
+    pub fn reconciled_freshness(mut self, now_ms: u64) -> Self {
+        if self.meters.is_empty() {
+            return self;
+        }
+        // Meter merges keep per-meter observation times, so the newest
+        // observation across the snapshot and its meters decides freshness;
+        // neither timestamp alone is authoritative.
+        let newest_observed = self
+            .observed_at_ms
+            .into_iter()
+            .chain(self.meters.iter().map(|meter| meter.observed_at_ms))
+            .max();
+        let fresh = newest_observed.is_some_and(|observed_at_ms| {
+            now_ms.saturating_sub(observed_at_ms) <= PROVIDER_USAGE_STALE_AFTER_MS
+        });
+        if !fresh
+            && matches!(
+                self.availability,
+                ProviderAccountUsageAvailability::Available
+                    | ProviderAccountUsageAvailability::Partial
+            )
+        {
+            self.availability = ProviderAccountUsageAvailability::Stale;
+        }
+        self
+    }
+}
+
+/// Read-side projection so list/get responses report honest freshness for
+/// run-gated usage without mutating persisted state.
+fn project_usage_freshness(mut profile: ProviderAccountProfile) -> ProviderAccountProfile {
+    profile.usage = profile
+        .usage
+        .reconciled_freshness(crate::session::unix_epoch_ms());
+    profile
 }
 
 /// Version of the credential-kind contract shared with clients. Bump when the
@@ -661,7 +707,7 @@ impl ProviderAccountProfileRegistry {
                         .as_deref()
                         .is_none_or(|provider| profile.public.provider == provider)
             })
-            .map(|profile| profile.public.clone())
+            .map(|profile| project_usage_freshness(profile.public.clone()))
             .collect())
     }
 
@@ -675,6 +721,20 @@ impl ProviderAccountProfileRegistry {
     }
 
     pub fn get(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        profile_id: &str,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        let document = self.read_document()?;
+        resolve_stored_profile(&document, owner_user_id, provider, profile_id)
+            .map(|profile| project_usage_freshness(profile.public.clone()))
+    }
+
+    /// Test-only view of the stored (unprojected) profile.
+    #[cfg(test)]
+    fn get_raw_for_test(
         &self,
         owner_user_id: &str,
         provider: &str,
@@ -951,7 +1011,7 @@ impl ProviderAccountProfileRegistry {
         profile.public.label = label.to_string();
         let result = profile.public.clone();
         self.persist_locked(&document)?;
-        Ok(result)
+        Ok(project_usage_freshness(result))
     }
 
     pub fn set_default(
@@ -976,7 +1036,7 @@ impl ProviderAccountProfileRegistry {
             .public
             .clone();
         self.persist_locked(&document)?;
-        Ok(result)
+        Ok(project_usage_freshness(result))
     }
 
     pub fn remove_registration(
@@ -997,7 +1057,7 @@ impl ProviderAccountProfileRegistry {
             }
         }
         self.persist_locked(&document)?;
-        Ok(removed.public)
+        Ok(project_usage_freshness(removed.public))
     }
 
     pub fn delete_managed_profile_data(
@@ -1039,7 +1099,7 @@ impl ProviderAccountProfileRegistry {
             }
         }
         self.persist_locked(&document)?;
-        Ok(removed.public)
+        Ok(project_usage_freshness(removed.public))
     }
 
     pub(crate) fn export_materialization(
@@ -2120,6 +2180,223 @@ mod tests {
         (root, registry)
     }
 
+    fn usage_meter(observed_at_ms: u64) -> ProviderAccountUsageMeter {
+        ProviderAccountUsageMeter {
+            meter_id: "rate_limit/five_hour".to_string(),
+            label: "5-hour".to_string(),
+            kind: ProviderAccountUsageMeterKind::RollingLimit,
+            scope: ProviderAccountUsageMeterScope::Account,
+            used_percent: Some(21.0),
+            used: None,
+            remaining: None,
+            total: None,
+            unit: None,
+            window_duration_minutes: Some(5 * 60),
+            resets_at_ms: None,
+            state: ProviderAccountUsageMeterState::Healthy,
+            source: "claude.status_line".to_string(),
+            observed_at_ms,
+        }
+    }
+
+    #[test]
+    fn reconciled_freshness_downgrades_only_aging_observed_snapshots() {
+        let now_ms = 10_000_000_000_000;
+        let fresh = ProviderAccountUsageSnapshot {
+            profile_id: "profile-a".to_string(),
+            provider: "claude".to_string(),
+            availability: ProviderAccountUsageAvailability::Available,
+            meters: vec![usage_meter(now_ms - 1_000)],
+            observed_at_ms: Some(now_ms - 1_000),
+            source: "claude.status_line".to_string(),
+            management_url: None,
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            fresh.availability,
+            ProviderAccountUsageAvailability::Available
+        );
+
+        let aging = ProviderAccountUsageSnapshot {
+            observed_at_ms: Some(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000),
+            meters: vec![usage_meter(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000)],
+            ..fresh.clone()
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(aging.availability, ProviderAccountUsageAvailability::Stale);
+
+        // Exactly at the horizon the snapshot is still fresh.
+        let boundary = ProviderAccountUsageSnapshot {
+            observed_at_ms: Some(now_ms - PROVIDER_USAGE_STALE_AFTER_MS),
+            meters: vec![usage_meter(now_ms - PROVIDER_USAGE_STALE_AFTER_MS)],
+            ..fresh.clone()
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            boundary.availability,
+            ProviderAccountUsageAvailability::Available
+        );
+
+        // Partial snapshots age the same way; they are not exempt.
+        let partial = ProviderAccountUsageSnapshot {
+            availability: ProviderAccountUsageAvailability::Partial,
+            observed_at_ms: Some(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000),
+            meters: vec![usage_meter(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000)],
+            ..fresh.clone()
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            partial.availability,
+            ProviderAccountUsageAvailability::Stale
+        );
+
+        // The newest observation wins regardless of which timestamp carries
+        // it, so a fresh meter re-observation keeps an old snapshot fresh and
+        // a missing snapshot timestamp falls back to its meters.
+        let refreshed_meter = ProviderAccountUsageSnapshot {
+            observed_at_ms: Some(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000),
+            meters: vec![usage_meter(now_ms - 1_000)],
+            ..fresh.clone()
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            refreshed_meter.availability,
+            ProviderAccountUsageAvailability::Available
+        );
+        let meter_only_timestamp = ProviderAccountUsageSnapshot {
+            observed_at_ms: None,
+            meters: vec![usage_meter(now_ms - 1_000)],
+            ..fresh.clone()
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            meter_only_timestamp.availability,
+            ProviderAccountUsageAvailability::Available
+        );
+
+        let not_observed = ProviderAccountUsageSnapshot::unavailable("profile-a", "claude")
+            .reconciled_freshness(now_ms);
+        assert_eq!(
+            not_observed.availability,
+            ProviderAccountUsageAvailability::Unavailable
+        );
+        assert_eq!(not_observed.source, "provider_not_observed");
+
+        let errored = ProviderAccountUsageSnapshot {
+            availability: ProviderAccountUsageAvailability::Error,
+            meters: vec![usage_meter(0)],
+            ..not_observed
+        }
+        .reconciled_freshness(now_ms);
+        assert_eq!(
+            errored.availability,
+            ProviderAccountUsageAvailability::Error
+        );
+    }
+
+    #[test]
+    fn provider_account_reads_project_usage_staleness_without_mutating_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-usage-read-staleness-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let registry = ProviderAccountProfileRegistry::open(root.join("profiles.json"))
+            .expect("registry should open");
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .expect("defaults should migrate");
+        let claude_profile_id = registry
+            .list("owner-a", Some("claude"))
+            .expect("profiles should list")
+            .into_iter()
+            .find(|profile| profile.provider == "claude")
+            .expect("claude profile should migrate")
+            .profile_id;
+        let now_ms = crate::session::unix_epoch_ms();
+        let aged_snapshot = ProviderAccountUsageSnapshot {
+            profile_id: claude_profile_id.clone(),
+            provider: "claude".to_string(),
+            availability: ProviderAccountUsageAvailability::Available,
+            meters: vec![usage_meter(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000)],
+            observed_at_ms: Some(now_ms - PROVIDER_USAGE_STALE_AFTER_MS - 1_000),
+            source: "claude.status_line".to_string(),
+            management_url: None,
+        };
+        registry
+            .update_usage(
+                "owner-a",
+                "claude",
+                &claude_profile_id,
+                aged_snapshot.clone(),
+            )
+            .expect("aged usage should persist");
+
+        let fetched = registry
+            .get("owner-a", "claude", &claude_profile_id)
+            .expect("profile should resolve");
+        assert_eq!(
+            fetched.usage.availability,
+            ProviderAccountUsageAvailability::Stale
+        );
+        let listed = registry
+            .list("owner-a", Some("claude"))
+            .expect("profiles should list");
+        assert!(
+            listed.iter().all(
+                |profile| profile.usage.availability == ProviderAccountUsageAvailability::Stale
+            )
+        );
+        let renamed = registry
+            .rename(
+                "owner-a",
+                "claude",
+                &claude_profile_id,
+                "Claude renamed",
+            )
+            .expect("profile should rename");
+        assert_eq!(
+            renamed.usage.availability,
+            ProviderAccountUsageAvailability::Stale
+        );
+        let defaulted = registry
+            .set_default("owner-a", "claude", &claude_profile_id)
+            .expect("profile should become default");
+        assert_eq!(
+            defaulted.usage.availability,
+            ProviderAccountUsageAvailability::Stale
+        );
+
+        // Read-side projection must not rewrite the persisted document.
+        let stored = ProviderAccountProfileRegistry::open(root.join("profiles.json"))
+            .expect("registry should reopen");
+        assert_eq!(
+            stored
+                .get_raw_for_test("owner-a", "claude", &claude_profile_id)
+                .expect("stored profile should resolve")
+                .usage,
+            aged_snapshot.clone()
+        );
+
+        let fresh_snapshot = ProviderAccountUsageSnapshot {
+            meters: vec![usage_meter(now_ms - 1_000)],
+            observed_at_ms: Some(now_ms - 1_000),
+            ..aged_snapshot
+        };
+        stored
+            .update_usage("owner-a", "claude", &claude_profile_id, fresh_snapshot)
+            .expect("fresh usage should persist");
+        assert_eq!(
+            stored
+                .get("owner-a", "claude", &claude_profile_id)
+                .expect("profile should resolve")
+                .usage
+                .availability,
+            ProviderAccountUsageAvailability::Available
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
     #[test]
     fn credential_kind_contract_is_versioned_and_grounded_in_observable_facts() {
         assert_eq!(PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION, 1);
@@ -2170,12 +2447,7 @@ mod tests {
             .join(format!("chariox-linked-kind-{}", rand::thread_rng().gen::<u64>()));
         fs::create_dir_all(&linked_root).unwrap();
         let linked = registry
-            .link_existing(
-                "owner-a",
-                "opencode",
-                "Imported Work",
-                &linked_root,
-            )
+            .link_existing("owner-a", "opencode", "Imported Work", &linked_root)
             .unwrap();
         assert_eq!(linked.credential_kind, None);
         assert_eq!(

@@ -298,7 +298,17 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => (
             claude_auth_status(provider, &profile.profile_id, &environment)?,
-            profile.usage.clone(),
+            // Claude subscription usage has no pull-based provider-native
+            // seam: statusLine and rate_limit_event observations arrive only
+            // during provider runs, and the undocumented OAuth usage endpoint
+            // would require reading provider-owned credentials. Refresh
+            // therefore re-issues the persisted run-observed snapshot and
+            // downgrades it to stale when it is no longer fresh instead of
+            // fabricating meters for never-run accounts.
+            profile
+                .usage
+                .clone()
+                .reconciled_freshness(crate::session::unix_epoch_ms()),
         ),
         Some("opencode") => (
             opencode_auth_status(&profile.profile_id, &environment)?,
