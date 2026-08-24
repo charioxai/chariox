@@ -11,6 +11,7 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::claude::materialize_runtime_claude_mcp_config;
+use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
@@ -135,6 +136,9 @@ fn install_claude_mcp_config_argument(
             });
         }
         _ => {}
+    }
+    if let Some(directory) = config_file.and_then(std::path::Path::parent) {
+        expose_runtime_directory_in_managed_namespace(args, directory)?;
     }
     Ok(())
 }
@@ -785,6 +789,51 @@ mod tests {
             .expect_err("inline config must never reach Claude argv");
 
         assert!(error.to_string().contains("materialized config file"));
+    }
+
+    #[test]
+    fn managed_runtime_mcp_config_is_visible_inside_the_private_tmp_namespace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-runtime-binding-test-{}",
+            std::process::id()
+        ));
+        let config = root.join("mcp-config.json");
+        let mut args = vec![
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--setenv".to_string(),
+            crate::provider::managed_isolation::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/local/bin/claude".to_string(),
+            "--mcp-config".to_string(),
+            CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
+        ];
+
+        super::install_claude_mcp_config_argument(&mut args, Some(&config))
+            .expect("managed MCP config should be installed");
+
+        let separator = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("managed launch should retain its separator");
+        assert_eq!(
+            &args[separator - 5..separator],
+            [
+                "--dir",
+                root.to_str().expect("test root should be UTF-8"),
+                "--ro-bind",
+                root.to_str().expect("test root should be UTF-8"),
+                root.to_str().expect("test root should be UTF-8"),
+            ]
+        );
+        assert!(args[separator + 1..].windows(2).any(|window| {
+            window
+                == [
+                    "--mcp-config",
+                    config.to_str().expect("config should be UTF-8"),
+                ]
+        }));
     }
 
     #[test]

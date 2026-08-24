@@ -163,6 +163,7 @@ provider_tool_as_chariox() {
   || fail "installed Claude Code version does not match"
 [ "$(provider_tool_as_chariox pnpm --version)" = "11.22.0" ] \
   || fail "installed pnpm version does not match"
+sh "$script_root/verify-provider-runtime-bind.sh"
 rm -rf "$provider_probe_home"
 trap - 0 HUP INT TERM
 [ -x /usr/share/docker.io/contrib/dockerd-rootless.sh ] \

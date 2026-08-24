@@ -12,6 +12,10 @@ const rootfulSocketHelperUrl = new URL(
   "../deploy/managed-kernel/remove-stale-rootful-docker-socket.sh",
   import.meta.url,
 )
+const providerRuntimeBindUrl = new URL(
+  "../deploy/managed-kernel/verify-provider-runtime-bind.sh",
+  import.meta.url,
+)
 const versionsUrl = new URL("../deploy/managed-kernel/provider-versions.env", import.meta.url)
 const publicationDockerfileUrl = new URL("../docker/publication/Dockerfile", import.meta.url)
 const sliceDockerfileUrl = new URL("../apps/kernel/slice-linux-docker/docker/Dockerfile", import.meta.url)
@@ -111,6 +115,26 @@ test("provider probes use a credential-free disposable home and remove it", asyn
     script,
     /provider_tool_as_chariox pnpm --version[\s\S]*rm -rf "\$provider_probe_home"\ntrap - 0 HUP INT TERM[\s\S]*managed runtime state entered the image/,
   )
+})
+
+test("managed image proves private runtime files survive the masked temp namespace read-only", async () => {
+  const prepare = await readFile(scriptUrl, "utf8")
+  const probe = await readFile(providerRuntimeBindUrl, "utf8")
+
+  assert.match(prepare, /sh "\$script_root\/verify-provider-runtime-bind\.sh"/)
+  assert.match(probe, /probe_root=\$\(mktemp -d \/tmp\/chariox-provider-runtime-bind\.XXXXXX\)/)
+  assert.match(probe, /chmod 0700 "\$probe_root"/)
+  assert.match(probe, /chmod 0600 "\$probe_file"/)
+  assert.match(probe, /bwrap=\/usr\/bin\/bwrap/)
+  assert.match(probe, /stat -c %u "\$bwrap"/)
+  assert.match(probe, /find "\$bwrap" -perm \/022/)
+  assert.match(probe, /runuser -u chariox -- "\$bwrap"/)
+  assert.match(probe, /--tmpfs \/tmp/)
+  assert.match(probe, /--dir "\$probe_root"/)
+  assert.match(probe, /--ro-bind "\$probe_root" "\$probe_root"/)
+  assert.match(probe, /cat "\$probe_file"/)
+  assert.match(probe, /mutation > "\$probe_file"/)
+  assert.match(probe, /trap 'cleanup_signal TERM' TERM/)
 })
 
 test("provider probe cleanup preserves failures and termination signals", async () => {

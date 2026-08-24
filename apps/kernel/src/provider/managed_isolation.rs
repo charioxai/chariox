@@ -1,7 +1,6 @@
 use std::collections::BTreeMap;
 #[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeSet;
-#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -15,7 +14,6 @@ pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDE
 const CLAUDE_SANDBOX_ENV: &str = "IS_SANDBOX";
 #[cfg(target_os = "linux")]
 pub(crate) const MANAGED_PROVIDER_HOME_ENV: &str = "CHARIOX_MANAGED_PROVIDER_HOME";
-#[cfg(any(target_os = "linux", test))]
 pub(crate) const MANAGED_PROVIDER_ISOLATION_MARKER_ENV: &str =
     "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE";
 
@@ -179,6 +177,38 @@ fn append_managed_namespace_environment(args: &mut Vec<String>, request: &Launch
     } else {
         args.extend(["--unsetenv".to_string(), CLAUDE_SANDBOX_ENV.to_string()]);
     }
+}
+
+pub(crate) fn expose_runtime_directory_in_managed_namespace(
+    args: &mut Vec<String>,
+    directory: &Path,
+) -> Result<(), DaemonError> {
+    let managed = args
+        .windows(3)
+        .any(|window| window == ["--setenv", MANAGED_PROVIDER_ISOLATION_MARKER_ENV, "1"]);
+    if !managed {
+        return Ok(());
+    }
+    if !directory.is_absolute() || directory.parent() != Some(std::env::temp_dir().as_path()) {
+        return Err(isolation_error(
+            "managed provider runtime directory must be a direct child of the process temp directory",
+        ));
+    }
+    let separator = args.iter().position(|arg| arg == "--").ok_or_else(|| {
+        isolation_error("managed provider launch is missing its command separator")
+    })?;
+    let path = directory.display().to_string();
+    args.splice(
+        separator..separator,
+        [
+            "--dir".to_string(),
+            path.clone(),
+            "--ro-bind".to_string(),
+            path.clone(),
+            path,
+        ],
+    );
+    Ok(())
 }
 
 pub(crate) fn managed_isolated_utility_launch(
@@ -648,5 +678,37 @@ mod tests {
         assert!(!args
             .windows(3)
             .any(|args| args == ["--setenv", CLAUDE_SANDBOX_ENV, "1"]));
+    }
+
+    #[test]
+    fn managed_namespace_exposes_runtime_directory_read_only_before_the_command() {
+        let mut args = vec![
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--setenv".to_string(),
+            MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/local/bin/claude".to_string(),
+        ];
+        let directory = Path::new("/tmp/chariox-claude-runtime-test");
+
+        expose_runtime_directory_in_managed_namespace(&mut args, directory)
+            .expect("managed runtime directory should be exposed");
+
+        let separator = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("command separator should remain present");
+        assert_eq!(
+            &args[separator - 5..separator],
+            [
+                "--dir",
+                "/tmp/chariox-claude-runtime-test",
+                "--ro-bind",
+                "/tmp/chariox-claude-runtime-test",
+                "/tmp/chariox-claude-runtime-test",
+            ]
+        );
     }
 }
