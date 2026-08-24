@@ -909,9 +909,50 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
         LocalDaemonResponse::SessionCreated { session, .. } => session,
         _ => panic!("unexpected local response"),
     };
+    // Worktree-concurrency boundary: workflow node turns serialize per worktree
+    // through workspace write claims, so every node that must run concurrently
+    // needs its own worktree. The shared agent stays on the session worktree —
+    // both workflows deliberately collide on it — while the alpha and beta
+    // downstream agents get explicit isolated worktrees (the same pattern as
+    // `local_request_api_runs_independent_workflows_concurrently`), so the
+    // alpha handoff can bind to a provider run while the promoted beta
+    // delivery holds the shared agent.
     let shared_agent = harness.spawn_workflow_test_agent(session.id(), "audit-shared-agent");
-    let alpha_agent = harness.spawn_workflow_test_agent(session.id(), "audit-alpha-agent");
-    let beta_agent = harness.spawn_workflow_test_agent(session.id(), "audit-beta-agent");
+    let alpha_worktree = std::env::temp_dir()
+        .join("chariox-collision-drill-alpha")
+        .join(session.id());
+    let beta_worktree = std::env::temp_dir()
+        .join("chariox-collision-drill-beta")
+        .join(session.id());
+    std::fs::create_dir_all(&alpha_worktree).expect("alpha drill worktree should exist");
+    std::fs::create_dir_all(&beta_worktree).expect("beta drill worktree should exist");
+    let alpha_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "audit-alpha-agent",
+        Some(&alpha_worktree.to_string_lossy()),
+    );
+    let beta_agent = harness.spawn_workflow_test_agent_with_worktree(
+        session.id(),
+        "audit-beta-agent",
+        Some(&beta_worktree.to_string_lossy()),
+    );
+    assert_eq!(
+        shared_agent.worktree_id(),
+        None,
+        "the colliding shared agent must inherit the session worktree"
+    );
+    assert_ne!(
+        alpha_agent.worktree_id(),
+        shared_agent.worktree_id(),
+        "the alpha downstream agent needs an isolated worktree so its handoff does not serialize behind the beta delivery"
+    );
+    assert_ne!(
+        beta_agent.worktree_id(),
+        shared_agent.worktree_id(),
+        "the beta downstream agent needs an isolated worktree so its handoff does not serialize behind the alpha chain"
+    );
+    harness.launch_workflow_test_provider(session.id(), alpha_agent.id());
+    harness.launch_workflow_test_provider(session.id(), beta_agent.id());
     eprintln!(
         "drill: session {} with shared agent {}",
         session.id(),
@@ -1095,7 +1136,8 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
         shared_agent.id(),
         "alpha goal-audit entry",
     );
-    let alpha_after_entry = harness.wait_for_workflow_test_run_where(
+    let alpha_after_entry = wait_for_workflow_run_matching(
+        &harness,
         session.id(),
         alpha_run.id(),
         "alpha entry node should complete and route its handoff",
@@ -1118,15 +1160,19 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
         alpha_agent.id(),
         "alpha goal-audit result",
     );
-    let alpha_final = harness.wait_for_workflow_test_run_where(
+    let alpha_final = wait_for_workflow_run_matching(
+        &harness,
         session.id(),
         alpha_run.id(),
         "alpha drill run should complete",
         |run| run.status() == WorkflowRunStatus::Completed,
     );
     let alpha_message = alpha_final
-        .final_output()
-        .expect("alpha run should carry its goal-audit output")
+        .node_runs()
+        .last()
+        .and_then(|node| node.completion())
+        .and_then(|completion| completion.output())
+        .expect("alpha terminal node should carry its goal-audit output")
         .message();
     assert!(
         alpha_message.contains("alpha goal-audit result"),
@@ -1194,50 +1240,52 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
         beta_agent.id(),
         "beta goal-audit result",
     );
-    let beta_final = harness.wait_for_workflow_test_run_where(
+    let beta_final = wait_for_workflow_run_matching(
+        &harness,
         session.id(),
         beta_run_created.id(),
         "beta drill run should complete",
         |run| run.status() == WorkflowRunStatus::Completed,
     );
     let beta_message = beta_final
-        .final_output()
-        .expect("beta run should carry its goal-audit output")
+        .node_runs()
+        .last()
+        .and_then(|node| node.completion())
+        .and_then(|completion| completion.output())
+        .expect("beta terminal node should carry its goal-audit output")
         .message();
     assert!(
         beta_message.contains("beta goal-audit result"),
         "beta output should carry the audit payload, got: {beta_message}"
     );
 
-    // Exactly one run per workflow, with disjoint identities.
-    let final_state = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should remain available")
-            .clone()
-    });
-    assert_eq!(
-        final_state
-            .workflow_runs()
-            .iter()
-            .filter(|run| run.workflow_id() == alpha_workflow.id())
-            .count(),
-        1
-    );
-    assert_eq!(
-        final_state
-            .workflow_runs()
-            .iter()
-            .filter(|run| run.workflow_id() == beta_workflow.id())
-            .count(),
-        1
-    );
+    // Exactly one durable run per workflow, with disjoint identities. Terminal
+    // runs leave the active session projection and remain queryable through
+    // workflow history, which is the product-facing source for completed runs.
+    let list_runs = |workflow_id: &str| match harness
+        .dispatch(LocalDaemonRequest::ListWorkflowRuns(
+            ListWorkflowRunsRequest {
+                session_id: session.id().to_string(),
+                workflow_ref: Some(workflow_id.to_string()),
+                cursor: None,
+                limit: None,
+            },
+        ))
+        .expect("durable workflow runs should list")
+    {
+        LocalDaemonResponse::WorkflowRunsListed { workflow_runs, .. } => workflow_runs,
+        _ => panic!("unexpected workflow run history response"),
+    };
+    assert_eq!(list_runs(alpha_workflow.id()).len(), 1);
+    assert_eq!(list_runs(beta_workflow.id()).len(), 1);
     assert_ne!(alpha_final.id(), beta_final.id());
     eprintln!(
         "drill: complete; alpha run {}, beta run {}; identities preserved across queueing and restart restore",
         alpha_final.id(),
         beta_final.id()
     );
+    std::fs::remove_dir_all(alpha_worktree).expect("alpha drill worktree should clean up");
+    std::fs::remove_dir_all(beta_worktree).expect("beta drill worktree should clean up");
 }
 
 fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {
@@ -1561,4 +1609,25 @@ fn wait_for_workflow_run_status(
         std::thread::sleep(std::time::Duration::from_millis(25));
     }
     panic!("workflow run `{workflow_run_id}` did not reach expected status");
+}
+
+fn wait_for_workflow_run_matching(
+    harness: &LocalRouterTestHarness,
+    session_id: &str,
+    workflow_run_id: &str,
+    reason: &str,
+    predicate: impl Fn(&crate::session::WorkflowRun) -> bool,
+) -> crate::session::WorkflowRun {
+    let mut last = None;
+    for _ in 0..200 {
+        let workflow_run = harness.get_workflow_test_run(session_id, workflow_run_id);
+        if predicate(&workflow_run) {
+            return workflow_run;
+        }
+        last = Some(workflow_run);
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    panic!(
+        "workflow run `{workflow_run_id}` did not reach expected state ({reason}); last observation: {last:?}"
+    );
 }
