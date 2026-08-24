@@ -112,6 +112,44 @@ test("provider account list renders every subscription window meter with labels"
   assert.match(rendered, /5-hour 84% used · nearing limit · resets in 2h \| Weekly 31% used · resets in 5d/)
 })
 
+test("provider account list preserves the source reason when meters have no values", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude",
+    flashFooter: () => {},
+    appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a",
+      provider: "claude",
+      profile_id: "opaque-claude-id",
+      label: "Pro",
+      origin: "chariox_created",
+      is_default: true,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-claude-id",
+        provider: "claude",
+        availability: "partial",
+        meters: [{
+          meter_id: "rate_limit/five_hour",
+          label: "5-hour",
+          kind: "rolling_limit",
+          scope: "account",
+          state: "unknown",
+          source: "claude.status_line",
+        }],
+        source: "provider_not_observed",
+      },
+      materializations: [],
+    }],
+  }
+
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts list", value: "accounts list" })
+
+  assert.match(notices.join("\n"), /partially reported \(provider has not exposed usage yet\)/)
+  assert.doesNotMatch(notices.join("\n"), /no reported value/)
+})
+
 test("provider account actions accept aliases while keeping profile ids internal", async () => {
   const calls: string[] = []
   const notices: string[] = []

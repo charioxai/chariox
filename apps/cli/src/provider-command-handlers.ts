@@ -384,7 +384,7 @@ export async function resolveProviderAccountAlias(
 
 function formatProviderAccountUsage(profile: ProviderAccountProfile): string {
   const meters = profile.usage.meters ?? []
-  if (meters.length > 0) {
+  if (meters.some((meter) => meter.used_percent != null || meter.remaining != null || meter.used != null)) {
     return meters.map((meter) => formatUsageMeter(meter, meters.length > 1)).join(" | ")
   }
   const reason = providerUsageSourceReason(profile.usage.source)
