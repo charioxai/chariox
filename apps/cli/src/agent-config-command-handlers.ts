@@ -190,7 +190,7 @@ async function agentAccountDisplayValue(
   agent: AgentInstance,
 ): Promise<string> {
   const profileId = agent.account_profile?.trim() || "default"
-  if (!deps.listProviderAccountProfiles) return profileId === "default" ? "Default" : "Account unavailable"
+  if (!deps.listProviderAccountProfiles) return "Account unavailable"
   const profiles = await deps.listProviderAccountProfiles(agent.provider)
   const profile = providerAccountsForProvider(profiles, agent.provider)
     .find((entry) => entry.profile_id === profileId)

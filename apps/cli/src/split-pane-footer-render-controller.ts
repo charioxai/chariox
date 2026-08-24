@@ -53,9 +53,7 @@ export function createSplitPaneFooterRenderController(
         agentBusyLatch: deps.agentBusyLatch,
         sessionConfigValues: deps.sessionConfigValues(),
         agentLocationLabel: deps.agentLocationLabel,
-        providerAccountLabel: deps.providerAccountLabel ?? ((_provider, accountProfile) => (
-          accountProfile === "default" ? "Default" : "Account unavailable"
-        )),
+        providerAccountLabel: deps.providerAccountLabel ?? (() => "Account unavailable"),
         badgeWidth: deps.badgeWidth,
         animationFrame: deps.animationFrame(),
       })

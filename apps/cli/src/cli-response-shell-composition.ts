@@ -162,7 +162,7 @@ export function createCliResponseShellComposition(deps: CliResponseShellComposit
     providerAccountLabel: (provider, accountProfile) => {
       const profile = selectedProviderAccount(deps.providerAccountsState(), provider, accountProfile)
       if (profile) return providerAccountDisplayLabel(profile)
-      return accountProfile === "default" ? "Default" : "Account unavailable"
+      return "Account unavailable"
     },
     badgeWidth: STATUS_BADGE_WIDTH,
     animationFrame: deps.workingAnimationFrame,

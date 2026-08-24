@@ -75,7 +75,7 @@ test("command center account choices display labels but execute stable profile i
   })
 
   assert.deepEqual(items.map((item) => ({ label: item.label, value: item.value })), [{
-    label: "Validation · validation@example.com",
+    label: "Validation",
     value: "secondary",
   }])
 })

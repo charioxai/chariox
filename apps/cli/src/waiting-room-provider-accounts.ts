@@ -32,7 +32,5 @@ export function defaultProviderAccountProfileId(
 }
 
 export function providerAccountDisplayLabel(profile: ProviderAccountProfile): string {
-  const identity = profile.identity_summary?.trim()
-  const suffix = identity && identity !== profile.label ? ` · ${identity}` : ""
-  return `${profile.label}${profile.is_default ? " (default)" : ""}${suffix}`
+  return profile.label
 }

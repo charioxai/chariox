@@ -156,7 +156,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
     model: "codex/gpt-5.6-luna",
     effort: "low",
   })
-  assert.equal(flashedMessage, "agent-1 account: Validation · validation@example.com")
+  assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
 function deps(currentAgent: AgentInstance) {

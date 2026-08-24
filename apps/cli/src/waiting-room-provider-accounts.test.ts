@@ -4,6 +4,7 @@ import test from "node:test"
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   providerAccountFamily,
+  providerAccountDisplayLabel,
   providerAccountsForProvider,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
@@ -33,6 +34,14 @@ test("provider account selection stays isolated to the selected provider family"
     providerAccountsForProvider(profiles, "codex").map((profile) => profile.profile_id),
     ["codex-primary"],
   )
+})
+
+test("provider account display uses only the public alias", () => {
+  const profile = account("codex", "internal-profile", true)
+  profile.label = "codex-1"
+  profile.identity_summary = "owner@example.com"
+
+  assert.equal(providerAccountDisplayLabel(profile), "codex-1")
 })
 
 function account(
