@@ -1047,6 +1047,17 @@ fn app_side_duplicate_completion_before_promoted_workflow_dispatch_is_ignored() 
         .sessions_mut()
         .create_workflow(&session_id, Some("queued-after-user".to_string()))
         .expect("workflow should be created");
+    app.sessions_mut()
+        .set_workflow_flush_agent_context_before_run(&session_id, workflow.id(), false)
+        .expect("duplicate-completion fixture should reuse its structured provider");
+    let mut workflow_provider = app
+        .providers()
+        .get_run(&provider_run_id)
+        .expect("duplicate-completion fixture provider should exist");
+    workflow_provider.enable_workflow_tools();
+    app.providers_mut()
+        .insert_run_for_test(workflow_provider.clone());
+    app.update_provider_run_projection(workflow_provider);
     let node = app
         .sessions_mut()
         .add_workflow_node(&session_id, workflow.id(), &agent_id)

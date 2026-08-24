@@ -542,7 +542,7 @@ mod tests {
                 .get_run(old_running_run.id())
                 .expect("old target run should remain represented")
                 .state(),
-            crate::provider::ProviderRunState::Running
+            crate::provider::ProviderRunState::Ended
         );
         let replacement = runtime
             .owned

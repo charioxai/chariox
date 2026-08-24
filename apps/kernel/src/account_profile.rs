@@ -2441,6 +2441,7 @@ mod tests {
             rand::thread_rng().gen::<u64>()
         ));
         fs::create_dir_all(&linked_root).unwrap();
+        set_private_dir_permissions(&linked_root).unwrap();
         let linked = registry
             .link_existing("owner-a", "opencode", "Imported Work", &linked_root)
             .unwrap();

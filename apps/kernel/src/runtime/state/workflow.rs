@@ -83,11 +83,19 @@ impl KernelRuntimeOwnedState {
         let mut retired_provider_run_id = None;
         if fresh_context {
             if let Some(run) = existing_run.as_ref() {
+                let session = self.session_store.get_session(session_id)?;
+                let has_queued_prompt = run.agent_instance_id().is_some_and(|agent_id| {
+                    !self
+                        .prompt_state_owner
+                        .state_parts(&session, agent_id)
+                        .1
+                        .is_empty()
+                });
                 if matches!(
                     run.state(),
                     crate::provider::ProviderRunState::Starting
                         | crate::provider::ProviderRunState::Running
-                ) && self.provider_run_has_active_prompt(session_id, run)?
+                ) && (self.provider_run_has_active_prompt(session_id, run)? || has_queued_prompt)
                 {
                     return Ok((run.id().to_string(), None));
                 }

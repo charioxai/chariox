@@ -85,6 +85,7 @@ fn removing_claude_native_process_cleans_hook_files() {
         .expect("permission response dir should exist");
     let events_file = root.join("events.jsonl");
     let context_file = root.join("hidden-context.txt");
+    let usage_file = root.join("usage.json");
     std::fs::write(&events_file, "").expect("events file should exist");
     std::fs::write(&context_file, "").expect("context file should exist");
     let request = LaunchProviderRequest::new(
@@ -119,6 +120,10 @@ fn removing_claude_native_process_cleans_hook_files() {
                 (
                     "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
                     permission_response_dir.display().to_string(),
+                ),
+                (
+                    "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+                    usage_file.display().to_string(),
                 ),
             ]),
             pty_env_remove: Vec::new(),

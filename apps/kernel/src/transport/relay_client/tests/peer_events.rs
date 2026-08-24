@@ -38,7 +38,10 @@ async fn incoming_peer_events_project_runtime_to_the_home_session() {
     let (session_id, agent_id, attachment_id, prompt_id, daemon_public_key) = {
         let mut app = app.lock().await;
         let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-            .create_session(CreateSessionRequest::new("workspace-home", "worktree-home"))
+            .create_session(
+                CreateSessionRequest::new("workspace-home", "worktree-home")
+                    .with_agent_defaults(crate::session::SessionAgentDefaults::new("dev-stub")),
+            )
             .expect("session should be created");
         let attachment = crate::app::KernelSessionService::new(&mut app)
             .attach(AttachRequest::new(
