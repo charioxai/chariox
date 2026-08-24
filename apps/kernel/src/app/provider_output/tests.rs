@@ -354,38 +354,43 @@ fn pump_structured_test_run(
 }
 
 #[test]
-fn live_requested_structured_poll_failure_is_retried() {
+fn live_requested_structured_poll_failures_are_retried_then_surfaced() {
     let (mut app, session_id, attachment_id, provider_run_id) = structured_provider_test_app();
     let output_store = app.structured_output_record_store();
-    output_store.mark_poll_enqueued(&provider_run_id, None);
-    app.providers_mut()
-        .push_finished_structured_output_poll_for_test(
-            provider_run_id.clone(),
-            Err(crate::error::DaemonError::ProviderProtocol {
-                provider_run_id: provider_run_id.clone(),
-                operation: "thread/turns/list",
-                message: "new rollout is temporarily empty".to_string(),
-            }),
-        );
+    for attempt in 1..=STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(&provider_run_id, None);
+        app.providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                provider_run_id.clone(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: provider_run_id.clone(),
+                    operation: "thread/turns/list",
+                    message: "new rollout is temporarily empty".to_string(),
+                }),
+            );
 
-    let records = ProviderOutputPump::new(&mut app)
-        .pump_provider_output(ProviderOutputPumpRequest {
-            session_id: &session_id,
-            provider_run_id: &provider_run_id,
-            recipient_attachment_ids: vec![attachment_id],
-            initial_liveness_already_checked: true,
-        })
-        .expect("a live requested structured poll failure should be deferred");
-
-    assert!(records.is_empty());
-    assert!(
-        output_store.poll_due_at_ms(&provider_run_id).is_some(),
-        "the live provider run must remain scheduled after a transient poll failure",
-    );
-    assert!(
-        !output_store.poll_due(&provider_run_id, crate::session::unix_epoch_ms()),
-        "the retry should respect the empty-poll backoff",
-    );
+        let result =
+            ProviderOutputPump::new(&mut app).pump_provider_output(ProviderOutputPumpRequest {
+                session_id: &session_id,
+                provider_run_id: &provider_run_id,
+                recipient_attachment_ids: vec![attachment_id.clone()],
+                initial_liveness_already_checked: true,
+            });
+        if attempt < STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            assert!(result
+                .expect("a transient structured poll failure should be deferred")
+                .is_empty());
+            assert!(output_store.poll_due_at_ms(&provider_run_id).is_some());
+            assert!(!output_store.poll_due(&provider_run_id, crate::session::unix_epoch_ms()));
+        } else {
+            assert!(matches!(
+                result,
+                Err(crate::error::DaemonError::ProviderProtocol { .. })
+            ));
+            assert!(output_store.poll_due_at_ms(&provider_run_id).is_none());
+            assert!(!output_store.poll_due(&provider_run_id, u64::MAX));
+        }
+    }
 }
 
 #[test]

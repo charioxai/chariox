@@ -5,12 +5,14 @@ use crate::provider::ProviderPromptSignalBatch;
 use crate::terminal::TerminalOutputRecord;
 
 pub(crate) const STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS: u64 = 500;
+pub(crate) const STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT: u8 = 3;
 
 #[derive(Clone, Default)]
 pub(crate) struct StructuredOutputRecordStore {
     records: Arc<Mutex<BTreeMap<String, Vec<TerminalOutputRecord>>>>,
     next_poll_due_at_ms: Arc<Mutex<BTreeMap<String, u64>>>,
     in_flight_prompt_ids: Arc<Mutex<BTreeMap<String, String>>>,
+    consecutive_poll_failures: Arc<Mutex<BTreeMap<String, u8>>>,
 }
 
 impl StructuredOutputRecordStore {
@@ -41,6 +43,15 @@ impl StructuredOutputRecordStore {
     }
 
     pub(crate) fn poll_due(&self, provider_run_id: &str, now_ms: u64) -> bool {
+        if self
+            .consecutive_poll_failures
+            .lock()
+            .expect("structured output poll failure map poisoned")
+            .get(provider_run_id)
+            .is_some_and(|attempts| *attempts >= STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT)
+        {
+            return false;
+        }
         if self
             .in_flight_prompt_ids
             .lock()
@@ -130,6 +141,7 @@ impl StructuredOutputRecordStore {
             .lock()
             .expect("structured output poll prompt map poisoned")
             .remove(provider_run_id);
+        self.clear_poll_failures(provider_run_id);
     }
 
     pub(crate) fn stop_polling(&self, provider_run_id: &str) {
@@ -137,6 +149,7 @@ impl StructuredOutputRecordStore {
             .lock()
             .expect("structured output poll schedule poisoned")
             .remove(provider_run_id);
+        self.clear_poll_failures(provider_run_id);
     }
 
     pub(crate) fn schedule_after_empty_poll(
@@ -148,6 +161,46 @@ impl StructuredOutputRecordStore {
             provider_run_id.into(),
             now_ms.saturating_add(STRUCTURED_OUTPUT_EMPTY_POLL_BACKOFF_MS),
         );
+    }
+
+    pub(crate) fn mark_poll_succeeded(&self, provider_run_id: &str) {
+        self.clear_poll_failures(provider_run_id);
+    }
+
+    pub(crate) fn schedule_after_poll_failure(
+        &self,
+        provider_run_id: &str,
+        now_ms: u64,
+    ) -> Option<u8> {
+        let attempt = {
+            let mut failures = self
+                .consecutive_poll_failures
+                .lock()
+                .expect("structured output poll failure map poisoned");
+            let attempt = failures
+                .get(provider_run_id)
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(1);
+            failures.insert(provider_run_id.to_string(), attempt);
+            attempt
+        };
+        if attempt >= STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            self.next_poll_due_at_ms
+                .lock()
+                .expect("structured output poll schedule poisoned")
+                .remove(provider_run_id);
+            return None;
+        }
+        self.schedule_after_empty_poll(provider_run_id.to_string(), now_ms);
+        Some(attempt)
+    }
+
+    fn clear_poll_failures(&self, provider_run_id: &str) {
+        self.consecutive_poll_failures
+            .lock()
+            .expect("structured output poll failure map poisoned")
+            .remove(provider_run_id);
     }
 }
 
@@ -163,7 +216,7 @@ pub(crate) fn structured_output_batch_should_poll_immediately(
 
 #[cfg(test)]
 mod tests {
-    use super::StructuredOutputRecordStore;
+    use super::{StructuredOutputRecordStore, STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT};
 
     #[test]
     fn structured_output_poll_schedule_defers_empty_poll_reenqueue() {
@@ -193,6 +246,31 @@ mod tests {
         assert_eq!(
             store.take_in_flight_prompt_id("provider-run-1").as_deref(),
             Some("prompt-1")
+        );
+    }
+
+    #[test]
+    fn structured_output_poll_failures_are_bounded_and_reset_by_success() {
+        let store = StructuredOutputRecordStore::default();
+
+        for attempt in 1..STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            assert_eq!(
+                store.schedule_after_poll_failure("provider-run-1", 1_000),
+                Some(attempt),
+            );
+        }
+        assert_eq!(
+            store.schedule_after_poll_failure("provider-run-1", 1_000),
+            None,
+        );
+        assert!(!store.poll_due("provider-run-1", u64::MAX));
+
+        store.mark_poll_succeeded("provider-run-1");
+
+        assert!(store.poll_due("provider-run-1", u64::MAX));
+        assert_eq!(
+            store.schedule_after_poll_failure("provider-run-1", 2_000),
+            Some(1),
         );
     }
 }

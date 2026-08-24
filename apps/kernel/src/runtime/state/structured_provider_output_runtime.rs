@@ -62,8 +62,16 @@ impl KernelRuntimeState {
                 }),
             );
             let poll_result = match finished.result {
-                Ok(Some(poll_result)) => poll_result,
+                Ok(Some(poll_result)) => {
+                    owned
+                        .structured_output_records
+                        .mark_poll_succeeded(&finished_run_id);
+                    poll_result
+                }
                 Ok(None) => {
+                    owned
+                        .structured_output_records
+                        .mark_poll_succeeded(&finished_run_id);
                     owned
                         .structured_output_records
                         .schedule_after_empty_poll(finished_run_id, now_ms);
@@ -90,9 +98,29 @@ impl KernelRuntimeState {
                             continue;
                         }
                         Ok(false) => {
-                            owned
+                            let retry_attempt = owned
                                 .structured_output_records
-                                .schedule_after_empty_poll(finished_run_id.clone(), now_ms);
+                                .schedule_after_poll_failure(&finished_run_id, now_ms);
+                            if retry_attempt.is_none() {
+                                crate::logging::error_with_fields(
+                                    "daemon.app",
+                                    "structured output polling abandoned after repeated failures",
+                                    serde_json::json!({
+                                        "session_id": if is_requested_run {
+                                            Some(session_id)
+                                        } else {
+                                            None
+                                        },
+                                        "provider_run_id": finished_run_id,
+                                        "retry_limit": crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
+                                        "error": error.to_string(),
+                                    }),
+                                );
+                                if is_requested_run {
+                                    return Err(error);
+                                }
+                                continue;
+                            }
                             crate::logging::warn_with_fields(
                                 "daemon.app",
                                 "structured output poll failed; retry scheduled",
@@ -103,6 +131,7 @@ impl KernelRuntimeState {
                                         None
                                     },
                                     "provider_run_id": finished_run_id,
+                                    "retry_attempt": retry_attempt,
                                     "error": error.to_string(),
                                 }),
                             );
@@ -110,14 +139,21 @@ impl KernelRuntimeState {
                         }
                         Err(reconcile_error) if is_requested_run => return Err(reconcile_error),
                         Err(reconcile_error) => {
-                            owned
+                            let retry_attempt = owned
                                 .structured_output_records
-                                .schedule_after_empty_poll(finished_run_id.clone(), now_ms);
+                                .schedule_after_poll_failure(&finished_run_id, now_ms);
+                            let message = if retry_attempt.is_some() {
+                                "background structured output poll reconciliation failed; retry scheduled"
+                            } else {
+                                "background structured output poll reconciliation abandoned after repeated failures"
+                            };
                             crate::logging::error_with_fields(
                                 "daemon.app",
-                                "background structured output poll reconciliation failed",
+                                message,
                                 serde_json::json!({
                                     "provider_run_id": finished_run_id,
+                                    "retry_attempt": retry_attempt,
+                                    "retry_limit": crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT,
                                     "error": reconcile_error.to_string(),
                                 }),
                             );

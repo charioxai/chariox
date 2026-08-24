@@ -571,6 +571,8 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
         )
         .expect("runtime instance should register");
     assert!(instance_worktree.exists());
+    std::fs::write(instance_root.join("stale-runtime-note"), "obsolete")
+        .expect("stray runtime artifact should be created");
 
     runtime
         .owned

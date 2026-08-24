@@ -771,8 +771,9 @@ impl KernelRuntimeState {
         session_id: &str,
         agent: &crate::agent::AgentInstance,
         prompt: &crate::session::PromptQueueItem,
-        _delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        delivery_phase: crate::session::DurablePromptDeliveryPhase,
     ) -> Result<UncertainLocalRecoveryOutcome, DaemonError> {
+        let mut prompt = prompt.clone();
         let adapter_key = crate::provider::adapter_key_for_provider(agent.provider());
         if adapter_key == "dev-stub" {
             self.redispatch_local_prompt(session_id, agent.id(), &prompt)
@@ -789,9 +790,9 @@ impl KernelRuntimeState {
         let session = self.owned.session_store.get_session(session_id).ok();
         let workflow_rendered_prompt = session
             .as_ref()
-            .and_then(|session| workflow_turn_rendered_prompt(session, prompt));
+            .and_then(|session| workflow_turn_rendered_prompt(session, &prompt));
         let recovery_material =
-            restart_recovery_prompt_material(prompt, workflow_rendered_prompt.as_deref());
+            restart_recovery_prompt_material(&prompt, workflow_rendered_prompt.as_deref());
         let prompt_text = recovery_material.transcript_match_text.clone();
         let worktree_path = agent.worktree_id().map(str::to_string).or_else(|| {
             session
@@ -844,6 +845,25 @@ impl KernelRuntimeState {
             // Accepted is the only phase known to be safe for raw redispatch.
             return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
         };
+        if prompt.durable_delivery_provider_session_id() != Some(provider_session_id.as_str()) {
+            let provider_run_id = prompt.durable_delivery_provider_run_id().ok_or_else(|| {
+                DaemonError::LocalTransport {
+                    operation: "reconcile provider restart session",
+                    message: format!(
+                        "prompt `{}` has mismatched provider sessions without a durable provider run",
+                        prompt.id()
+                    ),
+                }
+            })?;
+            prompt = self.owned.mark_active_prompt_delivery(
+                session_id,
+                agent.id(),
+                prompt.id(),
+                delivery_phase,
+                Some(provider_run_id.to_string()),
+                Some(provider_session_id.clone()),
+            )?;
+        }
         if let Some(operation_id) = existing_recovery_operation.as_deref() {
             let operation_observed = matched
                 .as_ref()
@@ -988,12 +1008,14 @@ fn preferred_restart_recovery_provider_session_id(
     durable_agent_session_id: Option<&str>,
     workflow_prompt: bool,
 ) -> Option<String> {
-    observed_session_id
-        .or(dispatch_session_id)
-        .or((!workflow_prompt)
-            .then_some(durable_agent_session_id)
-            .flatten())
-        .map(str::to_string)
+    if workflow_prompt {
+        observed_session_id.or(dispatch_session_id)
+    } else {
+        durable_agent_session_id
+            .or(dispatch_session_id)
+            .or(observed_session_id)
+    }
+    .map(str::to_string)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1246,6 +1268,19 @@ mod tests {
                 true,
             ),
             Some("observed-session".to_string())
+        );
+    }
+
+    #[test]
+    fn interactive_restart_recovery_prefers_the_durable_agent_session() {
+        assert_eq!(
+            preferred_restart_recovery_provider_session_id(
+                Some("observed-session"),
+                Some("dispatch-session"),
+                Some("acknowledged-agent-session"),
+                false,
+            ),
+            Some("acknowledged-agent-session".to_string())
         );
     }
 

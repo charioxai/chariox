@@ -185,7 +185,7 @@ async fn owned_output_pump_drains_completed_pending_output_after_run_quiesces() 
 }
 
 #[tokio::test]
-async fn live_structured_poll_failure_is_retried() {
+async fn live_structured_poll_failures_are_retried_then_surfaced() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
@@ -251,6 +251,37 @@ async fn live_structured_poll_failure_is_retried() {
         !output_store.poll_due(run.id(), crate::session::unix_epoch_ms()),
         "the retry should respect the empty-poll backoff",
     );
+
+    for attempt in 2..=crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+        output_store.mark_poll_enqueued(run.id(), None);
+        app.lock()
+            .await
+            .providers_mut()
+            .push_finished_structured_output_poll_for_test(
+                run.id().to_string(),
+                Err(crate::error::DaemonError::ProviderProtocol {
+                    provider_run_id: run.id().to_string(),
+                    operation: "thread/turns/list",
+                    message: "new rollout is temporarily empty".to_string(),
+                }),
+            );
+        let result = runtime
+            .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+            .await;
+        if attempt < crate::app::provider_output::STRUCTURED_OUTPUT_POLL_FAILURE_RETRY_LIMIT {
+            assert!(result
+                .expect("a transient structured poll failure should be deferred")
+                .is_empty());
+            assert!(output_store.poll_due_at_ms(run.id()).is_some());
+        } else {
+            assert!(matches!(
+                result,
+                Err(crate::error::DaemonError::ProviderProtocol { .. })
+            ));
+            assert!(output_store.poll_due_at_ms(run.id()).is_none());
+            assert!(!output_store.poll_due(run.id(), u64::MAX));
+        }
+    }
 }
 
 #[tokio::test]

@@ -400,13 +400,15 @@ impl KernelRuntimeOwnedState {
             .join("instances")
             .join(session.id());
         if instance_root.exists() {
-            return Err(DaemonError::LocalTransport {
-                operation: "delete session workflow runtime instance",
-                message: format!(
-                    "workflow runtime artifacts remain at `{}`",
-                    instance_root.display()
-                ),
-            });
+            std::fs::remove_dir_all(&instance_root).map_err(|error| {
+                DaemonError::LocalTransport {
+                    operation: "delete session workflow runtime instance",
+                    message: format!(
+                        "failed to remove deleted session workflow runtime artifacts at `{}`: {error}",
+                        instance_root.display(),
+                    ),
+                }
+            })?;
         }
         Ok(())
     }
