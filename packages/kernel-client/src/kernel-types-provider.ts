@@ -219,6 +219,16 @@ export type ProviderAccountUsageSnapshot = {
   management_url?: string | null
 }
 
+export const PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION = 1
+
+/**
+ * Non-secret credential-type facts only. Values state what the
+ * provider-native adapter can reliably observe; `credential_kind` is null on
+ * records written before the contract existed (treat as not reported, see
+ * `credential_kind_not_reported_reason`).
+ */
+export type ProviderCredentialKind = "subscription" | "imported_file"
+
 export type ProviderAccountProfile = {
   owner_user_id: string
   provider: string
@@ -227,6 +237,8 @@ export type ProviderAccountProfile = {
   origin: "default" | "chariox_created" | "linked"
   is_default: boolean
   auth_state: "unknown" | "not_configured" | "authenticated" | "expired" | "error"
+  credential_kind?: ProviderCredentialKind | null
+  credential_kind_not_reported_reason?: string | null
   identity_summary?: string | null
   plan?: string | null
   detected_provider_version?: string | null

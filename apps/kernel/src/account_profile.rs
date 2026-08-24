@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use base64::Engine as _;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{Rng, distributions::Alphanumeric};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -256,6 +256,64 @@ impl ProviderAccountUsageSnapshot {
     }
 }
 
+/// Version of the credential-kind contract shared with clients. Bump when the
+/// serialized `credential_kind`/`credential_kind_not_reported_reason` shapes
+/// change meaningfully.
+pub const PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION: u32 = 1;
+
+/// Non-secret credential-type facts only. Values state what the
+/// provider-native adapter can reliably observe; nothing here contains,
+/// references, or reads secret material.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderCredentialKind {
+    /// Enrolled through the provider's native subscription OAuth/device flow.
+    Subscription,
+    /// Credentials imported from a user-provided provider-native file.
+    ImportedFile,
+}
+
+/// Enrollment methods a provider adapter can run through its own native CLI /
+/// app-server flow. Empty for providers without reliable programmatic
+/// enrollment; callers must reject selections clearly instead of guessing.
+pub fn supported_provider_enrollment_methods(provider: &str) -> &'static [&'static str] {
+    match crate::provider::canonical_provider_family(provider) {
+        Some("codex") => &["device_code"],
+        Some("claude") | Some("opencode") => &["terminal"],
+        _ => &[],
+    }
+}
+
+/// Validates a client-selected enrollment method against what the provider
+/// adapter actually supports. `None` keeps the provider's historical default.
+pub fn validate_provider_enrollment_method(
+    provider: &str,
+    method: Option<&str>,
+) -> Result<(), DaemonError> {
+    let Some(method) = method.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(());
+    };
+    let supported = supported_provider_enrollment_methods(provider);
+    if supported.contains(&method) {
+        return Ok(());
+    }
+    Err(DaemonError::LocalTransport {
+        operation: "start provider login",
+        message: if supported.is_empty() {
+            format!(
+                "provider `{provider}` does not expose a reliable enrollment method; \
+                 enroll through the provider's own CLI/app"
+            )
+        } else {
+            format!(
+                "enrollment method `{method}` is not supported for `{provider}`; \
+                 supported methods: {}",
+                supported.join(", ")
+            )
+        },
+    })
+}
+
 /// Safe account metadata projected to clients. Host-local paths are
 /// deliberately absent.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -267,6 +325,13 @@ pub struct ProviderAccountProfile {
     pub origin: ProviderAccountProfileOrigin,
     pub is_default: bool,
     pub auth_state: ProviderAccountAuthState,
+    /// Versioned credential-kind contract (v1). `None` on records written
+    /// before the contract existed; readers must treat it as not-reported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_kind: Option<ProviderCredentialKind>,
+    /// Set only when the adapter cannot reliably report the kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credential_kind_not_reported_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub identity_summary: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1250,6 +1315,29 @@ impl ProviderAccountProfileRegistry {
     }
 }
 
+fn credential_kind_for_new_profile(
+    origin: ProviderAccountProfileOrigin,
+    provider: &str,
+) -> (Option<ProviderCredentialKind>, Option<String>) {
+    match origin {
+        ProviderAccountProfileOrigin::Linked => (Some(ProviderCredentialKind::ImportedFile), None),
+        ProviderAccountProfileOrigin::CharioxCreated
+            if crate::provider::canonical_provider_family(provider) == Some("codex") =>
+        {
+            // Managed Codex profiles enroll exclusively through the official
+            // app-server ChatGPT subscription flow.
+            (Some(ProviderCredentialKind::Subscription), None)
+        }
+        _ => (
+            None,
+            Some(
+                "the provider-native login does not report the resulting credential type"
+                    .to_string(),
+            ),
+        ),
+    }
+}
+
 fn new_public_profile(
     owner_user_id: &str,
     provider: &str,
@@ -1258,6 +1346,8 @@ fn new_public_profile(
     origin: ProviderAccountProfileOrigin,
     is_default: bool,
 ) -> ProviderAccountProfile {
+    let (credential_kind, credential_kind_not_reported_reason) =
+        credential_kind_for_new_profile(origin, provider);
     ProviderAccountProfile {
         owner_user_id: owner_user_id.to_string(),
         provider: provider.to_string(),
@@ -1266,6 +1356,8 @@ fn new_public_profile(
         origin,
         is_default,
         auth_state: ProviderAccountAuthState::Unknown,
+        credential_kind,
+        credential_kind_not_reported_reason,
         identity_summary: None,
         plan: None,
         detected_provider_version: None,
@@ -1770,7 +1862,7 @@ fn materialization_destination(
                     return Err(registry_error(
                         "materialize account profile",
                         "OpenCode materialization path has an unknown root",
-                    ))
+                    ));
                 }
             };
             Ok(root.join(components.as_path()))
@@ -1787,7 +1879,7 @@ fn enforce_codex_file_credentials(codex_home: &Path) -> Result<(), DaemonError> 
             return Err(registry_error(
                 "configure Codex account profile",
                 error.to_string(),
-            ))
+            ));
         }
     };
     let mut replaced = false;
@@ -2022,6 +2114,81 @@ mod tests {
     }
 
     #[test]
+    fn credential_kind_contract_is_versioned_and_grounded_in_observable_facts() {
+        assert_eq!(PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION, 1);
+        assert!(ProviderCredentialKind::Subscription != ProviderCredentialKind::ImportedFile);
+
+        let (root, registry) = fixture();
+        let managed_codex = registry.create_managed("owner-a", "codex", "Work").unwrap();
+        assert_eq!(
+            managed_codex.credential_kind,
+            Some(ProviderCredentialKind::Subscription)
+        );
+        assert_eq!(managed_codex.credential_kind_not_reported_reason, None);
+
+        // Claude/OpenCode native logins do not report the resulting credential
+        // type, so the contract requires an explicit not-reported reason.
+        let managed_claude = registry
+            .create_managed("owner-a", "claude", "Terminal Work")
+            .unwrap();
+        assert_eq!(managed_claude.credential_kind, None);
+        assert_eq!(
+            managed_claude
+                .credential_kind_not_reported_reason
+                .as_deref(),
+            Some("the provider-native login does not report the resulting credential type")
+        );
+
+        // Legacy records written before the contract deserialize with no kind;
+        // readers must treat that as not-reported.
+        let legacy: ProviderAccountProfile = serde_json::from_str(
+            r#"{"owner_user_id":"owner-a","provider":"codex","profile_id":"legacy",
+                "label":"Legacy","origin":"default","is_default":true,
+                "auth_state":"unknown","usage":{"profile_id":"legacy","provider":"codex",
+                "availability":"unavailable","meters":[],"source":"provider_not_observed"}}"#,
+        )
+        .expect("legacy profile should deserialize");
+        assert_eq!(legacy.credential_kind, None);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn enrollment_method_support_is_grounded_in_adapter_facts() {
+        assert_eq!(
+            supported_provider_enrollment_methods("codex"),
+            &["device_code"]
+        );
+        assert_eq!(
+            supported_provider_enrollment_methods("claude-p"),
+            &["terminal"]
+        );
+        assert_eq!(
+            supported_provider_enrollment_methods("opencode"),
+            &["terminal"]
+        );
+        let expected_empty: &[&str] = &[];
+        assert_eq!(
+            supported_provider_enrollment_methods("dev-stub"),
+            expected_empty
+        );
+
+        validate_provider_enrollment_method("codex", Some("device_code")).unwrap();
+        validate_provider_enrollment_method("claude", Some("terminal")).unwrap();
+        validate_provider_enrollment_method("opencode", None).unwrap();
+
+        let unsupported = validate_provider_enrollment_method("codex", Some("api_key"))
+            .expect_err("unsupported method must be rejected");
+        match unsupported {
+            DaemonError::LocalTransport { message, .. } => {
+                assert!(message.contains("device_code"), "{message}");
+                assert!(!message.contains("secret"), "{message}");
+            }
+            other => panic!("expected clear rejection, got {other:?}"),
+        }
+        assert!(validate_provider_enrollment_method("dev-stub", Some("terminal")).is_err());
+    }
+
+    #[test]
     fn migrates_one_effective_default_per_provider_without_scanning() {
         let (root, registry) = fixture();
         let home = root.join("home");
@@ -2037,9 +2204,11 @@ mod tests {
         assert_eq!(first.len(), 3);
         assert_eq!(second.len(), 3);
         assert!(first.iter().all(|profile| profile.profile_id != "default"));
-        assert!(first
-            .iter()
-            .all(|profile| profile.label == format!("{}-1", profile.provider)));
+        assert!(
+            first
+                .iter()
+                .all(|profile| profile.label == format!("{}-1", profile.provider))
+        );
         assert_eq!(
             first
                 .iter()
@@ -2298,9 +2467,11 @@ mod tests {
                 .unwrap(),
             r#"{"token":"never-log-this"}"#
         );
-        assert!(target
-            .materialize_replica("owner-b", &materialization)
-            .is_err());
+        assert!(
+            target
+                .materialize_replica("owner-b", &materialization)
+                .is_err()
+        );
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
     }
@@ -2344,16 +2515,20 @@ mod tests {
                 contents_base64: base64::engine::general_purpose::STANDARD.encode(b"invalid"),
             });
 
-        assert!(target
-            .materialize_replica("owner-a", &invalid_replacement)
-            .is_err());
+        assert!(
+            target
+                .materialize_replica("owner-a", &invalid_replacement)
+                .is_err()
+        );
         assert_eq!(
             fs::read_to_string(target_auth).unwrap(),
             r#"{"token":"old"}"#
         );
-        assert!(target
-            .get("owner-a", "codex", &materialized.profile_id)
-            .is_ok());
+        assert!(
+            target
+                .get("owner-a", "codex", &materialized.profile_id)
+                .is_ok()
+        );
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
@@ -2387,10 +2562,12 @@ mod tests {
             .unwrap();
         let restored = registry.get("owner-a", "claude", "default").unwrap();
         assert_eq!(restored.profile_id, native_default.profile_id);
-        assert!(!registry
-            .resolve_environment("owner-a", "claude", "default")
-            .unwrap()
-            .contains_key("CLAUDE_CONFIG_DIR"));
+        assert!(
+            !registry
+                .resolve_environment("owner-a", "claude", "default")
+                .unwrap()
+                .contains_key("CLAUDE_CONFIG_DIR")
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2429,9 +2606,11 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(error
-            .to_string()
-            .contains("already authenticated as `codex-1`"));
+        assert!(
+            error
+                .to_string()
+                .contains("already authenticated as `codex-1`")
+        );
         assert_eq!(
             registry
                 .get("owner-a", "codex", &secondary.profile_id)
@@ -2525,14 +2704,16 @@ mod tests {
         let profile = registry
             .create_managed("owner-a", "opencode", "Work")
             .unwrap();
-        assert!(registry
-            .delete_managed_profile_data(
-                "owner-a",
-                "opencode",
-                &profile.profile_id,
-                "wrong-profile"
-            )
-            .is_err());
+        assert!(
+            registry
+                .delete_managed_profile_data(
+                    "owner-a",
+                    "opencode",
+                    &profile.profile_id,
+                    "wrong-profile"
+                )
+                .is_err()
+        );
         registry
             .delete_managed_profile_data(
                 "owner-a",
@@ -2541,10 +2722,12 @@ mod tests {
                 &profile.profile_id,
             )
             .unwrap();
-        assert!(registry
-            .list("owner-a", Some("opencode"))
-            .unwrap()
-            .is_empty());
+        assert!(
+            registry
+                .list("owner-a", Some("opencode"))
+                .unwrap()
+                .is_empty()
+        );
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2558,9 +2741,11 @@ mod tests {
         fs::create_dir_all(&linked).unwrap();
         fs::set_permissions(&linked, fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert!(registry
-            .link_existing("owner-a", "codex", "Unsafe", &linked)
-            .is_err());
+        assert!(
+            registry
+                .link_existing("owner-a", "codex", "Unsafe", &linked)
+                .is_err()
+        );
         let _ = fs::remove_dir_all(root);
     }
 }

@@ -22,7 +22,11 @@ export type ProviderCommandHandlerDeps = {
   appendNotice: (message: string) => void
   applyProviderSelection?: (value: string) => Promise<void>
   getProviderAuthStatus?: (provider: string, accountProfile?: string) => Promise<ProviderAuthStatus>
-  startProviderLogin?: (provider: string, accountProfile?: string) => Promise<ProviderLoginStart>
+  startProviderLogin?: (
+    provider: string,
+    accountProfile?: string,
+    method?: string,
+  ) => Promise<ProviderLoginStart>
   getProviderLoginStatus?: (loginId: string) => Promise<ProviderLoginStatus>
   sendProviderLoginInput?: (loginId: string, dataBase64: string) => Promise<{ login_id: string; byte_count: number }>
   cancelProviderLogin?: (loginId: string) => Promise<ProviderLoginStatus>
@@ -51,7 +55,10 @@ export async function handleProviderSlashCommand(
   }
 
   const parts = value.split(/\s+/).filter(Boolean)
-  const [action, maybeProvider, maybeProfile] = parts
+  const [action] = parts
+  const method = extractEnrollmentMethod(parts)
+  const rest = method.rest
+  const [maybeProvider, maybeProfile] = rest.slice(1)
   if (action === "accounts") {
     await handleProviderAccountsCommand(deps, parts.slice(1))
     return
@@ -61,7 +68,7 @@ export async function handleProviderSlashCommand(
     return
   }
   if (action === "login") {
-    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
+    await startProviderLogin(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
     return
   }
   if (action === "login-status") {
@@ -81,7 +88,7 @@ export async function handleProviderSlashCommand(
     return
   }
   if (action === "reauth") {
-    await reauthProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile)
+    await reauthProvider(deps, maybeProvider ?? deps.currentProviderId(), maybeProfile, method.value)
     return
   }
   if (action === "processes") {
@@ -176,6 +183,7 @@ async function startProviderLogin(
   deps: ProviderCommandHandlerDeps,
   provider: string,
   accountProfile?: string,
+  method?: string,
 ): Promise<void> {
   if (!deps.startProviderLogin) {
     deps.flashFooter("provider login is not available in this daemon", "error")
@@ -183,7 +191,7 @@ async function startProviderLogin(
   }
   const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
   if (resolvedAccount === null) return
-  const login = await deps.startProviderLogin(provider, resolvedAccount)
+  const login = await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "login started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
@@ -257,6 +265,7 @@ async function reauthProvider(
   deps: ProviderCommandHandlerDeps,
   provider: string,
   accountProfile?: string,
+  method?: string,
 ): Promise<void> {
   if (!deps.logoutProvider || !deps.startProviderLogin) {
     deps.flashFooter("provider reauth is not available in this daemon", "error")
@@ -271,7 +280,7 @@ async function reauthProvider(
     deps.flashFooter(message, "info")
     return
   }
-  const login = await deps.startProviderLogin(provider, resolvedAccount)
+  const login = await deps.startProviderLogin(provider, resolvedAccount, method)
   const message = formatProviderLoginNotice(login, "reauth started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
@@ -289,7 +298,7 @@ async function handleProviderAccountsCommand(
     }
     const profiles = await deps.listProviderAccountProfiles(provider ?? null)
     const lines = profiles.map((entry) => {
-      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""} · ${formatProviderAccountUsage(entry)}`
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${credentialKindLabel(entry)} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""} · ${formatProviderAccountUsage(entry)}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
@@ -301,7 +310,28 @@ async function handleProviderAccountsCommand(
   }
   let result: ProviderAccountProfile | null = null
   if (action === "add" && deps.createProviderAccountProfile) {
-    result = await deps.createProviderAccountProfile(provider, [profile, ...rest].filter(Boolean).join(" "))
+    const { rest: addOperands, value: addMethod } = extractEnrollmentMethod(
+      [profile, ...rest].filter((operand): operand is string => operand !== undefined),
+    )
+    result = await deps.createProviderAccountProfile(
+      provider,
+      addOperands.filter(Boolean).join(" "),
+    )
+    if (result && addMethod) {
+      if (!deps.startProviderLogin) {
+        deps.flashFooter("provider login is not available in this daemon", "error")
+        return
+      }
+      const login = await deps.startProviderLogin(provider, result.profile_id, addMethod)
+      const message = formatProviderLoginNotice(
+        login,
+        "enrollment started",
+        await providerAccountPublicLabel(deps, login.provider, login.account_profile),
+      )
+      deps.appendNotice(message)
+      deps.flashFooter(message, "info")
+      return
+    }
   } else if (action === "link" && profile && deps.linkProviderAccountProfile) {
     const operands = [profile, ...rest]
     const path = operands.at(-1)!
@@ -397,6 +427,35 @@ function formatProviderLoginNotice(
 
 function providerAccountSubject(provider: string, accountLabel: string): string {
   return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
+}
+
+/// Extracts a `--method <name>` enrollment selection from the token stream,
+/// leaving the positional operands intact.
+function extractEnrollmentMethod(parts: string[]): { rest: string[]; value?: string | undefined } {
+  const index = parts.indexOf("--method")
+  if (index < 0) {
+    return { rest: parts }
+  }
+  return {
+    rest: parts.filter((_, position) => position !== index && position !== index + 1),
+    value: parts[index + 1],
+  }
+}
+
+function credentialKindLabel(profile: {
+  credential_kind?: string | null
+  credential_kind_not_reported_reason?: string | null
+}): string {
+  switch (profile.credential_kind) {
+    case "subscription":
+      return "subscription"
+    case "imported_file":
+      return "imported file"
+    default:
+      return profile.credential_kind_not_reported_reason
+        ? `kind not reported (${profile.credential_kind_not_reported_reason})`
+        : "kind not reported"
+  }
 }
 
 function findProviderAccountByAlias(

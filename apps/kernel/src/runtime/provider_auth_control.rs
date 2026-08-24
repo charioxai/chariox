@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use rand::{distributions::Alphanumeric, Rng};
+use rand::{Rng, distributions::Alphanumeric};
 
 use crate::error::DaemonError;
 use crate::local::provider_requests::{
@@ -565,6 +565,10 @@ pub(crate) async fn execute_start_provider_login_request(
     owner_user_id: &str,
     request: StartProviderLoginRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    crate::account_profile::validate_provider_enrollment_method(
+        &request.provider,
+        request.method.as_deref(),
+    )?;
     if crate::provider::canonical_provider_family(&request.provider) != Some("codex") {
         return start_terminal_provider_auth(
             runtime_state,
@@ -722,10 +726,12 @@ mod tests {
             },
         );
 
-        assert!(result
-            .expect_err("duplicate login should be rejected")
-            .to_string()
-            .contains("already authenticated as `Default`"));
+        assert!(
+            result
+                .expect_err("duplicate login should be rejected")
+                .to_string()
+                .contains("already authenticated as `Default`")
+        );
         assert_eq!(
             registry
                 .get("owner-a", "claude", "default")
@@ -825,8 +831,10 @@ mod tests {
             ProviderAuthProcessOperation::Logout,
             &super::provider_login_error("status probe unavailable"),
         );
-        assert!(message
-            .starts_with("Provider logout completed; verification is temporarily unavailable:"));
+        assert!(
+            message
+                .starts_with("Provider logout completed; verification is temporarily unavailable:")
+        );
         assert!(!message.contains("validation failed"));
     }
 }

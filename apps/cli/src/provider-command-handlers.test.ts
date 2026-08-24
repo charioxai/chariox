@@ -321,3 +321,191 @@ test("provider status resolves a padded alias to the stable id and reports only 
   assert.match(rendered, /codex\/Validation/)
   assert.doesNotMatch(rendered, /opaque-stable-id/)
 })
+
+test("provider login and reauth pass a --method enrollment selection to the kernel", async () => {
+  const starts: Array<{ provider: string; accountProfile?: string; method?: string }> = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: () => {},
+    appendNotice: () => {},
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "user-1",
+      provider: "codex",
+      profile_id: "opaque-secondary-id",
+      label: "secondary",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-secondary-id",
+        provider: "codex",
+        availability: "unavailable",
+        source: "test",
+      },
+    }],
+    logoutProvider: async () => ({
+      kind: "logged_out",
+      result: { provider: "codex", account_profile: "opaque-secondary-id" },
+    }),
+    startProviderLogin: async (provider, accountProfile, method) => {
+      starts.push({
+        provider,
+        ...(accountProfile === undefined ? {} : { accountProfile }),
+        ...(method === undefined ? {} : { method }),
+      })
+      return {
+        provider,
+        account_profile: accountProfile ?? "default",
+        login_kind: method ? `${method}:started` : "chatgptDeviceCode",
+        login_id: null,
+        auth_url: null,
+        verification_url: null,
+        user_code: null,
+      }
+    },
+  }
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider login codex secondary --method device_code",
+    value: "login codex secondary --method device_code",
+  })
+  assert.deepEqual(starts, [{
+    provider: "codex",
+    accountProfile: "opaque-secondary-id",
+    method: "device_code",
+  }])
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider reauth codex secondary --method terminal",
+    value: "reauth codex secondary --method terminal",
+  })
+  assert.deepEqual(starts[1], {
+    provider: "codex",
+    accountProfile: "opaque-secondary-id",
+    method: "terminal",
+  })
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider login codex secondary",
+    value: "login codex secondary",
+  })
+  assert.equal(starts[2]?.method, undefined)
+})
+
+test("account listing reports credential kind without exposing ids", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: () => {},
+    appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [
+      {
+        owner_user_id: "owner-a",
+        provider: "codex",
+        profile_id: "opaque-managed",
+        label: "Managed",
+        origin: "chariox_created",
+        is_default: true,
+        auth_state: "authenticated",
+        credential_kind: "subscription",
+        usage: {
+          profile_id: "opaque-managed",
+          provider: "codex",
+          availability: "unavailable",
+          meters: [],
+          source: "test",
+        },
+      },
+      {
+        owner_user_id: "owner-a",
+        provider: "claude",
+        profile_id: "opaque-claude",
+        label: "Claude Work",
+        origin: "chariox_created",
+        is_default: false,
+        auth_state: "not_configured",
+        credential_kind: null,
+        credential_kind_not_reported_reason:
+          "the provider-native login does not report the resulting credential type",
+        usage: {
+          profile_id: "opaque-claude",
+          provider: "claude",
+          availability: "unavailable",
+          meters: [],
+          source: "test",
+        },
+      },
+    ],
+  }
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider accounts list",
+    value: "accounts list",
+  })
+
+  const rendered = notices.join("\n")
+  assert.match(rendered, /codex Managed \[default\] · subscription/)
+  assert.match(rendered, /kind not reported \(the provider-native login does not report the resulting credential type\)/)
+  assert.doesNotMatch(rendered, /opaque-managed|opaque-claude/)
+})
+
+test("accounts add with --method enrolls the new alias through the chosen mode", async () => {
+  const enrollments: Array<{ provider: string; accountProfile?: string; method?: string }> = []
+  const footers: string[] = []
+  const created = {
+    owner_user_id: "owner-a",
+    provider: "codex",
+    profile_id: "opaque-new-profile",
+    label: "Fresh",
+    origin: "chariox_created" as const,
+    is_default: false,
+    auth_state: "not_configured" as const,
+    credential_kind: "subscription" as const,
+    usage: {
+      profile_id: "opaque-new-profile",
+      provider: "codex",
+      availability: "unavailable" as const,
+      meters: [],
+      source: "test",
+    },
+  }
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message) => footers.push(message),
+    appendNotice: () => {},
+    createProviderAccountProfile: async () => created,
+    startProviderLogin: async (provider, accountProfile, method) => {
+      enrollments.push({
+        provider,
+        ...(accountProfile === undefined ? {} : { accountProfile }),
+        ...(method === undefined ? {} : { method }),
+      })
+      return {
+        provider,
+        account_profile: accountProfile ?? "default",
+        login_kind: method ? `${method}:started` : "chatgptDeviceCode",
+        login_id: null,
+        auth_url: null,
+        verification_url: null,
+        user_code: null,
+      }
+    },
+  }
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider accounts add codex Fresh --method device_code",
+    value: "accounts add codex Fresh --method device_code",
+  })
+
+  assert.deepEqual(enrollments, [{
+    provider: "codex",
+    accountProfile: "opaque-new-profile",
+    method: "device_code",
+  }])
+  assert.match(footers.join(" "), /enrollment started/)
+})

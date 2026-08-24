@@ -74,11 +74,16 @@ export function getProviderAuthStatusRequest(provider: string, accountProfile = 
   }
 }
 
-export function startProviderLoginRequest(provider: string, accountProfile = "default") {
+export function startProviderLoginRequest(
+  provider: string,
+  accountProfile = "default",
+  method?: string | null,
+) {
   return {
     StartProviderLogin: {
       provider,
       account_profile: accountProfile,
+      ...(method ? { method } : {}),
     },
   }
 }

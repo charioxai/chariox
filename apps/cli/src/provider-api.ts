@@ -221,8 +221,11 @@ export async function startProviderLogin(
   client: LocalIpcClient,
   provider: string,
   accountProfile = "default",
+  method?: string,
 ): Promise<ProviderLoginStart> {
-  const response = await client.send<Record<string, unknown>>(startProviderLoginRequest(provider, accountProfile))
+  const response = await client.send<Record<string, unknown>>(
+    startProviderLoginRequest(provider, accountProfile, method),
+  )
   const payload = expectVariant<{ login: ProviderLoginStart }>(response, "ProviderLoginStarted")
   return payload.login
 }
