@@ -28,8 +28,8 @@ async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn(
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "claude-code",
                 "dev-stub",
+                "claude-code",
                 "default",
                 "sonnet",
             )
@@ -127,8 +127,8 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
         .launch_provider(
             crate::provider::LaunchProviderRequest::new(
                 session.id(),
-                "claude-code",
                 "dev-stub",
+                "claude-code",
                 "default",
                 "sonnet",
             )

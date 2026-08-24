@@ -559,14 +559,18 @@ impl<'a> ProviderOutputPumpContext<'a> {
                                 .stop_polling(&provider_run_id);
                             continue;
                         }
-                        Ok(false) if is_requested_run => return Err(error),
                         Ok(false) => {
                             self.pending_structured_output_records
                                 .schedule_after_empty_poll(provider_run_id.clone(), now_ms);
-                            crate::logging::error_with_fields(
+                            crate::logging::warn_with_fields(
                                 "daemon.app",
-                                "background structured output poll failed",
+                                "structured output poll failed; retry scheduled",
                                 serde_json::json!({
+                                    "session_id": if is_requested_run {
+                                        Some(requested_session_id)
+                                    } else {
+                                        None
+                                    },
                                     "provider_run_id": provider_run_id,
                                     "error": error.to_string(),
                                 }),

@@ -185,6 +185,75 @@ async fn owned_output_pump_drains_completed_pending_output_after_run_quiesces() 
 }
 
 #[tokio::test]
+async fn live_structured_poll_failure_is_retried() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-structured-poll-retry",
+            "worktree-structured-poll-retry",
+        ))
+        .expect("session should be created");
+    let request = crate::provider::LaunchProviderRequest::new(
+        session.id(),
+        "codex",
+        "codex",
+        "default",
+        "gpt-5.6-luna",
+    )
+    .with_agent_id(agent.id());
+    let mut run = crate::provider::RuntimeProviderRun::new(
+        "provider-run-structured-poll-retry",
+        &request,
+        crate::provider::ProviderLaunchResult {
+            endpoint_mode: crate::provider::AgentEndpointMode::External,
+            process_label: "test-codex-structured-poll-retry".to_string(),
+            pty_target: None,
+            pty_program: None,
+            pty_args: Vec::new(),
+            pty_env: std::collections::BTreeMap::new(),
+            pty_env_remove: Vec::new(),
+            working_directory: None,
+            structured_endpoint: Some("test-codex-runtime".to_string()),
+        },
+    );
+    run.mark_running();
+    app.providers_mut().insert_run_for_test(run.clone());
+    app.sessions
+        .set_active_provider_run(session.id(), Some(run.id().to_string()))
+        .expect("active provider run should be set");
+    app.update_provider_run_projection(run.clone());
+    let output_store = app.structured_output_record_store();
+    output_store.mark_poll_enqueued(run.id(), None);
+    app.providers_mut()
+        .push_finished_structured_output_poll_for_test(
+            run.id().to_string(),
+            Err(crate::error::DaemonError::ProviderProtocol {
+                provider_run_id: run.id().to_string(),
+                operation: "thread/turns/list",
+                message: "new rollout is temporarily empty".to_string(),
+            }),
+        );
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let records = runtime
+        .pump_owned_structured_provider_output(session.id(), run.id(), Vec::new())
+        .await
+        .expect("a live structured poll failure should be deferred");
+
+    assert!(records.is_empty());
+    assert!(
+        output_store.poll_due_at_ms(run.id()).is_some(),
+        "the live provider run must remain scheduled after a transient poll failure",
+    );
+    assert!(
+        !output_store.poll_due(run.id(), crate::session::unix_epoch_ms()),
+        "the retry should respect the empty-poll backoff",
+    );
+}
+
+#[tokio::test]
 async fn structured_output_batch_fans_out_chunks_with_one_terminal_notification() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
