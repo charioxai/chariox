@@ -200,7 +200,7 @@ async function agentAccountDisplayValue(
 async function updateAgentAccountProfile(
   deps: AgentConfigCommandHandlerDeps,
   agent: AgentInstance,
-  profileId: string,
+  accountAlias: string,
 ): Promise<void> {
   if (!deps.listProviderAccountProfiles || !deps.getProviderCatalogForAgent) {
     deps.flashFooter("agent account updates are unavailable in this build", "error")
@@ -209,7 +209,7 @@ async function updateAgentAccountProfile(
   try {
     const profiles = await deps.listProviderAccountProfiles(agent.provider)
     const profile = providerAccountsForProvider(profiles, agent.provider)
-      .find((entry) => entry.profile_id === profileId)
+      .find((entry) => entry.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
     if (!profile) {
       deps.flashFooter(`account is unavailable for ${agent.provider}`, "error")
       return

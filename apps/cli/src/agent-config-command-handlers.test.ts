@@ -147,7 +147,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
       updateOptions = options
       return { agent: updatedAgent, session: session({ agents: [updatedAgent] }) }
     },
-  }, ["account", "agent-1", "secondary"], "account")
+  }, ["account", "agent-1", "Validation"], "account")
 
   assert.deepEqual(catalogLoads, [{ provider: "codex", accountProfile: "secondary" }])
   assert.deepEqual(updateOptions, {
