@@ -46,7 +46,7 @@ fn repeated_claude_permission_render_is_stored_once() {
 }
 
 #[test]
-fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
+fn claude_permission_detection_bridges_every_permission_request() {
     let mcp_permission = serde_json::json!({
         "hook_event_name": "PermissionRequest",
         "hook_context_request_id": "request-mcp",
@@ -59,8 +59,12 @@ fn claude_permission_detection_bridges_non_runtime_mcp_tools() {
          Do you want to proceed?\n1. Yes\n2. Yes, and don't ask again\n3. No",
     ));
 
-    assert!(!should_bridge_claude_permission(&serde_json::json!({
+    assert!(should_bridge_claude_permission(&serde_json::json!({
         "hook_event_name": "PermissionRequest",
+        "tool_name": "mcp__chariox__session_status",
+    })));
+    assert!(!should_bridge_claude_permission(&serde_json::json!({
+        "hook_event_name": "PreToolUse",
         "tool_name": "mcp__chariox__session_status",
     })));
     assert!(!should_bridge_claude_permission(&serde_json::json!({

@@ -30,6 +30,23 @@ test("workflow runtime signature tracks endpoint capacity changes", () => {
   assert.notEqual(workflowRuntimeSignature(base), workflowRuntimeSignature(changed))
 })
 
+test("workflow runtime signature tracks endpoint design changes", () => {
+  const baseWorkflow = workflow(2)
+  const renamed = workflow(2)
+  renamed.endpoints![0]!.alias = "triage"
+  const rebound = workflow(2)
+  rebound.endpoints![0]!.entry_node_id = "node-2"
+
+  assert.notEqual(
+    workflowRuntimeSignature(session({ workflows: [baseWorkflow] })),
+    workflowRuntimeSignature(session({ workflows: [renamed] })),
+  )
+  assert.notEqual(
+    workflowRuntimeSignature(session({ workflows: [baseWorkflow] })),
+    workflowRuntimeSignature(session({ workflows: [rebound] })),
+  )
+})
+
 function session(overrides: Partial<RuntimeSession> = {}): RuntimeSession {
   return {
     id: "session-1",

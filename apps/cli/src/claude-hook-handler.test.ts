@@ -149,7 +149,22 @@ test("Claude permission bridge preserves event-specific allow and deny response 
         permissionDecisionReason: "Resolved through Chariox.",
       },
     })
-    assert.equal(interactionCount, 2)
+
+    const runtimePermissionResponse = await runClaudeHookHandler(handler, {
+      hook_event_name: "PermissionRequest",
+      permission_mode: "default",
+      tool_name: "mcp__chariox__workflow_status",
+      tool_input: {},
+    }, env)
+    assert.deepEqual(runtimePermissionResponse, {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+        },
+      },
+    })
+    assert.equal(interactionCount, 3)
   } finally {
     await bridge.stop()
     await rm(root, { recursive: true, force: true })

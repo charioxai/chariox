@@ -350,10 +350,12 @@ pub(super) fn should_bridge_claude_permission(event: &Value) -> bool {
     else {
         return false;
     };
-    if tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.") {
+    if event.get("permission_mode").and_then(Value::as_str) == Some("bypassPermissions") {
         return false;
     }
-    event.get("permission_mode").and_then(Value::as_str) != Some("bypassPermissions")
+    let is_runtime_tool =
+        tool_name.starts_with("mcp__chariox__") || tool_name.starts_with("chariox.");
+    event.get("hook_event_name").and_then(Value::as_str) != Some("PreToolUse") || !is_runtime_tool
 }
 
 pub(super) fn format_claude_permission_message(event: &Value) -> String {
