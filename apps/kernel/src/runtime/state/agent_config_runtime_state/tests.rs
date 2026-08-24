@@ -116,6 +116,41 @@ async fn agent_profile_update_ignores_legacy_processing_without_active_prompt() 
 }
 
 #[tokio::test]
+async fn cloud_owner_agent_profile_update_resolves_host_account_namespace() {
+    let cloud_owner = "cloud-owner";
+    let mut config = crate::config::DaemonConfig::for_tests();
+    config.cloud_relay = Some(crate::config::PersistedCloudRelayProfile {
+        user_id: cloud_owner.to_string(),
+        ..Default::default()
+    });
+    let (app, runtime, session_id, agent_id) =
+        agent_config_runtime_with_config_and_owner(config, cloud_owner).await;
+    let profile = app
+        .lock()
+        .await
+        .provider_account_profile_registry()
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Validation")
+        .expect("host account profile should be created");
+
+    let agent = runtime
+        .update_agent_profile(
+            &session_id,
+            &agent_id,
+            cloud_owner,
+            Some("codex".to_string()),
+            Some(profile.profile_id.clone()),
+            Some("gpt-5.6-luna".to_string()),
+            Some(Some("low".to_string())),
+        )
+        .await
+        .expect("Cloud owner should resolve the host-local account profile");
+
+    assert_eq!(agent.provider_account_profile(), profile.profile_id);
+    assert_eq!(agent.model(), Some("gpt-5.6-luna"));
+    assert_eq!(agent.effort(), Some("low"));
+}
+
+#[tokio::test]
 async fn agent_config_update_still_blocks_active_prompt_owner() {
     let (app, runtime, session_id, agent_id) = agent_config_runtime().await;
     sync_active_prompt(&app, &session_id, &agent_id).await;
@@ -411,12 +446,19 @@ async fn agent_config_runtime() -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, S
 async fn agent_config_runtime_with_config(
     config: crate::config::DaemonConfig,
 ) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
+    agent_config_runtime_with_config_and_owner(config, crate::session::DEFAULT_LOCAL_USER_ID).await
+}
+
+async fn agent_config_runtime_with_config_and_owner(
+    config: crate::config::DaemonConfig,
+    owner_user_id: &str,
+) -> (Arc<Mutex<DaemonApp>>, KernelRuntimeState, String, String) {
     let mut app = DaemonApp::bootstrap(config).expect("daemon bootstrap should succeed");
     let (session, agent) = crate::app::KernelSessionService::new(&mut app)
-        .create_session(crate::session::CreateSessionRequest::new(
-            "workspace-1",
-            "worktree-1",
-        ))
+        .create_session(
+            crate::session::CreateSessionRequest::new("workspace-1", "worktree-1")
+                .with_owner_user_id(owner_user_id),
+        )
         .expect("session should be created");
     let session_id = session.id().to_string();
     let agent_id = agent.id().to_string();

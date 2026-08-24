@@ -67,9 +67,14 @@ impl KernelRuntimeOwnedState {
         let target_account_profile = if crate::provider::canonical_provider_family(&target_provider)
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &self.config_projection.snapshot(),
+                    agent.owner_user_id(),
+                );
             self.provider_account_profiles
                 .get(
-                    agent.owner_user_id(),
+                    &account_owner_user_id,
                     &target_provider,
                     requested_account_profile,
                 )?
