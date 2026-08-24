@@ -28,7 +28,6 @@ struct PublicationProviderDefaultAccount {
 #[derive(Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PublicationProviderAccountBinding {
-    agent_id: String,
     provider: String,
     account_profile: String,
     label: String,
@@ -42,9 +41,24 @@ pub(crate) fn materialize_publication_provider_accounts(
     let Some(source) = std::env::var_os(PUBLICATION_PROVIDER_ACCOUNT_BINDINGS) else {
         return Ok(());
     };
+    let bindings = validated_bindings(source.to_string_lossy().as_bytes())?;
+    for binding in bindings {
+        registry.materialize_deployment_profile(
+            owner_user_id,
+            &binding.provider,
+            &binding.account_profile,
+            &binding.label,
+            &binding.home,
+        )?;
+    }
+    Ok(())
+}
+
+fn validated_bindings(
+    source: &[u8],
+) -> Result<Vec<PublicationProviderAccountBinding>, DaemonError> {
     let bindings: PublicationProviderAccountBindings =
-        serde_json::from_slice(source.to_string_lossy().as_bytes())
-            .map_err(|_| invalid_bindings())?;
+        serde_json::from_slice(source).map_err(|_| invalid_bindings())?;
     if bindings.schema_version != 1
         || bindings.defaults.len() > 64
         || bindings.accounts.len() > 256
@@ -69,21 +83,11 @@ pub(crate) fn materialize_publication_provider_accounts(
         }
         unique.insert(key, binding);
     }
-    for binding in unique.into_values() {
-        registry.materialize_deployment_profile(
-            owner_user_id,
-            &binding.provider,
-            &binding.account_profile,
-            &binding.label,
-            &binding.home,
-        )?;
-    }
-    Ok(())
+    Ok(unique.into_values().collect())
 }
 
 fn validate_binding(binding: &PublicationProviderAccountBinding) -> Result<(), DaemonError> {
-    if binding.agent_id.trim().is_empty()
-        || binding.provider.trim().is_empty()
+    if binding.provider.trim().is_empty()
         || binding.account_profile.trim().is_empty()
         || binding.label.trim().is_empty()
         || !binding.home.is_absolute()
@@ -98,6 +102,49 @@ fn validate_binding(binding: &PublicationProviderAccountBinding) -> Result<(), D
         return Err(invalid_bindings());
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_bindings;
+
+    #[test]
+    fn provider_account_materialization_manifest_has_no_agent_scope() {
+        let bindings = validated_bindings(
+            br#"{
+              "schema_version": 1,
+              "defaults": [{"provider":"codex","account_profile":"main"}],
+              "accounts": [{
+                "provider":"codex",
+                "account_profile":"secondary",
+                "label":"Codex secondary",
+                "home":"/home/chariox/.credential-bindings/001/home"
+              }]
+            }"#,
+        )
+        .expect("valid deployment account manifest");
+
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].account_profile, "secondary");
+    }
+
+    #[test]
+    fn provider_account_materialization_rejects_obsolete_agent_scope() {
+        assert!(validated_bindings(
+            br#"{
+              "schema_version": 1,
+              "defaults": [],
+              "accounts": [{
+                "agent_id":"agent-1",
+                "provider":"codex",
+                "account_profile":"secondary",
+                "label":"Codex secondary",
+                "home":"/home/chariox/.credential-bindings/001/home"
+              }]
+            }"#,
+        )
+        .is_err());
+    }
 }
 
 fn invalid_bindings() -> DaemonError {
