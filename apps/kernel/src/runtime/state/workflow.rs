@@ -95,7 +95,9 @@ impl KernelRuntimeOwnedState {
                     run.state(),
                     crate::provider::ProviderRunState::Starting
                         | crate::provider::ProviderRunState::Running
-                ) && (self.provider_run_has_active_prompt(session_id, run)? || has_queued_prompt)
+                ) && (self.provider_run_has_active_prompt(session_id, run)?
+                    || (run.state() == crate::provider::ProviderRunState::Starting
+                        && has_queued_prompt))
                 {
                     return Ok((run.id().to_string(), None));
                 }

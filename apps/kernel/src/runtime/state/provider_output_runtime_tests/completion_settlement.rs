@@ -357,6 +357,145 @@ async fn duplicate_completion_before_promoted_workflow_dispatch_is_ignored() {
 }
 
 #[tokio::test]
+async fn provider_settlement_rotates_context_before_promoting_queued_workflow() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-runtime-fresh-queue",
+            "worktree-runtime-fresh-queue",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "runtime-fresh-queue-client",
+            crate::attachment::ClientCapabilityLevel::InteractiveStructured,
+        ))
+        .expect("client should attach");
+    let agent = crate::app::KernelSessionService::new(&mut app)
+        .spawn_agent(
+            crate::agent::CreateAgentRequest::new(session.id(), "dev-stub")
+                .with_alias("runtime-fresh-queue-agent")
+                .with_model("test-model"),
+        )
+        .expect("workflow agent should be created");
+    let stale_run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "test-model",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("existing provider run should launch");
+    let direct_prompt = crate::session::PromptQueueItem::new(
+        "runtime-user-before-workflow",
+        attachment.id(),
+        agent.id(),
+        "finish the direct request first",
+        crate::session::PromptStatus::Queued,
+    );
+    let crate::session::PromptSubmissionOutcome::Started {
+        prompt: direct_prompt,
+    } = app
+        .prompt_owner_submit_prepared_prompt(session.id(), direct_prompt, false)
+        .expect("direct prompt should start")
+    else {
+        panic!("direct prompt should start immediately");
+    };
+    app.mark_active_prompt_delivery(
+        session.id(),
+        agent.id(),
+        direct_prompt.id(),
+        crate::session::DurablePromptDeliveryPhase::Delivered,
+        Some(stale_run.id().to_string()),
+        stale_run.provider_session_id().map(str::to_string),
+    )
+    .expect("direct prompt should be delivered");
+
+    let workflow = app
+        .sessions_mut()
+        .create_workflow(
+            session.id(),
+            Some("fresh-after-runtime-settlement".to_string()),
+        )
+        .expect("workflow should be created");
+    let node = app
+        .sessions_mut()
+        .add_workflow_node(session.id(), workflow.id(), agent.id())
+        .expect("workflow node should be created");
+    let _endpoint = app
+        .sessions_mut()
+        .create_workflow_endpoint(
+            session.id(),
+            workflow.id(),
+            node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("workflow endpoint should be created");
+    let (workflow_run, _, _) = app
+        .invoke_workflow_endpoint_and_schedule(
+            session.id(),
+            workflow.id(),
+            "entry",
+            Some("run with a fresh provider context".to_string()),
+        )
+        .expect("workflow run should be admitted behind the direct prompt");
+    let workflow_run_id = workflow_run.id().to_string();
+    let workflow_node_run_id = workflow_run.node_runs()[0].id().to_string();
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    let settlement = runtime
+        .settle_owned_provider_prompt(session.id(), stale_run.id(), true, false, true)
+        .await
+        .expect("direct prompt should settle and advance the queued workflow");
+    assert!(settlement.had_active_prompt);
+    assert!(
+        !settlement.started_next_prompt,
+        "the queued workflow must not promote onto the stale provider"
+    );
+
+    let fresh_run = runtime
+        .owned
+        .provider_store
+        .get_run_for_agent(session.id(), agent.id())
+        .expect("fresh workflow provider should replace the stale provider");
+    assert_ne!(fresh_run.id(), stale_run.id());
+    assert!(fresh_run.workflow_tools_enabled());
+    assert_eq!(
+        fresh_run.workflow_fresh_context_node_run_id(),
+        Some(workflow_node_run_id.as_str())
+    );
+    assert_eq!(
+        runtime
+            .owned
+            .provider_store
+            .get_run(stale_run.id())
+            .expect("stale provider should remain auditable")
+            .state(),
+        crate::provider::ProviderRunState::Ended
+    );
+    let active = runtime
+        .owned
+        .prompt_state_owner
+        .active_prompt_for_agent(
+            &runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .expect("session should resolve"),
+            agent.id(),
+        )
+        .expect("queued workflow should promote after provider rotation");
+    assert_eq!(active.workflow_run_id(), Some(workflow_run_id.as_str()));
+}
+
+#[tokio::test]
 async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_interval() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
