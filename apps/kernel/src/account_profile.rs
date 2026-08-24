@@ -967,12 +967,14 @@ impl ProviderAccountProfileRegistry {
                 for name in [".credentials.json", "settings.json", "stats-cache.json"] {
                     collect_optional_file(claude_config_dir, name, name, &mut files)?;
                 }
+                discard_nonportable_claude_credentials(&mut files);
+                if !materialization_has_file(&files, ".credentials.json") {
+                    collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
+                }
                 if stored.public.origin == ProviderAccountProfileOrigin::Default
-                    && !files
-                        .iter()
-                        .any(|file| file.relative_path == ".credentials.json")
+                    && !materialization_has_file(&files, ".credentials.json")
                 {
-                    collect_default_claude_keychain_credentials(&mut files)?;
+                    collect_legacy_claude_keychain_credentials(&mut files)?;
                 }
             }
             ProviderAccountLocator::Opencode {
@@ -1047,12 +1049,14 @@ impl ProviderAccountProfileRegistry {
                     &mut files,
                     MAX_MANAGED_CONTEXT_MATERIALIZATION_BYTES,
                 )?;
+                discard_nonportable_claude_credentials(&mut files);
+                if !materialization_has_file(&files, ".credentials.json") {
+                    collect_scoped_claude_keychain_credentials(claude_config_dir, &mut files)?;
+                }
                 if stored.public.origin == ProviderAccountProfileOrigin::Default
-                    && !files
-                        .iter()
-                        .any(|file| file.relative_path == ".credentials.json")
+                    && !materialization_has_file(&files, ".credentials.json")
                 {
-                    collect_default_claude_keychain_credentials(&mut files)?;
+                    collect_legacy_claude_keychain_credentials(&mut files)?;
                 }
                 require_materialization_file(&files, ".credentials.json", provider, profile_id)?;
             }
@@ -2280,17 +2284,71 @@ fn collect_optional_tree(
     Ok(())
 }
 
+fn materialization_has_file(
+    files: &[ProviderAccountMaterializationFile],
+    relative_path: &str,
+) -> bool {
+    files.iter().any(|file| file.relative_path == relative_path)
+}
+
+fn discard_nonportable_claude_credentials(files: &mut Vec<ProviderAccountMaterializationFile>) {
+    files.retain(|file| {
+        file.relative_path != ".credentials.json"
+            || base64::engine::general_purpose::STANDARD
+                .decode(&file.contents_base64)
+                .is_ok_and(|contents| claude_credentials_are_portable(&contents))
+    });
+}
+
+fn claude_credentials_are_portable(contents: &[u8]) -> bool {
+    serde_json::from_slice::<serde_json::Value>(contents)
+        .ok()
+        .is_some_and(|value| {
+            value
+                .pointer("/claudeAiOauth/refreshToken")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|refresh_token| !refresh_token.is_empty())
+        })
+}
+
+fn claude_keychain_service_name(claude_config_dir: &Path) -> String {
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(claude_config_dir.as_os_str().as_encoded_bytes())
+    );
+    format!("Claude Code-credentials-{}", &digest[..8])
+}
+
 #[cfg(target_os = "macos")]
-fn collect_default_claude_keychain_credentials(
+fn collect_scoped_claude_keychain_credentials(
+    claude_config_dir: &Path,
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    collect_claude_keychain_credentials(&claude_keychain_service_name(claude_config_dir), files)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn collect_scoped_claude_keychain_credentials(
+    _claude_config_dir: &Path,
+    _files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn collect_legacy_claude_keychain_credentials(
+    files: &mut Vec<ProviderAccountMaterializationFile>,
+) -> Result<(), DaemonError> {
+    collect_claude_keychain_credentials("Claude Code-credentials", files)
+}
+
+#[cfg(target_os = "macos")]
+fn collect_claude_keychain_credentials(
+    service: &str,
     files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
     let output = std::process::Command::new("security")
-        .args([
-            "find-generic-password",
-            "-s",
-            "Claude Code-credentials",
-            "-w",
-        ])
+        .args(["find-generic-password", "-s", service, "-w"])
         .output()
         .map_err(registry_io("export Claude Keychain credentials"))?;
     if !output.status.success() || output.stdout.is_empty() {
@@ -2302,6 +2360,9 @@ fn collect_default_claude_keychain_credentials(
             "Claude Keychain credential exceeds the materialization safety limit",
         ));
     }
+    if !claude_credentials_are_portable(&output.stdout) {
+        return Ok(());
+    }
     files.push(ProviderAccountMaterializationFile {
         relative_path: ".credentials.json".to_string(),
         contents_base64: base64::engine::general_purpose::STANDARD.encode(output.stdout),
@@ -2310,7 +2371,7 @@ fn collect_default_claude_keychain_credentials(
 }
 
 #[cfg(not(target_os = "macos"))]
-fn collect_default_claude_keychain_credentials(
+fn collect_legacy_claude_keychain_credentials(
     _files: &mut Vec<ProviderAccountMaterializationFile>,
 ) -> Result<(), DaemonError> {
     Ok(())
@@ -3201,11 +3262,12 @@ mod tests {
                 Path::new(&source_environment[environment_key]).join(relative_path);
             fs::create_dir_all(source_credential.parent().expect("credential parent"))
                 .expect("create credential parent");
-            fs::write(
-                &source_credential,
-                format!(r#"{{"provider":"{provider}","token":"secret"}}"#),
-            )
-            .expect("write provider credential");
+            let credential_contents = if provider == "claude" {
+                r#"{"claudeAiOauth":{"refreshToken":"secret"}}"#.to_string()
+            } else {
+                format!(r#"{{"provider":"{provider}","token":"secret"}}"#)
+            };
+            fs::write(&source_credential, &credential_contents).expect("write provider credential");
             let materialization = source
                 .export_managed_context_materialization(
                     "owner-a",
@@ -3232,7 +3294,7 @@ mod tests {
                 Path::new(&target_environment[environment_key]).join(relative_path);
             assert_eq!(
                 fs::read_to_string(&target_credential).expect("read target provider credential"),
-                format!(r#"{{"provider":"{provider}","token":"secret"}}"#)
+                credential_contents
             );
             target
                 .rollback_managed_context_replica("owner-a", &receipt)
@@ -3242,6 +3304,25 @@ mod tests {
             let _ = fs::remove_dir_all(source_root);
             let _ = fs::remove_dir_all(target_root);
         }
+    }
+
+    #[test]
+    fn claude_keychain_service_is_scoped_to_the_config_directory() {
+        assert_eq!(
+            claude_keychain_service_name(Path::new("/tmp/chariox-claude-profile")),
+            "Claude Code-credentials-bc2236e0"
+        );
+    }
+
+    #[test]
+    fn claude_credentials_require_a_nonempty_refresh_token_for_transfer() {
+        assert!(!claude_credentials_are_portable(
+            br#"{"claudeAiOauth":{"accessToken":"","refreshToken":""}}"#
+        ));
+        assert!(!claude_credentials_are_portable(br#"{"token":"secret"}"#));
+        assert!(claude_credentials_are_portable(
+            br#"{"claudeAiOauth":{"refreshToken":"secret"}}"#
+        ));
     }
 
     #[test]

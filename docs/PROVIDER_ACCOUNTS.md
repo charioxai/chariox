@@ -22,7 +22,7 @@ Existing effective default roots migrate once into the durable registry as `defa
 
 The home kernel remains authoritative. When an agent is assigned to a trusted home-worker or home-managed slice, only its selected profile is materialized through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Cloud and the relay receive only opaque encrypted packets and safe materialization status.
 
-Materialization is denied before launch when the existing trust/ownership policy does not authorize credential transfer. A credential replica is refreshed by rematerializing from the home authority; it does not become an independent credential source. Claude's existing macOS Keychain-to-Linux `.credentials.json` conversion remains part of this path.
+Materialization is denied before launch when the existing trust/ownership policy does not authorize credential transfer. A credential replica is refreshed by rematerializing from the home authority; it does not become an independent credential source. On macOS, Claude Code scopes Keychain credentials to `CLAUDE_CONFIG_DIR`. Chariox resolves that exact scoped item and converts it to Linux `.credentials.json` automatically. The legacy unscoped Keychain item is a default-profile fallback only. Empty refresh tokens are not transferable.
 
 Model catalogs are cached by owner, selected profile, and execution location. Remote/slice selections must have a kernel-projected materialization record; clients never infer availability from labels.
 
