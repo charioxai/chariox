@@ -142,6 +142,10 @@ pub(crate) fn failed_provider_resume_state_replacement_from_message(
     {
         "provider_stream/network_error"
     } else if run.adapter_key().eq_ignore_ascii_case("opencode")
+        && provider_message.contains("Upstream request failed: Endpoint is unavailable")
+    {
+        "provider_stream/network_error"
+    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
         && provider_message.starts_with("OpenCode became idle without producing assistant output")
     {
         "provider_stream/empty_idle_assistant"
@@ -242,6 +246,19 @@ mod tests {
             "OpenCode became idle without producing assistant output. Chariox closed this turn so the agent can be retried with a fresh provider session.",
         )
         .expect("an empty idle assistant poisons the resumed OpenCode session");
+
+        assert_eq!(replacement.opencode_session_id(), None);
+    }
+
+    #[test]
+    fn opencode_unavailable_upstream_retires_only_the_failed_resume_session() {
+        let run = opencode_run_with_resume_state();
+
+        let replacement = failed_provider_resume_state_replacement_from_message(
+            &run,
+            "Provider prompt dispatch failed: Error from provider (Console): Upstream request failed: Endpoint is unavailable.",
+        )
+        .expect("an unavailable OpenCode upstream poisons the resumed provider session");
 
         assert_eq!(replacement.opencode_session_id(), None);
     }
