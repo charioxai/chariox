@@ -158,7 +158,7 @@ pub(crate) async fn projected_waiting_room_public_snapshot(
         .provider_account_profile_registry()
         .list(&account_owner_user_id, None)?;
     let github_credential_available =
-        match crate::managed_context::scm::GitCredentialCommandContext::source_from_process() {
+        match crate::managed_context::scm::GitCredentialCommandContext::inventory_from_process() {
             Ok(context) => tokio::task::spawn_blocking(move || {
                 crate::managed_context::scm::github_credential_is_available(&context)
             })

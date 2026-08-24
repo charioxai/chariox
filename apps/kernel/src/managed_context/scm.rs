@@ -106,6 +106,16 @@ impl std::fmt::Debug for GitCredentialCommandContext {
 }
 
 impl GitCredentialCommandContext {
+    pub(crate) fn inventory_from_process() -> Result<Self, DaemonError> {
+        if let Some(home) = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME")
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        {
+            return Self::managed_target(home);
+        }
+        Self::source_from_process()
+    }
+
     pub(crate) fn source_from_process() -> Result<Self, DaemonError> {
         let home = std::env::var_os("HOME")
             .filter(|value| !value.is_empty())
@@ -1308,6 +1318,46 @@ esac
         assert!(!format!("{materialization:?}").contains("github-secret-canary"));
         validate_materializations(&github_selection(), &[materialization])
             .expect("validate GitHub materialization");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn managed_inventory_uses_the_managed_provider_home() {
+        let _guard = crate::env_lock::lock();
+        let (root, target_home, _) =
+            fake_target("managed-inventory-home", Some("github-secret-canary"));
+        let process_home = root.join("process-home");
+        fs::create_dir_all(&process_home).expect("create process home");
+        let bin = root.join("bin");
+        let previous_provider_home = std::env::var_os("CHARIOX_MANAGED_PROVIDER_HOME");
+        let previous_home = std::env::var_os("HOME");
+        let previous_path = std::env::var_os("PATH");
+        let previous_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+        let previous_gh_config_dir = std::env::var_os("GH_CONFIG_DIR");
+        std::env::set_var("CHARIOX_MANAGED_PROVIDER_HOME", &target_home);
+        std::env::set_var("HOME", &process_home);
+        std::env::set_var("PATH", &bin);
+        std::env::remove_var("XDG_CONFIG_HOME");
+        std::env::remove_var("GH_CONFIG_DIR");
+
+        let context = GitCredentialCommandContext::inventory_from_process()
+            .expect("resolve managed Git credential inventory context");
+        assert_eq!(context.home, target_home);
+        assert_eq!(context.gh_config_dir, Some(target_home.join(".config/gh")));
+
+        restore_env("CHARIOX_MANAGED_PROVIDER_HOME", previous_provider_home);
+        restore_env("HOME", previous_home);
+        restore_env("PATH", previous_path);
+        restore_env("XDG_CONFIG_HOME", previous_xdg_config_home);
+        restore_env("GH_CONFIG_DIR", previous_gh_config_dir);
+        fs::remove_dir_all(root).expect("remove managed inventory fixture");
+    }
+
+    fn restore_env(name: &str, value: Option<OsString>) {
+        match value {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     #[cfg(unix)]
