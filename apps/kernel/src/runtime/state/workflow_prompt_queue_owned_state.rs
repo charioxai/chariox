@@ -372,6 +372,45 @@ impl KernelRuntimeOwnedState {
         self.workflow_cleanup_runtime_instances(session_id)
     }
 
+    pub(super) fn workflow_cleanup_deleted_session_runtime_artifacts(
+        &self,
+        session: &crate::session::RuntimeSession,
+    ) -> Result<(), DaemonError> {
+        let _provision_guard = self
+            .workflow_instance_provision_lock
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        for instance in session
+            .workflow_runtime_instances()
+            .iter()
+            .filter(|instance| !instance.primary())
+        {
+            crate::git_worktree_placement::remove_workflow_runtime_worktree(
+                session.worktree_id(),
+                instance.worktree_id(),
+                "delete session workflow runtime instance",
+            )?;
+        }
+
+        self.workflow_cleanup_orphaned_runtime_worktrees(session.id(), session.worktree_id());
+        let instance_root = self
+            .config_projection
+            .snapshot()
+            .workflow_runtime_artifact_root()
+            .join("instances")
+            .join(session.id());
+        if instance_root.exists() {
+            return Err(DaemonError::LocalTransport {
+                operation: "delete session workflow runtime instance",
+                message: format!(
+                    "workflow runtime artifacts remain at `{}`",
+                    instance_root.display()
+                ),
+            });
+        }
+        Ok(())
+    }
+
     fn workflow_cleanup_orphaned_runtime_worktrees(
         &self,
         session_id: &str,

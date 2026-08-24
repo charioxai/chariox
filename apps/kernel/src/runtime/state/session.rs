@@ -414,6 +414,7 @@ impl KernelRuntimeOwnedState {
             } else {
                 self.end_session(&session_id)?
             };
+        self.workflow_cleanup_deleted_session_runtime_artifacts(&ended)?;
         let (mut deleted, removed_project) = self
             .session_store
             .delete_session_with_project_cleanup(ended.id())?;

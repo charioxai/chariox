@@ -252,9 +252,10 @@ fn owned_launch_response_tracks_requested_prompt_when_older_prompt_starts() {
 
 fn runtime_with_idle_workflow() -> (KernelRuntimeState, String, String, String, TestRoot) {
     let test_root = TestRoot(std::env::temp_dir().join(format!(
-        "chariox-owned-workflow-admission-{}-{}",
+        "chariox-owned-workflow-admission-{}-{}-{:032x}",
         std::process::id(),
-        crate::session::unix_epoch_ms()
+        crate::session::unix_epoch_ms(),
+        rand::random::<u128>()
     )));
     std::fs::create_dir_all(&test_root.0).expect("workflow test root should be created");
     let test_root_path = test_root.0.to_string_lossy().to_string();
@@ -484,6 +485,108 @@ fn runtime_cleanup_removes_unreferenced_hidden_agents_and_worktrees() {
             .focused_agent_id(),
         initial_focus.as_deref()
     );
+}
+
+#[test]
+fn deleting_session_removes_registered_workflow_runtime_worktrees() {
+    let (runtime, session_id, workflow_id, endpoint_id, test_root) = runtime_with_idle_workflow();
+    std::process::Command::new("git")
+        .args(["init"])
+        .current_dir(&test_root.0)
+        .output()
+        .expect("git init should run");
+    std::fs::write(
+        test_root.0.join("README.md"),
+        "workflow runtime cleanup fixture\n",
+    )
+    .expect("fixture should be written");
+    for args in [
+        vec!["config", "user.email", "tests@chariox.invalid"],
+        vec!["config", "user.name", "Chariox Tests"],
+        vec!["add", "README.md"],
+        vec!["commit", "-m", "fixture"],
+    ] {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&test_root.0)
+            .output()
+            .expect("git fixture command should run");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let instance_id = "workflow-instance-delete-test";
+    let instance_root = runtime
+        .owned
+        .config_projection
+        .snapshot()
+        .workflow_runtime_artifact_root()
+        .join("instances")
+        .join(&session_id);
+    std::fs::create_dir_all(&instance_root).expect("instance root should be created");
+    let instance_worktree = instance_root.join(instance_id);
+    let placement = crate::agent::GitWorktreePlacement {
+        target_directory: Some(instance_worktree.display().to_string()),
+        branch: None,
+        from_ref: Some("HEAD".to_string()),
+    };
+    let registered_worktree =
+        crate::git_worktree_placement::prepare_workflow_runtime_worktree_or_reuse_directory(
+            &placement,
+            &test_root.0,
+            None,
+            "prepare session deletion test worktree",
+        )
+        .expect("runtime worktree should be created");
+    let workflow = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_ref(&session_id, &workflow_id)
+        .expect("workflow should resolve");
+    let node_agent_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    runtime
+        .owned
+        .session_store
+        .write()
+        .register_workflow_runtime_instance(
+            &session_id,
+            crate::session::WorkflowEndpointRuntimeInstance::new(
+                instance_id,
+                &workflow_id,
+                &endpoint_id,
+                workflow.revision(),
+                2,
+                false,
+                node_agent_ids,
+                registered_worktree,
+            ),
+        )
+        .expect("runtime instance should register");
+    assert!(instance_worktree.exists());
+
+    runtime
+        .owned
+        .delete_session_ref(&session_id, None)
+        .expect("session deletion should succeed");
+
+    assert!(!instance_worktree.exists());
+    assert!(!instance_root.exists());
+    let worktree_list = std::process::Command::new("git")
+        .args(["worktree", "list", "--porcelain"])
+        .current_dir(&test_root.0)
+        .output()
+        .expect("git worktree list should run");
+    assert!(worktree_list.status.success());
+    assert!(!String::from_utf8_lossy(&worktree_list.stdout)
+        .contains(&instance_worktree.display().to_string()));
 }
 
 struct TestRoot(std::path::PathBuf);
