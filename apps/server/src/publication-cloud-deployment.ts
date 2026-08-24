@@ -89,6 +89,29 @@ function localRuntimeBackendTarget(publication: WorkflowPublicationConfig, local
   }
 }
 
+export type PublicationCloudBackendIngress =
+  | { readonly kind: "no_cloud_deployment" }
+  | { readonly kind: "hosted_container" }
+  | { readonly kind: "unavailable"; readonly lastError: string }
+  | { readonly kind: "ready" }
+
+export function publicationCloudBackendIngress(input: {
+  readonly cloudDeploymentId?: string | null | undefined
+  readonly cloudRunnerKey?: string | null | undefined
+  readonly access: string
+}): PublicationCloudBackendIngress {
+  const deploymentId = input.cloudDeploymentId?.trim()
+  if (!deploymentId) return { kind: "no_cloud_deployment" }
+  if (input.cloudRunnerKey?.trim()) return { kind: "hosted_container" }
+  if (input.access !== "tunnel") {
+    return {
+      kind: "unavailable",
+      lastError: `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${input.access}`,
+    }
+  }
+  return { kind: "ready" }
+}
+
 export async function appendCloudPublicationDeploymentLogs(
   input: AppendCloudPublicationDeploymentLogsInput,
 ): Promise<boolean> {

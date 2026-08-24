@@ -18,6 +18,7 @@ import {
 import { promptFromInvocationInput, publicationInvocationEnvelope } from "./kernel-publication-client.js"
 import {
   appendCloudPublicationDeploymentLogs,
+  publicationCloudBackendIngress,
   registerCloudPublicationDeploymentBackend,
 } from "./publication-cloud-deployment.js"
 import {
@@ -59,6 +60,7 @@ export {
   promptFromInvocationInput,
   publicationInvocationEnvelope,
   appendCloudPublicationDeploymentLogs,
+  publicationCloudBackendIngress,
   registerCloudPublicationDeploymentBackend,
   clearAgentAppEffectStoresForTests,
   publicationForAgentAppInvocation,

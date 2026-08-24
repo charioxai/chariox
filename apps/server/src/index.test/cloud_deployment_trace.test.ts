@@ -21,6 +21,7 @@ import {
   providerCatalogResponse,
   publicationConfigFromKernelRecord,
   publicationConfigFromPackage,
+  publicationCloudBackendIngress,
   publicationForAgentAppInvocation,
   publicationInvocationEnvelope,
   publishedHttpConfig,
@@ -172,6 +173,39 @@ test("publication gateway can register Cloud backend from env profile", async ()
     setOptionalEnv("CHARIOX_PUBLICATION_CLOUD_ACCOUNT_ID", previous.accountId)
     setOptionalEnv("CHARIOX_PUBLICATION_CLOUD_SESSION_TOKEN", previous.token)
   }
+})
+
+test("hosted publication container skips local runtime Cloud backend registration", () => {
+  assert.deepEqual(publicationCloudBackendIngress({
+    cloudDeploymentId: "deployment-hosted",
+    cloudRunnerKey: "runner-secret",
+    access: "local",
+  }), { kind: "hosted_container" })
+})
+
+test("connected publication without a relay tunnel marks the Cloud backend unavailable", () => {
+  const decision = publicationCloudBackendIngress({
+    cloudDeploymentId: "deployment-connected",
+    cloudRunnerKey: null,
+    access: "local",
+  })
+  assert.equal(decision.kind, "unavailable")
+  assert.equal(
+    decision.kind === "unavailable" ? decision.lastError : "",
+    "Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access local",
+  )
+})
+
+test("connected publication with a relay tunnel registers the Cloud backend ready", () => {
+  assert.deepEqual(publicationCloudBackendIngress({
+    cloudDeploymentId: "deployment-tunnel",
+    access: "tunnel",
+  }), { kind: "ready" })
+  assert.deepEqual(publicationCloudBackendIngress({
+    cloudDeploymentId: null,
+    cloudRunnerKey: null,
+    access: "local",
+  }), { kind: "no_cloud_deployment" })
 })
 
 test("publication gateway appends account-scoped deployment logs", async () => {

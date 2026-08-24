@@ -38,6 +38,7 @@ import {
   resolveHttpsOptions,
 } from "./publication-config.js"
 import {
+  publicationCloudBackendIngress,
   registerCloudPublicationDeploymentBackend,
 } from "./publication-cloud-deployment.js"
 import { forwardWorkflowResult } from "./publication-http-response.js"
@@ -339,9 +340,12 @@ async function registerServedPublicationEndpoint(
     })
     const access = registered?.access ?? "local"
     const openUrl = registered?.open_url ?? localUrl
-    const cloudDeploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
-    const cloudRunnerKey = process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY?.trim()
-    if (cloudDeploymentId && cloudRunnerKey) {
+    const ingress = publicationCloudBackendIngress({
+      cloudDeploymentId: process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID,
+      cloudRunnerKey: process.env.CHARIOX_PUBLICATION_CLOUD_RUNNER_KEY,
+      access,
+    })
+    if (ingress.kind === "hosted_container") {
       logger.info("skipping local-runtime Cloud backend registration for hosted publication container", {
         publication_id: publication.publication_id,
         local_url: localUrl,
@@ -350,8 +354,7 @@ async function registerServedPublicationEndpoint(
       })
       return
     }
-    if (cloudDeploymentId && access !== "tunnel") {
-      const message = `Cloud local-runtime publication requires a relay display tunnel; endpoint registered with access ${access}`
+    if (ingress.kind === "unavailable") {
       logger.warn("Cloud publication deployment backend is unavailable", {
         publication_id: publication.publication_id,
         local_url: localUrl,
@@ -360,7 +363,7 @@ async function registerServedPublicationEndpoint(
       })
       await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger, {
         status: "unavailable",
-        lastError: message,
+        lastError: ingress.lastError,
       })
       return
     }
