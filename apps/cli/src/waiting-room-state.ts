@@ -72,7 +72,7 @@ export function createWaitingRoomState(
       managedKernelContext: "empty",
       managedDevelopmentMode: "empty",
       managedRepositoryIndex: 0,
-      managedProviderAccountSource: "none",
+      managedProviderAccountSource: "selected_account",
       managedProviderAccountIndex: 0,
       managedGitCredentialSource: "none",
       managedAutoStopPreset: "idle_15m",

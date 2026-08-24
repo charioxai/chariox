@@ -1,6 +1,9 @@
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonRequest, LocalDaemonResponse, ManagedEnvironmentCatalog};
+use crate::local::{
+    LocalDaemonRequest, LocalDaemonResponse, ManagedEnvironmentCatalog,
+    ManagedEnvironmentProviderAccounts,
+};
 use crate::runtime::cloud_api_client::{
     cloud_url_component, get_cloud_json_authenticated, post_cloud_json_authenticated,
 };
@@ -12,6 +15,7 @@ use cloud_contract::{
 
 pub(crate) async fn execute_managed_environment_control_request(
     config: DaemonConfig,
+    provider_account_profiles: crate::account_profile::ProviderAccountProfileRegistry,
     caller_user_id: &str,
     request: LocalDaemonRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
@@ -99,6 +103,12 @@ pub(crate) async fn execute_managed_environment_control_request(
             Ok(LocalDaemonResponse::ManagedEnvironmentContextTransferPrepared { ticket })
         }
         LocalDaemonRequest::CreateManagedEnvironment(request) => {
+            preflight_provider_account_exports(
+                &config,
+                cloud,
+                &provider_account_profiles,
+                &request.context_plan.provider_accounts,
+            )?;
             let mut body =
                 serde_json::to_value(request).map_err(|error| DaemonError::LocalTransport {
                     operation: "encode managed environment create request",
@@ -149,6 +159,36 @@ pub(crate) async fn execute_managed_environment_control_request(
     }
 }
 
+fn preflight_provider_account_exports(
+    config: &DaemonConfig,
+    cloud: &PersistedCloudRelayProfile,
+    provider_account_profiles: &crate::account_profile::ProviderAccountProfileRegistry,
+    selection: &ManagedEnvironmentProviderAccounts,
+) -> Result<(), DaemonError> {
+    let ManagedEnvironmentProviderAccounts::Selected { accounts } = selection else {
+        return Ok(());
+    };
+    let owner_user_id = crate::account_profile::provider_account_authority_owner_user_id(
+        config,
+        cloud.user_id.as_str(),
+    );
+    for account in accounts {
+        provider_account_profiles
+            .export_managed_context_materialization(
+                &owner_user_id,
+                &account.provider,
+                &account.account_profile,
+            )
+            .map_err(|_| {
+                control_error(format!(
+                    "selected {} provider account `{}` has no transferable credentials",
+                    account.provider, account.account_profile
+                ))
+            })?;
+    }
+    Ok(())
+}
+
 fn authorized_cloud_profile<'a>(
     config: &'a DaemonConfig,
     caller_user_id: &str,
@@ -180,11 +220,14 @@ mod tests {
         ListManagedEnvironmentCatalogRequest, ManagedEnvironmentAutoStopPolicy,
         ManagedEnvironmentContextPlanInput, ManagedEnvironmentDevelopmentSetup,
         ManagedEnvironmentGitCredentials, ManagedEnvironmentKernelContextSelection,
-        ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccounts,
-        PrepareManagedEnvironmentContextTransferRequest, RequestManagedEnvironmentLifecycleRequest,
+        ManagedEnvironmentLifecycleAction, ManagedEnvironmentProviderAccountSelection,
+        ManagedEnvironmentProviderAccounts, PrepareManagedEnvironmentContextTransferRequest,
+        RequestManagedEnvironmentLifecycleRequest,
     };
+    use std::fs;
     use std::io::{Read, Write};
     use std::net::{TcpListener, TcpStream};
+    use std::path::Path;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
@@ -201,6 +244,74 @@ mod tests {
         authorized_cloud_profile(&config, "cloud-user-1").expect("Cloud owner");
         assert!(authorized_cloud_profile(&config, crate::session::DEFAULT_LOCAL_USER_ID).is_err());
         assert!(authorized_cloud_profile(&config, "cloud-user-2").is_err());
+    }
+
+    #[test]
+    fn managed_environment_create_preflights_selected_provider_exports() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-environment-preflight-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        fs::create_dir_all(&root).expect("test root");
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("provider-accounts.json"),
+        )
+        .expect("provider account registry");
+        let profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Managed default",
+            )
+            .expect("managed provider account");
+        let environment = registry
+            .resolve_environment(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+            )
+            .expect("provider account environment");
+        fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"token":"source"}"#,
+        )
+        .expect("provider credential");
+        let mut config = DaemonConfig::for_tests();
+        config.cloud_relay = Some(PersistedCloudRelayProfile {
+            user_id: "cloud-user-1".to_string(),
+            ..PersistedCloudRelayProfile::default()
+        });
+        let cloud = config.cloud_relay.as_ref().expect("Cloud profile");
+
+        preflight_provider_account_exports(
+            &config,
+            cloud,
+            &registry,
+            &ManagedEnvironmentProviderAccounts::Selected {
+                accounts: vec![ManagedEnvironmentProviderAccountSelection {
+                    provider: "codex".to_string(),
+                    account_profile: profile.profile_id,
+                }],
+            },
+        )
+        .expect("transferable account");
+        let error = preflight_provider_account_exports(
+            &config,
+            cloud,
+            &registry,
+            &ManagedEnvironmentProviderAccounts::Selected {
+                accounts: vec![ManagedEnvironmentProviderAccountSelection {
+                    provider: "claude".to_string(),
+                    account_profile: "missing".to_string(),
+                }],
+            },
+        )
+        .expect_err("missing account must fail before create");
+        assert!(error.to_string().contains(
+            "selected claude provider account `missing` has no transferable credentials"
+        ));
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -262,9 +373,15 @@ mod tests {
             "futureTicketField": true
         }));
         config.cloud_relay.as_mut().expect("Cloud profile").api_url = server.url();
+        let provider_account_profiles =
+            crate::account_profile::ProviderAccountProfileRegistry::open(
+                config.account_profile_registry_path(),
+            )
+            .expect("provider account registry");
 
         let catalog = execute_managed_environment_control_request(
             config.clone(),
+            provider_account_profiles.clone(),
             "cloud-user-1",
             LocalDaemonRequest::ListManagedEnvironmentCatalog(ListManagedEnvironmentCatalogRequest),
         )
@@ -283,6 +400,7 @@ mod tests {
 
         let create = execute_managed_environment_control_request(
             config.clone(),
+            provider_account_profiles.clone(),
             "cloud-user-1",
             LocalDaemonRequest::CreateManagedEnvironment(CreateManagedEnvironmentRequest {
                 client_request_id: "create-1".to_string(),
@@ -311,6 +429,7 @@ mod tests {
 
         let get = execute_managed_environment_control_request(
             config.clone(),
+            provider_account_profiles.clone(),
             "cloud-user-1",
             LocalDaemonRequest::GetManagedEnvironment(GetManagedEnvironmentRequest {
                 environment_id: "environment / one".to_string(),
@@ -325,6 +444,7 @@ mod tests {
 
         let prepared = execute_managed_environment_control_request(
             config.clone(),
+            provider_account_profiles.clone(),
             "cloud-user-1",
             LocalDaemonRequest::PrepareManagedEnvironmentContextTransfer(
                 PrepareManagedEnvironmentContextTransferRequest {
@@ -343,6 +463,7 @@ mod tests {
 
         let lifecycle = execute_managed_environment_control_request(
             config,
+            provider_account_profiles,
             "cloud-user-1",
             LocalDaemonRequest::RequestManagedEnvironmentLifecycle(
                 RequestManagedEnvironmentLifecycleRequest {

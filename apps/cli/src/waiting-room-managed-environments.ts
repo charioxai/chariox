@@ -6,7 +6,6 @@ import type {
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { projectSelectionFromId } from "./waiting-room-projects.js"
-import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 import type {
   WaitingRoomManagedProviderAccountSelection,
   WaitingRoomRemoteState,
@@ -204,7 +203,7 @@ export function toggleManagedRepositorySelection(
 
 export function cycleManagedProviderAccounts(
   state: WaitingRoomState,
-  remote: WaitingRoomRemoteState,
+  _remote: WaitingRoomRemoteState,
 ): WaitingRoomState {
   if (state.managedProviderAccountSource === "selected_account") {
     return {
@@ -213,21 +212,12 @@ export function cycleManagedProviderAccounts(
       managedProviderAccountSelection: [],
     }
   }
-  const fallback = selectedProviderAccount(
-    remote.providerAccounts,
-    state.providerId,
-    state.accountProfileId,
-  )
-  return {
+  const next: WaitingRoomState = {
     ...state,
     managedProviderAccountSource: "selected_account",
-    managedProviderAccountSelection: fallback && managedProviderAccountIsTransferable(fallback)
-      ? [{
-          provider: fallback.provider,
-          accountProfile: fallback.profile_id,
-        }]
-      : [],
   }
+  delete next.managedProviderAccountSelection
+  return next
 }
 
 export function toggleManagedProviderAccountSelection(
@@ -287,14 +277,12 @@ export function managedProviderAccountSelections(
       [managedProviderAccountSelectionKey(account), account]
     ))).values()]
   }
-  const account = selectedProviderAccount(
-    remote.providerAccounts,
-    state.providerId,
-    state.accountProfileId,
-  )
-  return account && managedProviderAccountIsTransferable(account)
-    ? [{ provider: account.provider, accountProfile: account.profile_id }]
-    : []
+  return (remote.providerAccounts ?? [])
+    .filter(managedProviderAccountIsTransferable)
+    .map((account) => ({
+      provider: account.provider,
+      accountProfile: account.profile_id,
+    }))
 }
 
 export function cycleManagedGitCredentials(state: WaitingRoomState): WaitingRoomState {
@@ -394,9 +382,10 @@ export function managedEnvironmentDraftBlockReason(
   if (!state.managedRegion || !computeClass.regions.includes(state.managedRegion)) {
     return "The selected managed region is unavailable for this compute class."
   }
+  const selectedProviderAccounts = managedProviderAccountSelections(state, remote)
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
-    || state.managedProviderAccountSource === "selected_account"
+    || selectedProviderAccounts.length > 0
     || state.managedGitCredentialSource === "selected"
   const source = remote.managedContextSources
     ?.find((candidate) => candidate.sourceTargetId === state.managedContextSourceTargetId)
@@ -415,8 +404,10 @@ export function managedEnvironmentDraftBlockReason(
     if (!remote.workspaceId) return "The connected source kernel returned no primary Workspace."
   }
   if ((state.managedProviderAccountSource ?? "none") === "selected_account") {
-    const accounts = managedProviderAccountSelections(state, remote)
-    if (accounts.length === 0) return "Choose at least one available provider account before transferring it."
+    const accounts = selectedProviderAccounts
+    if (accounts.length === 0 && state.managedProviderAccountSelection !== undefined) {
+      return "Choose at least one available provider account before transferring it."
+    }
     if (accounts.length > 16) return "Choose no more than 16 provider accounts."
     if (accounts.some((account) => !(remote.providerAccounts ?? []).some((profile) => (
       profile.provider === account.provider
@@ -439,9 +430,10 @@ export function managedEnvironmentContextPlanInput(
 ): ManagedEnvironmentContextPlanInput {
   const blockReason = managedEnvironmentDraftBlockReason(state, remote)
   if (blockReason) throw new Error(blockReason)
+  const providerAccounts = managedProviderAccountSelections(state, remote)
   const sourceRequired = state.managedKernelContext === "source_kernel"
     || state.managedDevelopmentMode === "current_project"
-    || state.managedProviderAccountSource === "selected_account"
+    || providerAccounts.length > 0
     || state.managedGitCredentialSource === "selected"
   const project = selectedManagedProject(state, remote)
   const developmentSetup = waitingRoomProjectDevelopmentSetup(state, remote)
@@ -451,10 +443,10 @@ export function managedEnvironmentContextPlanInput(
     developmentSetup: state.managedDevelopmentMode === "current_project" && project
       ? developmentSetup ?? { kind: "empty" }
       : { kind: "empty" },
-    providerAccounts: state.managedProviderAccountSource === "selected_account"
+    providerAccounts: providerAccounts.length > 0
       ? {
           kind: "selected",
-          accounts: managedProviderAccountSelections(state, remote),
+          accounts: providerAccounts,
         }
       : { kind: "none" },
     gitCredentials: state.managedGitCredentialSource === "selected"

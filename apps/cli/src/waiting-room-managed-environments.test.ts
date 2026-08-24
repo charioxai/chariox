@@ -75,7 +75,7 @@ test("new managed Machine selection reveals every conditional configuration row"
   )
 })
 
-test("clean kernel plus Current Project retains one source and Project repository defaults", () => {
+test("clean kernel plus Current Project exports every available provider account from one source", () => {
   const state: WaitingRoomState = {
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
@@ -98,7 +98,14 @@ test("clean kernel plus Current Project retains one source and Project repositor
         { role: "supporting", workspaceId: "workspace-supporting", worktreeId: null },
       ],
     },
-    providerAccounts: { kind: "none" },
+    providerAccounts: {
+      kind: "selected",
+      accounts: [
+        { provider: "opencode", accountProfile: "opencode-work" },
+        { provider: "claude", accountProfile: "default" },
+        { provider: "claude", accountProfile: "claude-work" },
+      ],
+    },
     gitCredentials: { kind: "none" },
   })
 
@@ -243,6 +250,7 @@ test("Empty development does not serialize the selected Project", () => {
     managedRegion: "hel1",
     managedKernelContext: "empty",
     managedDevelopmentMode: "empty",
+    managedProviderAccountSource: "none",
     projectSelectionId: "existing:project-1",
   }
   assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()), {
@@ -262,6 +270,7 @@ test("selected provider account uses the exact connected source", () => {
     managedRegion: "hel1",
     managedContextSourceTargetId: "source-target-1",
     managedProviderAccountSource: "selected_account",
+    managedProviderAccountSelection: [{ provider: "opencode", accountProfile: "opencode-work" }],
     accountProfileId: "opencode-work",
   }
   assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
@@ -302,6 +311,7 @@ test("managed Machine setup selects accounts across provider families", () => {
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
     selectedKernelRef: "",
     managedKernelContext: "source_kernel",
+    managedProviderAccountSource: "none",
     focus: "managed-provider-account",
     managedProviderAccountIndex: 3,
   }, [], catalog(), undefined, selectionRemote)
@@ -359,7 +369,12 @@ test("managed Machine setup selects accounts across provider families", () => {
   const enabled = cycleWaitingRoomValue(disabled, [], catalog(), 1, undefined, selectionRemote)
   assert.deepEqual(managedEnvironmentContextPlanInput(enabled, selectionRemote).providerAccounts, {
     kind: "selected",
-    accounts: [{ provider: "opencode", accountProfile: "opencode-work" }],
+    accounts: [
+      { provider: "opencode", accountProfile: "opencode-work" },
+      { provider: "claude", accountProfile: "default" },
+      { provider: "claude", accountProfile: "claude-work" },
+      { provider: "codex", accountProfile: "codex-work" },
+    ],
   })
 })
 
@@ -384,7 +399,11 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
     focus: "managed-provider-account",
     managedProviderAccountIndex: 0,
   }, [], catalog(), 1, undefined, unavailableRemote)
-  assert.equal(state.managedProviderAccountSource, "none")
+  assert.equal(state.managedProviderAccountSource, "selected_account")
+  assert.deepEqual(managedEnvironmentContextPlanInput(state, unavailableRemote).providerAccounts, {
+    kind: "selected",
+    accounts: [{ provider: "claude", accountProfile: "claude-work" }],
+  })
   assert.deepEqual(
     waitingRoomFocusTargets([], unavailableRemote, state)
       .filter((target) => target.focus === "managed-provider-account")
@@ -408,7 +427,7 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
       selectable: false,
     }, {
       id: "managed-provider-account:claude:claude-work",
-      value: "Claude · Excluded",
+      value: "Claude · Included",
       selectable: true,
     }],
   )
@@ -439,6 +458,13 @@ test("both Claude execution modes transfer the canonical Claude account", () => 
       managedProviderAccountSource: "selected_account",
     }, [], catalog(), undefined, remote())
     state = cycleWaitingRoomValue(state, [], catalog(), 1, undefined, remote())
+    state = {
+      ...state,
+      managedProviderAccountSelection: [{
+        provider: "claude",
+        accountProfile: state.accountProfileId ?? "default",
+      }],
+    }
     assert.equal(state.accountProfileId, "claude-work")
     assert.equal(managedEnvironmentDraftBlockReason(state, remote()), null)
     assert.deepEqual(managedEnvironmentContextPlanInput(state, remote()).providerAccounts, {
@@ -446,6 +472,21 @@ test("both Claude execution modes transfer the canonical Claude account", () => 
       accounts: [{ provider: "claude", accountProfile: "claude-work" }],
     })
   }
+})
+
+test("managed Machine setup treats no authenticated provider accounts as an empty transfer", () => {
+  const emptyRemote = remote()
+  emptyRemote.providerAccounts = []
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+  }, [], catalog(), undefined, emptyRemote)
+
+  assert.equal(managedEnvironmentDraftBlockReason(state, emptyRemote), null)
+  assert.deepEqual(managedEnvironmentContextPlanInput(state, emptyRemote).providerAccounts, {
+    kind: "none",
+  })
 })
 
 test("GitHub credential selection is source-bound and serialized", () => {
