@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::collections::BTreeSet;
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -101,47 +101,9 @@ pub(crate) fn apply_managed_provider_isolation(
         let account_bindings = managed_account_bindings(&mut launch.pty_env)?;
         let program = rewrite_managed_program_path(&program, &provider_home, &account_bindings);
 
-        let mut args = vec![
-            "--die-with-parent".to_string(),
-            "--new-session".to_string(),
-            "--unshare-user".to_string(),
-            "--unshare-pid".to_string(),
-            "--unshare-ipc".to_string(),
-            "--unshare-uts".to_string(),
-            "--unshare-cgroup-try".to_string(),
-            "--disable-userns".to_string(),
-            "--uid".to_string(),
-            "0".to_string(),
-            "--gid".to_string(),
-            "0".to_string(),
-            "--cap-drop".to_string(),
-            "ALL".to_string(),
-            "--ro-bind".to_string(),
-            "/".to_string(),
-            "/".to_string(),
-        ];
-
-        for path in ["/home", "/tmp", "/run", "/var/lib", "/var/tmp"] {
-            if Path::new(path).exists() {
-                args.extend(["--tmpfs".to_string(), path.to_string()]);
-            }
-        }
-        for path in ["/workspace", "/root", "/mnt", "/media"] {
-            if Path::new(path).exists() {
-                args.extend(["--tmpfs".to_string(), path.to_string()]);
-            }
-        }
-        if Path::new("/opt/chariox-slice/logs").exists() {
-            args.extend(["--tmpfs".to_string(), "/opt/chariox-slice/logs".to_string()]);
-        }
-        args.extend([
-            "--proc".to_string(),
-            "/proc".to_string(),
-            "--dev".to_string(),
-            "/dev".to_string(),
-        ]);
-
-        let mut created_directories = BTreeSet::new();
+        let resolver = managed_resolver_binding()?;
+        let (mut args, mut created_directories) =
+            managed_namespace_args(resolver.as_deref(), Path::exists);
         append_directory(&mut args, Path::new(SANDBOX_HOME), &mut created_directories);
         append_bind(
             &mut args,
@@ -306,6 +268,80 @@ fn managed_provider_home() -> Result<PathBuf, DaemonError> {
         .map(PathBuf::from)
         .ok_or_else(|| isolation_error("managed provider HOME is not configured"))?;
     canonical_directory(&home, "managed provider HOME")
+}
+
+#[cfg(target_os = "linux")]
+fn managed_resolver_binding() -> Result<Option<PathBuf>, DaemonError> {
+    let resolver = Path::new("/etc/resolv.conf");
+    let target = resolver.canonicalize().map_err(|error| {
+        isolation_error(format!(
+            "managed provider isolation cannot resolve /etc/resolv.conf: {error}"
+        ))
+    })?;
+    let metadata = std::fs::metadata(&target).map_err(|error| {
+        isolation_error(format!(
+            "managed provider isolation cannot inspect resolver target: {error}"
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(isolation_error(
+            "managed provider resolver target must be a regular file",
+        ));
+    }
+    Ok(target.starts_with("/run").then_some(target))
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn managed_namespace_args(
+    resolver: Option<&Path>,
+    path_exists: impl Fn(&Path) -> bool,
+) -> (Vec<String>, BTreeSet<PathBuf>) {
+    let mut args = vec![
+        "--die-with-parent".to_string(),
+        "--new-session".to_string(),
+        "--unshare-user".to_string(),
+        "--unshare-pid".to_string(),
+        "--unshare-ipc".to_string(),
+        "--unshare-uts".to_string(),
+        "--unshare-cgroup-try".to_string(),
+        "--disable-userns".to_string(),
+        "--uid".to_string(),
+        "0".to_string(),
+        "--gid".to_string(),
+        "0".to_string(),
+        "--cap-drop".to_string(),
+        "ALL".to_string(),
+        "--ro-bind".to_string(),
+        "/".to_string(),
+        "/".to_string(),
+    ];
+
+    for path in ["/home", "/tmp", "/run", "/var/lib", "/var/tmp"] {
+        if path_exists(Path::new(path)) {
+            args.extend(["--tmpfs".to_string(), path.to_string()]);
+        }
+    }
+    for path in ["/workspace", "/root", "/mnt", "/media"] {
+        if path_exists(Path::new(path)) {
+            args.extend(["--tmpfs".to_string(), path.to_string()]);
+        }
+    }
+    let slice_logs = Path::new("/opt/chariox-slice/logs");
+    if path_exists(slice_logs) {
+        args.extend(["--tmpfs".to_string(), slice_logs.display().to_string()]);
+    }
+    args.extend([
+        "--proc".to_string(),
+        "/proc".to_string(),
+        "--dev".to_string(),
+        "/dev".to_string(),
+    ]);
+
+    let mut created_directories = BTreeSet::new();
+    if let Some(resolver) = resolver {
+        append_read_only_bind(&mut args, resolver, resolver, &mut created_directories);
+    }
+    (args, created_directories)
 }
 
 #[cfg(target_os = "linux")]
@@ -488,7 +524,26 @@ fn append_bind(
     ]);
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
+fn append_read_only_bind(
+    args: &mut Vec<String>,
+    source: &Path,
+    destination: &Path,
+    created: &mut BTreeSet<PathBuf>,
+) {
+    append_directory(
+        args,
+        destination.parent().unwrap_or(Path::new("/")),
+        created,
+    );
+    args.extend([
+        "--ro-bind".to_string(),
+        source.display().to_string(),
+        destination.display().to_string(),
+    ]);
+}
+
+#[cfg(any(target_os = "linux", test))]
 fn append_directory(args: &mut Vec<String>, destination: &Path, created: &mut BTreeSet<PathBuf>) {
     let mut ancestors = destination.ancestors().collect::<Vec<_>>();
     ancestors.reverse();
@@ -504,5 +559,51 @@ fn isolation_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "managed_provider_isolation",
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn namespace_args_restore_the_resolver_after_masking_run() {
+        let resolver = Path::new("/run/systemd/resolve/stub-resolv.conf");
+        let (args, _) = managed_namespace_args(Some(resolver), |path| path == Path::new("/run"));
+
+        let mask = args
+            .windows(2)
+            .position(|args| args == ["--tmpfs", "/run"])
+            .expect("run should be masked");
+        let binding = args
+            .windows(3)
+            .position(|args| {
+                args == [
+                    "--ro-bind",
+                    "/run/systemd/resolve/stub-resolv.conf",
+                    "/run/systemd/resolve/stub-resolv.conf",
+                ]
+            })
+            .expect("resolver target should be restored read-only");
+        assert!(binding > mask);
+        assert_eq!(
+            &args[binding - 6..binding],
+            [
+                "--dir",
+                "/run",
+                "--dir",
+                "/run/systemd",
+                "--dir",
+                "/run/systemd/resolve",
+            ]
+        );
+    }
+
+    #[test]
+    fn namespace_args_do_not_bind_a_resolver_outside_masked_run() {
+        let (args, _) = managed_namespace_args(None, |path| path == Path::new("/run"));
+
+        assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
+        assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
     }
 }
