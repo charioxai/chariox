@@ -222,12 +222,12 @@ export type ProviderAccountUsageSnapshot = {
 export const PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION = 1
 
 /**
- * Non-secret credential-type facts only. Values state what the
- * provider-native adapter can reliably observe; `credential_kind` is null on
- * records written before the contract existed (treat as not reported, see
- * `credential_kind_not_reported_reason`).
+ * Provider-observed account/billing class for a credential, reported only by
+ * the provider-native adapter; `credential_kind` is null on records written
+ * before the contract existed or before the adapter reported the class (treat
+ * as not reported, see `credential_kind_not_reported_reason`).
  */
-export type ProviderCredentialKind = "subscription" | "imported_file"
+export type ProviderCredentialKind = "subscription" | "api_key" | "prepaid" | "mixed"
 
 export type ProviderAccountProfile = {
   owner_user_id: string

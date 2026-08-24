@@ -57,6 +57,10 @@ export async function handleProviderSlashCommand(
   const parts = value.split(/\s+/).filter(Boolean)
   const [action] = parts
   const method = extractEnrollmentMethod(parts)
+  if (method.error) {
+    deps.flashFooter(method.error, "error")
+    return
+  }
   const rest = method.rest
   const [maybeProvider, maybeProfile] = rest.slice(1)
   if (action === "accounts") {
@@ -431,14 +435,25 @@ function providerAccountSubject(provider: string, accountLabel: string): string 
 
 /// Extracts a `--method <name>` enrollment selection from the token stream,
 /// leaving the positional operands intact.
-function extractEnrollmentMethod(parts: string[]): { rest: string[]; value?: string | undefined } {
+function extractEnrollmentMethod(parts: string[]): {
+  rest: string[]
+  value?: string | undefined
+  error?: string | undefined
+} {
   const index = parts.indexOf("--method")
   if (index < 0) {
     return { rest: parts }
   }
+  const value = parts[index + 1]
+  if (!value || value.startsWith("--")) {
+    return {
+      rest: parts,
+      error: "--method requires an enrollment method",
+    }
+  }
   return {
     rest: parts.filter((_, position) => position !== index && position !== index + 1),
-    value: parts[index + 1],
+    value,
   }
 }
 
@@ -449,8 +464,12 @@ function credentialKindLabel(profile: {
   switch (profile.credential_kind) {
     case "subscription":
       return "subscription"
-    case "imported_file":
-      return "imported file"
+    case "api_key":
+      return "api key"
+    case "prepaid":
+      return "prepaid"
+    case "mixed":
+      return "mixed"
     default:
       return profile.credential_kind_not_reported_reason
         ? `kind not reported (${profile.credential_kind_not_reported_reason})`

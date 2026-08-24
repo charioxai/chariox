@@ -261,16 +261,22 @@ impl ProviderAccountUsageSnapshot {
 /// change meaningfully.
 pub const PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION: u32 = 1;
 
-/// Non-secret credential-type facts only. Values state what the
-/// provider-native adapter can reliably observe; nothing here contains,
-/// references, or reads secret material.
+/// Provider-observed account/billing class for a credential. This is
+/// deliberately separate from enrollment method and profile origin: an
+/// imported/linked profile may carry any of these classes, so the kind stays
+/// explicitly unknown (no value + a not-reported reason) until the
+/// provider-native adapter actually reports it. Never secret.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ProviderCredentialKind {
-    /// Enrolled through the provider's native subscription OAuth/device flow.
+    /// Subscription-backed access confirmed by the provider-native flow.
     Subscription,
-    /// Credentials imported from a user-provided provider-native file.
-    ImportedFile,
+    /// Static provider API key.
+    ApiKey,
+    /// Prepaid credit balance.
+    Prepaid,
+    /// More than one of the above on one account.
+    Mixed,
 }
 
 /// Enrollment methods a provider adapter can run through its own native CLI /
@@ -1319,23 +1325,24 @@ fn credential_kind_for_new_profile(
     origin: ProviderAccountProfileOrigin,
     provider: &str,
 ) -> (Option<ProviderCredentialKind>, Option<String>) {
-    match origin {
-        ProviderAccountProfileOrigin::Linked => (Some(ProviderCredentialKind::ImportedFile), None),
-        ProviderAccountProfileOrigin::CharioxCreated
-            if crate::provider::canonical_provider_family(provider) == Some("codex") =>
-        {
-            // Managed Codex profiles enroll exclusively through the official
-            // app-server ChatGPT subscription flow.
-            (Some(ProviderCredentialKind::Subscription), None)
-        }
-        _ => (
-            None,
-            Some(
-                "the provider-native login does not report the resulting credential type"
-                    .to_string(),
-            ),
-        ),
+    // Only managed Codex profiles have a known account class up front: their
+    // sole enrollment surface is the official app-server ChatGPT
+    // subscription device-code flow. Everything else — including
+    // linked/imported roots, which may hold subscription, API-key, prepaid,
+    // or mixed credentials — stays explicitly unknown until the adapter
+    // reports the class.
+    if origin == ProviderAccountProfileOrigin::CharioxCreated
+        && crate::provider::canonical_provider_family(provider) == Some("codex")
+    {
+        return (Some(ProviderCredentialKind::Subscription), None);
     }
+    let reason = match origin {
+        ProviderAccountProfileOrigin::Linked => {
+            "imported credentials are not classified until the provider reports the account type"
+        }
+        _ => "the provider-native login does not report the resulting credential type",
+    };
+    (None, Some(reason.to_string()))
 }
 
 fn new_public_profile(
@@ -2116,7 +2123,24 @@ mod tests {
     #[test]
     fn credential_kind_contract_is_versioned_and_grounded_in_observable_facts() {
         assert_eq!(PROVIDER_CREDENTIAL_KIND_CONTRACT_VERSION, 1);
-        assert!(ProviderCredentialKind::Subscription != ProviderCredentialKind::ImportedFile);
+        // The contract pins the wire names for every observable class so
+        // clients can rely on them without ever seeing secret material.
+        assert_eq!(
+            serde_json::to_value(ProviderCredentialKind::Subscription).unwrap(),
+            serde_json::json!("subscription")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCredentialKind::ApiKey).unwrap(),
+            serde_json::json!("api_key")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCredentialKind::Prepaid).unwrap(),
+            serde_json::json!("prepaid")
+        );
+        assert_eq!(
+            serde_json::to_value(ProviderCredentialKind::Mixed).unwrap(),
+            serde_json::json!("mixed")
+        );
 
         let (root, registry) = fixture();
         let managed_codex = registry.create_managed("owner-a", "codex", "Work").unwrap();
@@ -2138,6 +2162,29 @@ mod tests {
                 .as_deref(),
             Some("the provider-native login does not report the resulting credential type")
         );
+
+        // Linked/imported roots are origin facts, not class facts: they may
+        // hold subscription, API-key, prepaid, or mixed credentials, so the
+        // class stays explicitly unknown until the adapter reports it.
+        let linked_root = std::env::temp_dir()
+            .join(format!("chariox-linked-kind-{}", rand::thread_rng().gen::<u64>()));
+        fs::create_dir_all(&linked_root).unwrap();
+        let linked = registry
+            .link_existing(
+                "owner-a",
+                "opencode",
+                "Imported Work",
+                &linked_root,
+            )
+            .unwrap();
+        assert_eq!(linked.credential_kind, None);
+        assert_eq!(
+            linked.credential_kind_not_reported_reason.as_deref(),
+            Some(
+                "imported credentials are not classified until the provider reports the account type"
+            )
+        );
+        let _ = fs::remove_dir_all(&linked_root);
 
         // Legacy records written before the contract deserialize with no kind;
         // readers must treat that as not-reported.

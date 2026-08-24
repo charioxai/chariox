@@ -395,6 +395,32 @@ test("provider login and reauth pass a --method enrollment selection to the kern
   assert.equal(starts[2]?.method, undefined)
 })
 
+test("provider login rejects --method without a value", async () => {
+  const footers: Array<{ message: string; tone: string }> = []
+  let started = false
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: () => {},
+    startProviderLogin: async () => {
+      started = true
+      throw new Error("login must not start")
+    },
+  }
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider login codex secondary --method",
+    value: "login codex secondary --method",
+  })
+
+  assert.equal(started, false)
+  assert.deepEqual(footers, [{
+    message: "--method requires an enrollment method",
+    tone: "error",
+  }])
+})
+
 test("account listing reports credential kind without exposing ids", async () => {
   const notices: string[] = []
   const deps: ProviderCommandHandlerDeps = {
