@@ -496,7 +496,7 @@ pub struct ProviderAccountProfileRegistry {
 impl ProviderAccountProfileRegistry {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DaemonError> {
         let path = path.into();
-        let document = if path.exists() {
+        let mut document = if path.exists() {
             let bytes = fs::read(&path).map_err(registry_io("read account profile registry"))?;
             let document: RegistryDocument = serde_json::from_slice(&bytes).map_err(|error| {
                 registry_error("read account profile registry", error.to_string())
@@ -514,10 +514,17 @@ impl ProviderAccountProfileRegistry {
         } else {
             RegistryDocument::default()
         };
-        Ok(Self {
+        let changed = migrate_legacy_default_profile_ids(&mut document)
+            | migrate_legacy_default_profile_labels(&mut document);
+        let registry = Self {
             path,
             document: Arc::new(RwLock::new(document)),
-        })
+        };
+        if changed {
+            let document = registry.read_document()?;
+            registry.persist_locked(&document)?;
+        }
+        Ok(registry)
     }
 
     pub fn migrate_effective_defaults(
@@ -526,7 +533,7 @@ impl ProviderAccountProfileRegistry {
         home: &Path,
     ) -> Result<Vec<ProviderAccountProfile>, DaemonError> {
         let mut document = self.write_document()?;
-        let mut changed = migrate_legacy_default_profile_ids(&mut document);
+        let mut changed = false;
         for provider in SUPPORTED_PROVIDERS {
             if document.profiles.iter().any(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
@@ -539,13 +546,13 @@ impl ProviderAccountProfileRegistry {
                     .map_err(registry_io("create default Codex account root"))?;
                 enforce_codex_file_credentials(codex_home)?;
             }
-            let profile_id =
-                unique_profile_id(&document, owner_user_id, provider, "Native default");
+            let label = next_automatic_label(&document, owner_user_id, provider);
+            let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
             let profile = new_public_profile(
                 owner_user_id,
                 provider,
                 &profile_id,
-                "Default",
+                &label,
                 ProviderAccountProfileOrigin::Default,
                 true,
             );
@@ -789,10 +796,10 @@ impl ProviderAccountProfileRegistry {
         label: &str,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
-        let label = validate_label(label)?;
         let mut document = self.write_document()?;
-        ensure_unique_label(&document, owner_user_id, provider, label)?;
-        let profile_id = unique_profile_id(&document, owner_user_id, provider, label);
+        let label = resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        ensure_unique_label(&document, owner_user_id, provider, &label)?;
+        let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let managed_root = self
             .path
             .parent()
@@ -810,7 +817,7 @@ impl ProviderAccountProfileRegistry {
             owner_user_id,
             provider,
             &profile_id,
-            label,
+            &label,
             ProviderAccountProfileOrigin::CharioxCreated,
             false,
         );
@@ -831,16 +838,16 @@ impl ProviderAccountProfileRegistry {
         path: &Path,
     ) -> Result<ProviderAccountProfile, DaemonError> {
         let provider = normalize_provider(provider)?;
-        let label = validate_label(label)?;
         let canonical = validate_linked_root(path)?;
         let mut document = self.write_document()?;
-        ensure_unique_label(&document, owner_user_id, provider, label)?;
-        let profile_id = unique_profile_id(&document, owner_user_id, provider, label);
+        let label = resolved_new_profile_label(&document, owner_user_id, provider, label)?;
+        ensure_unique_label(&document, owner_user_id, provider, &label)?;
+        let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
         let profile = new_public_profile(
             owner_user_id,
             provider,
             &profile_id,
-            label,
+            &label,
             ProviderAccountProfileOrigin::Linked,
             false,
         );
@@ -1294,6 +1301,39 @@ fn validate_label(label: &str) -> Result<&str, DaemonError> {
     Ok(label)
 }
 
+fn resolved_new_profile_label(
+    document: &RegistryDocument,
+    owner_user_id: &str,
+    provider: &str,
+    requested: &str,
+) -> Result<String, DaemonError> {
+    let requested = requested.trim();
+    if requested.is_empty() {
+        Ok(next_automatic_label(document, owner_user_id, provider))
+    } else {
+        Ok(validate_label(requested)?.to_string())
+    }
+}
+
+fn next_automatic_label(
+    document: &RegistryDocument,
+    owner_user_id: &str,
+    provider: &str,
+) -> String {
+    let mut index = 1_u64;
+    loop {
+        let candidate = format!("{provider}-{index}");
+        if !document.profiles.iter().any(|profile| {
+            profile.public.owner_user_id == owner_user_id
+                && profile.public.provider == provider
+                && profile.public.label.eq_ignore_ascii_case(&candidate)
+        }) {
+            return candidate;
+        }
+        index += 1;
+    }
+}
+
 fn ensure_unique_label(
     document: &RegistryDocument,
     owner_user_id: &str,
@@ -1368,6 +1408,31 @@ fn migrate_legacy_default_profile_ids(document: &mut RegistryDocument) -> bool {
         let profile = &mut document.profiles[*index].public;
         profile.profile_id = profile_id.clone();
         profile.usage.profile_id = profile_id;
+    }
+    !legacy_profiles.is_empty()
+}
+
+fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> bool {
+    let legacy_profiles = document
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| {
+            profile.public.origin == ProviderAccountProfileOrigin::Default
+                && (profile.public.label.trim().is_empty()
+                    || profile.public.label.eq_ignore_ascii_case("default"))
+        })
+        .map(|(index, profile)| {
+            (
+                index,
+                profile.public.owner_user_id.clone(),
+                profile.public.provider.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, owner_user_id, provider) in &legacy_profiles {
+        let label = next_automatic_label(document, owner_user_id, provider);
+        document.profiles[*index].public.label = label;
     }
     !legacy_profiles.is_empty()
 }
@@ -1967,6 +2032,9 @@ mod tests {
         assert_eq!(first.len(), 3);
         assert_eq!(second.len(), 3);
         assert!(first.iter().all(|profile| profile.profile_id != "default"));
+        assert!(first
+            .iter()
+            .all(|profile| profile.label == format!("{}-1", profile.provider)));
         assert_eq!(
             first
                 .iter()
@@ -1978,6 +2046,56 @@ mod tests {
                 .collect::<Vec<_>>(),
         );
         assert!(first.iter().all(|profile| profile.is_default));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn assigns_sequential_provider_aliases_when_labels_are_omitted() {
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+
+        let second = registry.create_managed("owner-a", "codex", "").unwrap();
+        let linked_root = root.join("linked-codex");
+        fs::create_dir_all(&linked_root).unwrap();
+        set_private_dir_permissions(&linked_root).unwrap();
+        let third = registry
+            .link_existing("owner-a", "codex", "   ", &linked_root)
+            .unwrap();
+        let named = registry
+            .create_managed("owner-a", "codex", "client-work")
+            .unwrap();
+
+        assert_eq!(second.label, "codex-2");
+        assert_eq!(third.label, "codex-3");
+        assert_eq!(named.label, "client-work");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migrates_native_default_labels_to_provider_aliases() {
+        let (root, registry) = fixture();
+        let native = registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "codex")
+            .unwrap();
+        registry
+            .rename("owner-a", "codex", &native.profile_id, "Default")
+            .unwrap();
+        drop(registry);
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+
+        let migrated = registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.profile_id == native.profile_id)
+            .unwrap();
+
+        assert_eq!(migrated.label, "codex-1");
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2281,7 +2399,7 @@ mod tests {
 
         assert!(error
             .to_string()
-            .contains("already authenticated as `Default`"));
+            .contains("already authenticated as `codex-1`"));
         assert_eq!(
             registry
                 .get("owner-a", "codex", &secondary.profile_id)
