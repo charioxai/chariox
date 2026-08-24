@@ -147,6 +147,21 @@ test("provider login targets the explicitly selected account profile", async () 
     currentProviderId: () => "codex",
     flashFooter: () => {},
     appendNotice: () => {},
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "user-1",
+      provider: "codex",
+      profile_id: "opaque-secondary-id",
+      label: "secondary",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-secondary-id",
+        provider: "codex",
+        availability: "unavailable",
+        source: "test",
+      },
+    }],
     startProviderLogin: async (provider, accountProfile) => {
       starts.push({ provider, accountProfile })
       return { provider, account_profile: accountProfile ?? "default", login_kind: "chatgptDeviceCode" }
@@ -155,5 +170,5 @@ test("provider login targets the explicitly selected account profile", async () 
 
   await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider login codex secondary", value: "login codex secondary" })
 
-  assert.deepEqual(starts, [{ provider: "codex", accountProfile: "secondary" }])
+  assert.deepEqual(starts, [{ provider: "codex", accountProfile: "opaque-secondary-id" }])
 })

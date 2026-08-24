@@ -8,7 +8,11 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
-import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
+import {
+  providerAccountDisplayLabel,
+  providerAccountsForProvider,
+  selectedProviderAccount,
+} from "./waiting-room-provider-accounts.js"
 
 type FooterTone = "info" | "error"
 
@@ -152,8 +156,11 @@ async function showProviderStatus(
     deps.flashFooter("provider status is not available in this daemon", "error")
     return
   }
-  const status = await deps.getProviderAuthStatus(provider, accountProfile)
-  const details = `${status.provider}/${status.account_profile}: ${status.auth_state}${status.identity_summary ? ` as ${status.identity_summary}` : ""}`
+  const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
+  if (resolvedAccount === null) return
+  const status = await deps.getProviderAuthStatus(provider, resolvedAccount)
+  const accountLabel = await providerAccountPublicLabel(deps, status.provider, status.account_profile)
+  const details = `${providerAccountSubject(status.provider, accountLabel)}: ${status.auth_state}${status.identity_summary ? ` as ${status.identity_summary}` : ""}`
   deps.appendNotice(
     [
       details,
@@ -174,8 +181,10 @@ async function startProviderLogin(
     deps.flashFooter("provider login is not available in this daemon", "error")
     return
   }
-  const login = await deps.startProviderLogin(provider, accountProfile)
-  const message = formatProviderLoginNotice(login, "login started")
+  const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
+  if (resolvedAccount === null) return
+  const login = await deps.startProviderLogin(provider, resolvedAccount)
+  const message = formatProviderLoginNotice(login, "login started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
@@ -191,7 +200,8 @@ async function showProviderLoginStatus(
   const login = await deps.getProviderLoginStatus(loginId)
   const output = Buffer.from(login.terminal_output_base64, "base64").toString("utf8").trimEnd()
   if (output) deps.appendNotice(output)
-  deps.flashFooter(`${login.provider}/${login.account_profile} login ${login.state}`, login.state === "failed" ? "error" : "info")
+  const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
+  deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login ${login.state}`, login.state === "failed" ? "error" : "info")
 }
 
 async function sendProviderLoginInput(
@@ -220,7 +230,8 @@ async function cancelProviderLogin(
     return
   }
   const login = await deps.cancelProviderLogin(loginId)
-  deps.flashFooter(`${login.provider}/${login.account_profile} login cancelled`, "info")
+  const accountLabel = await providerAccountPublicLabel(deps, login.provider, login.account_profile)
+  deps.flashFooter(`${providerAccountSubject(login.provider, accountLabel)} login cancelled`, "info")
 }
 
 async function logoutProvider(
@@ -232,10 +243,12 @@ async function logoutProvider(
     deps.flashFooter("provider logout is not available in this daemon", "error")
     return
   }
-  const outcome = await deps.logoutProvider(provider, accountProfile)
+  const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
+  if (resolvedAccount === null) return
+  const outcome = await deps.logoutProvider(provider, resolvedAccount)
   const message = outcome.kind === "logged_out"
-    ? `${outcome.result.provider}/${outcome.result.account_profile} logged out`
-    : formatProviderLoginNotice(outcome.workflow, "logout started")
+    ? `${providerAccountSubject(outcome.result.provider, await providerAccountPublicLabel(deps, outcome.result.provider, outcome.result.account_profile))} logged out`
+    : formatProviderLoginNotice(outcome.workflow, "logout started", await providerAccountPublicLabel(deps, outcome.workflow.provider, outcome.workflow.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
@@ -249,15 +262,17 @@ async function reauthProvider(
     deps.flashFooter("provider reauth is not available in this daemon", "error")
     return
   }
-  const logout = await deps.logoutProvider(provider, accountProfile)
+  const resolvedAccount = await resolveProviderAccountReference(deps, provider, accountProfile)
+  if (resolvedAccount === null) return
+  const logout = await deps.logoutProvider(provider, resolvedAccount)
   if (logout.kind === "interaction_required") {
-    const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth")
+    const message = formatProviderLoginNotice(logout.workflow, "logout started; finish it before reauth", await providerAccountPublicLabel(deps, logout.workflow.provider, logout.workflow.account_profile))
     deps.appendNotice(message)
     deps.flashFooter(message, "info")
     return
   }
-  const login = await deps.startProviderLogin(provider, accountProfile)
-  const message = formatProviderLoginNotice(login, "reauth started")
+  const login = await deps.startProviderLogin(provider, resolvedAccount)
+  const message = formatProviderLoginNotice(login, "reauth started", await providerAccountPublicLabel(deps, login.provider, login.account_profile))
   deps.appendNotice(message)
   deps.flashFooter(message, "info")
 }
@@ -368,15 +383,47 @@ function relativeResetTime(timestamp: number): string {
 function formatProviderLoginNotice(
   login: ProviderLoginStart,
   action: string,
+  accountLabel: string,
 ): string {
   return [
-    `${login.provider} ${action}`,
+    `${providerAccountSubject(login.provider, accountLabel)} ${action}`,
     login.login_kind.startsWith("terminal") && login.login_id
       ? `run /provider login-status ${login.login_id}; respond with /provider login-input ${login.login_id}`
       : null,
     login.user_code ? `code ${login.user_code}` : null,
     login.verification_url ?? login.auth_url ?? null,
   ].filter(Boolean).join(" • ")
+}
+
+function providerAccountSubject(provider: string, accountLabel: string): string {
+  return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
+}
+
+async function resolveProviderAccountReference(
+  deps: ProviderCommandHandlerDeps,
+  provider: string,
+  accountAlias: string | undefined,
+): Promise<string | undefined | null> {
+  if (!accountAlias || accountAlias === "default") return accountAlias
+  if (!deps.listProviderAccountProfiles) {
+    deps.flashFooter("provider account selection is unavailable", "error")
+    return null
+  }
+  const profile = providerAccountsForProvider(await deps.listProviderAccountProfiles(provider), provider)
+    .find((candidate) => candidate.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
+  if (profile) return profile.profile_id
+  deps.flashFooter(`provider account alias ${accountAlias} was not found for ${provider}`, "error")
+  return null
+}
+
+async function providerAccountPublicLabel(
+  deps: ProviderCommandHandlerDeps,
+  provider: string,
+  accountProfile: string,
+): Promise<string> {
+  if (!deps.listProviderAccountProfiles) return "Account unavailable"
+  const profile = selectedProviderAccount(await deps.listProviderAccountProfiles(provider), provider, accountProfile)
+  return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
 }
 
 async function handleProviderProcessesCommand(
