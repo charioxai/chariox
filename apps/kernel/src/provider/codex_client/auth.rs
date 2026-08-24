@@ -379,7 +379,19 @@ fn timestamp_field_ms(
 /// provider identity, so the same scoped limit normalizes identically across
 /// the `rate_limits` and `usage` surfaces.
 fn scoped_meter_identity(path: &str) -> Option<&str> {
-    path.split('.').skip(1).find(|segment| {
+    let segments = path.split('.').collect::<Vec<_>>();
+    if let Some(container_index) = segments
+        .iter()
+        .position(|segment| matches!(*segment, "rateLimitsByLimitId" | "rate_limits_by_limit_id"))
+    {
+        return segments
+            .get(container_index + 1)
+            .copied()
+            .filter(|segment| {
+                !segment.is_empty() && !matches!(*segment, "primary" | "secondary" | "tertiary")
+            });
+    }
+    segments.iter().skip(1).copied().find(|segment| {
         !matches!(
             *segment,
             "rateLimits"
@@ -533,6 +545,29 @@ mod tests {
         ];
         assert!(ids.contains(&"rolling/300/codex".to_string()));
         assert!(ids.contains(&"rolling/300/gpt5".to_string()));
+    }
+
+    #[test]
+    fn keeps_numeric_scoped_limit_ids_distinct() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "2026": {"primary": {"usedPercent": 12.0, "windowDurationMins": 300}},
+                    "2027": {"primary": {"usedPercent": 60.0, "windowDurationMins": 300}}
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        let ids = snapshot
+            .meters
+            .iter()
+            .map(|meter| meter.meter_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"rolling/300/2026"));
+        assert!(ids.contains(&"rolling/300/2027"));
     }
 
     #[test]

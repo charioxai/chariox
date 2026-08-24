@@ -1,5 +1,26 @@
 use super::*;
 
+struct WorkflowCollisionDrillWorktree {
+    path: std::path::PathBuf,
+}
+
+impl WorkflowCollisionDrillWorktree {
+    fn create(path: std::path::PathBuf) -> Self {
+        std::fs::create_dir_all(&path).expect("collision drill worktree should exist");
+        Self { path }
+    }
+
+    fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+}
+
+impl Drop for WorkflowCollisionDrillWorktree {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 #[test]
 fn local_request_api_invokes_lists_gets_and_cancels_workflow_runs() {
     run_workflow_run_lifecycle_large_stack_test(
@@ -918,23 +939,25 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
     // alpha handoff can bind to a provider run while the promoted beta
     // delivery holds the shared agent.
     let shared_agent = harness.spawn_workflow_test_agent(session.id(), "audit-shared-agent");
-    let alpha_worktree = std::env::temp_dir()
-        .join("chariox-collision-drill-alpha")
-        .join(session.id());
-    let beta_worktree = std::env::temp_dir()
-        .join("chariox-collision-drill-beta")
-        .join(session.id());
-    std::fs::create_dir_all(&alpha_worktree).expect("alpha drill worktree should exist");
-    std::fs::create_dir_all(&beta_worktree).expect("beta drill worktree should exist");
+    let alpha_worktree = WorkflowCollisionDrillWorktree::create(
+        std::env::temp_dir()
+            .join("chariox-collision-drill-alpha")
+            .join(session.id()),
+    );
+    let beta_worktree = WorkflowCollisionDrillWorktree::create(
+        std::env::temp_dir()
+            .join("chariox-collision-drill-beta")
+            .join(session.id()),
+    );
     let alpha_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "audit-alpha-agent",
-        Some(&alpha_worktree.to_string_lossy()),
+        Some(&alpha_worktree.path().to_string_lossy()),
     );
     let beta_agent = harness.spawn_workflow_test_agent_with_worktree(
         session.id(),
         "audit-beta-agent",
-        Some(&beta_worktree.to_string_lossy()),
+        Some(&beta_worktree.path().to_string_lossy()),
     );
     assert_eq!(
         shared_agent.worktree_id(),
@@ -1284,8 +1307,6 @@ fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
         alpha_final.id(),
         beta_final.id()
     );
-    std::fs::remove_dir_all(alpha_worktree).expect("alpha drill worktree should clean up");
-    std::fs::remove_dir_all(beta_worktree).expect("beta drill worktree should clean up");
 }
 
 fn local_request_api_serializes_two_workflows_sharing_an_agent_inner() {

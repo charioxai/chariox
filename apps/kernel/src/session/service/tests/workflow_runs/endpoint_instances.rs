@@ -901,3 +901,127 @@ fn pool_shrink_keeps_a_busy_excess_clone_until_its_run_finishes() {
         crate::session::WorkflowEndpointRuntimeInstanceStatus::Busy
     );
 }
+
+#[test]
+fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    {
+        let session = service
+            .store
+            .get_mut(session.id())
+            .expect("session should exist");
+        let workflow_mut = session
+            .workflow_mut(workflow.id())
+            .expect("workflow should exist");
+        workflow_mut
+            .endpoint_mut(endpoint.id())
+            .expect("endpoint should exist")
+            .set_max_instances(2);
+    }
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    let endpoint = workflow.endpoint(endpoint.id()).expect("endpoint").clone();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    register_clone_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-clone",
+        "worktree-2",
+    );
+
+    // An idle instance already exists, so provisioning must plan nothing new.
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "first",
+    );
+    assert!(service
+        .workflow_runtime_instance_provision_candidate(session.id())
+        .expect("candidate lookup should succeed")
+        .is_none());
+    let (_, first_run, _, _) = service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("queue should advance")
+        .expect("first prompt should start");
+    assert_eq!(first_run.runtime_instance_id(), Some("instance-primary"));
+
+    // The primary is busy but the idle clone must be reused before any
+    // additional copy is provisioned.
+    enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "second",
+    );
+    assert!(service
+        .workflow_runtime_instance_provision_candidate(session.id())
+        .expect("candidate lookup should succeed")
+        .is_none());
+    let (_, second_run, _, _) = service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("queue should advance")
+        .expect("second prompt should start");
+    assert_eq!(second_run.runtime_instance_id(), Some("instance-clone"));
+
+    // Both copies are busy at max_instances = 2: no further copy may be
+    // planned and the third prompt stays parked in the queue.
+    let third = enqueue(
+        &mut service,
+        session.id(),
+        workflow.id(),
+        endpoint.id(),
+        "third",
+    );
+    assert!(service
+        .workflow_runtime_instance_provision_candidate(session.id())
+        .expect("candidate lookup should succeed")
+        .is_none());
+    assert!(service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("queue check should succeed")
+        .is_none());
+    assert!(service
+        .get_session(session.id())
+        .expect("session should exist")
+        .workflow_queued_prompts()
+        .iter()
+        .any(|item| item.id() == third.id()));
+
+    // Releasing the primary hands its copy back to the queued prompt without
+    // provisioning anything else.
+    service
+        .cancel_workflow_run(session.id(), first_run.id())
+        .expect("first run should cancel");
+    service
+        .store
+        .get_mut(session.id())
+        .expect("session should exist")
+        .reconcile_workflow_runtime_instances();
+    assert!(service
+        .workflow_runtime_instance_provision_candidate(session.id())
+        .expect("candidate lookup should succeed")
+        .is_none());
+    let (_, third_run, _, _) = service
+        .dequeue_next_workflow_prompt_and_create_run(session.id())
+        .expect("queue should advance after release")
+        .expect("third prompt should start");
+    assert_eq!(third_run.runtime_instance_id(), Some("instance-primary"));
+}

@@ -1175,6 +1175,7 @@ mod workflow_copy_alias_tests {
         );
         agent.set_execution_mode_override(Some(AgentExecutionMode::Build));
         agent.set_permission_level_override(Some(AgentPermissionLevel::Yolo));
+        agent.set_account_profile(Some("acct-primary".to_string()));
         agent.grant_mcp("home_browser");
         agent.grant_skill("dataviz");
         service.store.insert(agent)
@@ -1240,7 +1241,11 @@ mod workflow_copy_alias_tests {
             copy.permission_level_override(),
             source.permission_level_override()
         );
+        assert_eq!(copy.account_profile(), source.account_profile());
         assert_eq!(copy.extension_grants(), source.extension_grants());
+        // The copy is pinned to its own instance worktree, not the source's.
+        assert_eq!(copy.worktree_id(), Some("wt"));
+        assert_ne!(copy.worktree_id(), source.worktree_id());
         // The visible alias is the only identity that changes.
         assert_ne!(copy.alias(), source.alias());
     }
