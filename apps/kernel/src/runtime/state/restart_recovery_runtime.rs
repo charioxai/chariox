@@ -846,15 +846,13 @@ impl KernelRuntimeState {
             return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
         };
         if prompt.durable_delivery_provider_session_id() != Some(provider_session_id.as_str()) {
-            let provider_run_id = prompt.durable_delivery_provider_run_id().ok_or_else(|| {
-                DaemonError::LocalTransport {
-                    operation: "reconcile provider restart session",
-                    message: format!(
-                        "prompt `{}` has mismatched provider sessions without a durable provider run",
-                        prompt.id()
-                    ),
-                }
-            })?;
+            let Some(provider_run_id) = prompt.durable_delivery_provider_run_id() else {
+                // The newer provider session may be authoritative, but without the
+                // durable run identity we cannot safely rewrite the prompt's delivery
+                // record. Keep the recovery pending until transcript observation or
+                // durable state supplies enough identity to reconcile it.
+                return Ok(UncertainLocalRecoveryOutcome::TranscriptPending);
+            };
             prompt = self.owned.mark_active_prompt_delivery(
                 session_id,
                 agent.id(),
@@ -1854,6 +1852,7 @@ mod tests {
 
     async fn assert_restart_prefers_durable_agent_session_over_prompt_session(
         delivery_phase: crate::session::DurablePromptDeliveryPhase,
+        persist_provider_run_id: bool,
     ) {
         let config = DaemonConfig::for_tests();
         let worktree = std::env::current_dir().expect("test workspace should resolve");
@@ -1921,7 +1920,8 @@ mod tests {
                 agent.id(),
                 prompt.id(),
                 delivery_phase,
-                Some("provider-run-structured-ack-crash-prefix".to_string()),
+                persist_provider_run_id
+                    .then(|| "provider-run-structured-ack-crash-prefix".to_string()),
                 Some("codex-thread-dispatch-s1".to_string()),
             )
             .expect("dispatch identity should persist");
@@ -1984,8 +1984,12 @@ mod tests {
         assert_eq!(restored_prompt.id(), prompt_id);
         assert_eq!(
             restored_prompt.durable_delivery_provider_session_id(),
-            Some("codex-thread-acknowledged-s2"),
-            "the durable prompt must converge to the acknowledged session before recovery",
+            if persist_provider_run_id {
+                Some("codex-thread-acknowledged-s2")
+            } else {
+                Some("codex-thread-dispatch-s1")
+            },
+            "the prompt may converge only when its durable provider run identifies the delivery",
         );
         assert_eq!(
             restored_prompt.durable_delivery_phase(),
@@ -1998,6 +2002,7 @@ mod tests {
     async fn structured_ack_restart_prefers_durable_agent_session_over_dispatch_session() {
         assert_restart_prefers_durable_agent_session_over_prompt_session(
             crate::session::DurablePromptDeliveryPhase::Dispatching,
+            true,
         )
         .await;
     }
@@ -2006,6 +2011,16 @@ mod tests {
     async fn structured_output_restart_updates_delivered_prompt_to_durable_agent_session() {
         assert_restart_prefers_durable_agent_session_over_prompt_session(
             crate::session::DurablePromptDeliveryPhase::Delivered,
+            true,
+        )
+        .await;
+    }
+
+    #[tokio::test]
+    async fn restart_session_mismatch_without_a_provider_run_remains_pending() {
+        assert_restart_prefers_durable_agent_session_over_prompt_session(
+            crate::session::DurablePromptDeliveryPhase::Dispatching,
+            false,
         )
         .await;
     }
