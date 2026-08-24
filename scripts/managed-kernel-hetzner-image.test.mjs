@@ -331,6 +331,7 @@ test("managed Docker authority and publication access remain narrowly separated"
   assert.doesNotMatch(managed, /(?:Wants|After)=.*chariox-slice-broker/)
   assert.match(managed, /ExecStartPre=-\+\/usr\/bin\/systemctl restart chariox-slice-broker\.service/)
   assert.match(managed, /CHARIOX_CAPABILITY_ISOLATION_ROOT=\/var\/lib\/chariox\/home\/managed-context\/kernel/)
+  assert.match(managed, /^ProtectKernelTunables=false$/m)
   assert.doesNotMatch(rootless, /SupplementaryGroups=chariox-slice/)
   assert.match(rootless, /Environment=PATH=\/usr\/local\/bin:\/usr\/bin:\/bin:\/usr\/sbin:\/sbin/)
   assert.match(rootless, /^ProtectKernelTunables=false$/m)

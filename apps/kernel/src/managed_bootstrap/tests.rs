@@ -618,6 +618,7 @@ fn managed_systemd_unit_keeps_bootstrap_and_kernel_in_one_hardened_cgroup() {
         "RestartMaxDelaySec=5min",
         "NoNewPrivileges=true",
         "ProtectSystem=strict",
+        "ProtectKernelTunables=false",
         "StateDirectory=chariox",
         "StateDirectoryMode=0700",
         "ReadWritePaths=/var/lib/chariox /var/lib/chariox-slice-share",

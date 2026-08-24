@@ -36,7 +36,9 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ProtectKernelTunables=true
+# bubblewrap needs to mount a fresh /proc inside each provider PID namespace.
+# The unprivileged service user still cannot write host kernel tunables.
+ProtectKernelTunables=false
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictSUIDSGID=true
