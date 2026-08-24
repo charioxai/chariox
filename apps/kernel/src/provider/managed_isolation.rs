@@ -165,6 +165,9 @@ fn append_managed_namespace_environment(args: &mut Vec<String>, request: &Launch
         "LOGNAME".to_string(),
         "chariox".to_string(),
         "--setenv".to_string(),
+        "SHELL".to_string(),
+        "/bin/sh".to_string(),
+        "--setenv".to_string(),
         MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
         "1".to_string(),
     ]);
@@ -678,6 +681,19 @@ mod tests {
         assert!(!args
             .windows(3)
             .any(|args| args == ["--setenv", CLAUDE_SANDBOX_ENV, "1"]));
+    }
+
+    #[test]
+    fn managed_namespace_replaces_the_service_accounts_nologin_shell() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.6-luna");
+        let mut args = Vec::new();
+
+        append_managed_namespace_environment(&mut args, &request);
+
+        assert!(args
+            .windows(3)
+            .any(|args| args == ["--setenv", "SHELL", "/bin/sh"]));
     }
 
     #[test]
