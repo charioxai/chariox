@@ -893,6 +893,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomCloudNotice, waitingRoomInventoryStatus, relayStatusState, remoteMachinesState,
     remoteKernelsState, terminalsState, externalProviderSessionsState, externalProviderSessionsPageState,
     slicesState, waitingRoomTargets, themeRegistryState, selectedWorkflowId,
+    providerAccountsState,
     selectedWorkflowNodeId, workspaceShellContext, workspaceShellEntries,
     transcriptEntries: () => entries,
     agentPaneEntries,

@@ -59,6 +59,7 @@ export function createCliAppProcessRuntimeComposition(
     externalProviderSessionsState: deps.externalProviderSessionsState,
     externalProviderSessionsPageState: deps.externalProviderSessionsPageState,
     slicesState: deps.slicesState,
+    providerAccountsState: deps.providerAccountsState,
     waitingRoomTargets: deps.waitingRoomTargets,
     themeRegistryState: deps.themeRegistryState,
     selectedWorkflowId: deps.selectedWorkflowId,

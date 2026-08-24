@@ -55,6 +55,7 @@ export type CliAutomationProcessCompositionDeps = {
   externalProviderSessionsState: AnyFn
   externalProviderSessionsPageState: AnyFn
   slicesState: AnyFn
+  providerAccountsState: AnyFn
   waitingRoomTargets: AnyFn
   themeRegistryState: AnyFn
   selectedWorkflowId: AnyFn
@@ -122,6 +123,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     externalProviderSessionsState: deps.externalProviderSessionsState,
     externalProviderSessionsPageState: deps.externalProviderSessionsPageState,
     slicesState: deps.slicesState,
+    providerAccountsState: deps.providerAccountsState,
     waitingRoomTargets: deps.waitingRoomTargets,
     themeRegistryState: deps.themeRegistryState,
     selectedWorkflowId: deps.selectedWorkflowId,

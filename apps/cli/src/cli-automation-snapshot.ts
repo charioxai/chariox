@@ -12,6 +12,7 @@ import type {
   SliceRecord,
   TranscriptEntry,
   ExternalProviderSessionRecord,
+  ProviderAccountProfile,
 } from "./cli-types.js"
 import type { CliAutomationSnapshot } from "./cli-automation.js"
 import type { QueuedPromptStripItem } from "@chariox/kernel-client/queued-prompt-strip-state"
@@ -58,6 +59,7 @@ export type CliAutomationSnapshotDeps = {
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
   externalProviderSessionsPageState: () => { hasMore: boolean; nextCursor: string | null }
   slicesState: () => SliceRecord[]
+  providerAccountsState: () => ProviderAccountProfile[]
   waitingRoomTargets: () => WaitingRoomTargetState
   themeRegistryState: () => ThemeRegistry
   selectedWorkflowId: () => string | null
@@ -181,6 +183,7 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           externalProviderSessionsHasMore: deps.externalProviderSessionsPageState().hasMore,
           externalProviderSessionsNextCursor: deps.externalProviderSessionsPageState().nextCursor,
           slices: deps.slicesState(),
+          providerAccounts: deps.providerAccountsState(),
           projects: deps.waitingRoomProjects?.() ?? [],
         }, deps.waitingRoomTargets(), deps.themeRegistryState()).map((row) => ({
           id: row.id,
