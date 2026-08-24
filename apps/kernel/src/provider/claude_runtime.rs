@@ -95,8 +95,7 @@ pub(crate) fn initialize_claude_runtime(
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
             result_number: 1,
-            emitted_text_offsets: BTreeMap::new(),
-            saw_text_delta: false,
+            emitted_text_by_block: BTreeMap::new(),
             exit_reported: false,
         },
         selection: ClaudeRunSelection {
@@ -165,8 +164,7 @@ pub(crate) fn submit_claude_prompt(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
-    state.saw_text_delta = false;
-    state.emitted_text_offsets.clear();
+    state.emitted_text_by_block.clear();
     Ok(())
 }
 
@@ -454,8 +452,7 @@ fn restart_claude_runtime(
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
-    state.emitted_text_offsets.clear();
-    state.saw_text_delta = false;
+    state.emitted_text_by_block.clear();
     state.exit_reported = false;
     Ok(())
 }
@@ -578,8 +575,7 @@ mod tests {
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,
-                emitted_text_offsets: Default::default(),
-                saw_text_delta: false,
+                emitted_text_by_block: Default::default(),
                 exit_reported: false,
             },
             ProviderPromptSignalBatch::default(),
@@ -930,6 +926,44 @@ mod tests {
         assert_eq!(batch.chunks.len(), 1);
         assert_eq!(batch.chunks[0].kind, TerminalOutputKind::ProviderOutput);
         assert_eq!(batch.chunks[0].bytes, b"hello");
+    }
+
+    #[test]
+    fn reconciles_partial_stream_with_authoritative_assistant_snapshot() {
+        let (mut state, mut streamed) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "CL" }
+                }
+            }),
+            &mut streamed,
+        );
+        assert_eq!(streamed.chunks[0].bytes, b"CL");
+
+        let mut completed = ProviderPromptSignalBatch::default();
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "content": [{ "type": "text", "text": "CLAUDE_MANAGED_EMPTY_OK" }]
+            }
+        });
+        apply_claude_message("run-1", &mut state, assistant.clone(), &mut completed);
+
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(completed.chunks[0].bytes, b"AUDE_MANAGED_EMPTY_OK");
+
+        let mut duplicate = ProviderPromptSignalBatch::default();
+        apply_claude_message("run-1", &mut state, assistant, &mut duplicate);
+        assert!(duplicate.chunks.is_empty());
     }
 
     #[test]
