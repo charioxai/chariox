@@ -137,6 +137,7 @@ test("provider account list preserves the source reason when meters have no valu
           scope: "account",
           state: "unknown",
           source: "claude.status_line",
+          observed_at_ms: Date.now(),
         }],
         source: "provider_not_observed",
       },
