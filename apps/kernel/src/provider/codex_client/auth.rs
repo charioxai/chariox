@@ -9,7 +9,7 @@ use crate::account_profile::{
 };
 use crate::error::DaemonError;
 
-use super::{CodexClient, resolve_codex_executable};
+use super::{resolve_codex_executable, CodexClient};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAuthStatus {
@@ -226,8 +226,13 @@ fn collect_usage_meters(
         serde_json::Value::Object(object) => {
             let used_percent =
                 number_field(object, &["usedPercent", "used_percent"]).or_else(|| {
-                    number_field(object, &["utilization"])
-                        .map(|value| if value <= 1.0 { value * 100.0 } else { value })
+                    number_field(object, &["utilization"]).map(|value| {
+                        if value <= 1.0 {
+                            value * 100.0
+                        } else {
+                            value
+                        }
+                    })
                 });
             let remaining = number_field(object, &["remaining", "balance", "credits"]);
             let used = number_field(object, &["used", "amountUsed", "amount_used"]);
@@ -261,17 +266,21 @@ fn collect_usage_meters(
                     Some(43_200..=44_640) => "Monthly".to_string(),
                     _ => scoped_meter_label(path),
                 };
-                // Meter identity is the limit kind plus window duration, not
-                // the JSON traversal path. App-server payloads expose the same
-                // windows under different shapes across versions and surfaces,
-                // and stable identities keep the account merge from showing
-                // duplicate or orphaned window meters.
+                // Meter identity is the limit kind plus window duration and,
+                // when the payload carries one, the provider-native scoped
+                // limit id — never the JSON traversal path. App-server
+                // payloads expose the same windows under different shapes
+                // across versions and surfaces, and stable identities keep
+                // the account merge from showing duplicate or orphaned window
+                // meters while keeping distinct same-duration limits
+                // separate.
                 let meter_id = match kind {
                     ProviderAccountUsageMeterKind::CreditBalance => "credits".to_string(),
                     ProviderAccountUsageMeterKind::SpendLimit => "spend".to_string(),
-                    _ => match window_duration_minutes {
-                        Some(minutes) => format!("rolling/{minutes}"),
-                        None => format!("rolling/{}", path.replace('.', "/")),
+                    _ => match (window_duration_minutes, scoped_meter_identity(path)) {
+                        (Some(minutes), Some(limit_id)) => format!("rolling/{minutes}/{limit_id}"),
+                        (Some(minutes), None) => format!("rolling/{minutes}"),
+                        (None, _) => format!("rolling/{}", path.replace('.', "/")),
                     },
                 };
                 meters.push(ProviderAccountUsageMeter {
@@ -364,6 +373,26 @@ fn timestamp_field_ms(
     })
 }
 
+/// Scoped limit identity for meter ids: the nearest provider-native limit
+/// segment between the surface prefix and the window entry. Surface names,
+/// container keys, positional family keys, and array indices carry no
+/// provider identity, so the same scoped limit normalizes identically across
+/// the `rate_limits` and `usage` surfaces.
+fn scoped_meter_identity(path: &str) -> Option<&str> {
+    path.split('.').skip(1).find(|segment| {
+        !matches!(
+            *segment,
+            "rateLimits"
+                | "rate_limits"
+                | "rateLimitsByLimitId"
+                | "rate_limits_by_limit_id"
+                | "primary"
+                | "secondary"
+                | "tertiary"
+        ) && segment.parse::<u64>().is_err()
+    })
+}
+
 /// User-facing labels must be window periods or provider-reported scoped
 /// names, never positional `primary`/`secondary` family keys.
 fn scoped_meter_label(path: &str) -> String {
@@ -438,18 +467,14 @@ mod tests {
             ProviderAccountUsageAvailability::Available
         );
         assert_eq!(snapshot.meters.len(), 3);
-        assert!(
-            snapshot
-                .meters
-                .iter()
-                .any(|meter| meter.state == ProviderAccountUsageMeterState::Exhausted)
-        );
-        assert!(
-            snapshot
-                .meters
-                .iter()
-                .any(|meter| meter.remaining == Some(12.5))
-        );
+        assert!(snapshot
+            .meters
+            .iter()
+            .any(|meter| meter.state == ProviderAccountUsageMeterState::Exhausted));
+        assert!(snapshot
+            .meters
+            .iter()
+            .any(|meter| meter.remaining == Some(12.5)));
     }
 
     #[test]
@@ -484,8 +509,50 @@ mod tests {
             .expect("weekly window");
         assert_eq!(five_hour.label, "5-hour");
         assert_eq!(weekly.label, "Weekly");
-        assert_eq!(five_hour.meter_id, "rolling/300");
-        assert_eq!(weekly.meter_id, "rolling/10080");
+        assert_eq!(five_hour.meter_id, "rolling/300/codex");
+        assert_eq!(weekly.meter_id, "rolling/10080/codex");
+    }
+
+    #[test]
+    fn keeps_same_duration_scoped_limits_distinct() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {"primary": {"usedPercent": 12.0, "windowDurationMins": 300}},
+                    "gpt5": {"primary": {"usedPercent": 60.0, "windowDurationMins": 300}}
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        let ids = [
+            snapshot.meters[0].meter_id.clone(),
+            snapshot.meters[1].meter_id.clone(),
+        ];
+        assert!(ids.contains(&"rolling/300/codex".to_string()));
+        assert!(ids.contains(&"rolling/300/gpt5".to_string()));
+    }
+
+    #[test]
+    fn dedupes_the_same_scoped_limit_across_usage_surfaces() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {"primary": {"usedPercent": 12.0, "windowDurationMins": 300}}
+                }
+            })),
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "codex": {"primary": {"utilization": 0.55, "windowDurationMins": 300}}
+                }
+            })),
+        );
+
+        assert_eq!(snapshot.meters.len(), 1);
+        assert_eq!(snapshot.meters[0].meter_id, "rolling/300/codex");
     }
 
     #[test]
@@ -527,12 +594,10 @@ mod tests {
 
         assert_eq!(snapshot.meters.len(), 2);
         assert_ne!(snapshot.meters[0].meter_id, snapshot.meters[1].meter_id);
-        assert!(
-            snapshot
-                .meters
-                .iter()
-                .all(|meter| !matches!(meter.label.as_str(), "primary" | "secondary"))
-        );
+        assert!(snapshot
+            .meters
+            .iter()
+            .all(|meter| !matches!(meter.label.as_str(), "primary" | "secondary")));
     }
 
     #[test]

@@ -140,6 +140,43 @@ test("agent substitute add rejects unknown account aliases without updating", as
   assert.equal(flashedMessage, "provider account alias missing was not found for codex")
 })
 
+test("agent substitute add rejects a dangling account flag without updating", async () => {
+  const currentAgent = agent()
+  const currentSession = session({ agents: [currentAgent] })
+  let updateCalls = 0
+  let flashedMessage = ""
+
+  for (const args of [
+    ["substitute", "add", "codex", "gpt-5.4", "--account"],
+    ["substitute", "add", "codex", "gpt-5.4", "--account", "--kernel", "kernel-1"],
+  ]) {
+    await handleAgentSubstituteCommand({
+      sessionState: () => currentSession,
+      focusedAgentId: () => currentAgent.id,
+      currentModelId: () => "gpt-5.4",
+      currentVariantId: () => "high",
+      flashFooter: (message) => { flashedMessage = message },
+      updateAgentSubstitutes: async () => {
+        updateCalls += 1
+        return { agent: currentAgent, session: currentSession }
+      },
+      applySessionState: () => {},
+      refreshAgentPanes: async () => {},
+      launchAgentProviderRun: async () => providerRun(),
+      setProviderRunState: () => {},
+      refreshSessionState: async () => currentSession,
+      resolveSessionAgent: () => ({ agent: currentAgent, error: null }),
+      formatAgentLabel: (entry) => entry?.agent_ref ?? "",
+    }, args)
+
+    assert.equal(
+      flashedMessage,
+      "usage: /agent substitute add <provider> <model> [--variant v] [--account alias] [--kernel k] [--worktree dir] [--agent a]",
+    )
+  }
+  assert.equal(updateCalls, 0)
+})
+
 test("agent substitute activate launches with the substitute's own account profile", async () => {
   const activatedAgent = agent({
     account_profile: "primary-account",

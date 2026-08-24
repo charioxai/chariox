@@ -89,6 +89,13 @@ export async function handleAgentSubstituteCommand(
     const variantIndex = filteredArgs.indexOf("--variant")
     const variant = variantIndex >= 0 ? filteredArgs[variantIndex + 1] : undefined
     const accountIndex = filteredArgs.indexOf("--account")
+    if (accountIndex >= 0) {
+      const accountAliasValue = filteredArgs[accountIndex + 1]
+      if (accountAliasValue == null || accountAliasValue.startsWith("--")) {
+        deps.flashFooter("usage: /agent substitute add <provider> <model> [--variant v] [--account alias] [--kernel k] [--worktree dir] [--agent a]", "error")
+        return
+      }
+    }
     const accountAlias = accountIndex >= 0 ? filteredArgs[accountIndex + 1] : undefined
     const kernelIndex = filteredArgs.indexOf("--kernel")
     const kernelId = kernelIndex >= 0 ? filteredArgs[kernelIndex + 1] : undefined
