@@ -102,8 +102,8 @@ test("publication entrypoint imports only the designated default when multiple a
     await writeFile(join(profile, "home", ".codex", "auth.json"), profileId)
   }
   const accounts = [
-    { agent_id: "agent-1", provider: "codex", account_profile: "profile-main", label: "Main", home: `${bindings}/000/home` },
-    { agent_id: "agent-2", provider: "codex", account_profile: "profile-secondary", label: "Secondary", home: `${bindings}/001/home` },
+    { provider: "codex", account_profile: "profile-main", label: "Main", home: `${bindings}/000/home` },
+    { provider: "codex", account_profile: "profile-secondary", label: "Secondary", home: `${bindings}/001/home` },
   ]
   try {
     await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
