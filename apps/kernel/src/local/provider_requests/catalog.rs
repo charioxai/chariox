@@ -298,15 +298,13 @@ pub(crate) fn refresh_provider_account_profile_response(
         }
         Some("claude") => (
             claude_auth_status(provider, &profile.profile_id, &environment)?,
-            claude_usage_snapshot(&profile.profile_id, &environment).unwrap_or_else(|| {
-                // The OAuth endpoint is undocumented and may be unavailable.
-                // Retain real run-observed status-line/rate-limit data rather
-                // than replacing it with an invented empty snapshot.
-                profile
-                    .usage
-                    .clone()
-                    .reconciled_freshness(crate::session::unix_epoch_ms())
-            }),
+            // Claude Code owns its credentials. Refresh auth through the CLI,
+            // then retain the latest provider-run status-line/rate-limit
+            // observation without reading Keychain or credential files.
+            profile
+                .usage
+                .clone()
+                .reconciled_freshness(crate::session::unix_epoch_ms()),
         ),
         Some("opencode") => (
             opencode_auth_status(&profile.profile_id, &environment)?,
@@ -329,73 +327,6 @@ pub(crate) fn refresh_provider_account_profile_response(
         status.detected_version,
         Some(usage),
     )
-}
-
-fn claude_usage_snapshot(
-    account_profile: &str,
-    environment: &BTreeMap<String, String>,
-) -> Option<crate::account_profile::ProviderAccountUsageSnapshot> {
-    let access_token = claude_oauth_access_token(environment)?;
-    let response = ureq::AgentBuilder::new()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .get("https://api.anthropic.com/api/oauth/usage")
-        .set("Authorization", &format!("Bearer {access_token}"))
-        .set("anthropic-beta", "oauth-2025-04-20")
-        .set("Accept", "application/json")
-        .set("User-Agent", "chariox-kernel/provider-usage")
-        .call()
-        .ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(&response.into_string().ok()?).ok()?;
-    crate::provider::claude_oauth_usage_snapshot(account_profile, &value)
-}
-
-fn claude_oauth_access_token(environment: &BTreeMap<String, String>) -> Option<String> {
-    if let Some(config_dir) = environment.get("CLAUDE_CONFIG_DIR") {
-        return claude_oauth_access_token_from_bytes(
-            &std::fs::read(std::path::Path::new(config_dir).join(".credentials.json")).ok()?,
-        );
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let output = Command::new("security")
-            .args([
-                "find-generic-password",
-                "-s",
-                "Claude Code-credentials",
-                "-w",
-            ])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            if let Some(token) = claude_oauth_access_token_from_bytes(&output.stdout) {
-                return Some(token);
-            }
-        }
-    }
-
-    let home = std::env::var_os("HOME")?;
-    claude_oauth_access_token_from_bytes(
-        &std::fs::read(
-            std::path::PathBuf::from(home)
-                .join(".claude")
-                .join(".credentials.json"),
-        )
-        .ok()?,
-    )
-}
-
-fn claude_oauth_access_token_from_bytes(contents: &[u8]) -> Option<String> {
-    let value = serde_json::from_slice::<serde_json::Value>(contents).ok()?;
-    value
-        .get("claudeAiOauth")?
-        .get("accessToken")
-        .or_else(|| value.get("claudeAiOauth")?.get("access_token"))?
-        .as_str()
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-        .map(str::to_string)
 }
 
 fn claude_auth_status(
@@ -1554,21 +1485,5 @@ exit 2
             Some("selected-profile-key")
         );
         let _ = fs::remove_dir_all(root);
-    }
-
-    #[test]
-    fn extracts_only_the_claude_oauth_access_token() {
-        let token = claude_oauth_access_token_from_bytes(
-            br#"{
-                "claudeAiOauth": {
-                    "accessToken": " selected-token ",
-                    "refreshToken": "must-not-be-returned"
-                }
-            }"#,
-        );
-
-        assert_eq!(token.as_deref(), Some("selected-token"));
-        assert!(claude_oauth_access_token_from_bytes(br#"{}"#).is_none());
-        assert!(claude_oauth_access_token_from_bytes(b"not-json").is_none());
     }
 }

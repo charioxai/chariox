@@ -72,23 +72,13 @@ streamed `rate_limit_event` observations by meter identity, retaining both the
 5-hour and weekly windows instead of replacing the whole account snapshot with
 the newest event.
 
-Provider Accounts refresh also uses a narrowly isolated, read-only adapter for
-`GET https://api.anthropic.com/api/oauth/usage`. It reads the selected Claude
-Code profile's existing OAuth access token in memory, never persists or returns
-the token, and parses only recognized usage windows and spend fields. The
-endpoint is undocumented, so failures retain the last real status-line or
-rate-limit observation and project it to `stale` after
-`PROVIDER_USAGE_STALE_AFTER_MS`; missing data is never presented as zero. Every
-client-facing read (list/get) projects freshness without rewriting stored
-state, so a later provider refresh or run can restore `available` from a real
+Provider Accounts refresh never reads Claude Code credential files or macOS
+Keychain entries and does not call undocumented account endpoints. It refreshes
+authentication through the provider CLI, retains the latest real status-line or
+`rate_limit_event` observation, and projects that observation to `stale` after
+`PROVIDER_USAGE_STALE_AFTER_MS`. Missing data is never presented as zero. A
+later provider run restores `available` from a fresh provider-native
 observation.
-
-Community tools such as
-[claude-code-status-bar](https://github.com/briansmith80/claude-code-status-bar)
-and [claude-runway](https://github.com/tenex-hq/claude-runway) use the same
-endpoint. The Chariox parser handles both the legacy flat windows and newer
-structured `limits[]` responses; the official status-line path remains an
-independent provider-native source during active runs.
 
 API and organization accounts are separate products. Anthropic's
 [Usage & Cost API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)
