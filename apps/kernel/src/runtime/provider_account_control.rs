@@ -185,7 +185,7 @@ pub(crate) fn ensure_profile_idle(
             operation: "mutate provider account profile",
             message: format!(
                 "account profile `{}` is assigned to agent(s) {}; choose another account for those agents before removing or deleting it",
-                profile.profile_id,
+                profile.label,
                 bound_agents.join(", "),
             ),
         });
@@ -213,7 +213,7 @@ pub(crate) fn ensure_profile_idle(
             operation: "mutate provider account profile",
             message: format!(
                 "account profile `{}` has an active provider run; end the run before removing or deleting it",
-                profile.profile_id
+                profile.label
             ),
         });
     }
@@ -225,7 +225,7 @@ pub(crate) fn ensure_profile_idle(
             operation: "mutate provider account profile",
             message: format!(
                 "account profile `{}` has an active provider authentication workflow; cancel it before removing or deleting the profile",
-                profile.profile_id
+                profile.label
             ),
         });
     }
