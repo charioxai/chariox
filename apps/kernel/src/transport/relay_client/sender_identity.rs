@@ -66,6 +66,38 @@ pub(super) fn require_bound_kernel_sender<'a>(
     Ok(identity)
 }
 
+/// Requires the sender-bound machine or kernel identity used by managed context transfer.
+pub(super) fn require_bound_managed_context_sender<'a>(
+    caller_identity: Option<&'a RelayCallerIdentity>,
+    encrypted_request: &EncryptedRelayPayload,
+) -> Result<&'a RelayCallerIdentity, RelayError> {
+    let Some(identity) = caller_identity else {
+        return Err(unauthorized(
+            "managed context transfer requires an authenticated relay daemon identity",
+        ));
+    };
+    if !matches!(
+        identity.subject_kind,
+        RelaySubjectKind::Kernel | RelaySubjectKind::Machine
+    ) {
+        return Err(unauthorized(
+            "managed context transfer requires a machine or kernel identity",
+        ));
+    }
+    validate_identity_expiry(identity, daemon_identity_label(identity.subject_kind))?;
+    let Some(expected_thumbprint) = identity.public_key_thumbprint.as_deref() else {
+        return Err(unauthorized(
+            "managed context transfer requires a sender-bound relay identity",
+        ));
+    };
+    validate_sender_key(
+        expected_thumbprint,
+        encrypted_request,
+        daemon_identity_label(identity.subject_kind),
+    )?;
+    Ok(identity)
+}
+
 pub(super) fn require_bound_daemon_sender<'a>(
     caller_identity: Option<&'a RelayCallerIdentity>,
     encrypted_request: &EncryptedRelayPayload,
@@ -337,5 +369,45 @@ mod tests {
                 .expect("a live bound kernel should authorize managed transfer"),
             &bound
         );
+    }
+
+    #[test]
+    fn managed_context_transfer_accepts_a_bound_machine_or_kernel_sender() {
+        let request = encrypted_request("managed-source-public-key");
+        let thumbprint = Some(public_key_thumbprint(&request.sender_public_key));
+        let kernel = caller_identity(RelaySubjectKind::Kernel, thumbprint.clone());
+        let machine = caller_identity(RelaySubjectKind::Machine, thumbprint);
+        let client = caller_identity(
+            RelaySubjectKind::Client,
+            Some(public_key_thumbprint(&request.sender_public_key)),
+        );
+        let service = caller_identity(
+            RelaySubjectKind::Service,
+            Some(public_key_thumbprint(&request.sender_public_key)),
+        );
+        let unbound_machine = caller_identity(RelaySubjectKind::Machine, None);
+        let mut expired_machine = machine.clone();
+        expired_machine.expires_at_ms = 1;
+        let mismatched_machine = caller_identity(
+            RelaySubjectKind::Machine,
+            Some(public_key_thumbprint("other-public-key")),
+        );
+
+        assert_eq!(
+            require_bound_managed_context_sender(Some(&kernel), &request)
+                .expect("a live bound kernel should authorize managed context"),
+            &kernel
+        );
+        assert_eq!(
+            require_bound_managed_context_sender(Some(&machine), &request)
+                .expect("a live bound machine should authorize its selected kernel context"),
+            &machine
+        );
+        assert!(require_bound_managed_context_sender(Some(&client), &request).is_err());
+        assert!(require_bound_managed_context_sender(Some(&service), &request).is_err());
+        assert!(require_bound_managed_context_sender(Some(&unbound_machine), &request).is_err());
+        assert!(require_bound_managed_context_sender(Some(&expired_machine), &request).is_err());
+        assert!(require_bound_managed_context_sender(Some(&mismatched_machine), &request).is_err());
+        assert!(require_bound_managed_context_sender(None, &request).is_err());
     }
 }

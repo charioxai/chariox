@@ -41,6 +41,7 @@ impl CommandRouter {
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
+        source_kernel_id: String,
         context_id: String,
         plan_digest: String,
         target_environment_id: String,
@@ -50,7 +51,7 @@ impl CommandRouter {
         archive_sha256: String,
         archive_size_bytes: u64,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let authorization = managed_context_caller(self, &identity)?;
+        let authorization = managed_context_caller(self, &identity, &source_kernel_id)?;
         if authorization.plan.context_id != context_id
             || authorization.plan.plan_digest != plan_digest
         {
@@ -109,10 +110,11 @@ impl CommandRouter {
     pub(crate) async fn relay_begin_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
+        source_kernel_id: String,
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?.caller;
+        let caller = managed_context_caller(self, &identity, &source_kernel_id)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.begin(
@@ -129,13 +131,14 @@ impl CommandRouter {
     pub(crate) async fn relay_upload_managed_context_chunk(
         &self,
         identity: RelayCallerIdentity,
+        source_kernel_id: String,
         transfer_id: String,
         capability: String,
         offset: u64,
         bytes: Vec<u8>,
         chunk_sha256: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?.caller;
+        let caller = managed_context_caller(self, &identity, &source_kernel_id)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.upload_chunk(
@@ -155,10 +158,11 @@ impl CommandRouter {
     pub(crate) async fn relay_get_managed_context_import_status(
         &self,
         identity: RelayCallerIdentity,
+        source_kernel_id: String,
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let caller = managed_context_caller(self, &identity)?.caller;
+        let caller = managed_context_caller(self, &identity, &source_kernel_id)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
             store.get_status(
@@ -175,10 +179,11 @@ impl CommandRouter {
     pub(crate) async fn relay_finalize_managed_context_import(
         &self,
         identity: RelayCallerIdentity,
+        source_kernel_id: String,
         transfer_id: String,
         capability: String,
     ) -> Result<RelayPeerResponse, DaemonError> {
-        let authorization = managed_context_caller(self, &identity)?;
+        let authorization = managed_context_caller(self, &identity, &source_kernel_id)?;
         let caller = authorization.caller;
         let completion_plan = authorization.plan;
         let registration = self.managed_kernel_registration.clone().ok_or_else(|| {
@@ -434,6 +439,7 @@ impl CommandRouter {
 fn managed_context_caller(
     router: &CommandRouter,
     identity: &RelayCallerIdentity,
+    source_kernel_id: &str,
 ) -> Result<AuthorizedManagedContextCaller, DaemonError> {
     let owner_user_id = identity.user_id.clone().ok_or_else(|| {
         managed_context_authorization_error(
@@ -463,9 +469,15 @@ fn managed_context_caller(
         managed_context_authorization_error("managed context target has no Cloud relay profile")
     })?;
     let target_key_thumbprint = public_key_thumbprint(&config.relay_public_key);
+    let source_subject_matches = match identity.subject_kind {
+        chariox_relay::auth::RelaySubjectKind::Kernel => identity.subject == source.kernel_id,
+        chariox_relay::auth::RelaySubjectKind::Machine => identity.subject == source.machine_id,
+        _ => false,
+    };
     if registration.kernel_id != config.daemon_id
         || registration.machine_id != config.host_machine_id
-        || source.kernel_id != identity.subject
+        || source.kernel_id != source_kernel_id
+        || !source_subject_matches
         || source.key_thumbprint != key_thumbprint
         || source.relay_realm_id != identity.realm_id
         || profile.realm_id != identity.realm_id
@@ -477,7 +489,7 @@ fn managed_context_caller(
     }
     Ok(AuthorizedManagedContextCaller {
         caller: ManagedContextTransferCaller {
-            kernel_id: identity.subject.clone(),
+            kernel_id: source_kernel_id.to_string(),
             key_thumbprint,
             owner_user_id,
             realm_id: identity.realm_id.clone(),
