@@ -245,10 +245,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
                     == crate::account_profile::ProviderAccountAuthState::Authenticated
             }
             Err(error) => {
-                status = append_provider_login_error(
+                status = append_provider_login_refresh_failure(
                     runtime_state,
                     owner_user_id,
                     &request.login_id,
+                    crate::runtime::state::ProviderAuthProcessOperation::Login,
                     &error,
                 )?;
                 let rejected = runtime_state
@@ -342,10 +343,11 @@ pub(crate) async fn execute_get_provider_login_status_request(
                 false,
             ),
             Err(error) => {
-                append_provider_login_error(
+                append_provider_login_refresh_failure(
                     runtime_state,
                     owner_user_id,
                     &request.login_id,
+                    record.operation,
                     &error,
                 )?;
                 (false, true)
@@ -439,18 +441,30 @@ where
     }
 }
 
-fn append_provider_login_error(
+fn append_provider_login_refresh_failure(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
     login_id: &str,
+    operation: crate::runtime::state::ProviderAuthProcessOperation,
     error: &DaemonError,
 ) -> Result<crate::local::ProviderLoginStatus, DaemonError> {
     runtime_state.provider_login_process_store().append_output(
         owner_user_id,
         login_id,
-        std::iter::once(format!("Provider account validation failed: {error}\n").into_bytes()),
+        std::iter::once(provider_auth_refresh_failure_message(operation, error).into_bytes()),
         crate::session::unix_epoch_ms(),
     )
+}
+
+fn provider_auth_refresh_failure_message(
+    operation: crate::runtime::state::ProviderAuthProcessOperation,
+    error: &DaemonError,
+) -> String {
+    if operation == crate::runtime::state::ProviderAuthProcessOperation::Logout {
+        format!("Provider logout completed; verification is temporarily unavailable: {error}\n")
+    } else {
+        format!("Provider account validation failed: {error}\n")
+    }
 }
 
 pub(crate) async fn execute_send_provider_login_input_request(
@@ -645,7 +659,10 @@ fn provider_login_error(message: impl Into<String>) -> DaemonError {
 
 #[cfg(test)]
 mod tests {
-    use super::{provider_auth_process_succeeded, refresh_provider_account_family_after_login};
+    use super::{
+        provider_auth_process_succeeded, provider_auth_refresh_failure_message,
+        refresh_provider_account_family_after_login,
+    };
     use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
     use rand::Rng as _;
 
@@ -804,5 +821,12 @@ mod tests {
             false,
             true,
         ));
+        let message = provider_auth_refresh_failure_message(
+            ProviderAuthProcessOperation::Logout,
+            &super::provider_login_error("status probe unavailable"),
+        );
+        assert!(message
+            .starts_with("Provider logout completed; verification is temporarily unavailable:"));
+        assert!(!message.contains("validation failed"));
     }
 }

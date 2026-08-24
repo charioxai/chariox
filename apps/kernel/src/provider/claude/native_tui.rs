@@ -311,10 +311,7 @@ if (eventName === "UserPromptSubmit") {
   }))
   process.exit(0)
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  const toolName = String(input.tool_name ?? "")
-  const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
-  const isRuntimePreToolUse = eventName === "PreToolUse" && isCharioxRuntimeTool
-  if (isRuntimePreToolUse || input.permission_mode === "bypassPermissions") {
+  if (input.permission_mode === "bypassPermissions") {
     if (eventName === "PermissionRequest") {
       // PermissionRequestHookSpecificOutput nests the PermissionResult under
       // `decision`. PreToolUse uses a separate event-specific output shape.
@@ -444,18 +441,13 @@ mod tests {
     use crate::error::DaemonError;
 
     #[test]
-    fn hook_auto_allows_bypass_and_only_skips_runtime_pre_tool_events() {
+    fn hook_auto_allows_only_bypass_permissions() {
         let handler = claude_native_hook_handler();
 
-        assert!(handler
-            .contains("isRuntimePreToolUse || input.permission_mode === \"bypassPermissions\""));
-        assert!(handler.contains(
-            "const isRuntimePreToolUse = eventName === \"PreToolUse\" && isCharioxRuntimeTool"
-        ));
+        assert!(handler.contains("if (input.permission_mode === \"bypassPermissions\")"));
         assert!(handler.contains("behavior: \"allow\""));
         assert!(!handler.contains("permissionDecision"));
-        assert!(handler.contains("toolName.startsWith(\"mcp__chariox__\")"));
-        assert!(handler.contains("toolName.startsWith(\"chariox.\")"));
+        assert!(!handler.contains("toolName.startsWith"));
         assert!(handler.contains("process.exit(0)"));
     }
 

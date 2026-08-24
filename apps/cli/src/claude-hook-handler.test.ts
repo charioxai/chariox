@@ -36,7 +36,7 @@ async function runClaudeHookHandler(
     child.once("exit", resolve)
   })
   assert.equal(exitCode, 0, stderr)
-  return JSON.parse(stdout) as Record<string, unknown>
+  return stdout.trim() ? JSON.parse(stdout) as Record<string, unknown> : {}
 }
 
 test("Claude hook generators obey the shared immediate permission contract", async () => {
@@ -164,6 +164,15 @@ test("Claude permission bridge preserves event-specific allow and deny response 
         },
       },
     })
+    assert.equal(interactionCount, 3)
+
+    const runtimePreToolResponse = await runClaudeHookHandler(handler, {
+      hook_event_name: "PreToolUse",
+      permission_mode: "default",
+      tool_name: "mcp__chariox__workflow_status",
+      tool_input: {},
+    }, env)
+    assert.deepEqual(runtimePreToolResponse, {})
     assert.equal(interactionCount, 3)
   } finally {
     await bridge.stop()

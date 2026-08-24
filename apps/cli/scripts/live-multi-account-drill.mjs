@@ -72,7 +72,7 @@ const execute = process.argv.includes("--execute")
 const timeoutMs = Number(option("timeout-ms", "300000"))
 
 if (!provider || profiles.length !== 2) {
-  console.error("usage: live-multi-account-drill.mjs --provider <codex|claude|opencode> --profiles <profile-a,profile-b> [--kernel-url ws://...] [--model model] [--effort effort] [--workspace path] [--execute]")
+  console.error("usage: live-multi-account-drill.mjs --provider <codex|claude|opencode> --profiles <profile-a,profile-b> [--kernel-url ws://...] [--model model] [--effort effort] [--workspace path] [--evidence-root path] [--execute]")
   process.exit(2)
 }
 if (execute && (!model || !effort)) {
@@ -175,7 +175,10 @@ try {
   await client.close().catch(() => {})
 }
 
-const evidenceRoot = "/Users/miguel/.codex/evidence/workflow-infrastructure-platform/provider-accounts"
+const evidenceRoot = path.resolve(option(
+  "evidence-root",
+  path.join(process.env.HOME ?? process.cwd(), ".codex/evidence/workflow-infrastructure-platform/provider-accounts"),
+))
 await mkdir(evidenceRoot, { recursive: true })
 const evidencePath = path.join(evidenceRoot, `live-${provider}-${Date.now()}.json`)
 await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`, "utf8")

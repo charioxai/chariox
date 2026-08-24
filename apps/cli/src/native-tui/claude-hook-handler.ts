@@ -56,10 +56,7 @@ if (eventName === "UserPromptSubmit") {
     }
   }))
 } else if (eventName === "PreToolUse" || eventName === "PermissionRequest") {
-  const toolName = String(input.tool_name ?? "")
-  const isCharioxRuntimeTool = toolName.startsWith("mcp__chariox__") || toolName.startsWith("chariox.")
-  const isRuntimePreToolUse = eventName === "PreToolUse" && isCharioxRuntimeTool
-  if (isRuntimePreToolUse || input.permission_mode === "bypassPermissions") {
+  if (input.permission_mode === "bypassPermissions") {
     if (eventName === "PermissionRequest") {
       process.stdout.write(JSON.stringify({
         hookSpecificOutput: {
