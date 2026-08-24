@@ -11,15 +11,17 @@ use crate::error::DaemonError;
 use super::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
 
 pub(crate) const MANAGED_PROVIDER_ISOLATION_ENV: &str = "CHARIOX_MANAGED_PROVIDER_ISOLATION";
+#[cfg(any(target_os = "linux", test))]
+const CLAUDE_SANDBOX_ENV: &str = "IS_SANDBOX";
 #[cfg(target_os = "linux")]
 pub(crate) const MANAGED_PROVIDER_HOME_ENV: &str = "CHARIOX_MANAGED_PROVIDER_HOME";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const MANAGED_PROVIDER_ISOLATION_MARKER_ENV: &str =
     "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE";
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const SANDBOX_HOME: &str = "/home/chariox";
 #[cfg(target_os = "linux")]
 const SANDBOX_ACCOUNT_ROOT: &str = "/home/chariox/.provider-account";
@@ -126,20 +128,7 @@ pub(crate) fn apply_managed_provider_isolation(
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
 
-        args.extend([
-            "--setenv".to_string(),
-            "HOME".to_string(),
-            SANDBOX_HOME.to_string(),
-            "--setenv".to_string(),
-            "USER".to_string(),
-            "chariox".to_string(),
-            "--setenv".to_string(),
-            "LOGNAME".to_string(),
-            "chariox".to_string(),
-            "--setenv".to_string(),
-            MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
-            "1".to_string(),
-        ]);
+        append_managed_namespace_environment(&mut args, request);
         for name in CONTROL_ENVIRONMENT_NAMES {
             args.extend(["--unsetenv".to_string(), (*name).to_string()]);
             if !launch.pty_env_remove.iter().any(|value| value == name) {
@@ -162,6 +151,33 @@ pub(crate) fn apply_managed_provider_isolation(
         launch.working_directory = Some(provider_home);
         launch.process_label = format!("{}:managed-isolated", launch.process_label);
         Ok(launch)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn append_managed_namespace_environment(args: &mut Vec<String>, request: &LaunchProviderRequest) {
+    args.extend([
+        "--setenv".to_string(),
+        "HOME".to_string(),
+        SANDBOX_HOME.to_string(),
+        "--setenv".to_string(),
+        "USER".to_string(),
+        "chariox".to_string(),
+        "--setenv".to_string(),
+        "LOGNAME".to_string(),
+        "chariox".to_string(),
+        "--setenv".to_string(),
+        MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+        "1".to_string(),
+    ]);
+    if request.adapter_key == "claude" {
+        args.extend([
+            "--setenv".to_string(),
+            CLAUDE_SANDBOX_ENV.to_string(),
+            "1".to_string(),
+        ]);
+    } else {
+        args.extend(["--unsetenv".to_string(), CLAUDE_SANDBOX_ENV.to_string()]);
     }
 }
 
@@ -605,5 +621,32 @@ mod tests {
 
         assert_eq!(args.iter().filter(|arg| *arg == "--ro-bind").count(), 1);
         assert!(!args.iter().any(|arg| arg == "/etc/resolv.conf"));
+    }
+
+    #[test]
+    fn managed_namespace_scopes_claude_sandbox_state_to_the_claude_adapter() {
+        for provider in ["claude", "claude-headless", "claude-p"] {
+            let request =
+                LaunchProviderRequest::new("session-1", "claude", provider, "default", "sonnet");
+            let mut args = Vec::new();
+            append_managed_namespace_environment(&mut args, &request);
+            assert!(args
+                .windows(3)
+                .any(|args| { args == ["--setenv", CLAUDE_SANDBOX_ENV, "1"] }));
+            assert!(!args
+                .windows(2)
+                .any(|args| args == ["--unsetenv", CLAUDE_SANDBOX_ENV]));
+        }
+
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "claude", "default", "sonnet");
+        let mut args = Vec::new();
+        append_managed_namespace_environment(&mut args, &request);
+        assert!(args
+            .windows(2)
+            .any(|args| args == ["--unsetenv", CLAUDE_SANDBOX_ENV]));
+        assert!(!args
+            .windows(3)
+            .any(|args| args == ["--setenv", CLAUDE_SANDBOX_ENV, "1"]));
     }
 }
