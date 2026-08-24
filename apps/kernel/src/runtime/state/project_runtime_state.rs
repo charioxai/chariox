@@ -27,6 +27,43 @@ impl KernelRuntimeState {
         Ok(())
     }
 
+    pub(crate) fn remove_managed_context_project(
+        &self,
+        target: &crate::local::ManagedContextLaunchTarget,
+        caller_user_id: &str,
+    ) -> Result<bool, DaemonError> {
+        let Some(expected) = managed_context_project(target, caller_user_id)? else {
+            return Ok(false);
+        };
+        let Some(existing) = self
+            .owned
+            .session_store
+            .durable_projects()
+            .into_iter()
+            .find(|project| project.id() == expected.id())
+        else {
+            return Ok(false);
+        };
+        install_managed_context_project(Some(&existing), expected, |_| Ok(()), |_| {})?;
+        if !self
+            .owned
+            .session_store
+            .sessions_in_project(existing.id())
+            .is_empty()
+        {
+            return Err(managed_context_project_error(format!(
+                "managed context Project `{}` has sessions and cannot be rolled back",
+                existing.id()
+            )));
+        }
+        self.append_project_durable_event("project.deleted", &existing)?;
+        self.owned
+            .session_store
+            .delete_project_record(existing.id(), caller_user_id)?;
+        self.owned.runtime_projection_changes.record_change();
+        Ok(true)
+    }
+
     pub(crate) async fn list_projects(
         &self,
         caller_user_id: &str,

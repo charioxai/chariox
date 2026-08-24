@@ -658,6 +658,22 @@ impl ManagedContextTransferStore {
         Ok(status(transfer_id, entry))
     }
 
+    pub(crate) fn launch_target_for_import_receipt(
+        &self,
+        transfer_id: &str,
+        receipt: &crate::managed_context::package::ManagedContextPackageImportReceipt,
+    ) -> Result<crate::local::ManagedContextLaunchTarget, DaemonError> {
+        let state = self.lock_state();
+        let entry = state
+            .entries
+            .get(transfer_id)
+            .ok_or_else(|| transfer_error("managed context transfer does not exist"))?;
+        if entry.phase != ManagedContextTransferPhase::Importing {
+            return Err(transfer_error("managed context transfer is not importing"));
+        }
+        launch_target_from_receipt(transfer_id, entry, receipt)
+    }
+
     pub(crate) fn launch_target(
         &self,
         context_id: &str,

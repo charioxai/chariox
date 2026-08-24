@@ -1665,7 +1665,7 @@ mod tests {
             repositories: vec![DevelopmentRepositorySelection {
                 workspace_id: "workspace-primary".to_string(),
                 worktree_id: None,
-                worktree_path: repository,
+                worktree_path: repository.clone(),
                 role: DevelopmentRepositoryRole::Primary,
             }],
             archive_path: archive_path.clone(),
@@ -1945,6 +1945,13 @@ mod tests {
                 retryable: true,
             } if code == "managed_context_cloud_completion_unavailable"
         ));
+        let projects = router.runtime_state().list_projects("user-1", true).await;
+        assert!(
+            projects
+                .iter()
+                .any(|project| project.id() == "project-managed-peer"),
+            "managed-context import must publish its Project before Cloud can expose readiness"
+        );
         let completed = send_managed_peer_request(
             &router,
             &state,
@@ -2030,6 +2037,18 @@ mod tests {
         ));
 
         let terminal_context_id = "context-managed-peer-terminal".to_string();
+        let terminal_archive_path = root.join("terminal-development.tar.gz");
+        let terminal_exported = export_development_context(DevelopmentContextExportRequest {
+            project_id: "project-managed-peer-terminal".to_string(),
+            repositories: vec![DevelopmentRepositorySelection {
+                workspace_id: "workspace-primary".to_string(),
+                worktree_id: None,
+                worktree_path: repository,
+                role: DevelopmentRepositoryRole::Primary,
+            }],
+            archive_path: terminal_archive_path.clone(),
+        })
+        .expect("export terminal managed peer context");
         let terminal_capability_root = root.join("terminal-capabilities");
         let terminal_vault_path = root.join("terminal-vault.json");
         let terminal_vault_envelope_path = terminal_vault_path.with_file_name(format!(
@@ -2049,7 +2068,7 @@ mod tests {
             "realm-1",
             source_kernel_id,
             &source_key_thumbprint,
-            "project-managed-peer",
+            "project-managed-peer-terminal",
         );
         let terminal_plan_binding = terminal_plan.package_binding();
         let terminal_plan_digest = terminal_plan_binding.plan_digest.clone();
@@ -2092,8 +2111,8 @@ mod tests {
             target_kernel_id: target_kernel_id.clone(),
             target_key_thumbprint: target_key_thumbprint.clone(),
             development: ManagedContextPackageDevelopment::FromSource {
-                archive_path,
-                archive_sha256: exported.archive_sha256.clone(),
+                archive_path: terminal_archive_path,
+                archive_sha256: terminal_exported.archive_sha256,
             },
             kernel_context: ManagedContextPackageKernel::FromKernel(KernelContextSnapshot {
                 payload: terminal_payload,
@@ -2235,6 +2254,22 @@ mod tests {
         assert!(!terminal_capability_root.exists());
         assert!(!terminal_vault_path.exists());
         assert!(!terminal_vault_envelope_path.exists());
+        let projects = terminal_router
+            .runtime_state()
+            .list_projects("user-1", true)
+            .await;
+        assert!(
+            projects
+                .iter()
+                .all(|project| project.id() != "project-managed-peer-terminal"),
+            "terminal Cloud rejection must roll back its provisional managed-context Project"
+        );
+        assert!(
+            projects
+                .iter()
+                .any(|project| project.id() == "project-managed-peer"),
+            "terminal rollback must preserve a Project from an earlier completed import"
+        );
         let terminal_replay = send_managed_peer_request(
             &terminal_router,
             &state,

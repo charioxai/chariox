@@ -355,6 +355,46 @@ impl CommandRouter {
                 return Err(error);
             }
         };
+        let launch_target = store
+            .launch_target_for_import_receipt(&transfer_id, &receipt)
+            .and_then(|target| {
+                self.runtime_state
+                    .ensure_managed_context_project(&target, &caller.owner_user_id)?;
+                Ok(target)
+            });
+        let launch_target = match launch_target {
+            Ok(target) => target,
+            Err(publication_error) => {
+                let rollback_receipt = receipt.clone();
+                let rollback_provider_account_target = provider_account_target.clone();
+                let rollback_git_credential_target = git_credential_target.clone();
+                if let Err(rollback_error) = run_import_blocking(move || {
+                    rollback_managed_context_package_application(
+                        &rollback_receipt,
+                        &rollback_private_key,
+                        Some(&rollback_provider_account_target),
+                        rollback_git_credential_target.as_ref(),
+                    )
+                })
+                .await
+                {
+                    let release_store = store.clone();
+                    let release_transfer_id = transfer_id.clone();
+                    let _ =
+                        run_blocking(move || release_store.release_import(&release_transfer_id))
+                            .await;
+                    return Err(managed_context_unavailable(format!(
+                        "{publication_error}; roll back managed context package: {rollback_error}"
+                    )));
+                }
+                return Err(retire_terminal_import(
+                    store.clone(),
+                    transfer_id.clone(),
+                    publication_error,
+                )
+                .await);
+            }
+        };
         if let Err(completion_error) = complete_managed_context_import(
             &completion_config,
             &registration,
@@ -388,6 +428,17 @@ impl CommandRouter {
                             .await;
                     return Err(managed_context_unavailable(format!(
                         "roll back rejected managed context import: {rollback_error}"
+                    )));
+                }
+                if let Err(project_rollback_error) = self
+                    .runtime_state
+                    .remove_managed_context_project(&launch_target, &caller.owner_user_id)
+                {
+                    let _ =
+                        run_blocking(move || failure_store.release_import(&failure_transfer_id))
+                            .await;
+                    return Err(managed_context_unavailable(format!(
+                        "roll back rejected managed context Project: {project_rollback_error}"
                     )));
                 }
                 return Err(retire_terminal_import(
