@@ -5,6 +5,19 @@ import { fileURLToPath } from 'node:url'
 import { finalizeDrillArtifacts, prepareDrillArtifacts } from './lib/drill-artifacts.mjs'
 import { withDevStubProviderInventory } from './lib/drill-runtime-helpers.mjs'
 import {
+  assertDeploymentContractMatchesRequirements,
+  assertExtensionRequirementsExact,
+  assertHostedRejectsLocalOnly,
+  assertMissingDefinitionBlockedPublication,
+  assertActivationBlockedBeforeCredentialSetup,
+  assertUnrelatedExtensionAbsent,
+  drillExtensionCleanupSteps,
+  drillExtensionRunNames,
+  expectedMcpRequirement,
+  localOnlyStdioMcpConfig,
+  portableHttpsMcpConfig,
+} from './lib/live-cloud-publication-deployment-drill-extensions.mjs'
+import {
   assertSuccessfulSseTranscript,
   assertWorkflowRunCompleted,
   buildRustBinary,
@@ -43,6 +56,7 @@ const { connectKernelCloudRelay } = await import('../dist/relay-api.js')
 const {
   changePublicationDeployment,
   createPublicationDeploymentFromPackage,
+  getPublicationDeployment,
   listPublicationDeploymentLogs,
 } = await import('../dist/publication-deployment-api.js')
 
@@ -55,10 +69,14 @@ const {
   createWorkflowPublicationRequest,
   createWorkflowRequest,
   endSessionRequest,
+  grantAgentExtensionRequest,
+  installMcpServerRequest,
   launchProviderRunRequest,
+  revokeAgentExtensionRequest,
   setWorkflowNodeCanCompleteRunRequest,
   setWorkflowNodeCanEmitIntermediateOutputRequest,
   spawnAgentRequest,
+  uninstallMcpServerRequest,
   updateWorkflowNodeInstructionsRequest,
   exportWorkflowPublicationPackageRequest,
 } = requests
@@ -118,6 +136,10 @@ function usage() {
     '  --keep-tmp',
     '  --hold-ms MS',
     '  --debug-hold-ms MS',
+    '  --skip-extension-probes',
+  '    (default: prove exact extension transfer, unrelated-extension absence,',
+  '     granted-but-missing publication block, local-only hosted rejection with',
+  '     connected-ingress guidance, and activation blocked before credential setup)',
   ].join('\n')
 }
 
@@ -146,6 +168,7 @@ function parseArgs(argv) {
     keepTmp: false,
     holdMs: 0,
     debugHoldMs: 0,
+    skipExtensionProbes: process.env.CHARIOX_DRILL_SKIP_EXTENSION_PROBES?.trim() === '1',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]
@@ -170,6 +193,7 @@ function parseArgs(argv) {
     else if (arg === '--artifacts-dir') options.artifactsDir = path.resolve(argv[++index])
     else if (arg === '--browser-screenshot') options.browserScreenshot = true
     else if (arg === '--keep-tmp') options.keepTmp = true
+    else if (arg === '--skip-extension-probes') options.skipExtensionProbes = true
     else if (arg === '--hold-ms') options.holdMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--debug-hold-ms') options.debugHoldMs = Number.parseInt(argv[++index] ?? '', 10)
     else if (arg === '--help' || arg === '-h') {
@@ -329,6 +353,7 @@ async function main() {
       await delay(1_000)
     }
 
+    const extensionPlan = extensionProbePlan(options)
     const publicationContext = await createPublicationPackage({
       client,
       sessionIds,
@@ -342,9 +367,27 @@ async function main() {
       realDashboard: options.realDashboard,
       agentAppShopping: options.agentAppShopping,
       actionPort,
+      extensions: extensionPlan?.main ?? null,
     })
     profile = explicitCloudProfile(options) ?? relayCloudProfile(await loadPreferences())
     if (!profile) throw new Error('cloud is not linked. Run /cloud login from the TUI before this drill.')
+    if (options.mode === 'hosted_container' && extensionPlan) {
+      await runHostedExtensionRejectionProbes({
+        client,
+        sessionIds,
+        workspace,
+        kernelUrl,
+        transport: options.transport,
+        provider: options.provider,
+        model: options.model,
+        realDashboard: options.realDashboard,
+        actionPort,
+        root,
+        plan: extensionPlan,
+        profile,
+        slug: options.slug,
+      })
+    }
     logStep('deploy', { mode: options.mode, transport: options.transport, slug: options.slug })
     const deployment = await createPublicationDeploymentFromPackage({
       profile,
@@ -552,6 +595,7 @@ async function createPublicationPackage(input) {
     realDashboard,
     agentAppShopping,
     actionPort,
+    extensions,
   } = input
   const session = (await client.send(createSessionRequest(workspace, workspace, `cloud-publication-${transport}`))).SessionCreated.session
   sessionIds.push(session.id)
@@ -576,6 +620,45 @@ async function createPublicationPackage(input) {
   const endpointKind = transport === 'schedule' ? 'schedule' : transport
   const endpoint = (await client.send(createWorkflowEndpointRequest(session.id, workflow.id, node.id, endpointKind))).WorkflowEndpointCreated.endpoint
   const publication = (await client.send(createWorkflowPublicationRequest(session.id, workflow.id, endpoint.id, publicationOptions(transport, node.id)))).WorkflowPublicationCreated.publication
+  let extensionExpectations = null
+  const extensionState = { installed: [], granted: [] }
+  let bodyError = null
+  let publicationResult = null
+  try {
+    if (extensions && !agentAppShopping) {
+      const grantedConfig = extensions.stdioGranted
+        ? localOnlyStdioMcpConfig(extensions.grantedName)
+        : portableHttpsMcpConfig(
+          extensions.grantedName,
+          extensions.grantedUrl,
+          extensions.bearerSlot ? { bearerTokenCredential: 'drill-unbound-slot' } : {},
+        )
+      await client.send(installMcpServerRequest(workspace, grantedConfig))
+      extensionState.installed.push({ name: extensions.grantedName })
+      await client.send(installMcpServerRequest(workspace, localOnlyStdioMcpConfig(extensions.unrelatedName)))
+      extensionState.installed.push({ name: extensions.unrelatedName })
+      await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', extensions.grantedName))
+      extensionState.granted.push({ agentRef: agent.id, name: extensions.grantedName })
+      await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', extensions.missingName))
+      extensionState.granted.push({ agentRef: agent.id, name: extensions.missingName })
+      const blockedExport = await executeShellCommand(
+        parseShellCommand(`workflow trigger export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
+        createDefaultShellContext({ workspace, worktree: workspace, sessionId: session.id, workflowId: workflow.id }),
+        { client },
+      )
+      assertMissingDefinitionBlockedPublication(blockedExport.ok ? 'publication export unexpectedly succeeded' : blockedExport.message)
+      await client.send(revokeAgentExtensionRequest(agent.id, 'mcp', extensions.missingName))
+      extensionState.granted = extensionState.granted.filter((grant) => grant.name !== extensions.missingName)
+      extensionExpectations = [expectedMcpRequirement({
+        name: extensions.grantedName,
+        agentId: agent.id,
+        nodeIds: [node.id],
+        classification: extensions.stdioGranted ? 'local_only' : 'portable',
+        credentialSlotCount: extensions.bearerSlot ? 1 : 0,
+        networkHost: extensions.stdioGranted ? null : new URL(extensions.grantedUrl).host,
+        expectedUses: [{ agent_id: agent.id, node_ids: [node.id] }],
+      })]
+    }
   let schedule = null
   if (transport === 'schedule') {
     schedule = (await client.send(createWorkflowScheduleRequest(
@@ -617,17 +700,157 @@ async function createPublicationPackage(input) {
     snapshot.schedules[0].next_run_at_ms = 0
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
   }
-  await makePortablePackage(exportDir, packageDir)
-  return {
-    sessionId: session.id,
-    workflowId: workflow.id,
-    endpointId: endpoint.id,
-    publicationId: publication.id,
-    scheduleId: schedule?.id ?? null,
-    nodeId: node.id,
-    agentId: agent.id,
-    agentAlias: agent.alias ?? null,
+    await makePortablePackage(exportDir, packageDir)
+    if (extensionExpectations) {
+      const requirements = JSON.parse(await readFile(path.join(packageDir, 'requirements.json'), 'utf8'))
+      const contract = JSON.parse(await readFile(path.join(packageDir, 'deployment-contract.json'), 'utf8'))
+      assertUnrelatedExtensionAbsent(requirements, [extensions.unrelatedName])
+      assertExtensionRequirementsExact(requirements, extensionExpectations)
+      assertDeploymentContractMatchesRequirements(contract, requirements)
+    }
+    publicationResult = {
+      sessionId: session.id,
+      workflowId: workflow.id,
+      endpointId: endpoint.id,
+      publicationId: publication.id,
+      scheduleId: schedule?.id ?? null,
+      nodeId: node.id,
+      agentId: agent.id,
+      agentAlias: agent.alias ?? null,
+      extensions: extensionExpectations ? { grantedName: extensions.grantedName, unrelatedName: extensions.unrelatedName } : null,
+    }
+  } catch (error) {
+    bodyError = error
   }
+  const outcome = await cleanupDrillExtensionState({ client, workspace, agentRef: agent.id, state: extensionState })
+  logStep('extension_cleanup', {
+    revoked: outcome.revoked.length,
+    uninstalled: outcome.uninstalled.length,
+    failures: outcome.failures,
+  })
+  if (bodyError) throw bodyError
+  if (outcome.failures.length > 0) {
+    throw new Error(`drill extension cleanup incomplete: ${outcome.failures.join(', ')}`)
+  }
+  return publicationResult
+}
+
+async function cleanupDrillExtensionState(input) {
+  const steps = drillExtensionCleanupSteps(input.state)
+  const revoked = []
+  const uninstalled = []
+  const failures = []
+  for (const step of steps) {
+    try {
+      if (step.type === 'revoke') {
+        await input.client.send(revokeAgentExtensionRequest(step.agentRef, step.kind, step.name))
+        revoked.push(step.name)
+      } else {
+        await input.client.send(uninstallMcpServerRequest(input.workspace, step.name))
+        uninstalled.push(step.name)
+      }
+    } catch (error) {
+      failures.push(`${step.type}:${step.name}:${errorMessage(error)}`)
+    }
+  }
+  return { revoked, uninstalled, failures }
+}
+
+function extensionProbePlan(options) {
+  if (options.skipExtensionProbes || options.agentAppShopping) return null
+  const runStamp = `${Date.now().toString(36)}-${process.pid.toString(36)}`
+  const names = drillExtensionRunNames(runStamp)
+  const urlStamp = `${options.slug}-ext`
+  return {
+    main: {
+      grantedName: names.grantedPortable,
+      grantedUrl: `https://drill-mcp-${urlStamp}.example.com/rpc`,
+      unrelatedName: names.unrelated,
+      missingName: names.missing,
+      bearerSlot: false,
+    },
+    localOnly: {
+      grantedName: names.grantedLocalOnly,
+      grantedUrl: `https://drill-local-${urlStamp}.example.com/rpc`,
+      unrelatedName: names.unrelated,
+      missingName: names.missing,
+      bearerSlot: false,
+      stdioGranted: true,
+    },
+    bearerSlot: {
+      grantedName: names.grantedBearer,
+      grantedUrl: `https://drill-bearer-${urlStamp}.example.com/rpc`,
+      unrelatedName: names.unrelated,
+      missingName: names.missing,
+      bearerSlot: true,
+    },
+  }
+}
+
+async function runHostedExtensionRejectionProbes(input) {
+  const probePackages = [
+    { key: 'localOnly', assert: assertHostedRejectsLocalOnly, label: 'local-only hosted rejection' },
+    { key: 'bearerSlot', assert: assertActivationBlockedBeforeCredentialSetup, label: 'activation blocked before credential setup' },
+  ]
+  for (const probe of probePackages) {
+    const exportDir = path.join(input.root, `export-${probe.key}`)
+    const packageDir = path.join(input.root, `package-${probe.key}`)
+    await createPublicationPackage({
+      client: input.client,
+      sessionIds: input.sessionIds,
+      workspace: input.workspace,
+      exportDir,
+      packageDir,
+      kernelUrl: input.kernelUrl,
+      transport: input.transport,
+      provider: input.provider,
+      model: input.model,
+      realDashboard: input.realDashboard,
+      agentAppShopping: false,
+      actionPort: input.actionPort,
+      extensions: input.plan[probe.key],
+    })
+    let deploymentId = null
+    try {
+      const deployment = await createPublicationDeploymentFromPackage({
+        profile: input.profile,
+        packagePath: packageDir,
+        mode: 'hosted_container',
+        slug: `${input.slug}-${probe.key}`,
+        start: true,
+      })
+      deploymentId = deployment.id
+      if (probe.key === 'bearerSlot') {
+        const settled = await waitForCredentialBlockedDeployment(input.profile, deploymentId)
+        assertActivationBlockedBeforeCredentialSetup(settled)
+        logStep('extension_probe_rejected', { probe: probe.key, via: 'deployment_status' })
+        continue
+      }
+      throw new Error(`hosted deployment unexpectedly passed the ${probe.label} probe`)
+    } catch (error) {
+      if (String(error.message).includes(probe.label)) throw error
+      probe.assert(error.message)
+      logStep('extension_probe_rejected', { probe: probe.key })
+    } finally {
+      if (deploymentId) {
+        await changePublicationDeployment(input.profile, deploymentId, 'stop').catch((error) => {
+          logStep('cleanup_warning', { action: 'stop-probe-deployment', error: errorMessage(error) })
+        })
+      }
+    }
+  }
+}
+
+async function waitForCredentialBlockedDeployment(profile, deploymentId) {
+  const deadline = Date.now() + 120_000
+  let lastText = ''
+  while (Date.now() < deadline) {
+    const status = await getPublicationDeployment(profile, deploymentId).catch(() => null)
+    lastText = [status?.lastError, status?.lastErrorCode, status?.status].filter(Boolean).join(' | ')
+    if (/Required deployment credentials are not ready/i.test(lastText)) return lastText
+    await delay(2_000)
+  }
+  return `hosted start neither failed nor recorded a credential block: ${lastText}`
 }
 
 function publicationOptions(transport, nodeId) {
