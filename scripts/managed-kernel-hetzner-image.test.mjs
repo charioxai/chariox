@@ -87,6 +87,10 @@ test("Hetzner image preparation is pinned, guarded, and leaves no runtime identi
   assert.doesNotMatch(script, /usermod .*--groups docker chariox/)
   assert.doesNotMatch(script, /enable --now docker\.service/)
   assert.match(script, /cloud-init clean --logs --machine-id --seed/)
+  assert.match(
+    script,
+    /rm -rf \/var\/lib\/apt\/lists\/\* \/tmp\/chariox-managed-release \/root\/\.cache \/root\/\.npm \/root\/\.ssh/,
+  )
   assert.match(script, /rm -f \/etc\/ssh\/ssh_host_\* "\$MARKER_PATH"/)
   assert.doesNotMatch(script, /systemctl (?:start|restart|enable --now) chariox-managed-bootstrap/)
   assert.doesNotMatch(script, /\.arroba/)

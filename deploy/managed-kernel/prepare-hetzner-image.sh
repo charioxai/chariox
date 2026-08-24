@@ -246,7 +246,7 @@ if find /var/lib/chariox-slice-share -mindepth 1 \
 fi
 
 apt-get clean
-rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.npm /root/.ssh
+rm -rf /var/lib/apt/lists/* /tmp/chariox-managed-release /root/.cache /root/.npm /root/.ssh
 find /var/log -type f -exec sh -c ': > "$1"' _ {} \;
 cloud-init clean --logs --machine-id --seed
 rm -f /etc/ssh/ssh_host_* "$MARKER_PATH"
