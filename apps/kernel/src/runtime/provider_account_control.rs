@@ -166,10 +166,18 @@ pub(crate) fn ensure_profile_idle(
     let bound_agents = bound_agent_labels(
         &runtime_state.list_session_snapshots(),
         &profile.provider,
-        &profile.profile_id,
         |agent_owner_user_id| {
             runtime_state.provider_account_authority_owner_user_id(agent_owner_user_id)
                 == owner_user_id
+        },
+        |account_profile| {
+            account_profile_reference_matches(
+                registry,
+                owner_user_id,
+                &profile.provider,
+                account_profile,
+                &profile.profile_id,
+            )
         },
     );
     if !bound_agents.is_empty() {
@@ -186,11 +194,18 @@ pub(crate) fn ensure_profile_idle(
         .provider_runs_for_external_session_attachment()
         .into_iter()
         .any(|run| {
-            runtime_state.provider_account_authority_owner_user_id(run.owner_user_id())
-                == owner_user_id
+            let run_owner_user_id =
+                runtime_state.provider_account_authority_owner_user_id(run.owner_user_id());
+            run_owner_user_id == owner_user_id
                 && crate::provider::canonical_provider_family(run.provider())
                     == crate::provider::canonical_provider_family(provider)
-                && run.account_profile() == profile.profile_id
+                && account_profile_reference_matches(
+                    registry,
+                    &run_owner_user_id,
+                    &profile.provider,
+                    run.account_profile(),
+                    &profile.profile_id,
+                )
                 && run.state() != ProviderRunState::Ended
         });
     if active {
@@ -220,8 +235,8 @@ pub(crate) fn ensure_profile_idle(
 fn bound_agent_labels(
     sessions: &[crate::session::RuntimeSession],
     provider: &str,
-    profile_id: &str,
     owner_matches: impl Fn(&str) -> bool,
+    account_profile_matches: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     let provider_family = crate::provider::canonical_provider_family(provider);
     let mut labels = sessions
@@ -230,7 +245,7 @@ fn bound_agent_labels(
         .filter(|agent| {
             owner_matches(agent.owner_user_id())
                 && crate::provider::canonical_provider_family(agent.provider()) == provider_family
-                && agent.provider_account_profile() == profile_id
+                && account_profile_matches(agent.provider_account_profile())
         })
         .map(|agent| agent.alias().unwrap_or(agent.id()).to_string())
         .collect::<Vec<_>>();
@@ -239,9 +254,21 @@ fn bound_agent_labels(
     labels
 }
 
+fn account_profile_reference_matches(
+    registry: &crate::account_profile::ProviderAccountProfileRegistry,
+    owner_user_id: &str,
+    provider: &str,
+    account_profile: &str,
+    target_profile_id: &str,
+) -> bool {
+    registry
+        .get(owner_user_id, provider, account_profile)
+        .is_ok_and(|profile| profile.profile_id == target_profile_id)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::bound_agent_labels;
+    use super::{account_profile_reference_matches, bound_agent_labels};
     use crate::agent::{AgentInstance, GridPosition};
     use crate::session::RuntimeSession;
 
@@ -277,9 +304,57 @@ mod tests {
         session.set_agents(vec![bound, other_owner, other_account]);
 
         assert_eq!(
-            bound_agent_labels(&[session], "claude", "secondary", |owner| owner
-                == "owner-a"),
+            bound_agent_labels(
+                &[session],
+                "claude",
+                |owner| owner == "owner-a",
+                |account_profile| account_profile == "secondary",
+            ),
             vec!["reviewer".to_string()],
         );
+    }
+
+    #[test]
+    fn account_binding_detection_resolves_default_alias_to_stable_id() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-provider-account-binding-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let registry = crate::account_profile::ProviderAccountProfileRegistry::open(
+            root.join("accounts.json"),
+        )
+        .unwrap();
+        let profile = registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "codex")
+            .unwrap();
+
+        assert!(account_profile_reference_matches(
+            &registry,
+            "owner-a",
+            "codex",
+            "default",
+            &profile.profile_id,
+        ));
+        assert!(account_profile_reference_matches(
+            &registry,
+            "owner-a",
+            "codex",
+            &profile.profile_id,
+            &profile.profile_id,
+        ));
+        assert!(!account_profile_reference_matches(
+            &registry,
+            "owner-a",
+            "codex",
+            "missing",
+            &profile.profile_id,
+        ));
+        let _ = std::fs::remove_dir_all(root);
     }
 }
