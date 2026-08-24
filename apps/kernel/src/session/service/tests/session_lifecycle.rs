@@ -7,6 +7,15 @@ use crate::session::{
 };
 use std::collections::BTreeSet;
 
+fn without_serialized_project_id(session: RuntimeSession) -> RuntimeSession {
+    let mut session_json = serde_json::to_value(&session).expect("session should encode");
+    session_json
+        .as_object_mut()
+        .expect("session should encode as an object")
+        .remove("project_id");
+    serde_json::from_value(session_json).expect("session should decode")
+}
+
 #[test]
 fn creates_gets_and_lists_sessions() {
     let mut service = SessionService::new(&test_config());
@@ -489,6 +498,42 @@ fn normalizes_aliases_when_assigned() {
         .expect("alias should be assigned");
 
     assert_eq!(updated.alias(), Some("feature_main"));
+}
+
+#[test]
+fn visible_session_project_assignment_survives_release_builds() {
+    let mut service = SessionService::new(&test_config());
+    let created = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+
+    assert!(!created.project_id().is_empty());
+    assert_eq!(
+        service
+            .get_project(created.project_id())
+            .expect("session project should exist")
+            .workspace_id(),
+        created.workspace_id()
+    );
+
+    let legacy = RuntimeSession::new(
+        "legacy-session",
+        Some("legacy".to_string()),
+        "workspace-2",
+        "worktree-2",
+        "machine-test",
+        "daemon-test",
+    );
+    let restored = service.restore_session(without_serialized_project_id(legacy));
+
+    assert!(!restored.project_id().is_empty());
+    assert_eq!(
+        service
+            .get_project(restored.project_id())
+            .expect("restored session project should exist")
+            .workspace_id(),
+        restored.workspace_id()
+    );
 }
 
 #[test]
@@ -1492,13 +1537,7 @@ fn legacy_session_project_migration_uses_repo_label_hint_and_is_restart_stable()
         "machine-test",
         "daemon-test",
     );
-    let mut legacy_json = serde_json::to_value(&legacy).expect("legacy session should encode");
-    legacy_json
-        .as_object_mut()
-        .expect("session should encode as an object")
-        .remove("project_id");
-    let legacy: RuntimeSession =
-        serde_json::from_value(legacy_json).expect("legacy session should decode");
+    let legacy = without_serialized_project_id(legacy);
 
     let mut first_service = SessionService::new(&test_config());
     let migrated = first_service

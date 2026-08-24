@@ -77,7 +77,8 @@ impl SessionService {
             self.host_daemon_id.clone(),
         );
         if let Some(project_id) = project_id {
-            debug_assert!(session.assign_project_id(project_id));
+            let assigned = session.assign_project_id(project_id);
+            debug_assert!(assigned);
         }
         session.set_max_agents(self.session_default_max_agents);
         session.set_owner_user_id(request.owner_user_id);
@@ -222,7 +223,8 @@ impl SessionService {
                 session.workspace_id(),
                 default_project_name_hint,
             );
-            debug_assert!(session.assign_project_id(project_id));
+            let assigned = session.assign_project_id(project_id);
+            debug_assert!(assigned);
         } else if !self.projects.contains_key(session.project_id()) {
             let name = self.unique_project_name(
                 session.owner_user_id(),
