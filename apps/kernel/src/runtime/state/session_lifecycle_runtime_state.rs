@@ -1,5 +1,10 @@
 use super::*;
 
+type ProviderProcessRemovalResult = (
+    String,
+    Result<(bool, Option<String>), crate::error::DaemonError>,
+);
+
 pub(crate) struct AgentOutputSeenAck {
     pub(crate) session: crate::session::RuntimeSession,
     pub(crate) changed: bool,
@@ -708,10 +713,7 @@ impl KernelRuntimeState {
     fn remove_destroyed_agent_provider_processes_from_app(
         app: &mut crate::app::DaemonApp,
         provider_run_ids: &[String],
-    ) -> Vec<(
-        String,
-        Result<(bool, Option<String>), crate::error::DaemonError>,
-    )> {
+    ) -> Vec<ProviderProcessRemovalResult> {
         provider_run_ids
             .iter()
             .map(|provider_run_id| {
@@ -725,10 +727,7 @@ impl KernelRuntimeState {
 
     fn finish_destroyed_agent_provider_process_removal(
         &self,
-        results: Vec<(
-            String,
-            Result<(bool, Option<String>), crate::error::DaemonError>,
-        )>,
+        results: Vec<ProviderProcessRemovalResult>,
     ) {
         for (provider_run_id, result) in results {
             match result {

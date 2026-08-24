@@ -30,6 +30,7 @@ pub struct WorkflowEndpointRuntimeInstance {
 }
 
 impl WorkflowEndpointRuntimeInstance {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         id: impl Into<String>,
         workflow_id: impl Into<String>,

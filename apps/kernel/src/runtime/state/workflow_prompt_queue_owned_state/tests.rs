@@ -633,7 +633,7 @@ async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_
             .to_string()
     };
     {
-        let mut app = runtime.app.lock().await;
+        let app = runtime.app.lock().await;
         app.agents_mut()
             .set_agent_runtime_profile_with_account_profile(
                 &source_id,
@@ -782,16 +782,14 @@ fn pool_aliases_and_ordinals_survive_durable_restart_without_collisions() {
     let restored_instances: Vec<crate::session::WorkflowEndpointRuntimeInstance> =
         serde_json::from_value(
             serde_json::to_value(
-                &runtime
+                runtime
                     .owned
                     .session_store
                     .read()
                     .get_session(&session_id)
                     .expect("session should resolve")
                     .workflow_runtime_instances()
-                    .iter()
-                    .map(|instance| instance.clone())
-                    .collect::<Vec<_>>(),
+                    .to_vec(),
             )
             .expect("instances should encode"),
         )

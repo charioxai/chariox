@@ -885,6 +885,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn resolve_permission_event(
         &mut self,
         session_id: &str,

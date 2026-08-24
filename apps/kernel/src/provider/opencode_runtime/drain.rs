@@ -447,6 +447,7 @@ pub(in crate::provider) fn drain_opencode_events(
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_terminal_failure(
     state: &mut OpenCodeRuntimeState,
     message: String,

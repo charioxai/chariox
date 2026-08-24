@@ -356,15 +356,9 @@ pub(super) fn apply_notification_with_manifest(
 }
 
 fn codex_retry_progress(message: &str) -> Option<(u32, u32)> {
-    let Some(progress) = message.trim().strip_prefix("Reconnecting...") else {
-        return None;
-    };
-    let Some((attempt, limit)) = progress.trim().split_once('/') else {
-        return None;
-    };
-    let (Ok(attempt), Ok(limit)) = (attempt.parse::<u32>(), limit.parse::<u32>()) else {
-        return None;
-    };
+    let progress = message.trim().strip_prefix("Reconnecting...")?;
+    let (attempt, limit) = progress.trim().split_once('/')?;
+    let (attempt, limit) = (attempt.parse::<u32>().ok()?, limit.parse::<u32>().ok()?);
     (limit > 0 && attempt > 0 && attempt <= limit).then_some((attempt, limit))
 }
 

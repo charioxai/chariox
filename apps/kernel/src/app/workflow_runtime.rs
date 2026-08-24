@@ -319,6 +319,7 @@ impl DaemonApp {
             .fail_workflow_run(session_id, workflow_run.id());
     }
 
+    #[cfg(test)]
     fn invoke_queued_workflow_prompt(
         &mut self,
         session_id: &str,

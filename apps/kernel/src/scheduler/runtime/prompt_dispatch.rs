@@ -163,6 +163,7 @@ pub(super) fn dispatch_workflow_prompt(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn ensure_workflow_provider_run_for_agent(
     app: &mut DaemonApp,
     session_id: &str,

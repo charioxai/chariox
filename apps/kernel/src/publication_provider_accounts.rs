@@ -104,6 +104,13 @@ fn validate_binding(binding: &PublicationProviderAccountBinding) -> Result<(), D
     Ok(())
 }
 
+fn invalid_bindings() -> DaemonError {
+    DaemonError::InvalidConfig {
+        field: "publication_provider_account_bindings",
+        message: "provider account bindings are invalid",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::validated_bindings;
@@ -144,12 +151,5 @@ mod tests {
             }"#,
         )
         .is_err());
-    }
-}
-
-fn invalid_bindings() -> DaemonError {
-    DaemonError::InvalidConfig {
-        field: "publication_provider_account_bindings",
-        message: "provider account bindings are invalid",
     }
 }

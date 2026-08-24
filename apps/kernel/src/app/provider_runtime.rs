@@ -41,6 +41,7 @@ impl DaemonApp {
         self.start_provider_launch_with_options(request, false, false)
     }
 
+    #[cfg(test)]
     pub(crate) fn start_workflow_provider_launch(
         &mut self,
         request: LaunchProviderRequest,

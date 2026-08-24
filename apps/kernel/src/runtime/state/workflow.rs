@@ -59,6 +59,7 @@ impl KernelRuntimeOwnedState {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn workflow_ensure_provider_run(
         &self,
         session_id: &str,

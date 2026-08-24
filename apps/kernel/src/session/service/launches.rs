@@ -477,6 +477,7 @@ impl SessionService {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue_workflow_prompt_with_publication_invocation(
         &mut self,
         session_id: &str,
@@ -514,6 +515,7 @@ impl SessionService {
         Ok(session.enqueue_workflow_prompt(queued))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn enqueue_workflow_prompt_and_maybe_create_run(
         &mut self,
         session_id: &str,

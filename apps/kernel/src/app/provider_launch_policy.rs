@@ -138,11 +138,8 @@ pub(crate) fn failed_provider_resume_state_replacement_from_message(
     } else if provider_message.contains("codex_thread_resume") {
         "codex_thread_resume"
     } else if run.adapter_key().eq_ignore_ascii_case("opencode")
-        && provider_message.starts_with("Provider finish_reason: network_error")
-    {
-        "provider_stream/network_error"
-    } else if run.adapter_key().eq_ignore_ascii_case("opencode")
-        && provider_message.contains("Upstream request failed: Endpoint is unavailable")
+        && (provider_message.starts_with("Provider finish_reason: network_error")
+            || provider_message.contains("Upstream request failed: Endpoint is unavailable"))
     {
         "provider_stream/network_error"
     } else if run.adapter_key().eq_ignore_ascii_case("opencode")

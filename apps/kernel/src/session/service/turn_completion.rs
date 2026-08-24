@@ -92,7 +92,7 @@ impl SessionService {
         let run_output_validation_failure = candidate_final_output
             .as_ref()
             .filter(|submission| !submission.valid())
-            .map(|submission| Self::workflow_run_output_validation_failure(submission));
+            .map(Self::workflow_run_output_validation_failure);
         let handoff_validation_failure = handoff_validation_error
             .map(|(edge_id, message)| Self::workflow_handoff_validation_failure(edge_id, message));
         let has_terminal_validation_failure = handoff_validation_failure.is_some()
