@@ -347,17 +347,45 @@ impl KernelRuntimeOwnedState {
                         requested,
                     ) {
                         Ok(profile) => Some(profile.profile_id),
-                        Err(error) if requested_account.is_none() => {
+                        Err(_error) if requested_account.is_none() => {
                             return Err(DaemonError::LocalTransport {
                                 operation: "add agent substitute",
                                 message: format!(
-                                    "no usable default account profile is registered for \
-                                     `{provider}`; register a default provider account or bind an \
-                                     explicit account alias ({error})"
+                                    "no usable account profile is registered for `{provider}`; \
+                                     register one first or bind an explicit account alias"
                                 ),
                             });
                         }
-                        Err(error) => return Err(error),
+                        Err(_) => {
+                            // Never echo stable internal profile IDs (or the
+                            // literal default sentinel) back to users. If the
+                            // selection matches an account registered under a
+                            // different provider, surface its public label as
+                            // a hint instead.
+                            let cross_provider_hint = self
+                                .provider_account_profiles
+                                .list(&account_owner_user_id, None)
+                                .ok()
+                                .and_then(|profiles| {
+                                    profiles
+                                        .iter()
+                                        .find(|profile| profile.profile_id == requested)
+                                        .map(|profile| {
+                                            format!(
+                                                " The account alias “{}” is registered for {}.",
+                                                profile.label, profile.provider
+                                            )
+                                        })
+                                })
+                                .unwrap_or_default();
+                            return Err(DaemonError::LocalTransport {
+                                operation: "add agent substitute",
+                                message: format!(
+                                    "no {provider} account matches that selection{cross_provider_hint}; \
+                                     choose an available account alias"
+                                ),
+                            });
+                        }
                     }
                 } else {
                     requested_account.map(str::to_string)

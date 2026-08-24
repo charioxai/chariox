@@ -475,8 +475,16 @@ async fn substitute_add_rejects_account_not_registered_for_provider() {
     match error {
         DaemonError::LocalTransport { message, .. } => {
             assert!(
-                message.contains("ghost-profile"),
-                "error should name the rejected account: {message}"
+                !message.contains("ghost-profile"),
+                "error must not echo the internal profile id: {message}"
+            );
+            assert!(
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
+            );
+            assert!(
+                message.contains("choose an available account alias") && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
             );
         }
         other => panic!("expected registry rejection, got {other:?}"),
@@ -703,12 +711,13 @@ async fn substitute_add_without_any_registered_account_rejects_with_actionable_e
     match error {
         DaemonError::LocalTransport { message, .. } => {
             assert!(
-                message.contains("no usable default account profile"),
-                "error should be actionable: {message}"
+                message.contains("no usable account profile is registered")
+                    && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
             );
             assert!(
-                message.contains("codex"),
-                "error should name the provider: {message}"
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
             );
         }
         other => panic!("expected actionable default error, got {other:?}"),
@@ -749,8 +758,21 @@ async fn substitute_add_rejects_profile_from_mismatched_provider() {
     match error {
         DaemonError::LocalTransport { message, .. } => {
             assert!(
-                message.contains(&opencode_profile.profile_id),
-                "error should reference the rejected profile: {message}"
+                !message.contains(&opencode_profile.profile_id),
+                "error must not echo the internal profile id: {message}"
+            );
+            assert!(
+                !message.contains("default"),
+                "error must not leak the literal sentinel: {message}"
+            );
+            assert!(
+                message.contains("choose an available account alias") && message.contains("codex"),
+                "error should name the provider and be actionable: {message}"
+            );
+            // The public label may be shown as a hint; the id never is.
+            assert!(
+                message.contains("Wrong Family"),
+                "error may surface the public label as a hint: {message}"
             );
         }
         other => panic!("expected mismatch rejection, got {other:?}"),
