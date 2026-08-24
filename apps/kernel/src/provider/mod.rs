@@ -2,7 +2,9 @@ use std::time::Duration;
 
 mod claude;
 mod claude_runtime;
-pub(crate) use claude_runtime::usage::claude_status_line_usage_snapshot;
+pub(crate) use claude_runtime::usage::{
+    claude_oauth_usage_snapshot, claude_status_line_usage_snapshot,
+};
 mod codex;
 mod codex_client;
 mod codex_runtime;

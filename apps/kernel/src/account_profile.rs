@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
 use base64::Engine as _;
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distributions::Alphanumeric, Rng};
 use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
@@ -2342,18 +2342,11 @@ mod tests {
         let listed = registry
             .list("owner-a", Some("claude"))
             .expect("profiles should list");
-        assert!(
-            listed.iter().all(
-                |profile| profile.usage.availability == ProviderAccountUsageAvailability::Stale
-            )
-        );
+        assert!(listed
+            .iter()
+            .all(|profile| profile.usage.availability == ProviderAccountUsageAvailability::Stale));
         let renamed = registry
-            .rename(
-                "owner-a",
-                "claude",
-                &claude_profile_id,
-                "Claude renamed",
-            )
+            .rename("owner-a", "claude", &claude_profile_id, "Claude renamed")
             .expect("profile should rename");
         assert_eq!(
             renamed.usage.availability,
@@ -2443,8 +2436,10 @@ mod tests {
         // Linked/imported roots are origin facts, not class facts: they may
         // hold subscription, API-key, prepaid, or mixed credentials, so the
         // class stays explicitly unknown until the adapter reports it.
-        let linked_root = std::env::temp_dir()
-            .join(format!("chariox-linked-kind-{}", rand::thread_rng().gen::<u64>()));
+        let linked_root = std::env::temp_dir().join(format!(
+            "chariox-linked-kind-{}",
+            rand::thread_rng().gen::<u64>()
+        ));
         fs::create_dir_all(&linked_root).unwrap();
         let linked = registry
             .link_existing("owner-a", "opencode", "Imported Work", &linked_root)
@@ -2523,11 +2518,9 @@ mod tests {
         assert_eq!(first.len(), 3);
         assert_eq!(second.len(), 3);
         assert!(first.iter().all(|profile| profile.profile_id != "default"));
-        assert!(
-            first
-                .iter()
-                .all(|profile| profile.label == format!("{}-1", profile.provider))
-        );
+        assert!(first
+            .iter()
+            .all(|profile| profile.label == format!("{}-1", profile.provider)));
         assert_eq!(
             first
                 .iter()
@@ -2786,11 +2779,9 @@ mod tests {
                 .unwrap(),
             r#"{"token":"never-log-this"}"#
         );
-        assert!(
-            target
-                .materialize_replica("owner-b", &materialization)
-                .is_err()
-        );
+        assert!(target
+            .materialize_replica("owner-b", &materialization)
+            .is_err());
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
     }
@@ -2834,20 +2825,16 @@ mod tests {
                 contents_base64: base64::engine::general_purpose::STANDARD.encode(b"invalid"),
             });
 
-        assert!(
-            target
-                .materialize_replica("owner-a", &invalid_replacement)
-                .is_err()
-        );
+        assert!(target
+            .materialize_replica("owner-a", &invalid_replacement)
+            .is_err());
         assert_eq!(
             fs::read_to_string(target_auth).unwrap(),
             r#"{"token":"old"}"#
         );
-        assert!(
-            target
-                .get("owner-a", "codex", &materialized.profile_id)
-                .is_ok()
-        );
+        assert!(target
+            .get("owner-a", "codex", &materialized.profile_id)
+            .is_ok());
 
         let _ = fs::remove_dir_all(source_root);
         let _ = fs::remove_dir_all(target_root);
@@ -2881,12 +2868,10 @@ mod tests {
             .unwrap();
         let restored = registry.get("owner-a", "claude", "default").unwrap();
         assert_eq!(restored.profile_id, native_default.profile_id);
-        assert!(
-            !registry
-                .resolve_environment("owner-a", "claude", "default")
-                .unwrap()
-                .contains_key("CLAUDE_CONFIG_DIR")
-        );
+        assert!(!registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap()
+            .contains_key("CLAUDE_CONFIG_DIR"));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2925,11 +2910,9 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("already authenticated as `codex-1`")
-        );
+        assert!(error
+            .to_string()
+            .contains("already authenticated as `codex-1`"));
         assert_eq!(
             registry
                 .get("owner-a", "codex", &secondary.profile_id)
@@ -3023,16 +3006,14 @@ mod tests {
         let profile = registry
             .create_managed("owner-a", "opencode", "Work")
             .unwrap();
-        assert!(
-            registry
-                .delete_managed_profile_data(
-                    "owner-a",
-                    "opencode",
-                    &profile.profile_id,
-                    "wrong-profile"
-                )
-                .is_err()
-        );
+        assert!(registry
+            .delete_managed_profile_data(
+                "owner-a",
+                "opencode",
+                &profile.profile_id,
+                "wrong-profile"
+            )
+            .is_err());
         registry
             .delete_managed_profile_data(
                 "owner-a",
@@ -3041,12 +3022,10 @@ mod tests {
                 &profile.profile_id,
             )
             .unwrap();
-        assert!(
-            registry
-                .list("owner-a", Some("opencode"))
-                .unwrap()
-                .is_empty()
-        );
+        assert!(registry
+            .list("owner-a", Some("opencode"))
+            .unwrap()
+            .is_empty());
         let _ = fs::remove_dir_all(root);
     }
 
@@ -3060,11 +3039,9 @@ mod tests {
         fs::create_dir_all(&linked).unwrap();
         fs::set_permissions(&linked, fs::Permissions::from_mode(0o755)).unwrap();
 
-        assert!(
-            registry
-                .link_existing("owner-a", "codex", "Unsafe", &linked)
-                .is_err()
-        );
+        assert!(registry
+            .link_existing("owner-a", "codex", "Unsafe", &linked)
+            .is_err());
         let _ = fs::remove_dir_all(root);
     }
 }

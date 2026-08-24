@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs;
 
 use serde_json::Value;
@@ -8,8 +9,8 @@ use crate::account_profile::{
 };
 use crate::session::unix_epoch_ms;
 
-use super::ProviderPromptSignalBatch;
 use super::state::ClaudeRuntimeState;
+use super::ProviderPromptSignalBatch;
 
 pub(super) fn apply_claude_usage_capture(
     state: &mut ClaudeRuntimeState,
@@ -113,6 +114,227 @@ pub(crate) fn claude_status_line_usage_snapshot(
         source: "claude.status_line".to_string(),
         management_url: Some("https://claude.ai/settings/usage".to_string()),
     })
+}
+
+/// Parses the read-only Claude Code subscription-usage response. Anthropic
+/// does not document this endpoint, so the adapter is deliberately isolated,
+/// fail-closed, and tolerant of both the legacy named windows and the newer
+/// structured `limits` representation.
+pub(crate) fn claude_oauth_usage_snapshot(
+    account_profile: &str,
+    value: &Value,
+) -> Option<ProviderAccountUsageSnapshot> {
+    let observed_at_ms = unix_epoch_ms();
+    let mut meters = BTreeMap::new();
+
+    for (key, label, duration, scope) in [
+        (
+            "five_hour",
+            "5-hour",
+            Some(5 * 60),
+            ProviderAccountUsageMeterScope::Account,
+        ),
+        (
+            "seven_day",
+            "Weekly",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Account,
+        ),
+        (
+            "seven_day_opus",
+            "Weekly Opus",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Model,
+        ),
+        (
+            "seven_day_sonnet",
+            "Weekly Sonnet",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Model,
+        ),
+    ] {
+        let Some(window) = value.get(key) else {
+            continue;
+        };
+        let Some(meter) = oauth_window_meter(key, label, duration, scope, window, observed_at_ms)
+        else {
+            continue;
+        };
+        meters.insert(meter.meter_id.clone(), meter);
+    }
+
+    if let Some(limits) = value.get("limits").and_then(Value::as_array) {
+        for limit in limits {
+            let Some(kind) = limit.get("kind").and_then(Value::as_str) else {
+                continue;
+            };
+            let Some((meter_id, label, duration, scope)) = structured_limit_identity(kind) else {
+                continue;
+            };
+            let Some(meter) =
+                oauth_window_meter(meter_id, label, duration, scope, limit, observed_at_ms)
+            else {
+                continue;
+            };
+            meters.insert(meter.meter_id.clone(), meter);
+        }
+    }
+
+    if let Some(meter) = oauth_spend_meter(value, observed_at_ms) {
+        meters.insert(meter.meter_id.clone(), meter);
+    }
+
+    let mut meters = meters.into_values().collect::<Vec<_>>();
+    meters.sort_by(|left, right| {
+        left.window_duration_minutes
+            .unwrap_or(u64::MAX)
+            .cmp(&right.window_duration_minutes.unwrap_or(u64::MAX))
+            .then_with(|| left.meter_id.cmp(&right.meter_id))
+    });
+    (!meters.is_empty()).then(|| ProviderAccountUsageSnapshot {
+        profile_id: account_profile.to_string(),
+        provider: "claude".to_string(),
+        availability: ProviderAccountUsageAvailability::Available,
+        meters,
+        observed_at_ms: Some(observed_at_ms),
+        source: "claude.oauth_usage".to_string(),
+        management_url: Some("https://claude.ai/settings/usage".to_string()),
+    })
+}
+
+fn structured_limit_identity(
+    kind: &str,
+) -> Option<(&str, &str, Option<u64>, ProviderAccountUsageMeterScope)> {
+    match kind {
+        "session" => Some((
+            "five_hour",
+            "5-hour",
+            Some(5 * 60),
+            ProviderAccountUsageMeterScope::Account,
+        )),
+        "weekly_all" => Some((
+            "seven_day",
+            "Weekly",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Account,
+        )),
+        "weekly_opus" => Some((
+            "seven_day_opus",
+            "Weekly Opus",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Model,
+        )),
+        "weekly_sonnet" => Some((
+            "seven_day_sonnet",
+            "Weekly Sonnet",
+            Some(7 * 24 * 60),
+            ProviderAccountUsageMeterScope::Model,
+        )),
+        _ => None,
+    }
+}
+
+fn oauth_window_meter(
+    meter_id: &str,
+    label: &str,
+    window_duration_minutes: Option<u64>,
+    scope: ProviderAccountUsageMeterScope,
+    value: &Value,
+    observed_at_ms: u64,
+) -> Option<ProviderAccountUsageMeter> {
+    let used_percent = value
+        .get("utilization")
+        .or_else(|| value.get("percent"))
+        .and_then(Value::as_f64)?;
+    Some(ProviderAccountUsageMeter {
+        meter_id: format!("rate_limit/{meter_id}"),
+        label: label.to_string(),
+        kind: ProviderAccountUsageMeterKind::RollingLimit,
+        scope,
+        used_percent: Some(used_percent),
+        used: None,
+        remaining: None,
+        total: None,
+        unit: None,
+        window_duration_minutes,
+        resets_at_ms: value.get("resets_at").and_then(timestamp_ms),
+        state: meter_state(used_percent),
+        source: "claude.oauth_usage".to_string(),
+        observed_at_ms,
+    })
+}
+
+fn oauth_spend_meter(value: &Value, observed_at_ms: u64) -> Option<ProviderAccountUsageMeter> {
+    let spend = value.get("spend").filter(|spend| {
+        spend
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    if let Some(spend) = spend {
+        let used_percent = spend.get("percent").and_then(Value::as_f64);
+        let (used, currency) = spend.get("used").and_then(money_value).unzip();
+        let (total, total_currency) = spend
+            .get("limit")
+            .or_else(|| spend.get("cap"))
+            .and_then(money_value)
+            .unzip();
+        let remaining = spend
+            .get("balance")
+            .and_then(money_value)
+            .map(|(amount, _)| amount);
+        return Some(ProviderAccountUsageMeter {
+            meter_id: "spend/extra_usage".to_string(),
+            label: "Extra usage".to_string(),
+            kind: ProviderAccountUsageMeterKind::SpendLimit,
+            scope: ProviderAccountUsageMeterScope::Plan,
+            used_percent,
+            used,
+            remaining,
+            total,
+            unit: currency.or(total_currency),
+            window_duration_minutes: None,
+            resets_at_ms: None,
+            state: used_percent
+                .map(meter_state)
+                .unwrap_or(ProviderAccountUsageMeterState::Unknown),
+            source: "claude.oauth_usage".to_string(),
+            observed_at_ms,
+        });
+    }
+
+    let extra = value.get("extra_usage").filter(|extra| {
+        extra
+            .get("is_enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    })?;
+    let used_percent = extra.get("utilization").and_then(Value::as_f64);
+    Some(ProviderAccountUsageMeter {
+        meter_id: "spend/extra_usage".to_string(),
+        label: "Extra usage".to_string(),
+        kind: ProviderAccountUsageMeterKind::SpendLimit,
+        scope: ProviderAccountUsageMeterScope::Plan,
+        used_percent,
+        used: extra.get("used_credits").and_then(Value::as_f64),
+        remaining: None,
+        total: extra.get("monthly_limit").and_then(Value::as_f64),
+        unit: None,
+        window_duration_minutes: None,
+        resets_at_ms: None,
+        state: used_percent
+            .map(meter_state)
+            .unwrap_or(ProviderAccountUsageMeterState::Unknown),
+        source: "claude.oauth_usage".to_string(),
+        observed_at_ms,
+    })
+}
+
+fn money_value(value: &Value) -> Option<(f64, String)> {
+    let amount_minor = value.get("amount_minor")?.as_f64()?;
+    let exponent = value.get("exponent").and_then(Value::as_u64).unwrap_or(2);
+    let currency = value.get("currency")?.as_str()?.to_string();
+    Some((amount_minor / 10_f64.powi(exponent as i32), currency))
 }
 
 fn status_line_meter(
@@ -268,5 +490,67 @@ mod tests {
         assert_eq!(usage.meters.len(), 2);
         assert_eq!(usage.meters[0].meter_id, "rate_limit/five_hour");
         assert_eq!(usage.meters[1].meter_id, "rate_limit/seven_day");
+    }
+
+    #[test]
+    fn parses_claude_oauth_structured_limits_and_spend() {
+        let usage = claude_oauth_usage_snapshot(
+            "claude-2",
+            &serde_json::json!({
+                "five_hour": {"utilization": 12.0, "resets_at": "2027-01-15T12:00:00Z"},
+                "seven_day": {"utilization": 34.0, "resets_at": "2027-01-19T12:00:00Z"},
+                "limits": [
+                    {"kind": "session", "percent": 13.0, "resets_at": "2027-01-15T12:00:01Z"},
+                    {"kind": "weekly_opus", "percent": 81.0, "resets_at": "2027-01-19T12:00:00Z"},
+                    {"kind": "future_limit", "percent": 90.0}
+                ],
+                "spend": {
+                    "enabled": true,
+                    "percent": 25.0,
+                    "used": {"amount_minor": 250, "currency": "USD", "exponent": 2},
+                    "limit": {"amount_minor": 1000, "currency": "USD", "exponent": 2},
+                    "balance": {"amount_minor": 750, "currency": "USD", "exponent": 2}
+                }
+            }),
+        )
+        .expect("OAuth usage snapshot");
+
+        assert_eq!(usage.profile_id, "claude-2");
+        assert_eq!(usage.source, "claude.oauth_usage");
+        assert_eq!(usage.meters.len(), 4);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/five_hour");
+        assert_eq!(usage.meters[0].used_percent, Some(13.0));
+        assert_eq!(usage.meters[2].meter_id, "rate_limit/seven_day_opus");
+        assert_eq!(
+            usage.meters[2].state,
+            ProviderAccountUsageMeterState::Warning
+        );
+        let spend = usage
+            .meters
+            .iter()
+            .find(|meter| meter.meter_id == "spend/extra_usage")
+            .expect("spend meter");
+        assert_eq!(spend.used, Some(2.5));
+        assert_eq!(spend.remaining, Some(7.5));
+        assert_eq!(spend.total, Some(10.0));
+        assert_eq!(spend.unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn parses_legacy_claude_oauth_windows_without_structured_limits() {
+        let usage = claude_oauth_usage_snapshot(
+            "default",
+            &serde_json::json!({
+                "five_hour": {"utilization": 17.0},
+                "seven_day": {"utilization": 73.0},
+                "seven_day_sonnet": {"utilization": 4.0}
+            }),
+        )
+        .expect("legacy OAuth usage snapshot");
+
+        assert_eq!(usage.meters.len(), 3);
+        assert_eq!(usage.meters[0].label, "5-hour");
+        assert_eq!(usage.meters[1].label, "Weekly");
+        assert_eq!(usage.meters[2].label, "Weekly Sonnet");
     }
 }

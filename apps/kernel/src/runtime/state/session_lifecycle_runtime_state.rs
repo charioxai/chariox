@@ -623,6 +623,17 @@ impl KernelRuntimeState {
         caller_user_id: &str,
     ) -> Result<crate::agent::AgentInstance, DaemonError> {
         let agent = self.owned.agent_store.get_agent(agent_id)?;
+        let local_provider_run_ids = if agent.remote_execution().is_none() {
+            self.owned
+                .provider_store
+                .list_runs()
+                .into_iter()
+                .filter(|run| run.agent_instance_id() == Some(agent_id))
+                .map(|run| run.id().to_string())
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
         // Slice membership is the durable attachment authority. A worker kernel id can
         // legitimately be stale after a slice or home-kernel restart, so inferring the
         // attachment from remote execution would leave a deleted agent pinned to its
@@ -661,10 +672,79 @@ impl KernelRuntimeState {
             )?;
         }
         if agent.remote_execution().is_none() {
+            self.remove_destroyed_agent_provider_processes(local_provider_run_ids);
             self.append_agent_durable_event("agent.deleted", &destroyed, None)
                 .await?;
         }
         Ok(destroyed)
+    }
+
+    fn remove_destroyed_agent_provider_processes(&self, provider_run_ids: Vec<String>) {
+        if provider_run_ids.is_empty() {
+            return;
+        }
+        let immediate_provider_run_ids = provider_run_ids.clone();
+        if let Some(results) = self.try_with_app_side_effect(move |app| {
+            Self::remove_destroyed_agent_provider_processes_from_app(
+                app,
+                &immediate_provider_run_ids,
+            )
+        }) {
+            self.finish_destroyed_agent_provider_process_removal(results);
+            return;
+        }
+
+        let state = self.clone();
+        tokio::spawn(async move {
+            let results = state
+                .with_app_side_effect(move |app| {
+                    Self::remove_destroyed_agent_provider_processes_from_app(app, &provider_run_ids)
+                })
+                .await;
+            state.finish_destroyed_agent_provider_process_removal(results);
+        });
+    }
+
+    fn remove_destroyed_agent_provider_processes_from_app(
+        app: &mut crate::app::DaemonApp,
+        provider_run_ids: &[String],
+    ) -> Vec<(
+        String,
+        Result<(bool, Option<String>), crate::error::DaemonError>,
+    )> {
+        provider_run_ids
+            .iter()
+            .map(|provider_run_id| {
+                (
+                    provider_run_id.clone(),
+                    crate::app::ProviderLaunchProcessRuntime::new(app).remove_run(provider_run_id),
+                )
+            })
+            .collect()
+    }
+
+    fn finish_destroyed_agent_provider_process_removal(
+        &self,
+        results: Vec<(
+            String,
+            Result<(bool, Option<String>), crate::error::DaemonError>,
+        )>,
+    ) {
+        for (provider_run_id, result) in results {
+            match result {
+                Ok((_, process_key)) => self
+                    .owned
+                    .remove_provider_process_tracking_for_run(&provider_run_id, process_key),
+                Err(error) => crate::logging::error_with_fields(
+                    "daemon.provider_process_gc",
+                    "failed to remove provider process for destroyed agent",
+                    serde_json::json!({
+                        "provider_run_id": provider_run_id,
+                        "error": error.to_string(),
+                    }),
+                ),
+            }
+        }
     }
 
     pub(crate) async fn end_session(

@@ -495,7 +495,10 @@ mod tests {
     #[test]
     fn removing_a_workflow_run_keeps_other_workflows_queued_work() {
         let mut runtime = PromptRuntimeState::default();
-        runtime.submit_prompt(prompt("prompt-plain", "agent-shared", PromptStatus::Queued), None);
+        runtime.submit_prompt(
+            prompt("prompt-plain", "agent-shared", PromptStatus::Queued),
+            None,
+        );
         runtime.submit_prompt(
             prompt("prompt-alpha", "agent-shared", PromptStatus::Queued)
                 .with_workflow_context("run-alpha", "node-run-alpha"),

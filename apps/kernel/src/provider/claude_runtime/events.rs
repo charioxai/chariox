@@ -7,8 +7,8 @@ use super::super::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, ProviderRunTokenUsage,
 };
-use super::ClaudeRuntimeState;
 use super::usage::merge_claude_account_usage;
+use super::ClaudeRuntimeState;
 
 pub(super) fn apply_claude_message(
     provider_run_id: &str,

@@ -5,6 +5,7 @@ use base64::Engine as _;
 
 use crate::error::DaemonError;
 use crate::local::{ProviderLoginProcessState, ProviderLoginStatus};
+use crate::provider::ProviderLoginStart;
 
 const MAX_PROVIDER_LOGIN_OUTPUT_BYTES: usize = 64 * 1024;
 
@@ -26,6 +27,7 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub provider: String,
     pub account_profile: String,
     pub login_id: String,
+    pub start: ProviderLoginStart,
     pub state: ProviderLoginProcessState,
     pub backend: ProviderLoginProcessBackend,
     pub operation: ProviderAuthProcessOperation,
@@ -160,6 +162,25 @@ impl ProviderLoginProcessStore {
             })
     }
 
+    pub fn running_start_for_profile(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        account_profile: &str,
+    ) -> Option<ProviderLoginStart> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .find(|record| {
+                record.owner_user_id == owner_user_id
+                    && record.provider == provider
+                    && record.account_profile == account_profile
+                    && record.state == ProviderLoginProcessState::Running
+            })
+            .map(|record| record.start.clone())
+    }
+
     pub fn remove(&self, login_id: &str) {
         self.inner
             .lock()
@@ -230,6 +251,15 @@ mod tests {
             provider: "claude".to_string(),
             account_profile: "work".to_string(),
             login_id: login_id.to_string(),
+            start: crate::provider::ProviderLoginStart {
+                provider: "claude".to_string(),
+                account_profile: "work".to_string(),
+                login_kind: "terminal".to_string(),
+                login_id: Some(login_id.to_string()),
+                auth_url: None,
+                verification_url: None,
+                user_code: None,
+            },
             state: ProviderLoginProcessState::Running,
             backend: ProviderLoginProcessBackend::Terminal,
             operation: ProviderAuthProcessOperation::Login,
@@ -244,6 +274,12 @@ mod tests {
         let store = ProviderLoginProcessStore::default();
         store.insert(record("owner-a", "login-a")).unwrap();
         assert!(store.has_running_for_profile("owner-a", "claude", "work"));
+        assert_eq!(
+            store
+                .running_start_for_profile("owner-a", "claude", "work")
+                .and_then(|start| start.login_id),
+            Some("login-a".to_string())
+        );
         assert!(!store.has_running_for_profile("owner-b", "claude", "work"));
         assert!(store.insert(record("owner-a", "login-b")).is_err());
         assert!(store.record_for_owner("owner-b", "login-a").is_err());

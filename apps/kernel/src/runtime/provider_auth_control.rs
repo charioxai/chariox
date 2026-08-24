@@ -1,5 +1,5 @@
 use base64::Engine as _;
-use rand::{Rng, distributions::Alphanumeric};
+use rand::{distributions::Alphanumeric, Rng};
 
 use crate::error::DaemonError;
 use crate::local::provider_requests::{
@@ -15,6 +15,8 @@ use crate::pty::{PtyProcessState, PtySpawnRequest};
 use crate::runtime::state::KernelRuntimeState;
 
 const PROVIDER_LOGIN_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
+const PROVIDER_LOGIN_MONITOR_INTERVAL: std::time::Duration =
+    std::time::Duration::from_millis(1_500);
 
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
@@ -111,12 +113,26 @@ async fn start_terminal_provider_auth(
             .to_lowercase()
     );
     let now_ms = crate::session::unix_epoch_ms();
+    let workflow = ProviderLoginStart {
+        provider: provider.to_string(),
+        account_profile: profile.profile_id.clone(),
+        login_kind: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
+            "terminal".to_string()
+        } else {
+            "terminal_logout".to_string()
+        },
+        login_id: Some(login_id.clone()),
+        auth_url: None,
+        verification_url: None,
+        user_code: None,
+    };
     runtime_state.provider_login_process_store().insert(
         crate::runtime::state::ProviderLoginProcessRecord {
             owner_user_id: owner_user_id.to_string(),
             provider: provider.to_string(),
             account_profile: profile.profile_id.clone(),
             login_id: login_id.clone(),
+            start: workflow.clone(),
             state: ProviderLoginProcessState::Running,
             backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
             operation,
@@ -150,19 +166,7 @@ async fn start_terminal_provider_auth(
             .remove(&login_id);
         return Err(error);
     }
-    let workflow = ProviderLoginStart {
-        provider: provider.to_string(),
-        account_profile: profile.profile_id,
-        login_kind: if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
-            "terminal".to_string()
-        } else {
-            "terminal_logout".to_string()
-        },
-        login_id: Some(login_id),
-        auth_url: None,
-        verification_url: None,
-        user_code: None,
-    };
+    spawn_provider_login_monitor(runtime_state, owner_user_id, &login_id);
     Ok(
         if operation == crate::runtime::state::ProviderAuthProcessOperation::Login {
             LocalDaemonResponse::ProviderLoginStarted { login: workflow }
@@ -188,18 +192,36 @@ pub(crate) async fn execute_get_provider_login_status_request(
     let now_ms = crate::session::unix_epoch_ms();
     if now_ms.saturating_sub(record.started_at_ms) >= PROVIDER_LOGIN_TIMEOUT_MS {
         if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
-            cancel_codex_login(
+            if let Err(error) = cancel_codex_login(
                 runtime_state,
                 owner_user_id,
                 &record.account_profile,
                 &request.login_id,
             )
-            .await?;
+            .await
+            {
+                crate::logging::warn_with_fields(
+                    "provider.account",
+                    "timed-out provider login cleanup failed",
+                    serde_json::json!({
+                        "provider": record.provider,
+                        "account_profile": record.account_profile,
+                        "login_id": request.login_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         } else {
             let _ = runtime_state
                 .with_app_side_effect(|app| app.pty_mut().remove_process(&request.login_id))
                 .await;
         }
+        runtime_state.provider_login_process_store().append_output(
+            owner_user_id,
+            &request.login_id,
+            std::iter::once(b"Provider login timed out after 10 minutes.\n".to_vec()),
+            now_ms,
+        )?;
         let login = runtime_state.provider_login_process_store().set_state(
             owner_user_id,
             &request.login_id,
@@ -580,6 +602,13 @@ pub(crate) async fn execute_start_provider_login_request(
         .await;
     }
     let registry = runtime_state.provider_account_profile_registry().clone();
+    let profile = registry.get(owner_user_id, "codex", &request.account_profile)?;
+    if let Some(login) = runtime_state
+        .provider_login_process_store()
+        .running_start_for_profile(owner_user_id, "codex", &profile.profile_id)
+    {
+        return Ok(LocalDaemonResponse::ProviderLoginStarted { login });
+    }
     let owner = owner_user_id.to_string();
     let response = tokio::task::spawn_blocking(move || {
         start_provider_login_response(&registry, &owner, request)
@@ -595,6 +624,7 @@ pub(crate) async fn execute_start_provider_login_request(
                     provider: "codex".to_string(),
                     account_profile: login.account_profile.clone(),
                     login_id: login_id.to_string(),
+                    start: login.clone(),
                     state: ProviderLoginProcessState::Running,
                     backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
                     operation: crate::runtime::state::ProviderAuthProcessOperation::Login,
@@ -603,9 +633,60 @@ pub(crate) async fn execute_start_provider_login_request(
                     updated_at_ms: now_ms,
                 },
             )?;
+            spawn_provider_login_monitor(runtime_state, owner_user_id, login_id);
         }
     }
     Ok(response)
+}
+
+fn spawn_provider_login_monitor(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    login_id: &str,
+) {
+    let runtime_state = runtime_state.clone();
+    let owner_user_id = owner_user_id.to_string();
+    let login_id = login_id.to_string();
+    tokio::spawn(async move {
+        loop {
+            tokio::time::sleep(PROVIDER_LOGIN_MONITOR_INTERVAL).await;
+            let record = match runtime_state
+                .provider_login_process_store()
+                .record_for_owner(&owner_user_id, &login_id)
+            {
+                Ok(record) if record.state == ProviderLoginProcessState::Running => record,
+                Ok(_) | Err(_) => break,
+            };
+            match execute_get_provider_login_status_request(
+                &runtime_state,
+                &owner_user_id,
+                GetProviderLoginStatusRequest {
+                    login_id: login_id.clone(),
+                },
+            )
+            .await
+            {
+                Ok(LocalDaemonResponse::ProviderLoginStatus { login })
+                    if login.state != ProviderLoginProcessState::Running =>
+                {
+                    break;
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "provider.account",
+                        "provider login background reconciliation failed",
+                        serde_json::json!({
+                            "provider": record.provider,
+                            "account_profile": record.account_profile,
+                            "login_id": login_id.as_str(),
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+            }
+        }
+    });
 }
 
 pub(crate) async fn execute_logout_provider_request(
@@ -688,6 +769,12 @@ mod tests {
     #[test]
     fn login_completion_refreshes_siblings_and_rejects_a_duplicate_identity() {
         let (root, registry) = fixture();
+        let default = registry
+            .list("owner-a", Some("claude"))
+            .expect("default profile should list")
+            .into_iter()
+            .find(|profile| profile.is_default)
+            .expect("default profile should exist");
         let secondary = registry
             .create_managed("owner-a", "claude", "Claude secondary")
             .expect("secondary profile should create");
@@ -726,15 +813,13 @@ mod tests {
             },
         );
 
-        assert!(
-            result
-                .expect_err("duplicate login should be rejected")
-                .to_string()
-                .contains("already authenticated as `Default`")
-        );
+        assert!(result
+            .expect_err("duplicate login should be rejected")
+            .to_string()
+            .contains(&format!("already authenticated as `{}`", default.label)));
         assert_eq!(
             registry
-                .get("owner-a", "claude", "default")
+                .get("owner-a", "claude", &default.profile_id)
                 .expect("default profile should remain")
                 .auth_state,
             ProviderAccountAuthState::Authenticated,
@@ -748,7 +833,7 @@ mod tests {
         );
         assert_eq!(
             refreshed_profiles,
-            vec!["default".to_string(), secondary.profile_id.clone()],
+            vec![default.profile_id, secondary.profile_id.clone()],
             "the completed profile should only refresh again to surface its collision",
         );
         let _ = std::fs::remove_dir_all(root);
@@ -757,6 +842,12 @@ mod tests {
     #[test]
     fn login_completion_keeps_distinct_sibling_identities_authenticated() {
         let (root, registry) = fixture();
+        let default = registry
+            .list("owner-a", Some("codex"))
+            .expect("default profile should list")
+            .into_iter()
+            .find(|profile| profile.is_default)
+            .expect("default profile should exist");
         let secondary = registry
             .create_managed("owner-a", "codex", "Codex secondary")
             .expect("secondary profile should create");
@@ -800,14 +891,14 @@ mod tests {
         assert_eq!(result.auth_state, ProviderAccountAuthState::Authenticated);
         assert_eq!(
             registry
-                .get("owner-a", "codex", "default")
+                .get("owner-a", "codex", &default.profile_id)
                 .expect("default profile should remain")
                 .auth_state,
             ProviderAccountAuthState::Authenticated,
         );
         assert_eq!(
             refreshed_profiles,
-            vec!["default".to_string()],
+            vec![default.profile_id],
             "a distinct completed profile must not be refreshed a second time",
         );
         let _ = std::fs::remove_dir_all(root);
@@ -831,10 +922,8 @@ mod tests {
             ProviderAuthProcessOperation::Logout,
             &super::provider_login_error("status probe unavailable"),
         );
-        assert!(
-            message
-                .starts_with("Provider logout completed; verification is temporarily unavailable:")
-        );
+        assert!(message
+            .starts_with("Provider logout completed; verification is temporarily unavailable:"));
         assert!(!message.contains("validation failed"));
     }
 }

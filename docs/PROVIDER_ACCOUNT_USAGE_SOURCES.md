@@ -72,24 +72,23 @@ streamed `rate_limit_event` observations by meter identity, retaining both the
 5-hour and weekly windows instead of replacing the whole account snapshot with
 the newest event.
 
-Both seams are run-gated, so a never-run account correctly reports
-`provider_not_observed`: there is no documented pull-based subscription usage
-API, and fetching the experimental endpoint would require reading the
-provider-owned OAuth credential (Keychain-backed on macOS), which violates the
-credential seam. Every client-facing read (list/get) projects freshness onto
-the stored meters, and refresh additionally re-issues the persisted
-run-observed snapshot, downgrading both to `stale` after
-`PROVIDER_USAGE_STALE_AFTER_MS` instead of presenting aged meters as fresh.
-Read-side projection never rewrites stored state, so a later provider run can
-restore `available` from real observations.
+Provider Accounts refresh also uses a narrowly isolated, read-only adapter for
+`GET https://api.anthropic.com/api/oauth/usage`. It reads the selected Claude
+Code profile's existing OAuth access token in memory, never persists or returns
+the token, and parses only recognized usage windows and spend fields. The
+endpoint is undocumented, so failures retain the last real status-line or
+rate-limit observation and project it to `stale` after
+`PROVIDER_USAGE_STALE_AFTER_MS`; missing data is never presented as zero. Every
+client-facing read (list/get) projects freshness without rewriting stored
+state, so a later provider refresh or run can restore `available` from a real
+observation.
 
-Community tools such as [ccusage](https://github.com/ryoppippi/ccusage) and
-[claude-code-statusline](https://github.com/ohugonnot/claude-code-statusline)
-also call `GET https://api.anthropic.com/api/oauth/usage` for subscription
-usage. That endpoint is not documented by Anthropic. It may be used only behind
-an explicitly marked experimental adapter with a fail-closed parser and the
-official status-line path as the primary source. Parsers must handle both the
-legacy flat windows and newer structured `limits[]` responses.
+Community tools such as
+[claude-code-status-bar](https://github.com/briansmith80/claude-code-status-bar)
+and [claude-runway](https://github.com/tenex-hq/claude-runway) use the same
+endpoint. The Chariox parser handles both the legacy flat windows and newer
+structured `limits[]` responses; the official status-line path remains an
+independent provider-native source during active runs.
 
 API and organization accounts are separate products. Anthropic's
 [Usage & Cost API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)
@@ -158,4 +157,3 @@ API` reason.
 7. Fireworks fixtures for account, quota, spend, auth failure, and missing
    account slug; live drill only when a Fireworks profile is enrolled.
 8. Web and TUI evidence must show the same meters and unavailable reasons.
-

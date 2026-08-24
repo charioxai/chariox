@@ -27,7 +27,7 @@ mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
-use process::{ClaudeRuntimeMessage, spawn_claude_child, stop_child, write_json_line};
+use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
 use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
@@ -545,10 +545,10 @@ mod tests {
     use crate::terminal::TerminalOutputKind;
 
     use super::{
-        ClaudeRuntimeState, ProviderPromptSignalBatch, apply_claude_stderr,
-        claude_args_without_resume, events::apply_claude_message, handle_claude_tool_uses,
-        initialize_claude_runtime, input::claude_user_content, new_claude_session_id,
-        restart_claude_runtime,
+        apply_claude_stderr, claude_args_without_resume, events::apply_claude_message,
+        handle_claude_tool_uses, initialize_claude_runtime, input::claude_user_content,
+        new_claude_session_id, restart_claude_runtime, ClaudeRuntimeState,
+        ProviderPromptSignalBatch,
     };
 
     fn parser_state() -> (ClaudeRuntimeState, ProviderPromptSignalBatch) {
@@ -702,13 +702,11 @@ mod tests {
             .to_path_buf();
 
         assert!(config_path.is_file());
-        assert!(
-            binding
-                .state
-                .args
-                .iter()
-                .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers"))
-        );
+        assert!(binding
+            .state
+            .args
+            .iter()
+            .all(|arg| !arg.contains("runtime-bearer-token") && !arg.contains("mcpServers")));
         #[cfg(unix)]
         assert_eq!(
             std::fs::metadata(&config_path)
@@ -718,11 +716,9 @@ mod tests {
                 & 0o777,
             0o600
         );
-        assert!(
-            std::fs::read_to_string(&config_path)
-                .expect("config should be readable by the kernel")
-                .contains("Bearer runtime-bearer-token")
-        );
+        assert!(std::fs::read_to_string(&config_path)
+            .expect("config should be readable by the kernel")
+            .contains("Bearer runtime-bearer-token"));
 
         restart_claude_runtime(&run, &mut binding.state, "test_claude_restart")
             .expect("Claude runtime should restart");
@@ -1003,12 +999,10 @@ mod tests {
         .expect("tool-use rejection should write a tool result");
 
         assert!(!batch.prompt_completed);
-        assert!(
-            batch
-                .notices
-                .iter()
-                .any(|notice| notice.contains("Rejected unsupported Claude stream-json tool use"))
-        );
+        assert!(batch
+            .notices
+            .iter()
+            .any(|notice| notice.contains("Rejected unsupported Claude stream-json tool use")));
     }
 
     #[test]
@@ -1055,12 +1049,10 @@ mod tests {
         let content = claude_user_content("read this", &[attachment]);
 
         assert_eq!(content[0]["text"], "read this");
-        assert!(
-            content[1]["text"]
-                .as_str()
-                .expect("attachment should render as text")
-                .contains("attached marker")
-        );
+        assert!(content[1]["text"]
+            .as_str()
+            .expect("attachment should render as text")
+            .contains("attached marker"));
     }
 
     #[test]
@@ -1075,11 +1067,9 @@ mod tests {
         let content = claude_user_content("", &[attachment]);
 
         assert_eq!(content.len(), 1);
-        assert!(
-            content[0]["text"]
-                .as_str()
-                .expect("opaque attachment should render as reference")
-                .contains("archive.bin")
-        );
+        assert!(content[0]["text"]
+            .as_str()
+            .expect("opaque attachment should render as reference")
+            .contains("archive.bin"));
     }
 }

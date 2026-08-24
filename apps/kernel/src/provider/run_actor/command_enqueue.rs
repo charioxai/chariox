@@ -1,5 +1,10 @@
 use super::*;
 
+#[cfg(not(test))]
+const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT: Duration = Duration::from_millis(50);
+
 impl ProviderRunActorMailbox {
     pub(crate) fn spawn_submit(
         &self,
@@ -138,7 +143,9 @@ impl ProviderRunActorMailbox {
         }) {
             Ok(()) => {
                 self.operation_lanes.record_command_enqueued();
-                if let Err(error) = completion_rx.recv_timeout(Duration::from_secs(15)) {
+                if let Err(error) =
+                    completion_rx.recv_timeout(PROVIDER_RUN_TERMINATE_COMPLETION_TIMEOUT)
+                {
                     crate::logging::error_with_fields(
                         "daemon.provider_run_actor",
                         "provider run actor terminate command did not complete before cleanup",
@@ -147,6 +154,10 @@ impl ProviderRunActorMailbox {
                             "error": error.to_string(),
                         }),
                     );
+                    // The structured runtime owns persistent provider children. If its
+                    // worker cannot acknowledge termination, dropping the runtime slot
+                    // is the final teardown authority and prevents an orphan process.
+                    self.clear_runtime(&provider_run_id);
                 }
             }
             Err(error) => {
@@ -472,6 +483,24 @@ mod tests {
             .lock()
             .expect("worker map should not be poisoned")
             .contains_key("run-terminate"));
+    }
+
+    #[test]
+    fn terminate_timeout_force_clears_structured_runtime_bookkeeping() {
+        let mailbox = ProviderRunActorMailbox::default();
+        let (sender, _receiver) = tokio_mpsc::channel(1);
+        mailbox
+            .workers
+            .lock()
+            .expect("worker map should not be poisoned")
+            .insert("run-timeout".to_string(), sender);
+        mailbox.mark_structured_prompt_io_in_flight("run-timeout".to_string());
+        assert!(mailbox.mark_structured_output_poll_in_flight("run-timeout".to_string()));
+
+        mailbox.spawn_terminate("run-timeout".to_string(), runtime_run("run-timeout"));
+
+        assert!(!mailbox.structured_prompt_io_in_flight("run-timeout"));
+        assert!(!mailbox.structured_output_poll_in_flight("run-timeout"));
     }
 
     #[tokio::test]
