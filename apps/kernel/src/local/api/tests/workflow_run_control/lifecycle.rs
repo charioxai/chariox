@@ -56,6 +56,14 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt() {
     );
 }
 
+#[test]
+fn local_request_api_two_workflow_multi_node_collision_drill() {
+    run_workflow_run_lifecycle_large_stack_test(
+        "local-request-api-two-workflow-multi-node-collision-drill",
+        local_request_api_two_workflow_multi_node_collision_drill_inner,
+    );
+}
+
 fn run_workflow_run_lifecycle_large_stack_test(name: &str, test: impl FnOnce() + Send + 'static) {
     let handle = std::thread::Builder::new()
         .name(name.to_string())
@@ -561,7 +569,7 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
         LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
         _ => panic!("unexpected local response"),
     };
-    let second_run = match harness
+    let parked_prompt = match harness
         .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
             InvokeWorkflowEndpointRequest {
                 session_id: session.id().to_string(),
@@ -572,25 +580,48 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
                 publication_invocation: None,
             },
         ))
-        .expect("second workflow should create its run")
+        .expect("second workflow should park in the endpoint queue")
     {
-        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        // The endpoint's primary runtime instance is busy with the first run and
+        // max_instances is 1, so the second concurrent invocation must park in
+        // the workflow-owned queue instead of creating a run immediately.
+        LocalDaemonResponse::WorkflowPromptEnqueued { queued_prompt, .. } => queued_prompt,
         _ => panic!("unexpected local response"),
     };
-    let queued_before_stop = harness.with_app(|app| {
-        app.sessions()
-            .get_session(session.id())
-            .expect("session should remain available")
-            .queued_prompts_for_agent(agent.id())
-            .expect("second workflow prompt should queue behind the shared agent")
-            .front()
-            .cloned()
-            .expect("second workflow prompt should be durable")
-    });
-    assert_eq!(queued_before_stop.workflow_run_id(), Some(second_run.id()));
+    assert_eq!(parked_prompt.workflow_id(), workflow.id());
+    assert_eq!(parked_prompt.endpoint_id(), endpoint.id());
     assert_eq!(
-        queued_before_stop.workflow_node_run_id(),
-        Some(second_run.node_runs()[0].id())
+        parked_prompt.queue_id(),
+        &format!("{0}:default", workflow.id())
+    );
+    assert_eq!(
+        parked_prompt.status(),
+        crate::session::WorkflowQueuedPromptStatus::Queued
+    );
+    assert_eq!(parked_prompt.workflow_run_id(), None);
+    let queued_before_stop = harness.with_app(|app| {
+        let session = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available");
+        (
+            session
+                .workflow_queued_prompts()
+                .iter()
+                .any(|prompt| prompt.id() == parked_prompt.id()),
+            session
+                .queued_prompts_for_agent(agent.id())
+                .map(|queue| queue.is_empty())
+                .unwrap_or(true),
+        )
+    });
+    assert!(
+        queued_before_stop.0,
+        "second invocation should wait in the workflow-owned queue while the shared agent runs the first workflow"
+    );
+    assert!(
+        queued_before_stop.1,
+        "shared agent must not receive the second workflow delivery before its instance frees"
     );
     match harness
         .dispatch(LocalDaemonRequest::CancelWorkflowRun(
@@ -654,6 +685,18 @@ fn stopping_workflow_dispatches_next_queued_workflow_prompt_inner() {
     assert_eq!(
         advanced.workflow_runs()[0].status(),
         WorkflowRunStatus::Running
+    );
+    // Workflow and run identity survive queueing: the promoted run belongs to
+    // the same workflow/endpoint and carries the parked prompt's identity.
+    assert_eq!(advanced.workflow_runs()[0].workflow_id(), workflow.id());
+    assert_eq!(advanced.workflow_runs()[0].endpoint_id(), endpoint.id());
+    assert_eq!(
+        advanced.workflow_runs()[0].queue_item_id(),
+        Some(parked_prompt.id())
+    );
+    assert_eq!(
+        advanced.workflow_runs()[0].invocation_prompt(),
+        Some("second queued workflow")
     );
     let (first_page, next_cursor) = match harness
         .dispatch(LocalDaemonRequest::ListWorkflowRuns(
@@ -844,6 +887,356 @@ fn local_request_api_queues_concurrent_invocations_for_one_endpoint_inner() {
     assert_eq!(
         active.workflow_node_run_id(),
         Some(workflow_runs[0].node_runs()[0].id()),
+    );
+}
+
+// Live two-workflow collision drill: both multi-node workflows share the entry
+// agent, collide in time, and produce compact goal-audit outputs. Proves the
+// second workflow-owned delivery queues while the shared agent is busy, starts
+// only after it becomes idle, and that workflow/run identity survives a hot
+// state round trip (the same serialization the kernel restart restores from).
+fn local_request_api_two_workflow_multi_node_collision_drill_inner() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-concurrency-audit-drill",
+                "worktree-concurrency-audit-drill",
+            ),
+        ))
+        .expect("session create should succeed")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        _ => panic!("unexpected local response"),
+    };
+    let shared_agent = harness.spawn_workflow_test_agent(session.id(), "audit-shared-agent");
+    let alpha_agent = harness.spawn_workflow_test_agent(session.id(), "audit-alpha-agent");
+    let beta_agent = harness.spawn_workflow_test_agent(session.id(), "audit-beta-agent");
+    eprintln!(
+        "drill: session {} with shared agent {}",
+        session.id(),
+        shared_agent.id()
+    );
+    match harness
+        .dispatch(LocalDaemonRequest::LaunchProviderRun(
+            LaunchProviderRunRequest {
+                session_id: session.id().to_string(),
+                agent_id: Some(shared_agent.id().to_string()),
+                adapter_key: "dev-stub".to_string(),
+                provider: "slow-structured".to_string(),
+                account_profile: "default".to_string(),
+                model: "default".to_string(),
+                variant: None,
+                structured_endpoint: None,
+                provider_session_id: None,
+                native_tui: false,
+            },
+        ))
+        .expect("shared agent provider should launch")
+    {
+        LocalDaemonResponse::ProviderRunLaunched { .. }
+        | LocalDaemonResponse::ProviderRunLaunchAccepted { .. } => {}
+        _ => panic!("unexpected local response"),
+    }
+    let _ = harness.wait_for_active_provider_run(session.id());
+
+    let build_workflow = |alias: &str, second_agent: &str| {
+        let workflow = match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflow(CreateWorkflowRequest {
+                session_id: session.id().to_string(),
+                alias: Some(alias.to_string()),
+            }))
+            .expect("drill workflow should create")
+        {
+            LocalDaemonResponse::WorkflowCreated { workflow, .. } => workflow,
+            _ => panic!("unexpected local response"),
+        };
+        let entry = harness.add_workflow_test_node(session.id(), workflow.id(), shared_agent.id());
+        let downstream = harness.add_workflow_test_node(session.id(), workflow.id(), second_agent);
+        harness.add_workflow_test_edge(session.id(), workflow.id(), entry.id(), downstream.id());
+        let endpoint = match harness
+            .dispatch(LocalDaemonRequest::CreateWorkflowEndpoint(
+                CreateWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow.id().to_string(),
+                    entry_node_id: entry.id().to_string(),
+                    alias: Some("entry".to_string()),
+                    expected_workflow_revision: None,
+                },
+            ))
+            .expect("drill endpoint should create")
+        {
+            LocalDaemonResponse::WorkflowEndpointCreated { endpoint, .. } => endpoint,
+            _ => panic!("unexpected local response"),
+        };
+        (workflow, endpoint)
+    };
+    let (alpha_workflow, alpha_endpoint) = build_workflow("goal-audit-alpha", alpha_agent.id());
+    let (beta_workflow, beta_endpoint) = build_workflow("goal-audit-beta", beta_agent.id());
+
+    // Collide in time: invoke both workflows back to back on the busy shared
+    // agent. Each carries a useful, compact goal-audit task.
+    let invoke = |workflow_id: &str, endpoint_id: &str, prompt: String| {
+        harness
+            .dispatch(LocalDaemonRequest::InvokeWorkflowEndpoint(
+                InvokeWorkflowEndpointRequest {
+                    session_id: session.id().to_string(),
+                    workflow_ref: workflow_id.to_string(),
+                    endpoint_ref: endpoint_id.to_string(),
+                    prompt: Some(prompt),
+                    queue_ref: None,
+                    publication_invocation: None,
+                },
+            ))
+            .expect("drill invocation should dispatch")
+    };
+    let alpha_invocation = invoke(
+        alpha_workflow.id(),
+        alpha_endpoint.id(),
+        "[goal-audit] alpha lane: summarize the shared-agent queue-collision outcome as compact JSON"
+            .to_string(),
+    );
+    let beta_invocation = invoke(
+        beta_workflow.id(),
+        beta_endpoint.id(),
+        "[goal-audit] beta lane: record the queued second delivery and its start ordering as compact JSON"
+            .to_string(),
+    );
+    let alpha_run = match alpha_invocation {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("alpha drill invocation should start immediately"),
+    };
+    let beta_run_created = match beta_invocation {
+        LocalDaemonResponse::WorkflowRunInvoked { workflow_run, .. } => workflow_run,
+        _ => panic!("beta drill run should be created for the distinct endpoint pool"),
+    };
+    eprintln!(
+        "drill: collided invocations accepted; alpha run {}, beta run {}",
+        alpha_run.id(),
+        beta_run_created.id()
+    );
+
+    // The shared agent is busy with the alpha entry node: the beta delivery
+    // must queue behind it instead of dispatching.
+    let parked = harness.with_app(|app| {
+        let session_state = app
+            .sessions()
+            .get_session(session.id())
+            .expect("session should remain available");
+        (
+            session_state
+                .active_prompt_for_agent(shared_agent.id())
+                .and_then(|prompt| prompt.workflow_run_id())
+                == Some(alpha_run.id()),
+            session_state
+                .queued_prompts_for_agent(shared_agent.id())
+                .map(|queue| {
+                    queue
+                        .iter()
+                        .any(|prompt| prompt.workflow_run_id() == Some(beta_run_created.id()))
+                })
+                .unwrap_or(false),
+        )
+    });
+    assert!(
+        parked.0,
+        "alpha entry node should own the shared agent after the collision"
+    );
+    assert!(
+        parked.1,
+        "beta workflow delivery should queue behind the shared agent"
+    );
+
+    // Workflow/run identity survives the hot-state round trip that a kernel
+    // restart restores from.
+    let encoded = serde_json::to_value(
+        harness
+            .with_app(|app| {
+                app.sessions()
+                    .get_session(session.id())
+                    .expect("session should serialize")
+            })
+            .clone(),
+    )
+    .expect("session should serialize");
+    let restored: crate::session::RuntimeSession =
+        serde_json::from_value(encoded).expect("session hot state should restore");
+    let restored_beta_queued = restored
+        .queued_prompts_for_agent(shared_agent.id())
+        .expect("restored shared agent queue should resolve")
+        .iter()
+        .find(|prompt| prompt.workflow_run_id() == Some(beta_run_created.id()))
+        .cloned();
+    assert!(
+        restored_beta_queued.is_some(),
+        "the queued beta workflow delivery should survive restart restoration"
+    );
+    let restored_beta_run = restored
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == beta_run_created.id())
+        .cloned()
+        .expect("beta run identity should survive restart restoration");
+    assert_eq!(restored_beta_run.workflow_id(), beta_workflow.id());
+    assert_eq!(restored_beta_run.endpoint_id(), beta_endpoint.id());
+    let restored_alpha_instance = restored
+        .workflow_runtime_instances()
+        .iter()
+        .find(|instance| instance.active_run_id() == Some(alpha_run.id()))
+        .cloned()
+        .expect("alpha primary instance binding should survive restart restoration");
+    assert!(restored_alpha_instance.primary());
+
+    // Finish the alpha entry turn on the shared agent. Completing it frees the
+    // shared agent, which immediately promotes the queued beta delivery while
+    // the alpha chain continues on the alpha-only agent.
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        shared_agent.id(),
+        "alpha goal-audit entry",
+    );
+    let alpha_after_entry = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        alpha_run.id(),
+        "alpha entry node should complete and route its handoff",
+        |run| {
+            run.node_runs()
+                .first()
+                .is_some_and(|node| node.status() == WorkflowNodeRunStatus::Completed)
+        },
+    );
+    let shared_idle_at_ms = alpha_after_entry
+        .node_runs()
+        .first()
+        .and_then(|node| node.completed_at_ms())
+        .expect("alpha entry node should record a completion time");
+
+    // Finish the alpha chain on the alpha-only agent while beta owns the
+    // shared agent. Focusing the downstream agent delivers the routed handoff.
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        alpha_agent.id(),
+        "alpha goal-audit result",
+    );
+    let alpha_final = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        alpha_run.id(),
+        "alpha drill run should complete",
+        |run| run.status() == WorkflowRunStatus::Completed,
+    );
+    let alpha_message = alpha_final
+        .final_output()
+        .expect("alpha run should carry its goal-audit output")
+        .message();
+    assert!(
+        alpha_message.contains("alpha goal-audit result"),
+        "alpha output should carry the audit payload, got: {alpha_message}"
+    );
+
+    // The beta delivery may only start once the shared agent became idle.
+    let beta_started_session = harness.wait_for_session_where(
+        session.id(),
+        "beta run should start after the shared agent freed",
+        |state| {
+            state
+                .workflow_runs()
+                .iter()
+                .any(|run| run.id() == beta_run_created.id() && run.started_at_ms().is_some())
+        },
+    );
+    let beta_running = beta_started_session
+        .workflow_runs()
+        .iter()
+        .find(|run| run.id() == beta_run_created.id())
+        .cloned()
+        .expect("beta run should resolve");
+    assert_eq!(beta_running.workflow_id(), beta_workflow.id());
+    assert_eq!(beta_running.endpoint_id(), beta_endpoint.id());
+    assert_eq!(
+        beta_running.invocation_prompt(),
+        Some(
+            "[goal-audit] beta lane: record the queued second delivery and its start ordering as compact JSON"
+        )
+    );
+    assert!(
+        beta_running
+            .started_at_ms()
+            .expect("beta run should have started")
+            >= shared_idle_at_ms,
+        "the beta delivery must not start before the shared agent became idle",
+    );
+    eprintln!(
+        "drill: beta started at {} after the shared agent freed at {}",
+        beta_running.started_at_ms().unwrap_or(0),
+        shared_idle_at_ms,
+    );
+
+    // Finish the beta chain.
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        shared_agent.id(),
+        "beta goal-audit entry",
+    );
+    harness.wait_for_session_where(
+        session.id(),
+        "beta audit node should receive the routed handoff",
+        |state| {
+            state
+                .active_prompt_for_agent(beta_agent.id())
+                .is_some_and(|prompt| {
+                    prompt.durable_delivery_phase()
+                        == Some(crate::session::DurablePromptDeliveryPhase::Delivered)
+                })
+        },
+    );
+    harness.complete_workflow_test_prompt_for_agent(
+        session.id(),
+        beta_agent.id(),
+        "beta goal-audit result",
+    );
+    let beta_final = harness.wait_for_workflow_test_run_where(
+        session.id(),
+        beta_run_created.id(),
+        "beta drill run should complete",
+        |run| run.status() == WorkflowRunStatus::Completed,
+    );
+    let beta_message = beta_final
+        .final_output()
+        .expect("beta run should carry its goal-audit output")
+        .message();
+    assert!(
+        beta_message.contains("beta goal-audit result"),
+        "beta output should carry the audit payload, got: {beta_message}"
+    );
+
+    // Exactly one run per workflow, with disjoint identities.
+    let final_state = harness.with_app(|app| {
+        app.sessions()
+            .get_session(session.id())
+            .expect("session should remain available")
+            .clone()
+    });
+    assert_eq!(
+        final_state
+            .workflow_runs()
+            .iter()
+            .filter(|run| run.workflow_id() == alpha_workflow.id())
+            .count(),
+        1
+    );
+    assert_eq!(
+        final_state
+            .workflow_runs()
+            .iter()
+            .filter(|run| run.workflow_id() == beta_workflow.id())
+            .count(),
+        1
+    );
+    assert_ne!(alpha_final.id(), beta_final.id());
+    eprintln!(
+        "drill: complete; alpha run {}, beta run {}; identities preserved across queueing and restart restore",
+        alpha_final.id(),
+        beta_final.id()
     );
 }
 
