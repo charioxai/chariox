@@ -163,12 +163,57 @@ test("provider login targets the explicitly selected account profile", async () 
       },
     }],
     startProviderLogin: async (provider, accountProfile) => {
-      starts.push({ provider, accountProfile })
-      return { provider, account_profile: accountProfile ?? "default", login_kind: "chatgptDeviceCode" }
+      starts.push(accountProfile === undefined ? { provider } : { provider, accountProfile })
+      return {
+        provider,
+        account_profile: accountProfile ?? "default",
+        login_kind: "chatgptDeviceCode",
+        login_id: null,
+        auth_url: null,
+        verification_url: null,
+        user_code: null,
+      }
     },
   }
 
   await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider login codex secondary", value: "login codex secondary" })
 
   assert.deepEqual(starts, [{ provider: "codex", accountProfile: "opaque-secondary-id" }])
+})
+
+test("provider status, logout, and reauth reject an unknown account alias before provider work", async () => {
+  const footers: Array<{ message: string; tone: "info" | "error" }> = []
+  const providerCalls: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: () => {},
+    listProviderAccountProfiles: async () => [],
+    getProviderAuthStatus: async () => {
+      providerCalls.push("status")
+      throw new Error("status should not run")
+    },
+    logoutProvider: async () => {
+      providerCalls.push("logout")
+      throw new Error("logout should not run")
+    },
+    startProviderLogin: async () => {
+      providerCalls.push("login")
+      throw new Error("login should not run")
+    },
+  }
+
+  for (const action of ["status", "logout", "reauth"]) {
+    await handleProviderSlashCommand(deps, {
+      kind: "provider",
+      raw: `/provider ${action} codex missing-account`,
+      value: `${action} codex missing-account`,
+    })
+  }
+
+  assert.deepEqual(providerCalls, [])
+  assert.deepEqual(footers, Array.from({ length: 3 }, () => ({
+    message: "provider account alias missing-account was not found for codex",
+    tone: "error" as const,
+  })))
 })

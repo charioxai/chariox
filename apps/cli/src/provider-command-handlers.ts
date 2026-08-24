@@ -404,25 +404,30 @@ async function resolveProviderAccountReference(
   provider: string,
   accountAlias: string | undefined,
 ): Promise<string | undefined | null> {
-  if (!accountAlias || accountAlias === "default") return accountAlias
+  const normalizedAlias = accountAlias?.trim()
+  if (!normalizedAlias || normalizedAlias === "default") return normalizedAlias
   if (!deps.listProviderAccountProfiles) {
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
   const profile = providerAccountsForProvider(await deps.listProviderAccountProfiles(provider), provider)
-    .find((candidate) => candidate.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
+    .find((candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0)
   if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${accountAlias} was not found for ${provider}`, "error")
+  deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
   return null
 }
 
 async function providerAccountPublicLabel(
   deps: ProviderCommandHandlerDeps,
   provider: string,
-  accountProfile: string,
+  accountProfile: string | null | undefined,
 ): Promise<string> {
   if (!deps.listProviderAccountProfiles) return "Account unavailable"
-  const profile = selectedProviderAccount(await deps.listProviderAccountProfiles(provider), provider, accountProfile)
+  const profile = selectedProviderAccount(
+    await deps.listProviderAccountProfiles(provider),
+    provider,
+    accountProfile ?? undefined,
+  )
   return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
 }
 
