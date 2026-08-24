@@ -591,6 +591,276 @@ fn deleting_session_removes_registered_workflow_runtime_worktrees() {
         .contains(&instance_worktree.display().to_string()));
 }
 
+#[tokio::test]
+async fn pool_clone_binds_exact_stable_account_and_launch_ignores_later_default_change() {
+    let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
+        runtime_with_idle_workflow();
+
+    // Register two managed accounts; the first is the default at bind time.
+    let first = runtime
+        .owned
+        .provider_account_profiles
+        .create_managed(crate::session::DEFAULT_LOCAL_USER_ID, "codex", "Pool First")
+        .expect("first managed account profile should register");
+    let second = runtime
+        .owned
+        .provider_account_profiles
+        .create_managed(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            "Pool Second",
+        )
+        .expect("second managed account profile should register");
+    runtime
+        .owned
+        .provider_account_profiles
+        .set_default(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &first.profile_id,
+        )
+        .expect("initial default should be set");
+
+    // Bind the visible node agent to the exact stable profile id.
+    let source_id = {
+        let app = runtime.app.lock().await;
+        app.agents()
+            .get_session_agents(&session_id)
+            .into_iter()
+            .find(|agent| agent.alias() == Some("owned-workflow-agent"))
+            .expect("aliased node agent should exist")
+            .id()
+            .to_string()
+    };
+    {
+        let mut app = runtime.app.lock().await;
+        app.agents_mut()
+            .set_agent_runtime_profile_with_account_profile(
+                &source_id,
+                "dev-stub",
+                None,
+                None,
+                Some(first.profile_id.clone()),
+                crate::provider::ProviderResumeState::default(),
+            )
+            .expect("stable account binding should apply");
+    }
+    let source = runtime
+        .owned
+        .agent_store
+        .get_agent(&source_id)
+        .expect("source should resolve");
+    assert_eq!(source.account_profile(), Some(first.profile_id.as_str()));
+
+    // The pool clone carries the exact stable binding, not a sentinel.
+    let clone_a = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(source.clone(), &session_id, "wt-clone-a");
+    assert_eq!(clone_a.alias(), Some("owned-workflow-agent-2"));
+    assert_eq!(clone_a.provider(), source.provider());
+    assert_eq!(clone_a.model(), source.model());
+    assert_eq!(
+        clone_a.account_profile(),
+        Some(first.profile_id.as_str()),
+        "clone must preserve the exact stable profile binding"
+    );
+
+    // Launch through the production prompt-launch seam: the request uses the
+    // clone's bound profile id.
+    let run_id = {
+        let mut app = runtime.app.lock().await;
+        app.ensure_prompt_provider_run_for_agent(&session_id, clone_a.id())
+            .expect("clone provider run should launch")
+    };
+    let launched = runtime
+        .owned
+        .provider_store
+        .get_run(&run_id)
+        .expect("launched run should resolve");
+    assert_eq!(launched.account_profile(), first.profile_id);
+
+    // The provider default changes AFTER creation...
+    runtime
+        .owned
+        .provider_account_profiles
+        .set_default(
+            crate::session::DEFAULT_LOCAL_USER_ID,
+            "codex",
+            &second.profile_id,
+        )
+        .expect("default switch should succeed");
+
+    // ...yet a pool clone provisioned afterwards still binds the original
+    // stable id instead of following the moving default.
+    let clone_c = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(source.clone(), &session_id, "wt-clone-c");
+    assert_eq!(clone_c.account_profile(), Some(first.profile_id.as_str()));
+    assert_ne!(clone_c.account_profile(), Some(second.profile_id.as_str()));
+
+    // And a fresh relaunch of the existing clone still uses the original id.
+    {
+        let mut app = runtime.app.lock().await;
+        app.end_provider_run_for_workflow_context_flush(&session_id, clone_a.id())
+            .expect("previous run should retire");
+    }
+    let relaunched_run_id = {
+        let mut app = runtime.app.lock().await;
+        app.ensure_prompt_provider_run_for_agent(&session_id, clone_a.id())
+            .expect("relaunched clone provider run should start")
+    };
+    let relaunched = runtime
+        .owned
+        .provider_store
+        .get_run(&relaunched_run_id)
+        .expect("relaunched run should resolve");
+    assert_eq!(relaunched.account_profile(), first.profile_id);
+}
+
+#[test]
+fn pool_aliases_and_ordinals_survive_durable_restart_without_collisions() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let source = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.alias() == Some("owned-workflow-agent"))
+        .expect("aliased source agent should exist");
+    let copy_a = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(source.clone(), &session_id, "wt-restart-a");
+    let copy_b = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(source.clone(), &session_id, "wt-restart-b");
+    assert_eq!(copy_a.alias(), Some("owned-workflow-agent-2"));
+    assert_eq!(copy_b.alias(), Some("owned-workflow-agent-3"));
+
+    let workflow = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_ref(&session_id, &workflow_id)
+        .expect("workflow should resolve");
+    let node_agent_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), node.agent_id().to_string()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for (ordinal, primary) in [(1u16, true), (2, false), (3, false)] {
+        runtime
+            .owned
+            .session_store
+            .write()
+            .register_workflow_runtime_instance(
+                &session_id,
+                crate::session::WorkflowEndpointRuntimeInstance::new(
+                    format!("workflow-instance-restart-{ordinal}"),
+                    &workflow_id,
+                    &endpoint_id,
+                    workflow.revision(),
+                    ordinal,
+                    primary,
+                    node_agent_ids.clone(),
+                    format!("wt-restart-{ordinal}"),
+                ),
+            )
+            .expect("runtime instance should register");
+    }
+
+    // Durable boundary: agents, instances, and the session cross restarts as
+    // serde documents. Round-trip each and rebuild the post-restart world only
+    // from those documents.
+    let live_agents: Vec<crate::agent::AgentInstance> = vec![source.clone(), copy_a, copy_b];
+    let restored_agents: Vec<crate::agent::AgentInstance> =
+        serde_json::from_value(serde_json::to_value(&live_agents).expect("agents should encode"))
+            .expect("agents should decode");
+    let restored_instances: Vec<crate::session::WorkflowEndpointRuntimeInstance> =
+        serde_json::from_value(
+            serde_json::to_value(
+                &runtime
+                    .owned
+                    .session_store
+                    .read()
+                    .get_session(&session_id)
+                    .expect("session should resolve")
+                    .workflow_runtime_instances()
+                    .iter()
+                    .map(|instance| instance.clone())
+                    .collect::<Vec<_>>(),
+            )
+            .expect("instances should encode"),
+        )
+        .expect("instances should decode");
+    let restored_session: crate::session::RuntimeSession = serde_json::from_value(
+        serde_json::to_value(
+            runtime
+                .owned
+                .session_store
+                .get_session(&session_id)
+                .expect("session should resolve"),
+        )
+        .expect("session should encode"),
+    )
+    .expect("session should decode");
+
+    // Ordinals continue after restart without collisions.
+    assert_eq!(restored_instances.len(), 3);
+    assert_eq!(
+        restored_session.next_workflow_runtime_instance_ordinal(&workflow_id, &endpoint_id),
+        4
+    );
+
+    // Aliases stay user-facing and collision-free after restart.
+    let mut fresh_agents = crate::agent::AgentService::new();
+    for agent in restored_agents {
+        fresh_agents.restore_agent(agent);
+    }
+    let restored_source = fresh_agents
+        .get_agent(&source_id_of(&live_agents))
+        .expect("restored source should resolve");
+    let next_copy = fresh_agents.materialize_workflow_runtime_agent(
+        restored_source.clone(),
+        &session_id,
+        "wt-restart-c",
+    );
+    assert_eq!(next_copy.alias(), Some("owned-workflow-agent-4"));
+
+    // A squatter occupying the next suffix (e.g. a user-named agent restored
+    // from durable state) forces the sequence to skip the collision.
+    let squatter = crate::agent::AgentInstance::new(
+        "agent-squatter-restart",
+        crate::agent::generate_agent_ref(),
+        &session_id,
+        Some("owned-workflow-agent-5".to_string()),
+        "dev-stub",
+        None,
+        None,
+        None,
+        crate::agent::GridPosition::new(0, 0, 1, 1),
+    );
+    fresh_agents.restore_agent(squatter);
+    let skipped_copy = fresh_agents.materialize_workflow_runtime_agent(
+        restored_source,
+        &session_id,
+        "wt-restart-d",
+    );
+    assert_eq!(skipped_copy.alias(), Some("owned-workflow-agent-6"));
+}
+
+fn source_id_of(agents: &[crate::agent::AgentInstance]) -> String {
+    agents
+        .iter()
+        .find(|agent| agent.visible_in_freeform())
+        .expect("visible source should exist")
+        .id()
+        .to_string()
+}
+
 struct TestRoot(std::path::PathBuf);
 
 impl Drop for TestRoot {
