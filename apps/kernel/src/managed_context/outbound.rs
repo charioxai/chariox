@@ -157,6 +157,9 @@ pub(crate) async fn transfer_managed_context_package(
             }
             (transfer_id, capability, max_chunk_bytes)
         }
+        RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
+            return Err(target_import_failure(code, retryable));
+        }
         response => return Err(unexpected_response("arm", response)),
     };
 
@@ -295,14 +298,18 @@ fn status_response(
     match response {
         RelayPeerResponse::ManagedContextImportStatus { status } => Ok(status),
         RelayPeerResponse::ManagedContextImportFailed { code, retryable } => {
-            Err(DaemonError::ManagedContext {
-                code: "target_import_failed",
-                operation: "send managed context",
-                message: format!("target kernel rejected managed context with `{code}`"),
-                retryable,
-            })
+            Err(target_import_failure(code, retryable))
         }
         response => Err(unexpected_response(operation, response)),
+    }
+}
+
+fn target_import_failure(code: String, retryable: bool) -> DaemonError {
+    DaemonError::ManagedContext {
+        code: "target_import_failed",
+        operation: "send managed context",
+        message: format!("target kernel rejected managed context with `{code}`"),
+        retryable,
     }
 }
 
@@ -680,6 +687,42 @@ mod tests {
         assert!(error
             .to_string()
             .contains("conflicting managed-context receipt"));
+        std::fs::remove_dir_all(fixture_root).expect("fixture cleanup");
+    }
+
+    #[tokio::test]
+    async fn preserves_arm_rejection_code_and_retryability() {
+        let fixture = outbound_fixture(10);
+        let fixture_root = fixture.root.clone();
+        let capability = RelayManagedContextCapability::new("capability".to_string());
+        let transport =
+            FakeTransport::new(vec![Ok(RelayPeerResponse::ManagedContextImportFailed {
+                code: "authorization_failed".to_string(),
+                retryable: true,
+            })]);
+        let error = transfer_managed_context_package(
+            &transport,
+            ManagedContextOutboundTransferRequest {
+                plan: fixture.plan,
+                target_environment_id: "environment-1".to_string(),
+                target_kernel_id: "target-kernel".to_string(),
+                target_key_thumbprint: "a".repeat(64),
+                package: fixture.package,
+                capability,
+            },
+            |_| {},
+        )
+        .await
+        .expect_err("target rejection should fail");
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                code: "target_import_failed",
+                operation: "send managed context",
+                message,
+                retryable: true,
+            } if message == "target kernel rejected managed context with `authorization_failed`"
+        ));
         std::fs::remove_dir_all(fixture_root).expect("fixture cleanup");
     }
 
