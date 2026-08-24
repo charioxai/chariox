@@ -97,6 +97,68 @@ fn substitute_profile_preserves_account_profile_binding_and_default_semantics() 
 }
 
 #[test]
+fn substitute_activation_switches_account_and_deactivation_restores_primary_account() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_account_profile(Some("primary-work".to_string()));
+    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
+    agent.add_substitute(
+        AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+            .with_account_profile(Some("substitute-personal".to_string())),
+    );
+
+    agent.activate_substitute(0, "manual");
+    assert_eq!(agent.provider(), "codex");
+    assert_eq!(agent.account_profile(), Some("substitute-personal"));
+
+    // A chained activation keeps the original primary account for restore.
+    agent.add_substitute(
+        AgentSubstituteProfile::new("claude", "sonnet", None)
+            .with_account_profile(Some("claude-second".to_string())),
+    );
+    agent.activate_substitute(1, "manual");
+    assert_eq!(agent.account_profile(), Some("claude-second"));
+
+    agent.deactivate_substitute();
+    assert_eq!(agent.provider(), "opencode");
+    assert_eq!(agent.account_profile(), Some("primary-work"));
+}
+
+#[test]
+fn substitute_without_bound_account_falls_back_to_default_and_restore_is_exact() {
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.set_account_profile(Some("primary-work".to_string()));
+    agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
+    agent.add_substitute(AgentSubstituteProfile::new("codex", "gpt-5.4", None));
+
+    agent.activate_substitute(0, "manual");
+    assert_eq!(agent.account_profile(), None);
+    assert_eq!(agent.provider_account_profile(), "default");
+
+    agent.deactivate_substitute();
+    assert_eq!(agent.account_profile(), Some("primary-work"));
+}
+
+#[test]
 fn workflow_runtime_materialization_preserves_config_without_live_state() {
     let mut source = AgentInstance::new(
         "agent-1",

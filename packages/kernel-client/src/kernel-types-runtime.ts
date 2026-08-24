@@ -329,6 +329,7 @@ export type AgentInstance = {
   substitutes?: AgentSubstituteProfile[]
   active_substitute_index?: number | null
   last_substitution?: AgentSubstitutionRecord | null
+  substitution_previous_account_profile?: string | null
   substitution_timeout_ms?: number | null
   visible_in_freeform?: boolean
   external_provider_import?: ExternalProviderImportMetadata | null

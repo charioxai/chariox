@@ -249,6 +249,8 @@ pub struct AgentInstance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     last_substitution: Option<AgentSubstitutionRecord>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    substitution_previous_account_profile: Option<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     substitution_timeout_ms: Option<u64>,
     #[serde(
         default = "default_visible_in_freeform",
@@ -306,6 +308,7 @@ impl AgentInstance {
             substitutes: Vec::new(),
             active_substitute_index: None,
             last_substitution: None,
+            substitution_previous_account_profile: None,
             substitution_timeout_ms: None,
             visible_in_freeform: true,
             state: AgentState::Idle,
@@ -802,7 +805,12 @@ impl AgentInstance {
         }
         let removed = self.substitutes.remove(index);
         self.active_substitute_index = match self.active_substitute_index {
-            Some(active) if active == index => None,
+            Some(active) if active == index => {
+                if let Some(previous_account) = self.substitution_previous_account_profile.take() {
+                    self.account_profile = previous_account;
+                }
+                None
+            }
             Some(active) if active > index => Some(active - 1),
             other => other,
         };
@@ -812,6 +820,9 @@ impl AgentInstance {
 
     pub fn clear_substitutes(&mut self) {
         self.substitutes.clear();
+        if let Some(previous_account) = self.substitution_previous_account_profile.take() {
+            self.account_profile = previous_account;
+        }
         self.active_substitute_index = None;
         self.last_substitution = None;
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
@@ -828,9 +839,16 @@ impl AgentInstance {
         reason: impl Into<String>,
     ) -> Option<AgentSubstituteProfile> {
         let profile = self.substitutes.get(index)?.clone();
+        if self.active_substitute_index.is_none() {
+            // Entering substitution from the primary profile: remember the
+            // primary account so returning to primary restores it exactly.
+            self.substitution_previous_account_profile = Some(self.account_profile.clone());
+        }
+        let account_profile = normalized_agent_account_profile(profile.account_profile.clone());
         self.provider = profile.provider.clone();
         self.model = Some(profile.model.clone());
         self.effort = profile.variant.clone();
+        self.account_profile = account_profile;
         self.active_substitute_index = Some(index);
         self.last_substitution = Some(AgentSubstitutionRecord {
             substitute_index: index,
@@ -847,6 +865,9 @@ impl AgentInstance {
         self.provider = self.primary_provider().to_string();
         self.model = self.primary_model().map(str::to_string);
         self.effort = self.primary_effort().map(str::to_string);
+        if let Some(previous_account) = self.substitution_previous_account_profile.take() {
+            self.account_profile = previous_account;
+        }
         self.last_activity_at_ms = crate::session::unix_epoch_ms();
     }
 }
