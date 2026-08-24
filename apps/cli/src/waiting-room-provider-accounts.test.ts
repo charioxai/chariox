@@ -34,6 +34,8 @@ test("provider account selection stays isolated to the selected provider family"
     providerAccountsForProvider(profiles, "codex").map((profile) => profile.profile_id),
     ["codex-primary"],
   )
+  assert.equal(selectedProviderAccount(profiles, "claude-headless", "default")?.profile_id, "claude-primary")
+  assert.equal(selectedProviderAccount(profiles, "codex", undefined)?.profile_id, "codex-primary")
 })
 
 test("provider account display uses only the public alias", () => {

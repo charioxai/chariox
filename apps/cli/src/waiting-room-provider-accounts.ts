@@ -17,8 +17,11 @@ export function selectedProviderAccount(
   provider: string,
   profileId: string | undefined,
 ): ProviderAccountProfile | null {
-  return providerAccountsForProvider(profiles, provider)
-    .find((profile) => profile.profile_id === profileId) ?? null
+  const accounts = providerAccountsForProvider(profiles, provider)
+  if (!profileId || profileId === "default") {
+    return accounts.find((profile) => profile.is_default) ?? null
+  }
+  return accounts.find((profile) => profile.profile_id === profileId) ?? null
 }
 
 export function defaultProviderAccountProfileId(

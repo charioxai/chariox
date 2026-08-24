@@ -13,6 +13,7 @@ import {
 import {
   providerAccountDisplayLabel,
   providerAccountsForProvider,
+  selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
 const SESSION_AGENT_MODE_CONFIG_KEY = "agents.mode"
@@ -192,8 +193,7 @@ async function agentAccountDisplayValue(
   const profileId = agent.account_profile?.trim() || "default"
   if (!deps.listProviderAccountProfiles) return "Account unavailable"
   const profiles = await deps.listProviderAccountProfiles(agent.provider)
-  const profile = providerAccountsForProvider(profiles, agent.provider)
-    .find((entry) => entry.profile_id === profileId)
+  const profile = selectedProviderAccount(profiles, agent.provider, profileId)
   return profile ? providerAccountDisplayLabel(profile) : "Account unavailable"
 }
 

@@ -159,6 +159,34 @@ test("agent account command loads its scoped catalog and applies a compatible pr
   assert.equal(flashedMessage, "agent-1 account: Validation")
 })
 
+test("agent account display resolves the virtual default pointer to its public alias", async () => {
+  const currentAgent = agent({ provider: "codex", account_profile: "default" })
+  let flashedMessage = ""
+
+  await handleAgentProfileCommand({
+    ...deps(currentAgent),
+    flashFooter: (message) => { flashedMessage = message },
+    updateAgentProfile: async () => ({ agent: currentAgent, session: session({ agents: [currentAgent] }) }),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "user-1",
+      provider: "codex",
+      profile_id: "opaque-profile-id",
+      label: "codex-1",
+      origin: "default",
+      is_default: true,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-profile-id",
+        provider: "codex",
+        availability: "unavailable",
+        source: "test",
+      },
+    } satisfies ProviderAccountProfile],
+  }, ["account"], "account")
+
+  assert.equal(flashedMessage, "agent-1 account: codex-1")
+})
+
 function deps(currentAgent: AgentInstance) {
   const currentSession = session({ agents: [currentAgent] })
   return {
