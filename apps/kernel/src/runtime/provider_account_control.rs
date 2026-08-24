@@ -163,6 +163,25 @@ pub(crate) fn ensure_profile_idle(
     profile_id: &str,
 ) -> Result<(), DaemonError> {
     let profile = registry.get(owner_user_id, provider, profile_id)?;
+    let bound_agents = bound_agent_labels(
+        &runtime_state.list_session_snapshots(),
+        &profile.provider,
+        &profile.profile_id,
+        |agent_owner_user_id| {
+            runtime_state.provider_account_authority_owner_user_id(agent_owner_user_id)
+                == owner_user_id
+        },
+    );
+    if !bound_agents.is_empty() {
+        return Err(DaemonError::LocalTransport {
+            operation: "mutate provider account profile",
+            message: format!(
+                "account profile `{}` is assigned to agent(s) {}; choose another account for those agents before removing or deleting it",
+                profile.profile_id,
+                bound_agents.join(", "),
+            ),
+        });
+    }
     let active = runtime_state
         .provider_runs_for_external_session_attachment()
         .into_iter()
@@ -196,4 +215,71 @@ pub(crate) fn ensure_profile_idle(
         });
     }
     Ok(())
+}
+
+fn bound_agent_labels(
+    sessions: &[crate::session::RuntimeSession],
+    provider: &str,
+    profile_id: &str,
+    owner_matches: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let provider_family = crate::provider::canonical_provider_family(provider);
+    let mut labels = sessions
+        .iter()
+        .flat_map(|session| session.agents())
+        .filter(|agent| {
+            owner_matches(agent.owner_user_id())
+                && crate::provider::canonical_provider_family(agent.provider()) == provider_family
+                && agent.provider_account_profile() == profile_id
+        })
+        .map(|agent| agent.alias().unwrap_or(agent.id()).to_string())
+        .collect::<Vec<_>>();
+    labels.sort();
+    labels.dedup();
+    labels
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bound_agent_labels;
+    use crate::agent::{AgentInstance, GridPosition};
+    use crate::session::RuntimeSession;
+
+    #[test]
+    fn account_binding_detection_covers_provider_families_and_agent_owners() {
+        let mut session = RuntimeSession::new(
+            "session-a",
+            Some("accounts".to_string()),
+            "workspace-a",
+            "worktree-a",
+            "machine-a",
+            "kernel-a",
+        );
+        let mut bound = AgentInstance::new(
+            "agent-bound",
+            "agent-bound",
+            session.id(),
+            Some("reviewer".to_string()),
+            "claude-headless",
+            Some("opus".to_string()),
+            Some("high".to_string()),
+            None,
+            GridPosition::new(0, 0, 1, 1),
+        );
+        bound.set_owner_user_id("owner-a");
+        bound.set_account_profile(Some("secondary".to_string()));
+        let mut other_owner = bound.clone();
+        other_owner.set_alias(Some("other-owner".to_string()));
+        other_owner.set_owner_user_id("owner-b");
+        let mut other_account = bound.clone();
+        other_account.set_alias(Some("other-account".to_string()));
+        other_account.set_account_profile(Some("default".to_string()));
+        session.set_agents(vec![bound, other_owner, other_account]);
+
+        assert_eq!(
+            bound_agent_labels(&[session], "claude", "secondary", |owner| owner
+                == "owner-a"),
+            vec!["reviewer".to_string()],
+        );
+    }
 }

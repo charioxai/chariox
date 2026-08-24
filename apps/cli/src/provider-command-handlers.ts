@@ -273,13 +273,7 @@ async function handleProviderAccountsCommand(
     }
     const profiles = await deps.listProviderAccountProfiles(provider ?? null)
     const lines = profiles.map((entry) => {
-      const usage = entry.usage.meters?.[0]
-      const usageText = usage?.used_percent != null
-        ? `${Math.round(usage.used_percent)}% used`
-        : usage?.remaining != null
-          ? `${usage.remaining}${usage.unit ? ` ${usage.unit}` : ""} remaining`
-          : entry.usage.availability
-      return `${entry.provider}/${entry.profile_id} "${entry.label}"${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.identity_summary ? ` · ${entry.identity_summary}` : ""}${entry.plan ? ` · ${entry.plan}` : ""} · ${usageText}`
+      return `${entry.provider}/${entry.profile_id} "${entry.label}"${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.identity_summary ? ` · ${entry.identity_summary}` : ""}${entry.plan ? ` · ${entry.plan}` : ""} · ${formatProviderAccountUsage(entry)}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
@@ -311,6 +305,38 @@ async function handleProviderAccountsCommand(
   }
   deps.appendNotice(`${action}: ${result.provider}/${result.profile_id} "${result.label}"`)
   deps.flashFooter(`provider account ${action} complete`, "info")
+}
+
+function formatProviderAccountUsage(profile: ProviderAccountProfile): string {
+  const meter = profile.usage.meters?.[0]
+  const meterState = meter?.state === "exhausted" ? " · exhausted" : meter?.state === "warning" ? " · nearing limit" : ""
+  const reset = meter?.resets_at_ms ? ` · resets ${relativeResetTime(meter.resets_at_ms)}` : ""
+  if (meter?.used_percent != null) return `${Math.round(meter.used_percent)}% used${meterState}${reset}`
+  if (meter?.remaining != null) return `${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining${meterState}${reset}`
+  if (meter?.used != null) return `${meter.used}${meter.unit ? ` ${meter.unit}` : ""} used${meterState}${reset}`
+  const reason = providerUsageSourceReason(profile.usage.source)
+  if (profile.usage.availability === "partial") return `partially reported (${reason})`
+  if (profile.usage.availability === "stale") return `stale (${reason})`
+  if (profile.usage.availability === "error") return `refresh failed (${reason})`
+  return `not reported (${reason})`
+}
+
+function providerUsageSourceReason(source: string): string {
+  switch (source) {
+    case "provider_api_unavailable": return "provider usage API unavailable"
+    case "provider_not_observed": return "provider has not exposed usage yet"
+    case "opencode.local_stats": return "OpenCode exposes local stats, not upstream balance"
+    default: return source.replaceAll(/[._-]+/g, " ")
+  }
+}
+
+function relativeResetTime(timestamp: number): string {
+  const seconds = Math.round((timestamp - Date.now()) / 1_000)
+  if (seconds <= 0) return "now"
+  if (seconds < 60) return `in ${seconds}s`
+  if (seconds < 3_600) return `in ${Math.round(seconds / 60)}m`
+  if (seconds < 86_400) return `in ${Math.round(seconds / 3_600)}h`
+  return `in ${Math.round(seconds / 86_400)}d`
 }
 
 function formatProviderLoginNotice(

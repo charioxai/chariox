@@ -526,7 +526,7 @@ impl ProviderAccountProfileRegistry {
         home: &Path,
     ) -> Result<Vec<ProviderAccountProfile>, DaemonError> {
         let mut document = self.write_document()?;
-        let mut changed = false;
+        let mut changed = migrate_legacy_default_profile_ids(&mut document);
         for provider in SUPPORTED_PROVIDERS {
             if document.profiles.iter().any(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
@@ -539,10 +539,12 @@ impl ProviderAccountProfileRegistry {
                     .map_err(registry_io("create default Codex account root"))?;
                 enforce_codex_file_credentials(codex_home)?;
             }
+            let profile_id =
+                unique_profile_id(&document, owner_user_id, provider, "Native default");
             let profile = new_public_profile(
                 owner_user_id,
                 provider,
-                "default",
+                &profile_id,
                 "Default",
                 ProviderAccountProfileOrigin::Default,
                 true,
@@ -1347,6 +1349,29 @@ fn unique_profile_id(
     }
 }
 
+fn migrate_legacy_default_profile_ids(document: &mut RegistryDocument) -> bool {
+    let legacy_profiles = document
+        .profiles
+        .iter()
+        .enumerate()
+        .filter(|(_, profile)| profile.public.profile_id == "default")
+        .map(|(index, profile)| {
+            (
+                index,
+                profile.public.owner_user_id.clone(),
+                profile.public.provider.clone(),
+            )
+        })
+        .collect::<Vec<_>>();
+    for (index, owner_user_id, provider) in &legacy_profiles {
+        let profile_id = unique_profile_id(document, owner_user_id, provider, "Native default");
+        let profile = &mut document.profiles[*index].public;
+        profile.profile_id = profile_id.clone();
+        profile.usage.profile_id = profile_id;
+    }
+    !legacy_profiles.is_empty()
+}
+
 fn safe_path_component(value: &str) -> String {
     let mut result = String::new();
     let mut separator = false;
@@ -1941,7 +1966,17 @@ mod tests {
 
         assert_eq!(first.len(), 3);
         assert_eq!(second.len(), 3);
-        assert!(first.iter().all(|profile| profile.profile_id == "default"));
+        assert!(first.iter().all(|profile| profile.profile_id != "default"));
+        assert_eq!(
+            first
+                .iter()
+                .map(|profile| &profile.profile_id)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|profile| &profile.profile_id)
+                .collect::<Vec<_>>(),
+        );
         assert!(first.iter().all(|profile| profile.is_default));
         let _ = fs::remove_dir_all(root);
     }
@@ -2177,8 +2212,11 @@ mod tests {
     #[test]
     fn default_alias_tracks_selected_provider_default() {
         let (root, registry) = fixture();
-        registry
+        let native_default = registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap()
+            .into_iter()
+            .find(|profile| profile.provider == "claude")
             .unwrap();
         let work = registry
             .create_managed("owner-a", "claude", "Work")
@@ -2193,6 +2231,16 @@ mod tests {
             .resolve_environment("owner-a", "claude", "default")
             .unwrap();
         assert!(environment["CLAUDE_CONFIG_DIR"].contains(&work.profile_id));
+
+        registry
+            .set_default("owner-a", "claude", &native_default.profile_id)
+            .unwrap();
+        let restored = registry.get("owner-a", "claude", "default").unwrap();
+        assert_eq!(restored.profile_id, native_default.profile_id);
+        assert!(!registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap()
+            .contains_key("CLAUDE_CONFIG_DIR"));
         let _ = fs::remove_dir_all(root);
     }
 
