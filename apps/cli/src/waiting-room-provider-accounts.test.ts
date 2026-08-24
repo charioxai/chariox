@@ -3,6 +3,7 @@ import test from "node:test"
 
 import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
+  defaultProviderAccountProfileId,
   providerAccountFamily,
   providerAccountDisplayLabel,
   providerAccountsForProvider,
@@ -36,6 +37,12 @@ test("provider account selection stays isolated to the selected provider family"
   )
   assert.equal(selectedProviderAccount(profiles, "claude-headless", "default")?.profile_id, "claude-primary")
   assert.equal(selectedProviderAccount(profiles, "codex", undefined)?.profile_id, "codex-primary")
+})
+
+test("a missing default stays unavailable instead of silently selecting the first account", () => {
+  const accounts = [account("codex", "codex-secondary")]
+  assert.equal(defaultProviderAccountProfileId(accounts, "codex"), "default")
+  assert.equal(selectedProviderAccount(accounts, "codex", "default"), null)
 })
 
 test("provider account display uses only the public alias", () => {

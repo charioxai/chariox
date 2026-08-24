@@ -105,7 +105,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
   const catalogLoads: unknown[] = []
   let flashedMessage = ""
 
-  await handleAgentProfileCommand({
+  const handlerDeps: Parameters<typeof handleAgentProfileCommand>[0] = {
     ...deps(currentAgent),
     flashFooter: (message) => { flashedMessage = message },
     listProviderAccountProfiles: async () => [{
@@ -114,7 +114,7 @@ test("agent account command loads its scoped catalog and applies a compatible pr
       profile_id: "secondary",
       label: "Validation",
       origin: "chariox_created",
-      is_default: false,
+      is_default: true,
       auth_state: "authenticated",
       identity_summary: "validation@example.com",
       usage: {
@@ -147,9 +147,15 @@ test("agent account command loads its scoped catalog and applies a compatible pr
       updateOptions = options
       return { agent: updatedAgent, session: session({ agents: [updatedAgent] }) }
     },
-  }, ["account", "agent-1", "Validation"], "account")
+  }
 
-  assert.deepEqual(catalogLoads, [{ provider: "codex", accountProfile: "secondary" }])
+  await handleAgentProfileCommand(handlerDeps, ["account", "agent-1", "Validation"], "account")
+  await handleAgentProfileCommand(handlerDeps, ["account", "agent-1", "default"], "account")
+
+  assert.deepEqual(catalogLoads, [
+    { provider: "codex", accountProfile: "secondary" },
+    { provider: "codex", accountProfile: "secondary" },
+  ])
   assert.deepEqual(updateOptions, {
     provider: "codex",
     accountProfile: "secondary",

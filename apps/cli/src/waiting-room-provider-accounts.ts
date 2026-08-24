@@ -30,7 +30,6 @@ export function defaultProviderAccountProfileId(
 ): string {
   const accounts = providerAccountsForProvider(profiles, provider)
   return accounts.find((profile) => profile.is_default)?.profile_id
-    ?? accounts[0]?.profile_id
     ?? "default"
 }
 

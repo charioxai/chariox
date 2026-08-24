@@ -208,8 +208,10 @@ async function updateAgentAccountProfile(
   }
   try {
     const profiles = await deps.listProviderAccountProfiles(agent.provider)
-    const profile = providerAccountsForProvider(profiles, agent.provider)
-      .find((entry) => entry.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
+    const accounts = providerAccountsForProvider(profiles, agent.provider)
+    const profile = accountAlias === "default"
+      ? selectedProviderAccount(accounts, agent.provider, "default")
+      : accounts.find((entry) => entry.label.localeCompare(accountAlias, undefined, { sensitivity: "accent" }) === 0)
     if (!profile) {
       deps.flashFooter(`account is unavailable for ${agent.provider}`, "error")
       return
