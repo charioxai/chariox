@@ -6,6 +6,7 @@
 use super::*;
 
 const CLAUDE_HEADLESS_PROMPT_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const CLAUDE_HEADLESS_PROMPT_ACK_OPERATION: &str = "acknowledge Claude headless prompt";
 
 struct DetachedWorkflowProviderLaunchClaim {
     provider_run_id: String,
@@ -39,6 +40,9 @@ fn claude_headless_dispatch_failure_requires_provider_retirement(
         DaemonError::LocalTransport {
             operation: "submit Claude headless prompt",
             ..
+        } | DaemonError::LocalTransport {
+            operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+            ..
         } | DaemonError::ProviderProtocol {
             operation: "submit Claude headless prompt",
             ..
@@ -50,9 +54,9 @@ fn claude_headless_dispatch_failure_invalidates_resume(error: &DaemonError) -> b
     matches!(
         error,
         DaemonError::LocalTransport {
-            operation: "submit Claude headless prompt",
-            message,
-        } if message.contains("did not acknowledge prompt")
+            operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
+            ..
+        }
     )
 }
 
@@ -1551,7 +1555,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -1634,7 +1638,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -1751,7 +1755,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -1874,7 +1878,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -1957,7 +1961,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -2014,7 +2018,7 @@ mod tests {
             .fail_prompt_dispatch(
                 dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -2127,7 +2131,7 @@ mod tests {
             .fail_prompt_dispatch(
                 stale_dispatch,
                 DaemonError::LocalTransport {
-                    operation: "submit Claude headless prompt",
+                    operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                     message: "provider did not acknowledge prompt after PTY injection".to_string(),
                 },
             )
@@ -2579,7 +2583,7 @@ impl KernelRuntimeState {
                         }
                         if tokio::time::Instant::now() >= deadline {
                             return Err(DaemonError::LocalTransport {
-                                operation: "submit Claude headless prompt",
+                                operation: CLAUDE_HEADLESS_PROMPT_ACK_OPERATION,
                                 message: format!(
                                     "provider `{}` did not acknowledge prompt `{}` after PTY injection",
                                     dispatch.provider_run_id, dispatch.prompt_id

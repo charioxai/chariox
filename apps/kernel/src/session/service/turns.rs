@@ -861,4 +861,41 @@ impl SessionService {
         let _ = session.release_workflow_runtime_instance_for_run(workflow_run_id);
         Ok(failed)
     }
+
+    pub fn fail_workflow_run(
+        &mut self,
+        session_id: &str,
+        workflow_run_id: &str,
+    ) -> Result<WorkflowRun, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        let workflow_run = session.workflow_run_mut(workflow_run_id).ok_or_else(|| {
+            DaemonError::WorkflowRunNotFound {
+                session_id: session_id.to_string(),
+                workflow_run_id: workflow_run_id.to_string(),
+            }
+        })?;
+        for node_run in workflow_run.node_runs_mut() {
+            if !matches!(
+                node_run.status(),
+                WorkflowNodeRunStatus::Completed
+                    | WorkflowNodeRunStatus::Failed
+                    | WorkflowNodeRunStatus::Stopped
+            ) {
+                node_run.set_status(WorkflowNodeRunStatus::Failed);
+                if let Some(envelope) = node_run.turn_envelope_mut() {
+                    envelope.mark_failed();
+                }
+            }
+        }
+        workflow_run.clear_active_node_run();
+        workflow_run.set_status(WorkflowRunStatus::Failed);
+        let failed = workflow_run.clone();
+        let _ = session.release_workflow_runtime_instance_for_run(workflow_run_id);
+        Ok(failed)
+    }
 }

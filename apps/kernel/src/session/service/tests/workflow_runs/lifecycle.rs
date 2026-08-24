@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::WorkflowRun;
 
 #[test]
 fn workflow_run_ids_are_unique_lowercase_128_bit_hex() {
@@ -169,6 +170,35 @@ fn provider_failure_marks_workflow_and_node_failed() {
         failed.node_runs()[0].status(),
         WorkflowNodeRunStatus::Failed
     );
+}
+
+#[test]
+fn pre_schedule_failure_marks_workflow_without_node_runs_failed() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let session_id = session.id().to_string();
+    let run = WorkflowRun::new(
+        "run-before-schedule",
+        "workflow-before-schedule",
+        "endpoint-before-schedule",
+        "node-before-schedule",
+        Some("review this diff".to_string()),
+        None,
+        Vec::new(),
+        Vec::new(),
+    );
+    session.create_workflow_run(run.clone());
+    service.restore_session(session);
+
+    let failed = service
+        .fail_workflow_run(&session_id, run.id())
+        .expect("workflow should fail before a node run exists");
+
+    assert_eq!(failed.status(), WorkflowRunStatus::Failed);
+    assert_eq!(failed.active_node_run_id(), None);
+    assert!(failed.node_runs().is_empty());
 }
 
 #[test]

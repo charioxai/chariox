@@ -313,15 +313,10 @@ impl DaemonApp {
                     error.to_string(),
                 ),
             );
-            let _ = self.sessions_mut().fail_workflow_node_run(
-                session_id,
-                workflow_run.id(),
-                node_run.id(),
-            );
         }
         let _ = self
             .sessions_mut()
-            .release_workflow_runtime_instance_for_run(session_id, workflow_run.id());
+            .fail_workflow_run(session_id, workflow_run.id());
     }
 
     fn invoke_queued_workflow_prompt(
