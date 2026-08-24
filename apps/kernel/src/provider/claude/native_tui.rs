@@ -54,6 +54,7 @@ pub(super) struct ClaudeNativeTuiFiles {
     pub(super) context_response_dir: PathBuf,
     pub(super) permission_response_dir: PathBuf,
     pub(super) settings_file: PathBuf,
+    pub(super) usage_file: PathBuf,
     mcp_config_file: Option<PathBuf>,
 }
 
@@ -85,6 +86,8 @@ pub(super) fn prepare_claude_native_tui_files(
     let permission_response_dir = root.path().join("permission-responses");
     let settings_file = root.path().join("settings.json");
     let hook_handler_file = root.path().join("hook-handler.mjs");
+    let usage_file = root.path().join("usage.json");
+    let usage_handler_file = root.path().join("usage-handler.mjs");
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
@@ -101,9 +104,19 @@ pub(super) fn prepare_claude_native_tui_files(
         operation: "prepare claude native context file",
         message: error.to_string(),
     })?;
+    fs::write(&usage_file, "").map_err(|error| DaemonError::LocalTransport {
+        operation: "prepare claude usage file",
+        message: error.to_string(),
+    })?;
     fs::write(&hook_handler_file, claude_native_hook_handler()).map_err(|error| {
         DaemonError::LocalTransport {
             operation: "prepare claude native hook handler",
+            message: error.to_string(),
+        }
+    })?;
+    fs::write(&usage_handler_file, claude_usage_handler()).map_err(|error| {
+        DaemonError::LocalTransport {
+            operation: "prepare claude usage handler",
             message: error.to_string(),
         }
     })?;
@@ -140,6 +153,10 @@ pub(super) fn prepare_claude_native_tui_files(
             "StopFailure": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "SessionEnd": [{ "hooks": [{ "type": "command", "command": hook_command }] }],
             "PermissionRequest": [{ "matcher": "*", "hooks": [{ "type": "command", "command": hook_command }] }]
+        },
+        "statusLine": {
+            "type": "command",
+            "command": claude_usage_command(&usage_handler_file, &usage_file)
         }
     });
     let settings =
@@ -158,8 +175,42 @@ pub(super) fn prepare_claude_native_tui_files(
         context_response_dir,
         permission_response_dir,
         settings_file,
+        usage_file,
         mcp_config_file: None,
     })
+}
+
+fn claude_usage_command(handler_file: &Path, usage_file: &Path) -> String {
+    let quoted = |path: &Path| {
+        serde_json::to_string(&path.display().to_string())
+            .expect("serializing a filesystem path should not fail")
+    };
+    format!(
+        "CHARIOX_CLAUDE_USAGE_FILE={} node {}",
+        quoted(usage_file),
+        quoted(handler_file),
+    )
+}
+
+fn claude_usage_handler() -> &'static str {
+    r#"#!/usr/bin/env node
+import { renameSync, writeFileSync } from "node:fs"
+
+const chunks = []
+for await (const chunk of process.stdin) chunks.push(chunk)
+const raw = Buffer.concat(chunks).toString("utf8").trim()
+if (!raw) process.exit(0)
+
+try {
+  const input = JSON.parse(raw)
+  if (!input?.rate_limits) process.exit(0)
+  const target = process.env.CHARIOX_CLAUDE_USAGE_FILE
+  if (!target) process.exit(0)
+  const temporary = `${target}.${process.pid}.tmp`
+  writeFileSync(temporary, JSON.stringify(input))
+  renameSync(temporary, target)
+} catch {}
+"#
 }
 
 fn claude_native_hook_command(
@@ -449,6 +500,65 @@ mod tests {
         assert!(!handler.contains("permissionDecision"));
         assert!(!handler.contains("toolName.startsWith"));
         assert!(handler.contains("process.exit(0)"));
+    }
+
+    #[test]
+    fn status_line_captures_official_subscription_windows_atomically() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-usage",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let handler = native
+            .usage_file
+            .parent()
+            .expect("usage file should have a root")
+            .join("usage-handler.mjs");
+        let mut child = Command::new("node")
+            .arg(handler)
+            .env("CHARIOX_CLAUDE_USAGE_FILE", &native.usage_file)
+            .stdin(Stdio::piped())
+            .spawn()
+            .expect("usage handler should start");
+        child
+            .stdin
+            .take()
+            .expect("usage stdin should be piped")
+            .write_all(
+                br#"{"rate_limits":{"five_hour":{"used_percentage":21},"seven_day":{"used_percentage":34}}}"#,
+            )
+            .expect("usage input should write");
+        assert!(child.wait().expect("usage handler should finish").success());
+
+        let captured: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&native.usage_file).expect("usage capture should exist"),
+        )
+        .expect("usage capture should be valid JSON");
+        assert_eq!(captured["rate_limits"]["five_hour"]["used_percentage"], 21);
+        assert!(!native
+            .usage_file
+            .parent()
+            .expect("usage root")
+            .read_dir()
+            .expect("usage root should list")
+            .flatten()
+            .any(|entry| entry.path().extension().and_then(|value| value.to_str()) == Some("tmp")));
+
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&native.settings_file).expect("settings should exist"),
+        )
+        .expect("settings should be valid JSON");
+        assert_eq!(settings["statusLine"]["type"], "command");
+        assert!(settings["statusLine"]["command"]
+            .as_str()
+            .is_some_and(|command| command.contains("usage-handler.mjs")));
     }
 
     #[test]

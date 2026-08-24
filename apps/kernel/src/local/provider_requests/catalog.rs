@@ -418,24 +418,20 @@ fn opencode_usage_snapshot(
         ProviderAccountUsageSnapshot,
     };
     let observed_at_ms = crate::session::unix_epoch_ms();
-    let Ok(executable) = resolve_opencode_executable() else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let mut command = Command::new(executable);
-    command
-        .args(["stats", "--format", "json"])
-        .envs(environment);
-    remove_account_auth_environment(&mut command, "opencode");
-    let Ok(output) = command.output() else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(&output.stdout) else {
-        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
-    };
-    let tokens = find_numeric_field(&value, &["tokens", "totalTokens", "total_tokens"]);
-    let cost = find_numeric_field(&value, &["cost", "totalCost", "total_cost"]);
     let mut meters = Vec::new();
-    if let Some(used) = tokens {
+    let local_stats = resolve_opencode_executable().ok().and_then(|executable| {
+        let mut command = Command::new(executable);
+        command
+            .args(["stats", "--format", "json"])
+            .envs(environment);
+        remove_account_auth_environment(&mut command, "opencode");
+        let output = command.output().ok()?;
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).ok()
+    });
+    if let Some(used) = local_stats
+        .as_ref()
+        .and_then(|value| find_numeric_field(value, &["tokens", "totalTokens", "total_tokens"]))
+    {
         meters.push(ProviderAccountUsageMeter {
             meter_id: "local/tokens".to_string(),
             label: "Local token usage".to_string(),
@@ -453,7 +449,10 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
-    if let Some(used) = cost {
+    if let Some(used) = local_stats
+        .as_ref()
+        .and_then(|value| find_numeric_field(value, &["cost", "totalCost", "total_cost"]))
+    {
         meters.push(ProviderAccountUsageMeter {
             meter_id: "local/cost".to_string(),
             label: "Local recorded cost".to_string(),
@@ -471,10 +470,19 @@ fn opencode_usage_snapshot(
             observed_at_ms,
         });
     }
+    let go_usage = opencode_go_usage(environment, observed_at_ms);
+    if let OpenCodeGoUsage::Available(go_meters) = &go_usage {
+        let mut combined = go_meters.clone();
+        combined.extend(meters);
+        meters = combined;
+    }
+    let has_provider_usage = matches!(go_usage, OpenCodeGoUsage::Available(_));
     ProviderAccountUsageSnapshot {
         profile_id: account_profile.to_string(),
         provider: "opencode".to_string(),
-        availability: if meters.is_empty() {
+        availability: if has_provider_usage {
+            ProviderAccountUsageAvailability::Available
+        } else if meters.is_empty() {
             ProviderAccountUsageAvailability::Unavailable
         } else {
             // OpenCode local stats cannot represent Zen or arbitrary upstream
@@ -483,8 +491,142 @@ fn opencode_usage_snapshot(
         },
         meters,
         observed_at_ms: Some(observed_at_ms),
-        source: "opencode.local_stats".to_string(),
+        source: match go_usage {
+            OpenCodeGoUsage::Available(_) => "opencode.go_usage".to_string(),
+            OpenCodeGoUsage::NotEntitled => "opencode.go_not_entitled".to_string(),
+            OpenCodeGoUsage::Unavailable => "opencode.local_stats".to_string(),
+        },
         management_url: Some("https://opencode.ai/zen".to_string()),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+enum OpenCodeGoUsage {
+    Available(Vec<crate::account_profile::ProviderAccountUsageMeter>),
+    NotEntitled,
+    Unavailable,
+}
+
+fn opencode_go_usage(
+    environment: &BTreeMap<String, String>,
+    observed_at_ms: u64,
+) -> OpenCodeGoUsage {
+    let Some(key) = opencode_zen_api_key(environment) else {
+        return OpenCodeGoUsage::Unavailable;
+    };
+    let response = ureq::AgentBuilder::new()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .get("https://opencode.ai/zen/go/v1/usage")
+        .set("Authorization", &format!("Bearer {key}"))
+        .set("User-Agent", "chariox-kernel/provider-usage")
+        .call();
+    match response {
+        Ok(response) => match response
+            .into_string()
+            .ok()
+            .and_then(|body| serde_json::from_str::<serde_json::Value>(&body).ok())
+        {
+            Some(value) => opencode_go_usage_from_value(&value, observed_at_ms)
+                .map(OpenCodeGoUsage::Available)
+                .unwrap_or(OpenCodeGoUsage::Unavailable),
+            None => OpenCodeGoUsage::Unavailable,
+        },
+        Err(ureq::Error::Status(403, response)) => {
+            let body = response
+                .into_string()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            if body.contains("entitlement") || body.contains("subscription required") {
+                OpenCodeGoUsage::NotEntitled
+            } else {
+                OpenCodeGoUsage::Unavailable
+            }
+        }
+        Err(_) => OpenCodeGoUsage::Unavailable,
+    }
+}
+
+fn opencode_zen_api_key(environment: &BTreeMap<String, String>) -> Option<String> {
+    let data_home = environment.get("XDG_DATA_HOME")?;
+    let auth_path = std::path::Path::new(data_home).join("opencode/auth.json");
+    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()?;
+    value
+        .get("opencode")?
+        .get("key")?
+        .as_str()
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(str::to_string)
+}
+
+fn opencode_go_usage_from_value(
+    value: &serde_json::Value,
+    observed_at_ms: u64,
+) -> Option<Vec<crate::account_profile::ProviderAccountUsageMeter>> {
+    use crate::account_profile::{
+        ProviderAccountUsageMeter, ProviderAccountUsageMeterKind, ProviderAccountUsageMeterScope,
+    };
+    let usage = value.get("usage").unwrap_or(value);
+    let windows = [
+        ("rolling", "5-hour", Some(5 * 60)),
+        ("weekly", "Weekly", Some(7 * 24 * 60)),
+        ("monthly", "Monthly", None),
+    ];
+    let meters = windows
+        .into_iter()
+        .filter_map(|(id, label, duration)| {
+            let window = usage.get(id)?;
+            let used_percent = window.get("percent")?.as_f64()?;
+            Some(ProviderAccountUsageMeter {
+                meter_id: format!("go/{id}"),
+                label: label.to_string(),
+                kind: ProviderAccountUsageMeterKind::RollingLimit,
+                scope: ProviderAccountUsageMeterScope::Plan,
+                used_percent: Some(used_percent),
+                used: None,
+                remaining: None,
+                total: None,
+                unit: None,
+                window_duration_minutes: duration,
+                resets_at_ms: window.get("resetsAt").and_then(provider_timestamp_ms),
+                state: usage_meter_state(used_percent, window.get("status")),
+                source: "opencode.go_usage".to_string(),
+                observed_at_ms,
+            })
+        })
+        .collect::<Vec<_>>();
+    (!meters.is_empty()).then_some(meters)
+}
+
+fn provider_timestamp_ms(value: &serde_json::Value) -> Option<u64> {
+    if let Some(value) = value.as_u64() {
+        return Some(if value < 10_000_000_000 {
+            value * 1_000
+        } else {
+            value
+        });
+    }
+    value
+        .as_str()
+        .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        .and_then(|value| u64::try_from(value.timestamp_millis()).ok())
+}
+
+fn usage_meter_state(
+    used_percent: f64,
+    status: Option<&serde_json::Value>,
+) -> crate::account_profile::ProviderAccountUsageMeterState {
+    use crate::account_profile::ProviderAccountUsageMeterState;
+    let status = status
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or_default();
+    if used_percent >= 100.0 || matches!(status, "exhausted" | "rejected" | "rate-limited") {
+        ProviderAccountUsageMeterState::Exhausted
+    } else if used_percent >= 80.0 || status == "warning" {
+        ProviderAccountUsageMeterState::Warning
+    } else {
+        ProviderAccountUsageMeterState::Healthy
     }
 }
 
@@ -922,6 +1064,7 @@ fn approved_live_remote_machines(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::account_profile::ProviderAccountUsageMeterState;
     use crate::provider::OpenCodeProviderModel;
     use serde_json::json;
     use std::fs;
@@ -1256,5 +1399,52 @@ exit 2
         assert_eq!(catalog.all.len(), 1);
         assert_eq!(catalog.all[0].id, "opencode");
         assert!(catalog.all[0].models.contains_key("gpt-5.2"));
+    }
+
+    #[test]
+    fn parses_all_opencode_go_subscription_windows() {
+        let meters = opencode_go_usage_from_value(
+            &json!({
+                "usage": {
+                    "rolling": {"status": "warning", "percent": 82.0, "resetsAt": "2027-01-15T12:00:00Z"},
+                    "weekly": {"status": "active", "percent": 34.0, "resetsAt": 1_800_000_000},
+                    "monthly": {"status": "rate-limited", "percent": 100.0}
+                }
+            }),
+            42,
+        )
+        .expect("Go usage should parse");
+
+        assert_eq!(meters.len(), 3);
+        assert_eq!(meters[0].label, "5-hour");
+        assert_eq!(meters[0].state, ProviderAccountUsageMeterState::Warning);
+        assert_eq!(meters[1].label, "Weekly");
+        assert_eq!(meters[1].resets_at_ms, Some(1_800_000_000_000));
+        assert_eq!(meters[2].label, "Monthly");
+        assert_eq!(meters[2].state, ProviderAccountUsageMeterState::Exhausted);
+    }
+
+    #[test]
+    fn reads_only_the_selected_opencode_profile_key() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-go-key-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode":{"type":"api","key":"selected-profile-key"},"openai":{"type":"oauth","access":"ignored"}}"#,
+        )
+        .expect("auth file should write");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(
+            opencode_zen_api_key(&environment).as_deref(),
+            Some("selected-profile-key")
+        );
+        let _ = fs::remove_dir_all(root);
     }
 }

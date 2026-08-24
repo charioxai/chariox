@@ -275,6 +275,7 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
             provider_run,
         )?;
         self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
+        self.process_claude_account_usage(provider_run)?;
 
         let events_path = std::path::Path::new(events_file);
         let raw = fs::read_to_string(events_path).unwrap_or_default();
@@ -441,6 +442,38 @@ impl<'a> ProviderOutputClaudeNativeBridge<'a> {
         }
         self.drain_known_claude_transcripts(session_id, provider_run_id, context_file)?;
         Ok(outcome)
+    }
+
+    fn process_claude_account_usage(
+        &mut self,
+        provider_run: &RuntimeProviderRun,
+    ) -> Result<(), DaemonError> {
+        let Some(path) = provider_run.pty_env().get("CHARIOX_CLAUDE_USAGE_FILE") else {
+            return Ok(());
+        };
+        let path = std::path::Path::new(path);
+        let consumed_path = path.with_extension("consuming");
+        if fs::rename(path, &consumed_path).is_err() {
+            return Ok(());
+        }
+        let raw = fs::read_to_string(&consumed_path).unwrap_or_default();
+        let _ = fs::remove_file(&consumed_path);
+        if raw.trim().is_empty() {
+            return Ok(());
+        }
+        let Ok(value) = serde_json::from_str(&raw) else {
+            return Ok(());
+        };
+        let Some(snapshot) = crate::provider::claude_status_line_usage_snapshot(&value) else {
+            return Ok(());
+        };
+        self.app.provider_account_profiles.update_usage(
+            provider_run.owner_user_id(),
+            provider_run.provider(),
+            provider_run.account_profile(),
+            snapshot,
+        )?;
+        Ok(())
     }
 
     pub(crate) fn finish_deferred_stop(

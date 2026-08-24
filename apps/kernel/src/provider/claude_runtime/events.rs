@@ -7,6 +7,7 @@ use super::super::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, ProviderRunTokenUsage,
 };
+use super::usage::merge_claude_account_usage;
 use super::ClaudeRuntimeState;
 
 pub(super) fn apply_claude_message(
@@ -184,7 +185,7 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
     } else {
         ProviderAccountUsageMeterScope::Account
     };
-    batch.account_usage = Some(ProviderAccountUsageSnapshot {
+    let snapshot = ProviderAccountUsageSnapshot {
         // The run-owning kernel replaces this placeholder with the selected
         // stable profile ID before persisting it.
         profile_id: String::new(),
@@ -192,7 +193,11 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         availability: ProviderAccountUsageAvailability::Available,
         meters: vec![ProviderAccountUsageMeter {
             meter_id: format!("rate_limit/{limit_type}"),
-            label: limit_type.replace(['_', '-'], " "),
+            label: match limit_type.as_str() {
+                "five_hour" | "five-hour" => "5-hour".to_string(),
+                "seven_day" | "seven-day" => "Weekly".to_string(),
+                _ => limit_type.replace(['_', '-'], " "),
+            },
             kind: ProviderAccountUsageMeterKind::RollingLimit,
             scope,
             used_percent: utilization,
@@ -209,7 +214,8 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
         observed_at_ms: Some(observed_at_ms),
         source: "claude.rate_limit_event".to_string(),
         management_url: Some("https://claude.ai/settings/usage".to_string()),
-    });
+    };
+    merge_claude_account_usage(&mut batch.account_usage, snapshot);
 }
 
 fn apply_assistant_message(

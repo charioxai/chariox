@@ -29,6 +29,8 @@ pub struct ClaudeRuntimeState {
     pub(super) working_directory: Option<PathBuf>,
     pub(super) context_file: Option<PathBuf>,
     pub(super) settings_file: Option<PathBuf>,
+    pub(super) usage_file: Option<PathBuf>,
+    pub(super) last_usage_file_contents: Option<String>,
     pub(super) mcp_config_file: Option<ClaudeMcpConfigFile>,
     pub(super) child: Child,
     pub(super) stdin: ChildStdin,
@@ -57,6 +59,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             .field("working_directory", &self.working_directory)
             .field("context_file", &self.context_file)
             .field("settings_file", &self.settings_file)
+            .field("usage_file", &self.usage_file)
             .field(
                 "mcp_config_file",
                 &self.mcp_config_file.as_ref().map(ClaudeMcpConfigFile::path),

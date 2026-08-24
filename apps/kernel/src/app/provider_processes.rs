@@ -431,6 +431,7 @@ fn claude_native_tui_cleanup_root(run: &RuntimeProviderRun) -> Option<PathBuf> {
         "CHARIOX_CLAUDE_NATIVE_CONTEXT",
         "CHARIOX_CLAUDE_NATIVE_CONTEXT_RESPONSES",
         "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES",
+        "CHARIOX_CLAUDE_USAGE_FILE",
     ] {
         if Path::new(run.pty_env().get(key)?).parent() != Some(root) {
             return None;

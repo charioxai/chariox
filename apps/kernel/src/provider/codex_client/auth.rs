@@ -227,11 +227,6 @@ fn collect_usage_meters(
             let used = number_field(object, &["used", "amountUsed", "amount_used"]);
             let total = number_field(object, &["total", "limit", "spendLimit", "spend_limit"]);
             if used_percent.is_some() || remaining.is_some() || used.is_some() || total.is_some() {
-                let label = path
-                    .rsplit('.')
-                    .next()
-                    .unwrap_or(path)
-                    .replace(['_', '-'], " ");
                 let lower_path = path.to_ascii_lowercase();
                 let kind = if lower_path.contains("credit") || lower_path.contains("balance") {
                     ProviderAccountUsageMeterKind::CreditBalance
@@ -246,6 +241,24 @@ fn collect_usage_meters(
                     Some(_) => ProviderAccountUsageMeterState::Healthy,
                     None => ProviderAccountUsageMeterState::Unknown,
                 };
+                let window_duration_minutes = integer_field(
+                    object,
+                    &[
+                        "windowDurationMins",
+                        "windowDurationMinutes",
+                        "window_duration_minutes",
+                    ],
+                );
+                let label = match window_duration_minutes {
+                    Some(300) => "5-hour".to_string(),
+                    Some(10_080) => "Weekly".to_string(),
+                    Some(43_200..=44_640) => "Monthly".to_string(),
+                    _ => path
+                        .rsplit('.')
+                        .next()
+                        .unwrap_or(path)
+                        .replace(['_', '-'], " "),
+                };
                 meters.push(ProviderAccountUsageMeter {
                     meter_id: path.replace('.', "/"),
                     label,
@@ -256,14 +269,7 @@ fn collect_usage_meters(
                     remaining,
                     total,
                     unit: string_field(object, &["unit", "currency"]),
-                    window_duration_minutes: integer_field(
-                        object,
-                        &[
-                            "windowDurationMins",
-                            "windowDurationMinutes",
-                            "window_duration_minutes",
-                        ],
-                    ),
+                    window_duration_minutes,
                     resets_at_ms: integer_field(object, &["resetsAt", "resetAt", "resets_at"])
                         .map(epoch_to_ms),
                     state,
@@ -271,7 +277,20 @@ fn collect_usage_meters(
                     observed_at_ms,
                 });
             }
+            // Newer app-server versions return the same convenience windows
+            // under `rateLimits` and the authoritative, scoped form under
+            // `rateLimitsByLimitId`. Prefer the scoped form instead of showing
+            // duplicate meters to the user.
+            let has_scoped_rate_limits = object.keys().any(|key| {
+                matches!(
+                    key.as_str(),
+                    "rateLimitsByLimitId" | "rate_limits_by_limit_id"
+                )
+            });
             for (key, child) in object {
+                if has_scoped_rate_limits && matches!(key.as_str(), "rateLimits" | "rate_limits") {
+                    continue;
+                }
                 let child_path = format!("{path}.{key}");
                 collect_usage_meters(child, &child_path, observed_at_ms, meters);
             }
@@ -375,6 +394,34 @@ mod tests {
             .meters
             .iter()
             .any(|meter| meter.remaining == Some(12.5)));
+    }
+
+    #[test]
+    fn prefers_scoped_codex_windows_and_uses_period_labels() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimits": {
+                    "primary": {"usedPercent": 12.0, "windowDurationMins": 300},
+                    "secondary": {"usedPercent": 34.0, "windowDurationMins": 10080}
+                },
+                "rateLimitsByLimitId": {
+                    "codex": {
+                        "primary": {"usedPercent": 12.0, "windowDurationMins": 300},
+                        "secondary": {"usedPercent": 34.0, "windowDurationMins": 10080}
+                    }
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        assert_eq!(snapshot.meters[0].label, "5-hour");
+        assert_eq!(snapshot.meters[1].label, "Weekly");
+        assert!(snapshot
+            .meters
+            .iter()
+            .all(|meter| meter.meter_id.contains("rateLimitsByLimitId")));
     }
 
     #[test]

@@ -148,6 +148,10 @@ fn plan_claude_launch_unlocked(
             "CHARIOX_CLAUDE_NATIVE_PERMISSION_RESPONSES".to_string(),
             native.permission_response_dir.display().to_string(),
         );
+        pty_env.insert(
+            "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+            native.usage_file.display().to_string(),
+        );
         pty_env.insert("TERM".to_string(), "xterm-256color".to_string());
         pty_env.insert("COLORTERM".to_string(), "truecolor".to_string());
         let launch = ProviderLaunchResult {
@@ -198,6 +202,10 @@ fn plan_claude_launch_unlocked(
         pty_env.insert(
             "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
             native.settings_file.display().to_string(),
+        );
+        pty_env.insert(
+            "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+            native.usage_file.display().to_string(),
         );
         crate::logging::info_with_fields(
             "daemon.provider.claude",
@@ -250,6 +258,10 @@ fn plan_claude_launch_unlocked(
     pty_env.insert(
         "CHARIOX_CLAUDE_SETTINGS_FILE".to_string(),
         native.settings_file.display().to_string(),
+    );
+    pty_env.insert(
+        "CHARIOX_CLAUDE_USAGE_FILE".to_string(),
+        native.usage_file.display().to_string(),
     );
     let mut args = claude_launch_args(request)?;
     args.extend([

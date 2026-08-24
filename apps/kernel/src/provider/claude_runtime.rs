@@ -22,12 +22,14 @@ mod events;
 mod input;
 mod process;
 mod state;
+pub(crate) mod usage;
 mod watchdog;
 
 use events::apply_claude_message;
 use input::claude_user_content;
 use process::{spawn_claude_child, stop_child, write_json_line, ClaudeRuntimeMessage};
 pub(crate) use state::{ClaudeRunSelection, ClaudeRuntimeBinding, ClaudeRuntimeState};
+use usage::apply_claude_usage_capture;
 use watchdog::ClaudeTurnStallAction;
 
 pub(crate) fn initialize_claude_runtime(
@@ -58,6 +60,7 @@ pub(crate) fn initialize_claude_runtime(
     let env = run.pty_env().clone();
     let context_file = env.get("CHARIOX_CLAUDE_NATIVE_CONTEXT").map(PathBuf::from);
     let settings_file = env.get("CHARIOX_CLAUDE_SETTINGS_FILE").map(PathBuf::from);
+    let usage_file = env.get("CHARIOX_CLAUDE_USAGE_FILE").map(PathBuf::from);
     let env_remove = run.pty_env_remove().to_vec();
     let working_directory = run.working_directory().cloned();
     let (child, stdin, receiver) = spawn_claude_child(
@@ -79,6 +82,8 @@ pub(crate) fn initialize_claude_runtime(
             working_directory,
             context_file,
             settings_file,
+            usage_file,
+            last_usage_file_contents: None,
             mcp_config_file,
             child,
             stdin,
@@ -206,6 +211,7 @@ pub(crate) fn drain_claude_events(
             Err(TryRecvError::Disconnected) => break,
         }
     }
+    apply_claude_usage_capture(state, &mut batch);
 
     if !batch.prompt_completed && !state.exit_reported {
         match state.child.try_wait() {
@@ -565,6 +571,8 @@ mod tests {
                 working_directory: None,
                 context_file: None,
                 settings_file: None,
+                usage_file: None,
+                last_usage_file_contents: None,
                 mcp_config_file: None,
                 child,
                 stdin,
