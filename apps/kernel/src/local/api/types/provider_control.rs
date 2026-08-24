@@ -80,6 +80,8 @@ pub enum AgentSubstituteAction {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         variant: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
+        account_profile: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         kernel_id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         worktree_id: Option<String>,

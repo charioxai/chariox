@@ -132,6 +132,10 @@ pub struct AgentSubstituteProfile {
     pub model: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub variant: Option<String>,
+    /// Provider account profile used when launching this substitute. `None`
+    /// keeps the historical default-account behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kernel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,9 +152,15 @@ impl AgentSubstituteProfile {
             provider: provider.into(),
             model: model.into(),
             variant,
+            account_profile: None,
             kernel_id: None,
             worktree_id: None,
         }
+    }
+
+    pub fn with_account_profile(mut self, account_profile: Option<String>) -> Self {
+        self.account_profile = normalize_optional_profile(account_profile);
+        self
     }
 
     pub fn with_kernel_id(mut self, kernel_id: Option<String>) -> Self {
@@ -162,6 +172,13 @@ impl AgentSubstituteProfile {
         self.worktree_id = worktree_id;
         self
     }
+}
+
+fn normalize_optional_profile(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let trimmed = value.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

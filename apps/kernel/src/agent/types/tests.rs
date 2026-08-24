@@ -54,6 +54,49 @@ fn substitute_deactivation_restores_primary_without_default_model() {
 }
 
 #[test]
+fn substitute_profile_preserves_account_profile_binding_and_default_semantics() {
+    let default_profile = AgentSubstituteProfile::new("codex", "gpt-5.4", None);
+    assert_eq!(default_profile.account_profile, None);
+
+    let bound = AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+        .with_account_profile(Some("  work  ".to_string()));
+    assert_eq!(bound.account_profile.as_deref(), Some("work"));
+
+    let cleared = AgentSubstituteProfile::new("codex", "gpt-5.4", None)
+        .with_account_profile(Some("   ".to_string()));
+    assert_eq!(cleared.account_profile, None);
+
+    // Persistence round-trip: the bound profile survives serialization and a
+    // legacy profile without account_profile deserializes back to `None`.
+    let serialized = serde_json::to_string(&bound).expect("substitute profile should serialize");
+    let deserialized: AgentSubstituteProfile =
+        serde_json::from_str(&serialized).expect("substitute profile should deserialize");
+    assert_eq!(deserialized, bound);
+    let legacy: AgentSubstituteProfile =
+        serde_json::from_str(r#"{"provider":"codex","model":"gpt-5.4"}"#)
+            .expect("legacy substitute profile should deserialize");
+    assert_eq!(legacy.account_profile, None);
+
+    let mut agent = AgentInstance::new(
+        "agent-1",
+        "agent-1",
+        "session-1",
+        None,
+        "opencode",
+        None,
+        None,
+        None,
+        GridPosition::new(0, 0, 1, 1),
+    );
+    agent.add_substitute(bound.clone());
+    let activated = agent.activate_substitute(0, "manual");
+    assert_eq!(
+        activated.map(|profile| profile.account_profile),
+        Some(Some("work".to_string()))
+    );
+}
+
+#[test]
 fn workflow_runtime_materialization_preserves_config_without_live_state() {
     let mut source = AgentInstance::new(
         "agent-1",

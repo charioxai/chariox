@@ -36,12 +36,16 @@ impl KernelRuntimeState {
             }
             let provider = crate::provider::provider_id_for_launch(&profile.provider);
             let adapter_key = crate::provider::adapter_key_for_provider(provider);
+            let account_profile = profile
+                .account_profile
+                .clone()
+                .unwrap_or_else(|| "default".to_string());
             let config = owned.config_projection.snapshot();
             let mut launch_request = crate::provider::LaunchProviderRequest::new(
                 session_id,
                 adapter_key,
                 provider,
-                "default",
+                account_profile,
                 profile.model.clone(),
             )
             .with_agent_id(agent_id)

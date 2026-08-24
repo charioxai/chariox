@@ -355,6 +355,7 @@ export type AgentSubstituteProfile = {
   provider: string
   model: string
   variant?: string | null
+  account_profile?: string | null
   kernel_id?: string | null
   worktree_id?: string | null
 }

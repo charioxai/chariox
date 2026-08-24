@@ -7,7 +7,7 @@ use crate::provider::ProviderLoginStart;
 
 #[test]
 fn local_daemon_protocol_provider_catalog_selection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
     let request = LocalDaemonRequest::GetProviderCatalog(crate::local::GetProviderCatalogRequest {
         provider: Some("codex".to_string()),
         account_profiles: std::collections::BTreeMap::from([(
@@ -37,7 +37,7 @@ fn local_daemon_protocol_provider_catalog_selection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let requests = vec![
         LocalDaemonRequest::GetProviderLoginStatus(GetProviderLoginStatusRequest {
@@ -108,7 +108,7 @@ fn local_daemon_protocol_provider_terminal_login_shape_is_versioned_and_redacted
 
 #[test]
 fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::CreateProviderAccountProfile(
         crate::local::api::CreateProviderAccountProfileRequest {
@@ -192,7 +192,7 @@ fn local_daemon_protocol_provider_account_profile_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::ImportProviderCapabilities(
         crate::local::ImportProviderCapabilitiesRequest {
@@ -272,7 +272,7 @@ fn local_daemon_protocol_provider_capability_import_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let mut provider_run = RuntimeProviderRun::from_control_capability_inference(
         "provider-run-1",
@@ -369,6 +369,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
                 provider: "codex".to_string(),
                 model: "gpt-5.4".to_string(),
                 variant: Some("medium".to_string()),
+                account_profile: Some("work".to_string()),
                 kernel_id: Some("kernel-1".to_string()),
                 worktree_id: Some("/repo/sub".to_string()),
             },
@@ -383,6 +384,34 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
         substitute_snapshot.pointer("/UpdateAgentSubstitutes/action/Add/worktree_id"),
         Some(&serde_json::json!("/repo/sub"))
     );
+    assert_eq!(
+        substitute_snapshot.pointer("/UpdateAgentSubstitutes/action/Add/account_profile"),
+        Some(&serde_json::json!("work"))
+    );
+    // Null/default semantics: omitting account_profile must not change the wire
+    // shape so older clients keep binding to the provider default account.
+    let default_account_request =
+        LocalDaemonRequest::UpdateAgentSubstitutes(UpdateAgentSubstitutesRequest {
+            session_id: "session-1".to_string(),
+            agent_id: "agent-1".to_string(),
+            action: AgentSubstituteAction::Add {
+                provider: "codex".to_string(),
+                model: "gpt-5.4".to_string(),
+                variant: None,
+                account_profile: None,
+                kernel_id: None,
+                worktree_id: None,
+            },
+        });
+    let default_account_snapshot = serde_json::to_value(default_account_request)
+        .expect("default-account substitute request should serialize");
+    assert_eq!(
+        default_account_snapshot
+            .pointer("/UpdateAgentSubstitutes/action/Add")
+            .and_then(|add| add.as_object())
+            .map(|add| !add.contains_key("account_profile")),
+        Some(true)
+    );
     let substitute_add_snapshot = substitute_snapshot
         .pointer("/UpdateAgentSubstitutes/action/Add")
         .expect("substitute add payload should serialize");
@@ -391,7 +420,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "9b0859c53bee6ebd06bec8f4fc4d5181876cbf407433f0f54f6aa7f29e2f3fec"
+        "c194be05129cb5a452f1e1c7ee49d1a5fe469a6dff62d6b632f03d53163fe2f2"
     );
 
     let layout_request = serde_json::to_value(LocalDaemonRequest::UpdateWorkflowCanvasLayout(
@@ -884,7 +913,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let active_turn = crate::runtime::projection::AgentActiveTurnProjection {
         prompt_id: "external:codex:thread-1:prompt-1".to_string(),
@@ -939,7 +968,7 @@ fn local_daemon_protocol_active_turn_phase_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let control = crate::runtime::projection::AgentQueuedPromptControlProjection {
         prompt_id: "prompt-queued".to_string(),
@@ -989,7 +1018,7 @@ fn local_daemon_protocol_queued_prompt_control_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let completed = crate::git_observer::CompletedGitTurnActionProjection {
         turn_id: "turn-1".to_string(),
@@ -1046,7 +1075,7 @@ fn local_daemon_protocol_completed_turn_action_projection_shape_is_versioned() {
 
 #[test]
 fn local_daemon_protocol_agent_runtime_activity_counts_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let activity = crate::runtime::projection::AgentRuntimeActivity {
         status: crate::runtime::projection::AgentRuntimeStatus::Working,

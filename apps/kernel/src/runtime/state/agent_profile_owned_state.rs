@@ -257,6 +257,7 @@ impl KernelRuntimeOwnedState {
                 provider,
                 model,
                 variant,
+                account_profile,
                 kernel_id,
                 worktree_id,
             } => {
@@ -282,6 +283,7 @@ impl KernelRuntimeOwnedState {
                 self.agent_store.add_agent_substitute(
                     agent_id,
                     crate::agent::AgentSubstituteProfile::new(provider, model, variant)
+                        .with_account_profile(account_profile)
                         .with_kernel_id(kernel_id)
                         .with_worktree_id(worktree_id),
                 )
