@@ -1298,6 +1298,12 @@ fn validate_label(label: &str) -> Result<&str, DaemonError> {
             "label must contain between 1 and 80 characters",
         ));
     }
+    if label.eq_ignore_ascii_case("default") {
+        return Err(registry_error(
+            "validate account profile",
+            "`default` is reserved for the provider-level account pointer",
+        ));
+    }
     Ok(label)
 }
 
@@ -1418,9 +1424,8 @@ fn migrate_legacy_default_profile_labels(document: &mut RegistryDocument) -> boo
         .iter()
         .enumerate()
         .filter(|(_, profile)| {
-            profile.public.origin == ProviderAccountProfileOrigin::Default
-                && (profile.public.label.trim().is_empty()
-                    || profile.public.label.eq_ignore_ascii_case("default"))
+            profile.public.label.trim().is_empty()
+                || profile.public.label.eq_ignore_ascii_case("default")
         })
         .map(|(index, profile)| {
             (
@@ -2074,7 +2079,7 @@ mod tests {
     }
 
     #[test]
-    fn migrates_native_default_labels_to_provider_aliases() {
+    fn reserves_default_for_the_provider_pointer() {
         let (root, registry) = fixture();
         let native = registry
             .migrate_effective_defaults("owner-a", &root.join("home"))
@@ -2082,17 +2087,44 @@ mod tests {
             .into_iter()
             .find(|profile| profile.provider == "codex")
             .unwrap();
-        registry
+
+        let rename_error = registry
             .rename("owner-a", "codex", &native.profile_id, "Default")
+            .unwrap_err();
+        let create_error = registry
+            .create_managed("owner-a", "codex", "default")
+            .unwrap_err();
+
+        assert!(rename_error.to_string().contains("reserved"));
+        assert!(create_error.to_string().contains("reserved"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn migrates_legacy_default_aliases_regardless_of_profile_origin() {
+        let (root, registry) = fixture();
+        let profile = registry
+            .create_managed("owner-a", "codex", "legacy-name")
             .unwrap();
+        {
+            let mut document = registry.write_document().unwrap();
+            document
+                .profiles
+                .iter_mut()
+                .find(|candidate| candidate.public.profile_id == profile.profile_id)
+                .unwrap()
+                .public
+                .label = "Default".to_string();
+            registry.persist_locked(&document).unwrap();
+        }
         drop(registry);
         let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
 
         let migrated = registry
-            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .list("owner-a", Some("codex"))
             .unwrap()
             .into_iter()
-            .find(|profile| profile.profile_id == native.profile_id)
+            .find(|candidate| candidate.profile_id == profile.profile_id)
             .unwrap();
 
         assert_eq!(migrated.label, "codex-1");
