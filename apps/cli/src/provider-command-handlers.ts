@@ -8,6 +8,7 @@ import type {
 } from "./cli-types.js"
 import type { ParsedSlashCommand } from "./commands.js"
 import { isBackendProviderId } from "./provider-catalog.js"
+import { providerAccountsForProvider } from "./waiting-room-provider-accounts.js"
 
 type FooterTone = "info" | "error"
 
@@ -273,7 +274,7 @@ async function handleProviderAccountsCommand(
     }
     const profiles = await deps.listProviderAccountProfiles(provider ?? null)
     const lines = profiles.map((entry) => {
-      return `${entry.provider}/${entry.profile_id} "${entry.label}"${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.identity_summary ? ` · ${entry.identity_summary}` : ""}${entry.plan ? ` · ${entry.plan}` : ""} · ${formatProviderAccountUsage(entry)}`
+      return `${entry.provider} ${entry.label}${entry.is_default ? " [default]" : ""} · ${entry.auth_state}${entry.plan ? ` · ${entry.plan}` : ""} · ${formatProviderAccountUsage(entry)}`
     })
     deps.appendNotice(lines.length > 0 ? lines.join("\n") : "No provider accounts registered")
     deps.flashFooter(`${profiles.length} provider account profile${profiles.length === 1 ? "" : "s"}`, "info")
@@ -283,28 +284,53 @@ async function handleProviderAccountsCommand(
     deps.flashFooter("usage: /provider accounts <add|link|refresh|rename|default|remove|delete> <provider> ...", "error")
     return
   }
-  let result: ProviderAccountProfile
-  if (action === "add" && profile && deps.createProviderAccountProfile) {
-    result = await deps.createProviderAccountProfile(provider, [profile, ...rest].join(" "))
-  } else if (action === "link" && profile && rest.length >= 1 && deps.linkProviderAccountProfile) {
-    const path = rest.at(-1)!
-    result = await deps.linkProviderAccountProfile(provider, [profile, ...rest.slice(0, -1)].join(" "), path)
-  } else if (action === "refresh" && profile && deps.refreshProviderAccountProfile) {
-    result = await deps.refreshProviderAccountProfile(provider, profile)
-  } else if (action === "rename" && profile && rest.length > 0 && deps.renameProviderAccountProfile) {
-    result = await deps.renameProviderAccountProfile(provider, profile, rest.join(" "))
-  } else if (action === "default" && profile && deps.setDefaultProviderAccountProfile) {
-    result = await deps.setDefaultProviderAccountProfile(provider, profile)
-  } else if (action === "remove" && profile && deps.removeProviderAccountProfile) {
-    result = await deps.removeProviderAccountProfile(provider, profile)
-  } else if (action === "delete" && profile && rest[0] === profile && deps.deleteProviderAccountProfileData) {
-    result = await deps.deleteProviderAccountProfileData(provider, profile)
-  } else {
-    deps.flashFooter("invalid or unavailable Provider Accounts action; destructive delete requires repeating the profile ID", "error")
+  let result: ProviderAccountProfile | null = null
+  if (action === "add" && deps.createProviderAccountProfile) {
+    result = await deps.createProviderAccountProfile(provider, [profile, ...rest].filter(Boolean).join(" "))
+  } else if (action === "link" && profile && deps.linkProviderAccountProfile) {
+    const operands = [profile, ...rest]
+    const path = operands.at(-1)!
+    result = await deps.linkProviderAccountProfile(provider, operands.slice(0, -1).join(" "), path)
+  } else if (["refresh", "rename", "default", "remove", "delete"].includes(action) && profile) {
+    const profileId = await resolveProviderAccountAlias(deps, provider, profile)
+    if (!profileId) return
+    if (action === "refresh" && deps.refreshProviderAccountProfile) {
+      result = await deps.refreshProviderAccountProfile(provider, profileId)
+    } else if (action === "rename" && rest.length > 0 && deps.renameProviderAccountProfile) {
+      result = await deps.renameProviderAccountProfile(provider, profileId, rest.join(" "))
+    } else if (action === "default" && deps.setDefaultProviderAccountProfile) {
+      result = await deps.setDefaultProviderAccountProfile(provider, profileId)
+    } else if (action === "remove" && deps.removeProviderAccountProfile) {
+      result = await deps.removeProviderAccountProfile(provider, profileId)
+    } else if (action === "delete" && rest[0] === profile && deps.deleteProviderAccountProfileData) {
+      result = await deps.deleteProviderAccountProfileData(provider, profileId)
+    }
+  }
+  if (!result) {
+    deps.flashFooter("invalid or unavailable Provider Accounts action; destructive delete requires repeating the account alias", "error")
     return
   }
-  deps.appendNotice(`${action}: ${result.provider}/${result.profile_id} "${result.label}"`)
+  deps.appendNotice(`${action}: ${result.provider} ${result.label}`)
   deps.flashFooter(`provider account ${action} complete`, "info")
+}
+
+async function resolveProviderAccountAlias(
+  deps: ProviderCommandHandlerDeps,
+  provider: string,
+  alias: string,
+): Promise<string | null> {
+  if (!deps.listProviderAccountProfiles) {
+    deps.flashFooter("provider account management is unavailable", "error")
+    return null
+  }
+  const profiles = providerAccountsForProvider(
+    await deps.listProviderAccountProfiles(provider),
+    provider,
+  )
+  const profile = profiles.find((entry) => entry.label.localeCompare(alias, undefined, { sensitivity: "accent" }) === 0)
+  if (profile) return profile.profile_id
+  deps.flashFooter(`provider account alias ${alias} was not found for ${provider}`, "error")
+  return null
 }
 
 function formatProviderAccountUsage(profile: ProviderAccountProfile): string {
