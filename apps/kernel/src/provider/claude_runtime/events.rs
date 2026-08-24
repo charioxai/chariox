@@ -7,8 +7,8 @@ use super::super::{
     ProviderAssistantCompletion, ProviderPromptChunk, ProviderPromptSignalBatch,
     ProviderResumeState, ProviderRunTokenUsage,
 };
-use super::usage::merge_claude_account_usage;
 use super::ClaudeRuntimeState;
+use super::usage::merge_claude_account_usage;
 
 pub(super) fn apply_claude_message(
     provider_run_id: &str,
@@ -172,14 +172,7 @@ fn apply_rate_limit_event(value: &Value, batch: &mut ProviderPromptSignalBatch) 
     let resets_at_ms = info
         .get("resets_at")
         .or_else(|| info.get("resetsAt"))
-        .and_then(Value::as_u64)
-        .map(|value| {
-            if value < 10_000_000_000 {
-                value * 1_000
-            } else {
-                value
-            }
-        });
+        .and_then(super::usage::timestamp_ms);
     let scope = if limit_type.to_ascii_lowercase().contains("model") {
         ProviderAccountUsageMeterScope::Model
     } else {

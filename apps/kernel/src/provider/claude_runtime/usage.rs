@@ -8,8 +8,8 @@ use crate::account_profile::{
 };
 use crate::session::unix_epoch_ms;
 
-use super::state::ClaudeRuntimeState;
 use super::ProviderPromptSignalBatch;
+use super::state::ClaudeRuntimeState;
 
 pub(super) fn apply_claude_usage_capture(
     state: &mut ClaudeRuntimeState,
@@ -148,12 +148,22 @@ fn status_line_meter(
     })
 }
 
-fn timestamp_ms(value: &Value) -> Option<u64> {
+pub(super) fn timestamp_ms(value: &Value) -> Option<u64> {
     if let Some(value) = value.as_u64() {
         return Some(if value < 10_000_000_000 {
             value * 1_000
         } else {
             value
+        });
+    }
+    if let Some(value) = value.as_f64() {
+        return (value > 0.0).then(|| {
+            let value = value as u64;
+            if value < 10_000_000_000 {
+                value * 1_000
+            } else {
+                value
+            }
         });
     }
     value
@@ -217,6 +227,25 @@ mod tests {
             usage.meters[0].state,
             ProviderAccountUsageMeterState::Exhausted
         );
+    }
+
+    #[test]
+    fn parses_camel_case_status_line_windows() {
+        let usage = claude_status_line_usage_snapshot(&serde_json::json!({
+            "rateLimits": {
+                "fiveHour": {
+                    "usedPercentage": 12.0,
+                    "resetsAt": 1_800_000_000_000u64
+                }
+            }
+        }))
+        .expect("camel-case usage snapshot");
+
+        assert_eq!(usage.meters.len(), 1);
+        assert_eq!(usage.meters[0].meter_id, "rate_limit/five_hour");
+        assert_eq!(usage.meters[0].used_percent, Some(12.0));
+        assert_eq!(usage.meters[0].resets_at_ms, Some(1_800_000_000_000));
+        assert_eq!(usage.meters[0].window_duration_minutes, Some(5 * 60));
     }
 
     #[test]

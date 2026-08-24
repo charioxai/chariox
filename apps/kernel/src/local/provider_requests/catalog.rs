@@ -1,9 +1,9 @@
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
 use crate::provider::{
+    CodexClient, OpenCodeClient, OpenCodeProviderCatalog, OpenCodeProviderInfo, ProviderAuthStatus,
     claude_provider_catalog, default_provider_command_catalogs, resolve_claude_executable,
-    resolve_opencode_executable, CodexClient, OpenCodeClient, OpenCodeProviderCatalog,
-    OpenCodeProviderInfo, ProviderAuthStatus,
+    resolve_opencode_executable,
 };
 use chariox_relay::protocol::RelayMachinePresence;
 use std::collections::BTreeMap;
@@ -308,7 +308,7 @@ pub(crate) fn refresh_provider_account_profile_response(
             return Err(unsupported_auth_provider(
                 "refresh provider account",
                 provider,
-            ))
+            ));
         }
     };
     registry.update_observation(
@@ -1166,9 +1166,15 @@ exit 2
             registry_root.join("profiles.json"),
         )
         .expect("profile registry should open");
-        registry
+        let migrated = registry
             .migrate_effective_defaults("local", &registry_root.join("home"))
             .expect("default profiles should migrate");
+        let claude_profile_id = migrated
+            .iter()
+            .find(|profile| profile.provider == "claude")
+            .expect("claude profile should migrate")
+            .profile_id
+            .clone();
 
         let response = provider_auth_status_response(
             &registry,
@@ -1189,12 +1195,14 @@ exit 2
                 assert_eq!(status.provider, "claude-headless");
                 assert_eq!(status.auth_state, "authenticated");
                 assert_eq!(status.detected_version.as_deref(), Some("claude 1.2.3"));
-                assert_eq!(status.account_profile, "default");
-                assert!(status
-                    .identity_summary
-                    .as_deref()
-                    .unwrap_or_default()
-                    .contains("dev@example.test"));
+                assert_eq!(status.account_profile, claude_profile_id);
+                assert!(
+                    status
+                        .identity_summary
+                        .as_deref()
+                        .unwrap_or_default()
+                        .contains("dev@example.test")
+                );
             }
             response => panic!("unexpected response: {response:?}"),
         }
@@ -1422,6 +1430,32 @@ exit 2
         assert_eq!(meters[1].resets_at_ms, Some(1_800_000_000_000));
         assert_eq!(meters[2].label, "Monthly");
         assert_eq!(meters[2].state, ProviderAccountUsageMeterState::Exhausted);
+    }
+
+    #[test]
+    fn opencode_go_usage_is_fail_closed_without_reported_windows() {
+        assert!(opencode_go_usage_from_value(&json!({}), 42).is_none());
+        assert!(
+            opencode_go_usage_from_value(&json!({"usage": {"rolling": {"status": "active"}}}), 42)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn opencode_timestamps_accept_seconds_milliseconds_and_rfc3339() {
+        assert_eq!(
+            provider_timestamp_ms(&json!(1_800_000_000)),
+            Some(1_800_000_000_000)
+        );
+        assert_eq!(
+            provider_timestamp_ms(&json!(1_800_000_000_000u64)),
+            Some(1_800_000_000_000)
+        );
+        assert_eq!(
+            provider_timestamp_ms(&json!("2027-01-15T12:00:00Z")),
+            Some(1_800_014_400_000)
+        );
+        assert_eq!(provider_timestamp_ms(&json!("not-a-time")), None);
     }
 
     #[test]

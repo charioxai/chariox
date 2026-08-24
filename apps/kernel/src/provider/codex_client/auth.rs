@@ -9,7 +9,7 @@ use crate::account_profile::{
 };
 use crate::error::DaemonError;
 
-use super::{resolve_codex_executable, CodexClient};
+use super::{CodexClient, resolve_codex_executable};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderAuthStatus {
@@ -182,8 +182,19 @@ fn normalize_codex_usage(
     if let Some(value) = usage {
         collect_usage_meters(value, "usage", observed_at_ms, &mut meters);
     }
-    meters.sort_by(|left, right| left.meter_id.cmp(&right.meter_id));
-    meters.dedup_by(|left, right| left.meter_id == right.meter_id);
+    // Same-identity meters from a later surface are fresher, so last wins.
+    let mut deduped: Vec<ProviderAccountUsageMeter> = Vec::with_capacity(meters.len());
+    for meter in meters {
+        match deduped
+            .iter()
+            .position(|existing| existing.meter_id == meter.meter_id)
+        {
+            Some(index) => deduped[index] = meter,
+            None => deduped.push(meter),
+        }
+    }
+    deduped.sort_by(|left, right| left.meter_id.cmp(&right.meter_id));
+    let meters = deduped;
     let available_surfaces = usize::from(rate_limits.is_some()) + usize::from(usage.is_some());
     ProviderAccountUsageSnapshot {
         profile_id: account_profile.to_string(),
@@ -215,13 +226,8 @@ fn collect_usage_meters(
         serde_json::Value::Object(object) => {
             let used_percent =
                 number_field(object, &["usedPercent", "used_percent"]).or_else(|| {
-                    number_field(object, &["utilization"]).map(|value| {
-                        if value <= 1.0 {
-                            value * 100.0
-                        } else {
-                            value
-                        }
-                    })
+                    number_field(object, &["utilization"])
+                        .map(|value| if value <= 1.0 { value * 100.0 } else { value })
                 });
             let remaining = number_field(object, &["remaining", "balance", "credits"]);
             let used = number_field(object, &["used", "amountUsed", "amount_used"]);
@@ -253,14 +259,23 @@ fn collect_usage_meters(
                     Some(300) => "5-hour".to_string(),
                     Some(10_080) => "Weekly".to_string(),
                     Some(43_200..=44_640) => "Monthly".to_string(),
-                    _ => path
-                        .rsplit('.')
-                        .next()
-                        .unwrap_or(path)
-                        .replace(['_', '-'], " "),
+                    _ => scoped_meter_label(path),
+                };
+                // Meter identity is the limit kind plus window duration, not
+                // the JSON traversal path. App-server payloads expose the same
+                // windows under different shapes across versions and surfaces,
+                // and stable identities keep the account merge from showing
+                // duplicate or orphaned window meters.
+                let meter_id = match kind {
+                    ProviderAccountUsageMeterKind::CreditBalance => "credits".to_string(),
+                    ProviderAccountUsageMeterKind::SpendLimit => "spend".to_string(),
+                    _ => match window_duration_minutes {
+                        Some(minutes) => format!("rolling/{minutes}"),
+                        None => format!("rolling/{}", path.replace('.', "/")),
+                    },
                 };
                 meters.push(ProviderAccountUsageMeter {
-                    meter_id: path.replace('.', "/"),
+                    meter_id,
                     label,
                     kind,
                     scope: ProviderAccountUsageMeterScope::Account,
@@ -270,8 +285,7 @@ fn collect_usage_meters(
                     total,
                     unit: string_field(object, &["unit", "currency"]),
                     window_duration_minutes,
-                    resets_at_ms: integer_field(object, &["resetsAt", "resetAt", "resets_at"])
-                        .map(epoch_to_ms),
+                    resets_at_ms: timestamp_field_ms(object, &["resetsAt", "resetAt", "resets_at"]),
                     state,
                     source: "codex.app_server".to_string(),
                     observed_at_ms,
@@ -326,6 +340,44 @@ fn string_field(
 ) -> Option<String> {
     keys.iter()
         .find_map(|key| object.get(*key)?.as_str().map(str::to_string))
+}
+
+fn timestamp_field_ms(
+    object: &serde_json::Map<String, serde_json::Value>,
+    keys: &[&str],
+) -> Option<u64> {
+    keys.iter().find_map(|key| {
+        let value = object.get(*key)?;
+        if let Some(value) = value.as_u64() {
+            return Some(epoch_to_ms(value));
+        }
+        if let Some(value) = value.as_f64() {
+            return (value > 0.0).then(|| epoch_to_ms(value as u64));
+        }
+        let text = value.as_str()?.trim();
+        if let Ok(value) = text.parse::<u64>() {
+            return Some(epoch_to_ms(value));
+        }
+        chrono::DateTime::parse_from_rfc3339(text)
+            .ok()
+            .and_then(|value| u64::try_from(value.timestamp_millis()).ok())
+    })
+}
+
+/// User-facing labels must be window periods or provider-reported scoped
+/// names, never positional `primary`/`secondary` family keys.
+fn scoped_meter_label(path: &str) -> String {
+    let readable = |segment: &str| segment.replace(['_', '-'], " ");
+    let tail = path.rsplit('.').next().unwrap_or(path);
+    if matches!(tail, "primary" | "secondary" | "tertiary") {
+        return path
+            .split('.')
+            .rev()
+            .nth(1)
+            .map(readable)
+            .unwrap_or_else(|| "rate limit".to_string());
+    }
+    readable(tail)
 }
 
 fn epoch_to_ms(value: u64) -> u64 {
@@ -386,14 +438,18 @@ mod tests {
             ProviderAccountUsageAvailability::Available
         );
         assert_eq!(snapshot.meters.len(), 3);
-        assert!(snapshot
-            .meters
-            .iter()
-            .any(|meter| meter.state == ProviderAccountUsageMeterState::Exhausted));
-        assert!(snapshot
-            .meters
-            .iter()
-            .any(|meter| meter.remaining == Some(12.5)));
+        assert!(
+            snapshot
+                .meters
+                .iter()
+                .any(|meter| meter.state == ProviderAccountUsageMeterState::Exhausted)
+        );
+        assert!(
+            snapshot
+                .meters
+                .iter()
+                .any(|meter| meter.remaining == Some(12.5))
+        );
     }
 
     #[test]
@@ -416,12 +472,103 @@ mod tests {
         );
 
         assert_eq!(snapshot.meters.len(), 2);
-        assert_eq!(snapshot.meters[0].label, "5-hour");
-        assert_eq!(snapshot.meters[1].label, "Weekly");
-        assert!(snapshot
+        let five_hour = snapshot
             .meters
             .iter()
-            .all(|meter| meter.meter_id.contains("rateLimitsByLimitId")));
+            .find(|meter| meter.window_duration_minutes == Some(300))
+            .expect("5-hour window");
+        let weekly = snapshot
+            .meters
+            .iter()
+            .find(|meter| meter.window_duration_minutes == Some(10_080))
+            .expect("weekly window");
+        assert_eq!(five_hour.label, "5-hour");
+        assert_eq!(weekly.label, "Weekly");
+        assert_eq!(five_hour.meter_id, "rolling/300");
+        assert_eq!(weekly.meter_id, "rolling/10080");
+    }
+
+    #[test]
+    fn keeps_one_meter_per_window_across_usage_surfaces() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimits": {
+                    "primary": {"usedPercent": 50.0, "windowDurationMins": 300}
+                }
+            })),
+            Some(&json!({
+                "rateLimits": {
+                    "primary": {"utilization": 0.55, "windowDurationMins": 300}
+                }
+            })),
+        );
+
+        assert_eq!(snapshot.meters.len(), 1);
+        assert_eq!(snapshot.meters[0].meter_id, "rolling/300");
+        assert!(
+            (snapshot.meters[0].used_percent.expect("used percentage") - 55.0).abs()
+                < f64::EPSILON * 100.0
+        );
+    }
+
+    #[test]
+    fn keeps_distinct_durationless_windows_without_exposing_positional_labels() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimits": {
+                    "primary": {"usedPercent": 40.0},
+                    "secondary": {"usedPercent": 10.0}
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        assert_ne!(snapshot.meters[0].meter_id, snapshot.meters[1].meter_id);
+        assert!(
+            snapshot
+                .meters
+                .iter()
+                .all(|meter| !matches!(meter.label.as_str(), "primary" | "secondary"))
+        );
+    }
+
+    #[test]
+    fn parses_string_and_ratio_limit_fields() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimits": {
+                    "primary": {
+                        "utilization": 0.4,
+                        "windowDurationMins": 10080,
+                        "resetsAt": "2027-01-15T12:00:00Z"
+                    },
+                    "secondary": {
+                        "usedPercent": 10.0,
+                        "resetsAt": 1_800_000_000
+                    }
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        let weekly = snapshot
+            .meters
+            .iter()
+            .find(|meter| meter.window_duration_minutes == Some(10_080))
+            .expect("weekly window");
+        assert_eq!(weekly.used_percent, Some(40.0));
+        assert_eq!(weekly.resets_at_ms, Some(1_800_014_400_000));
+        let other = snapshot
+            .meters
+            .iter()
+            .find(|meter| meter.window_duration_minutes.is_none())
+            .expect("duration-less window");
+        assert_ne!(other.label, "secondary");
     }
 
     #[test]
