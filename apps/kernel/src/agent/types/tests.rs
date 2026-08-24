@@ -134,28 +134,42 @@ fn substitute_activation_switches_account_and_deactivation_restores_primary_acco
 }
 
 #[test]
-fn substitute_without_bound_account_falls_back_to_default_and_restore_is_exact() {
+fn legacy_persisted_unbound_substitute_keeps_default_fallback_until_rebound() {
+    // New substitutes can no longer be created without a bound stable account
+    // (the kernel add seam resolves or rejects). This test constrains the
+    // dynamic default fallback to LEGACY persisted records only: an existing
+    // substitute deserialized without `account_profile` keeps launching via
+    // the default sentinel, and returning to primary still restores the exact
+    // primary profile.
     let mut agent = AgentInstance::new(
         "agent-1",
         "agent-1",
         "session-1",
         None,
         "opencode",
-        None,
+        Some("gpt-5.4".to_string()),
         None,
         None,
         GridPosition::new(0, 0, 1, 1),
     );
     agent.set_account_profile(Some("primary-work".to_string()));
     agent.set_primary_profile("opencode", Some("gpt-5.4".to_string()), None);
-    agent.add_substitute(AgentSubstituteProfile::new("codex", "gpt-5.4", None));
+    let mut substitute = AgentSubstituteProfile::new("codex", "gpt-5.4", None);
+    substitute.account_profile = None;
+    agent.add_substitute(substitute);
+    // Simulate the legacy persisted record (no account binding on disk).
+    let mut restored: AgentInstance =
+        serde_json::from_str(&serde_json::to_string(&agent).expect("agent should serialize"))
+            .expect("agent should deserialize");
+    assert_eq!(restored.substitutes()[0].account_profile, None);
 
-    agent.activate_substitute(0, "manual");
-    assert_eq!(agent.account_profile(), None);
-    assert_eq!(agent.provider_account_profile(), "default");
+    restored.activate_substitute(0, "manual");
+    assert_eq!(restored.account_profile(), None);
+    assert_eq!(restored.provider_account_profile(), "default");
 
-    agent.deactivate_substitute();
-    assert_eq!(agent.account_profile(), Some("primary-work"));
+    restored.deactivate_substitute();
+    assert_eq!(restored.provider(), "opencode");
+    assert_eq!(restored.account_profile(), Some("primary-work"));
 }
 
 #[test]

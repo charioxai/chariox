@@ -321,32 +321,46 @@ impl KernelRuntimeOwnedState {
                         });
                     }
                 }
-                // Authority seam: a bound substitute account must resolve in the
-                // kernel account inventory for this provider family before it is
-                // accepted, so activation can never fall back to the default
-                // sentinel for a known-bound substitute.
-                let account_profile = match account_profile
+                // Authority seam: a substitute must bind a real stable account
+                // profile from the kernel account inventory. An omitted alias
+                // resolves the provider's current default to its stable
+                // profile_id now, so the substitute never follows a later
+                // default change and can never launch via the literal default
+                // sentinel. Unregistered providers (no inventory family) keep
+                // historical pass-through semantics.
+                let requested_account = account_profile
                     .as_deref()
                     .map(str::trim)
-                    .filter(|value| !value.is_empty())
+                    .filter(|value| !value.is_empty());
+                let account_profile = if crate::provider::canonical_provider_family(&provider)
+                    .is_some_and(|family| matches!(family, "codex" | "claude" | "opencode"))
                 {
-                    Some(requested)
-                        if crate::provider::canonical_provider_family(&provider).is_some_and(
-                            |family| matches!(family, "codex" | "claude" | "opencode"),
-                        ) =>
-                    {
-                        let account_owner_user_id =
-                            crate::account_profile::provider_account_authority_owner_user_id(
-                                &self.config_projection.snapshot(),
-                                agent.owner_user_id(),
-                            );
-                        Some(
-                            self.provider_account_profiles
-                                .get(&account_owner_user_id, &provider, requested)?
-                                .profile_id,
-                        )
+                    let requested = requested_account.unwrap_or("default");
+                    let account_owner_user_id =
+                        crate::account_profile::provider_account_authority_owner_user_id(
+                            &self.config_projection.snapshot(),
+                            agent.owner_user_id(),
+                        );
+                    match self.provider_account_profiles.get(
+                        &account_owner_user_id,
+                        &provider,
+                        requested,
+                    ) {
+                        Ok(profile) => Some(profile.profile_id),
+                        Err(error) if requested_account.is_none() => {
+                            return Err(DaemonError::LocalTransport {
+                                operation: "add agent substitute",
+                                message: format!(
+                                    "no usable default account profile is registered for \
+                                     `{provider}`; register a default provider account or bind an \
+                                     explicit account alias ({error})"
+                                ),
+                            });
+                        }
+                        Err(error) => return Err(error),
                     }
-                    other => other.map(str::to_string),
+                } else {
+                    requested_account.map(str::to_string)
                 };
                 self.agent_store.add_agent_substitute(
                     agent_id,

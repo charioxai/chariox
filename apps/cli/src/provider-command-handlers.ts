@@ -329,7 +329,7 @@ async function handleProviderAccountsCommand(
   deps.flashFooter(`provider account ${action} complete`, "info")
 }
 
-async function resolveProviderAccountAlias(
+export async function resolveProviderAccountAlias(
   deps: ProviderCommandHandlerDeps,
   provider: string,
   alias: string,
@@ -338,13 +338,13 @@ async function resolveProviderAccountAlias(
     deps.flashFooter("provider account management is unavailable", "error")
     return null
   }
-  const profiles = providerAccountsForProvider(
+  const profile = findProviderAccountByAlias(
     await deps.listProviderAccountProfiles(provider),
     provider,
+    alias,
   )
-  const profile = profiles.find((entry) => entry.label.localeCompare(alias, undefined, { sensitivity: "accent" }) === 0)
   if (profile) return profile.profile_id
-  deps.flashFooter(`provider account alias ${alias} was not found for ${provider}`, "error")
+  deps.flashFooter(`provider account alias ${alias.trim()} was not found for ${provider}`, "error")
   return null
 }
 
@@ -399,6 +399,16 @@ function providerAccountSubject(provider: string, accountLabel: string): string 
   return accountLabel === "Account unavailable" ? provider : `${provider}/${accountLabel}`
 }
 
+function findProviderAccountByAlias(
+  profiles: Awaited<ReturnType<NonNullable<ProviderCommandHandlerDeps["listProviderAccountProfiles"]>>>,
+  provider: string,
+  alias: string,
+) {
+  const normalizedAlias = alias.trim()
+  return providerAccountsForProvider(profiles, provider)
+    .find((candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0)
+}
+
 async function resolveProviderAccountReference(
   deps: ProviderCommandHandlerDeps,
   provider: string,
@@ -410,8 +420,7 @@ async function resolveProviderAccountReference(
     deps.flashFooter("provider account selection is unavailable", "error")
     return null
   }
-  const profile = providerAccountsForProvider(await deps.listProviderAccountProfiles(provider), provider)
-    .find((candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0)
+  const profile = findProviderAccountByAlias(await deps.listProviderAccountProfiles(provider), provider, normalizedAlias)
   if (profile) return profile.profile_id
   deps.flashFooter(`provider account alias ${normalizedAlias} was not found for ${provider}`, "error")
   return null

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { handleProviderSlashCommand, type ProviderCommandHandlerDeps } from "./provider-command-handlers.js"
+import { handleProviderSlashCommand, resolveProviderAccountAlias, type ProviderCommandHandlerDeps } from "./provider-command-handlers.js"
 
 test("provider account list explains unavailable usage and exhausted limits", async () => {
   const notices: string[] = []
@@ -216,4 +216,108 @@ test("provider status, logout, and reauth reject an unknown account alias before
     message: "provider account alias missing-account was not found for codex",
     tone: "error" as const,
   })))
+})
+
+test("provider account alias resolution trims whitespace and ignores case without exposing ids", async () => {
+  const footers: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message) => footers.push(message),
+    appendNotice: () => {},
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a",
+      provider: "codex",
+      profile_id: "opaque-stable-id",
+      label: "Validation",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      usage: { profile_id: "opaque-stable-id", provider: "codex", availability: "unavailable", source: "test" },
+    }],
+  }
+
+  assert.equal(await resolveProviderAccountAlias(deps, "codex", "  Validation  "), "opaque-stable-id")
+  assert.equal(await resolveProviderAccountAlias(deps, "codex", "\tvalidation\n"), "opaque-stable-id")
+  assert.deepEqual(footers, [])
+})
+
+test("provider account actions reject unknown aliases with public-label errors and no mutation", async () => {
+  const footers: Array<{ message: string; tone: "info" | "error" }> = []
+  const mutations: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message, tone) => footers.push({ message, tone }),
+    appendNotice: () => {},
+    listProviderAccountProfiles: async () => [],
+    setDefaultProviderAccountProfile: async () => {
+      mutations.push("default")
+      throw new Error("default switch should not run")
+    },
+    refreshProviderAccountProfile: async () => {
+      mutations.push("refresh")
+      throw new Error("refresh should not run")
+    },
+    removeProviderAccountProfile: async () => {
+      mutations.push("remove")
+      throw new Error("remove should not run")
+    },
+  }
+
+  for (const action of ["refresh", "default", "remove"]) {
+    await handleProviderSlashCommand(deps, {
+      kind: "provider",
+      raw: `/provider accounts ${action} codex missing`,
+      value: `accounts ${action} codex missing`,
+    })
+  }
+
+  assert.deepEqual(mutations, [])
+  assert.deepEqual(footers, Array.from({ length: 3 }, () => ({
+    message: "provider account alias missing was not found for codex",
+    tone: "error" as const,
+  })))
+})
+
+test("provider status resolves a padded alias to the stable id and reports only public labels", async () => {
+  const statuses: Array<{ provider: string; accountProfile?: string | undefined }> = []
+  const notices: string[] = []
+  const footers: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message) => footers.push(message),
+    appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a",
+      provider: "codex",
+      profile_id: "opaque-stable-id",
+      label: "Validation",
+      origin: "chariox_created",
+      is_default: false,
+      auth_state: "authenticated",
+      identity_summary: "owner@example.com",
+      usage: { profile_id: "opaque-stable-id", provider: "codex", availability: "unavailable", source: "test" },
+    }],
+    getProviderAuthStatus: async (provider, accountProfile) => {
+      statuses.push({ provider, ...(accountProfile === undefined ? {} : { accountProfile }) })
+      return {
+        provider,
+        account_profile: accountProfile ?? "default",
+        auth_state: "authenticated",
+        identity_summary: "owner@example.com",
+        login_hint: null,
+        detected_version: null,
+      }
+    },
+  }
+
+  await handleProviderSlashCommand(deps, {
+    kind: "provider",
+    raw: "/provider status codex VALIDATION",
+    value: "status codex VALIDATION",
+  })
+
+  assert.deepEqual(statuses, [{ provider: "codex", accountProfile: "opaque-stable-id" }])
+  const rendered = [...notices, ...footers].join("\n")
+  assert.match(rendered, /codex\/Validation/)
+  assert.doesNotMatch(rendered, /opaque-stable-id/)
 })
