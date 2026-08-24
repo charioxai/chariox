@@ -61,6 +61,57 @@ test("provider account list explains unavailable usage and exhausted limits", as
   assert.doesNotMatch(notices.join("\n"), /secondary|owner@example.com/)
 })
 
+test("provider account list renders every subscription window meter with labels", async () => {
+  const notices: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "claude",
+    flashFooter: () => {},
+    appendNotice: (message) => notices.push(message),
+    listProviderAccountProfiles: async () => [{
+      owner_user_id: "owner-a",
+      provider: "claude",
+      profile_id: "opaque-claude-id",
+      label: "Pro",
+      origin: "chariox_created",
+      is_default: true,
+      auth_state: "authenticated",
+      usage: {
+        profile_id: "opaque-claude-id",
+        provider: "claude",
+        availability: "available",
+        meters: [{
+          meter_id: "rate_limit/five_hour",
+          label: "5-hour",
+          kind: "rolling_limit",
+          scope: "account",
+          used_percent: 84,
+          resets_at_ms: Date.now() + 7_200_000,
+          state: "warning",
+          source: "claude.status_line",
+          observed_at_ms: Date.now(),
+        }, {
+          meter_id: "rate_limit/seven_day",
+          label: "Weekly",
+          kind: "rolling_limit",
+          scope: "account",
+          used_percent: 31,
+          resets_at_ms: Date.now() + 5 * 86_400_000,
+          state: "healthy",
+          source: "claude.status_line",
+          observed_at_ms: Date.now(),
+        }],
+        source: "claude.native_usage",
+      },
+      materializations: [],
+    }],
+  }
+
+  await handleProviderSlashCommand(deps, { kind: "provider", raw: "/provider accounts list", value: "accounts list" })
+
+  const rendered = notices.join("\n")
+  assert.match(rendered, /5-hour 84% used · nearing limit · resets in 2h \| Weekly 31% used · resets in 5d/)
+})
+
 test("provider account actions accept aliases while keeping profile ids internal", async () => {
   const calls: string[] = []
   const notices: string[] = []
