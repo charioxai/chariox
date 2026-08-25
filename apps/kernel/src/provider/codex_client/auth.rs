@@ -294,9 +294,7 @@ fn collect_usage_meters(
                 // the account merge from showing duplicate or orphaned window
                 // meters while keeping distinct same-duration limits
                 // separate.
-                let scoped_limit_id = scope_label
-                    .as_deref()
-                    .and_then(|_| scoped_meter_identity(path));
+                let scoped_limit_id = scoped_container_identity(path);
                 let meter_id = match kind {
                     ProviderAccountUsageMeterKind::CreditBalance => scoped_limit_id
                         .map(|limit_id| format!("credits/{limit_id}"))
@@ -423,6 +421,24 @@ fn timestamp_field_ms(
 /// provider identity, so the same scoped limit normalizes identically across
 /// the `rate_limits` and `usage` surfaces.
 fn scoped_meter_identity(path: &str) -> Option<&str> {
+    if let Some(identity) = scoped_container_identity(path) {
+        return Some(identity);
+    }
+    path.split('.').skip(1).find(|segment| {
+        !matches!(
+            *segment,
+            "rateLimits"
+                | "rate_limits"
+                | "rateLimitsByLimitId"
+                | "rate_limits_by_limit_id"
+                | "primary"
+                | "secondary"
+                | "tertiary"
+        ) && segment.parse::<u64>().is_err()
+    })
+}
+
+fn scoped_container_identity(path: &str) -> Option<&str> {
     let segments = path.split('.').collect::<Vec<_>>();
     if let Some(container_index) = segments
         .iter()
@@ -435,18 +451,7 @@ fn scoped_meter_identity(path: &str) -> Option<&str> {
                 !segment.is_empty() && !matches!(*segment, "primary" | "secondary" | "tertiary")
             });
     }
-    segments.iter().skip(1).copied().find(|segment| {
-        !matches!(
-            *segment,
-            "rateLimits"
-                | "rate_limits"
-                | "rateLimitsByLimitId"
-                | "rate_limits_by_limit_id"
-                | "primary"
-                | "secondary"
-                | "tertiary"
-        ) && segment.parse::<u64>().is_err()
-    })
+    None
 }
 
 /// User-facing labels must be window periods or provider-reported scoped
@@ -677,6 +682,34 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(labels.contains(&"Personal credits"));
         assert!(labels.contains(&"Team credits"));
+    }
+
+    #[test]
+    fn keeps_unnamed_scoped_credit_balances_distinct() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "personal": {
+                        "limitName": null,
+                        "creditBalance": {"balance": "5"}
+                    },
+                    "team": {
+                        "creditBalance": {"balance": "9"}
+                    }
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        let ids = snapshot
+            .meters
+            .iter()
+            .map(|meter| meter.meter_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"credits/personal"));
+        assert!(ids.contains(&"credits/team"));
     }
 
     #[test]
