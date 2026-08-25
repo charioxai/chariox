@@ -1,6 +1,7 @@
 mod display_endpoint;
 mod lifecycle;
 mod provider_auth;
+mod worker_discovery;
 
 use crate::error::DaemonError;
 use crate::local::{

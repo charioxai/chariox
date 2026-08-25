@@ -507,3 +507,46 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         Some(&"slice-local-token")
     );
 }
+
+#[test]
+fn hosted_relay_discovery_uses_owner_metadata_credential() {
+    let relay = LocalDockerSliceRelay {
+        relay_url: "wss://relay.example.test".to_string(),
+        container_relay_url: Some("wss://relay.example.test".to_string()),
+        relay_token: "worker-bootstrap-token".to_string(),
+        cloud_relay_config_json: None,
+    };
+    let mut owner_config = DaemonConfig::for_tests();
+    owner_config.relay_token = Some("owner-metadata-token".to_string());
+
+    let discovery = relay.worker_discovery_config(owner_config);
+
+    assert!(relay.uses_shared_relay());
+    assert!(!relay.uses_private_relay());
+    assert_eq!(
+        discovery.relay_token.as_deref(),
+        Some("owner-metadata-token")
+    );
+}
+
+#[test]
+fn private_relay_discovery_uses_private_relay_credential() {
+    let relay = LocalDockerSliceRelay {
+        relay_url: "ws://127.0.0.1:43130".to_string(),
+        container_relay_url: None,
+        relay_token: "slice-private-token".to_string(),
+        cloud_relay_config_json: None,
+    };
+    let mut owner_config = DaemonConfig::for_tests();
+    owner_config.relay_token = Some("owner-token".to_string());
+
+    let discovery = relay.worker_discovery_config(owner_config);
+
+    assert!(relay.uses_private_relay());
+    assert!(!relay.uses_shared_relay());
+    assert_eq!(
+        discovery.relay_token.as_deref(),
+        Some("slice-private-token")
+    );
+    assert!(discovery.cloud_relay.is_none());
+}

@@ -48,6 +48,25 @@ pub struct LocalDockerSliceRelay {
     pub cloud_relay_config_json: Option<String>,
 }
 
+impl LocalDockerSliceRelay {
+    pub(crate) fn uses_shared_relay(&self) -> bool {
+        self.container_relay_url.is_some()
+    }
+
+    pub(crate) fn uses_private_relay(&self) -> bool {
+        !self.uses_shared_relay()
+    }
+
+    pub(crate) fn worker_discovery_config(&self, mut owner_config: DaemonConfig) -> DaemonConfig {
+        owner_config.relay_url = Some(self.relay_url.clone());
+        if self.uses_private_relay() {
+            owner_config.relay_token = Some(self.relay_token.clone());
+            owner_config.cloud_relay = None;
+        }
+        owner_config
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDockerSliceOptions {
     pub root: PathBuf,
