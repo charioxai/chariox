@@ -222,24 +222,7 @@ function formatAccountValue(profile: ProviderAccountProfile | null): string {
   if (!profile) {
     return "Default (not discovered)"
   }
-  const identity = profile.identity_summary ? ` · ${profile.identity_summary}` : ""
-  const usage = compactUsage(profile)
-  return `${profile.label}${identity}${usage ? ` · ${usage}` : ""}`
-}
-
-function compactUsage(profile: ProviderAccountProfile): string | null {
-  const meters = profile.usage.meters ?? []
-  const meter = meters.find((candidate) => candidate.state === "exhausted") ?? meters[0]
-  if (!meter) {
-    return profile.usage.availability === "unavailable" ? "usage not observed" : null
-  }
-  if (meter.used_percent !== undefined && meter.used_percent !== null) {
-    return `${Math.round(meter.used_percent)}% used`
-  }
-  if (meter.remaining !== undefined && meter.remaining !== null) {
-    return `${meter.remaining}${meter.unit ? ` ${meter.unit}` : ""} remaining`
-  }
-  return meter.label
+  return profile.label
 }
 
 function formatTitleCase(value: string) {

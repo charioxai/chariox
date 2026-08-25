@@ -230,6 +230,50 @@ test("waiting room start rows include selected slice provider account", () => {
   assert.equal(rows.find((row) => row.id === "account")?.value, "Default (not discovered)")
 })
 
+test("waiting room account row shows only the public alias", () => {
+  const catalog = fallbackProviderCatalog()
+  const modelOptions = catalogModelOptions(catalog, "codex")
+  const rows = waitingRoomStartRows(
+    waitingRoomState({ providerId: "codex" }),
+    {
+      providerId: "codex",
+      model: modelOptions[0] ?? null,
+      effort: "low",
+      accountProfile: {
+        owner_user_id: "local",
+        provider: "codex",
+        profile_id: "opaque-profile-id",
+        label: "codex-2",
+        origin: "linked",
+        is_default: false,
+        auth_state: "authenticated",
+        identity_summary: "owner@example.com",
+        usage: {
+          profile_id: "opaque-profile-id",
+          provider: "codex",
+          availability: "available",
+          source: "test",
+          meters: [{
+            key: "credits",
+            label: "Credits",
+            state: "available",
+            remaining: 42,
+          }],
+        },
+      },
+    },
+    {
+      modelOptions,
+      inventoryLoading: false,
+      loadingText: "loading",
+      visibleSessionCount: 0,
+      titleWidth: 24,
+    },
+  )
+
+  assert.equal(rows.find((row) => row.id === "account")?.value, "codex-2")
+})
+
 test("waiting room start rows do not conflate worker auth with the selected account", () => {
   const catalog = fallbackProviderCatalog()
   const modelOptions = catalogModelOptions(catalog, "opencode")
