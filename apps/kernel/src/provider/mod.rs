@@ -26,6 +26,7 @@ mod workspace_live_sync_policy;
 mod workspace_write_fence;
 
 pub(crate) use claude::ensure_claude_native_hidden_context_fits;
+pub(crate) use claude::probe_claude_account_usage;
 pub use claude::{claude_provider_catalog, plan_claude_launch, resolve_claude_executable};
 pub(crate) use claude_runtime::ClaudeRuntimeState;
 pub use codex::{

@@ -10,6 +10,7 @@ use super::launch_args::{normalized_claude_model, request_uses_metaagent_tools_o
 use super::mcp_config::{
     create_claude_runtime_files_root, materialize_request_claude_mcp_config, ClaudeRuntimeFilesRoot,
 };
+use super::usage_capture::materialize_claude_usage_capture;
 
 pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 4;
 pub(crate) const CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES: usize = 6_000;
@@ -86,8 +87,8 @@ pub(super) fn prepare_claude_native_tui_files(
     let permission_response_dir = root.path().join("permission-responses");
     let settings_file = root.path().join("settings.json");
     let hook_handler_file = root.path().join("hook-handler.mjs");
-    let usage_file = root.path().join("usage.json");
-    let usage_handler_file = root.path().join("usage-handler.mjs");
+    let usage_capture = materialize_claude_usage_capture(&root)?;
+    let usage_file = usage_capture.usage_file().to_path_buf();
     fs::create_dir_all(&context_response_dir).map_err(|error| DaemonError::LocalTransport {
         operation: "prepare claude native context response dir",
         message: error.to_string(),
@@ -104,19 +105,9 @@ pub(super) fn prepare_claude_native_tui_files(
         operation: "prepare claude native context file",
         message: error.to_string(),
     })?;
-    fs::write(&usage_file, "").map_err(|error| DaemonError::LocalTransport {
-        operation: "prepare claude usage file",
-        message: error.to_string(),
-    })?;
     fs::write(&hook_handler_file, claude_native_hook_handler()).map_err(|error| {
         DaemonError::LocalTransport {
             operation: "prepare claude native hook handler",
-            message: error.to_string(),
-        }
-    })?;
-    fs::write(&usage_handler_file, claude_usage_handler()).map_err(|error| {
-        DaemonError::LocalTransport {
-            operation: "prepare claude usage handler",
             message: error.to_string(),
         }
     })?;
@@ -156,7 +147,7 @@ pub(super) fn prepare_claude_native_tui_files(
         },
         "statusLine": {
             "type": "command",
-            "command": claude_usage_command(&usage_handler_file, &usage_file)
+            "command": usage_capture.command()
         }
     });
     let settings =
@@ -178,39 +169,6 @@ pub(super) fn prepare_claude_native_tui_files(
         usage_file,
         mcp_config_file: None,
     })
-}
-
-fn claude_usage_command(handler_file: &Path, usage_file: &Path) -> String {
-    let quoted = |path: &Path| {
-        serde_json::to_string(&path.display().to_string())
-            .expect("serializing a filesystem path should not fail")
-    };
-    format!(
-        "CHARIOX_CLAUDE_USAGE_FILE={} node {}",
-        quoted(usage_file),
-        quoted(handler_file),
-    )
-}
-
-fn claude_usage_handler() -> &'static str {
-    r#"#!/usr/bin/env node
-import { renameSync, writeFileSync } from "node:fs"
-
-const chunks = []
-for await (const chunk of process.stdin) chunks.push(chunk)
-const raw = Buffer.concat(chunks).toString("utf8").trim()
-if (!raw) process.exit(0)
-
-try {
-  const input = JSON.parse(raw)
-  if (!input?.rate_limits) process.exit(0)
-  const target = process.env.CHARIOX_CLAUDE_USAGE_FILE
-  if (!target) process.exit(0)
-  const temporary = `${target}.${process.pid}.tmp`
-  writeFileSync(temporary, JSON.stringify(input))
-  renameSync(temporary, target)
-} catch {}
-"#
 }
 
 fn claude_native_hook_command(

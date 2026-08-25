@@ -15,6 +15,8 @@ mod catalog;
 mod launch_args;
 mod mcp_config;
 mod native_tui;
+mod usage_capture;
+mod usage_probe;
 
 pub use catalog::claude_provider_catalog;
 use catalog::CLAUDE_HEADLESS_PROVIDER_ID;
@@ -24,6 +26,7 @@ pub(crate) use mcp_config::CLAUDE_MCP_CONFIG_PLACEHOLDER;
 pub(crate) use mcp_config::{materialize_runtime_claude_mcp_config, ClaudeMcpConfigFile};
 pub(crate) use native_tui::ensure_claude_native_hidden_context_fits;
 use native_tui::{claude_native_tui_args, prepare_claude_native_tui_files};
+pub(crate) use usage_probe::probe_claude_account_usage;
 
 pub(crate) const CLAUDE_STRUCTURED_ENDPOINT: &str = "stdio://claude";
 

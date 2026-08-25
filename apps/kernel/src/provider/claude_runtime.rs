@@ -481,7 +481,7 @@ fn claude_args_without_resume(args: &[String]) -> Vec<String> {
     sanitized
 }
 
-fn new_claude_session_id() -> String {
+pub(crate) fn new_claude_session_id() -> String {
     let mut bytes = [0_u8; 16];
     rand::thread_rng().fill_bytes(&mut bytes);
     bytes[6] = (bytes[6] & 0x0f) | 0x40;

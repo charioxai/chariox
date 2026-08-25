@@ -296,16 +296,23 @@ pub(crate) fn refresh_provider_account_profile_response(
                 client.usage_snapshot(&profile.profile_id)?,
             )
         }
-        Some("claude") => (
-            claude_auth_status(provider, &profile.profile_id, &environment)?,
-            // Claude Code owns its credentials. Refresh auth through the CLI,
-            // then retain the latest provider-run status-line/rate-limit
-            // observation without reading Keychain or credential files.
-            profile
-                .usage
-                .clone()
-                .reconciled_freshness(crate::session::unix_epoch_ms()),
-        ),
+        Some("claude") => {
+            let status = claude_auth_status(provider, &profile.profile_id, &environment)?;
+            let usage = if status.auth_state == "authenticated" {
+                let executable = resolve_claude_executable()?;
+                crate::provider::probe_claude_account_usage(
+                    &executable,
+                    &profile.profile_id,
+                    &environment,
+                )?
+            } else {
+                profile
+                    .usage
+                    .clone()
+                    .reconciled_freshness(crate::session::unix_epoch_ms())
+            };
+            (status, usage)
+        }
         Some("opencode") => (
             opencode_auth_status(&profile.profile_id, &environment)?,
             opencode_usage_snapshot(&profile.profile_id, &environment),
