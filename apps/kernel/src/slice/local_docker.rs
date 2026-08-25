@@ -20,11 +20,13 @@ use super::model::{
 use super::ports::{busy_published_ports_for_slice, LocalDockerSlicePorts};
 
 mod broker;
+mod provider_inputs;
 mod state;
 #[cfg(test)]
 mod tests;
 
 use broker::docker_command;
+use provider_inputs::home_provider_credential_sources;
 pub use state::{
     create_local_docker_slice_backup, create_local_docker_slice_backup_live,
     default_local_docker_saved_state, remove_local_docker_saved_state,
@@ -182,38 +184,7 @@ pub fn run_local_docker_slice_action(
         std::env::var_os("HOME"),
     ) {
         let home = PathBuf::from(home);
-        for (environment, source, name) in [
-            (
-                "CHARIOX_SLICE_CODEX_AUTH",
-                home.join(".codex/auth.json"),
-                "codex-auth.json",
-            ),
-            (
-                "CHARIOX_SLICE_OPENCODE_AUTH",
-                home.join(".local/share/opencode/auth.json"),
-                "opencode-auth.json",
-            ),
-            (
-                "CHARIOX_SLICE_CLAUDE_JSON",
-                home.join(".claude.json"),
-                "claude.json",
-            ),
-            (
-                "CHARIOX_SLICE_CLAUDE_SETTINGS",
-                home.join(".claude/settings.json"),
-                "claude-settings.json",
-            ),
-            (
-                "CHARIOX_SLICE_CLAUDE_STATS",
-                home.join(".claude/stats-cache.json"),
-                "claude-stats.json",
-            ),
-            (
-                "CHARIOX_SLICE_CLAUDE_CREDENTIALS",
-                home.join(".claude/.credentials.json"),
-                "claude-credentials.json",
-            ),
-        ] {
+        for (environment, source, name) in home_provider_credential_sources(&home, provider) {
             configure_provider_input(&mut command, &mut broker_inputs, environment, &source, name)?;
         }
     }
