@@ -199,6 +199,7 @@ mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
 mod capability_owned_state;
+mod detached_provider_run_owned_state;
 mod owned;
 mod pending_runtime_state;
 use pending_runtime_state::*;

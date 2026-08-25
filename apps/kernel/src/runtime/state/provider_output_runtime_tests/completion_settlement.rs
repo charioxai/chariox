@@ -677,6 +677,31 @@ async fn detached_session_completes_active_and_two_queued_prompts_without_transi
         assert_eq!(settled.started_next_prompt, index < 2);
     }
 
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let session_is_idle = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .expect("detached session should remain")
+                .active_provider_run_id()
+                .is_none();
+            let provider_is_parked = runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .expect("detached provider run should remain")
+                .state()
+                == crate::provider::ProviderRunState::Parked;
+            if session_is_idle && provider_is_parked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed detached provider should park");
+
     let completed = runtime
         .owned
         .session_store
