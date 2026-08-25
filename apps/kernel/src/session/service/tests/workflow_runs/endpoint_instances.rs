@@ -928,13 +928,8 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         .resolve_workflow_ref(session.id(), workflow.id())
         .expect("workflow should resolve");
     let endpoint = workflow.endpoint(endpoint.id()).expect("endpoint").clone();
-    register_primary_instance(
-        &mut service,
-        session.id(),
-        &workflow,
-        &endpoint,
-        "instance-primary",
-    );
+    // Durable reconstruction does not promise vector order. Register the
+    // clone first to prove dispatch still prefers the lowest ordinal.
     register_clone_instance(
         &mut service,
         session.id(),
@@ -942,6 +937,13 @@ fn pool_prefers_idle_clone_reuse_and_queues_when_full() {
         &endpoint,
         "instance-clone",
         "worktree-2",
+    );
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
     );
 
     // An idle instance already exists, so provisioning must plan nothing new.

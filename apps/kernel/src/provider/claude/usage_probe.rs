@@ -49,7 +49,7 @@ fn probe_claude_account_usage_with_timeout(
         serde_json::to_vec(&serde_json::json!({
             "statusLine": {
                 "type": "command",
-                "command": capture.command(),
+                "command": capture.raw_command(),
             }
         }))
         .map_err(|error| probe_error(format!("failed to encode settings: {error}")))?,
@@ -78,6 +78,12 @@ fn probe_claude_account_usage_with_timeout(
         // terminal capability replies before starting the status line.
         "--ax-screen-reader",
     ]);
+    for (name, value) in environment {
+        if name == "HOME" {
+            continue;
+        }
+        command.env(name, value);
+    }
     for name in [
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
@@ -85,9 +91,6 @@ fn probe_claude_account_usage_with_timeout(
         "ANTHROPIC_CUSTOM_HEADERS",
     ] {
         command.env_remove(name);
-    }
-    for (name, value) in environment {
-        command.env(name, value);
     }
     command.env("DISABLE_AUTOUPDATER", "1");
     command.env("TERM", "xterm-256color");
@@ -97,14 +100,24 @@ fn probe_claude_account_usage_with_timeout(
         .spawn_command(command)
         .map_err(|error| probe_error(format!("failed to start Claude: {error}")))?;
     drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|error| probe_error(format!("failed to drain Claude PTY: {error}")))?;
-    let mut writer = pair
-        .master
-        .take_writer()
-        .map_err(|error| probe_error(format!("failed to control Claude PTY: {error}")))?;
+    let mut reader = match pair.master.try_clone_reader() {
+        Ok(reader) => reader,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(probe_error(format!("failed to drain Claude PTY: {error}")));
+        }
+    };
+    let mut writer = match pair.master.take_writer() {
+        Ok(writer) => writer,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(probe_error(format!(
+                "failed to control Claude PTY: {error}"
+            )));
+        }
+    };
     let (output_tx, output_rx) = mpsc::sync_channel(64);
     let reader_thread = thread::Builder::new()
         .name("chariox-claude-usage-probe-reader".to_string())
@@ -226,14 +239,17 @@ fn cleanup_probe_session(
     environment: &BTreeMap<String, String>,
     session_id: &str,
 ) -> Result<(), DaemonError> {
-    let config_root = environment
-        .get("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))
+    let config_root = claude_config_root(environment, std::env::var_os("HOME").map(PathBuf::from))
         .ok_or_else(|| probe_error("cannot locate Claude account storage".to_string()))?;
     let projects_root = config_root.join("projects");
-    let Ok(metadata) = fs::symlink_metadata(&projects_root) else {
-        return Ok(());
+    let metadata = match fs::symlink_metadata(&projects_root) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(probe_error(format!(
+                "failed to inspect Claude projects storage: {error}"
+            )))
+        }
     };
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(probe_error(format!(
@@ -254,8 +270,15 @@ fn cleanup_probe_session(
             continue;
         }
         let transcript = entry.path().join(&transcript_name);
-        let Ok(transcript_metadata) = fs::symlink_metadata(&transcript) else {
-            continue;
+        let transcript_metadata = match fs::symlink_metadata(&transcript) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(probe_error(format!(
+                    "failed to inspect Claude probe transcript {}: {error}",
+                    transcript.display()
+                )))
+            }
         };
         if transcript_metadata.file_type().is_symlink() || !transcript_metadata.is_file() {
             return Err(probe_error(format!(
@@ -271,6 +294,16 @@ fn cleanup_probe_session(
         })?;
     }
     Ok(())
+}
+
+fn claude_config_root(
+    environment: &BTreeMap<String, String>,
+    inherited_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    environment
+        .get("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| inherited_home.map(|home| home.join(".claude")))
 }
 
 fn append_probe_error(error: DaemonError, diagnostic: String) -> DaemonError {
@@ -363,6 +396,10 @@ writeFileSync(transcriptPath, "")
 writeFileSync(process.env.CHARIOX_PROBE_TEST_ENV_FILE, JSON.stringify({
   home: process.env.HOME,
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
+  anthropicApiKey: process.env.ANTHROPIC_API_KEY,
+  anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
+  anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
+  anthropicCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
   transcriptPath
 }))
 const emitStatusLine = (input) => spawnSync("/bin/sh", ["-c", settings.statusLine.command], {
@@ -391,12 +428,29 @@ process.stdin.resume()
         let inherited_home = std::env::var("HOME").expect("test HOME");
         let environment = BTreeMap::from([
             (
+                "HOME".to_string(),
+                fixture.join("wrong-home").display().to_string(),
+            ),
+            (
                 "CLAUDE_CONFIG_DIR".to_string(),
                 claude_config_dir.display().to_string(),
             ),
             (
                 "CHARIOX_PROBE_TEST_ENV_FILE".to_string(),
                 observed_environment.display().to_string(),
+            ),
+            ("ANTHROPIC_API_KEY".to_string(), "wrong-api-key".to_string()),
+            (
+                "ANTHROPIC_AUTH_TOKEN".to_string(),
+                "wrong-auth-token".to_string(),
+            ),
+            (
+                "ANTHROPIC_BASE_URL".to_string(),
+                "https://wrong.invalid".to_string(),
+            ),
+            (
+                "ANTHROPIC_CUSTOM_HEADERS".to_string(),
+                "x-wrong: yes".to_string(),
             ),
         ]);
 
@@ -420,6 +474,14 @@ process.stdin.resume()
             observed["claudeConfigDir"],
             environment["CLAUDE_CONFIG_DIR"]
         );
+        for key in [
+            "anthropicApiKey",
+            "anthropicAuthToken",
+            "anthropicBaseUrl",
+            "anthropicCustomHeaders",
+        ] {
+            assert!(observed.get(key).is_none(), "{key} must be removed");
+        }
         assert!(
             !Path::new(
                 observed["transcriptPath"]
@@ -470,6 +532,17 @@ process.stdin.resume()
         assert_eq!(
             terminal_diagnostic(b"\x1b[31mLogin expired\x1b[0m\r\n  run auth"),
             "Login expired run auth"
+        );
+    }
+
+    #[test]
+    fn account_environment_cannot_replace_home_for_cleanup() {
+        let inherited_home = PathBuf::from("/real/home");
+        let environment = BTreeMap::from([("HOME".to_string(), "/wrong/home".to_string())]);
+
+        assert_eq!(
+            claude_config_root(&environment, Some(inherited_home)),
+            Some(PathBuf::from("/real/home/.claude"))
         );
     }
 }

@@ -359,12 +359,15 @@ impl RuntimeSession {
         endpoint_id: &str,
         workflow_revision: u64,
     ) -> Option<&WorkflowEndpointRuntimeInstance> {
-        self.workflow_runtime_instances.iter().find(|instance| {
-            instance.workflow_id() == workflow_id
-                && instance.endpoint_id() == endpoint_id
-                && instance.workflow_revision() == workflow_revision
-                && instance.status() == WorkflowEndpointRuntimeInstanceStatus::Idle
-        })
+        self.workflow_runtime_instances
+            .iter()
+            .filter(|instance| {
+                instance.workflow_id() == workflow_id
+                    && instance.endpoint_id() == endpoint_id
+                    && instance.workflow_revision() == workflow_revision
+                    && instance.status() == WorkflowEndpointRuntimeInstanceStatus::Idle
+            })
+            .min_by_key(|instance| instance.ordinal())
     }
 
     pub fn current_workflow_runtime_instance_count(

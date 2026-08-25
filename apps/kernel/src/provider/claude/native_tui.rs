@@ -520,6 +520,51 @@ mod tests {
     }
 
     #[test]
+    fn status_line_preserves_usage_when_a_later_tick_has_no_rate_limits() {
+        if Command::new("node").arg("--version").output().is_err() {
+            return;
+        }
+        let request = LaunchProviderRequest::new(
+            "session-usage-sequence",
+            "claude",
+            "claude-headless",
+            "default",
+            "sonnet",
+        );
+        let native =
+            prepare_claude_native_tui_files(&request).expect("native files should be prepared");
+        let handler = native
+            .usage_file
+            .parent()
+            .expect("usage file should have a root")
+            .join("usage-handler.mjs");
+        for payload in [
+            br#"{"rate_limits":{"five_hour":{"used_percentage":21}}}"#.as_slice(),
+            br#"{"model":{"display_name":"Claude"}}"#.as_slice(),
+        ] {
+            let mut child = Command::new("node")
+                .arg(&handler)
+                .env("CHARIOX_CLAUDE_USAGE_FILE", &native.usage_file)
+                .stdin(Stdio::piped())
+                .spawn()
+                .expect("usage handler should start");
+            child
+                .stdin
+                .take()
+                .expect("usage stdin should be piped")
+                .write_all(payload)
+                .expect("usage input should write");
+            assert!(child.wait().expect("usage handler should finish").success());
+        }
+
+        let captured: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&native.usage_file).expect("usage capture should exist"),
+        )
+        .expect("usage capture should be valid JSON");
+        assert_eq!(captured["rate_limits"]["five_hour"]["used_percentage"], 21);
+    }
+
+    #[test]
     fn permission_request_hook_uses_permission_request_specific_decision_contract() {
         if Command::new("node").arg("--version").output().is_err() {
             return;
