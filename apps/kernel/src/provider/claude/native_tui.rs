@@ -533,18 +533,22 @@ mod tests {
         );
         let native =
             prepare_claude_native_tui_files(&request).expect("native files should be prepared");
-        let handler = native
-            .usage_file
-            .parent()
-            .expect("usage file should have a root")
-            .join("usage-handler.mjs");
+        let settings: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&native.settings_file).expect("settings should exist"),
+        )
+        .expect("settings should be valid JSON");
+        let usage_command = settings["statusLine"]["command"]
+            .as_str()
+            .expect("usage command");
         for payload in [
             br#"{"rate_limits":{"five_hour":{"used_percentage":21}}}"#.as_slice(),
             br#"{"model":{"display_name":"Claude"}}"#.as_slice(),
         ] {
-            let mut child = Command::new("node")
-                .arg(&handler)
-                .env("CHARIOX_CLAUDE_USAGE_FILE", &native.usage_file)
+            let mut child = Command::new("/bin/sh")
+                .args(["-c", usage_command])
+                // The generated native command must override an inherited
+                // internal probe flag instead of capturing ordinary ticks.
+                .env("CHARIOX_CLAUDE_CAPTURE_ALL", "1")
                 .stdin(Stdio::piped())
                 .spawn()
                 .expect("usage handler should start");

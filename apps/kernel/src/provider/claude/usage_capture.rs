@@ -16,7 +16,7 @@ impl ClaudeUsageCapture {
     }
 
     pub(super) fn command(&self) -> String {
-        self.command_with_environment("")
+        self.command_with_environment("CHARIOX_CLAUDE_CAPTURE_ALL=0 ")
     }
 
     pub(super) fn raw_command(&self) -> String {

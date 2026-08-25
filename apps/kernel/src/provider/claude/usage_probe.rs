@@ -79,6 +79,9 @@ fn probe_claude_account_usage_with_timeout(
         "--ax-screen-reader",
     ]);
     for (name, value) in environment {
+        // Credential profiles isolate Claude accounts with
+        // CLAUDE_CONFIG_DIR. HOME must remain the inherited macOS login home
+        // so Claude can resolve and persist its Keychain credentials.
         if name == "HOME" {
             continue;
         }
