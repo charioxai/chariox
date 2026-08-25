@@ -177,10 +177,10 @@ fn normalize_codex_usage(
     let observed_at_ms = crate::session::unix_epoch_ms();
     let mut meters = Vec::new();
     if let Some(value) = rate_limits {
-        collect_usage_meters(value, "rate_limits", observed_at_ms, &mut meters);
+        collect_usage_meters(value, "rate_limits", None, observed_at_ms, &mut meters);
     }
     if let Some(value) = usage {
-        collect_usage_meters(value, "usage", observed_at_ms, &mut meters);
+        collect_usage_meters(value, "usage", None, observed_at_ms, &mut meters);
     }
     // Same-identity meters from a later surface are fresher, so last wins.
     let mut deduped: Vec<ProviderAccountUsageMeter> = Vec::with_capacity(meters.len());
@@ -219,11 +219,15 @@ fn normalize_codex_usage(
 fn collect_usage_meters(
     value: &serde_json::Value,
     path: &str,
+    scope_label: Option<&str>,
     observed_at_ms: u64,
     meters: &mut Vec<ProviderAccountUsageMeter>,
 ) {
     match value {
         serde_json::Value::Object(object) => {
+            let scope_label = string_field(object, &["limitName", "limit_name"])
+                .filter(|label| !label.trim().is_empty())
+                .or_else(|| scope_label.map(str::to_string));
             let used_percent =
                 number_field(object, &["usedPercent", "used_percent"]).or_else(|| {
                     number_field(object, &["utilization"]).map(|value| {
@@ -246,11 +250,21 @@ fn collect_usage_meters(
                 } else {
                     ProviderAccountUsageMeterKind::RollingLimit
                 };
-                let state = match used_percent {
-                    Some(value) if value >= 100.0 => ProviderAccountUsageMeterState::Exhausted,
-                    Some(value) if value >= 80.0 => ProviderAccountUsageMeterState::Warning,
-                    Some(_) => ProviderAccountUsageMeterState::Healthy,
-                    None => ProviderAccountUsageMeterState::Unknown,
+                let state = match (kind, used_percent, remaining) {
+                    (_, Some(value), _) if value >= 100.0 => {
+                        ProviderAccountUsageMeterState::Exhausted
+                    }
+                    (_, Some(value), _) if value >= 80.0 => ProviderAccountUsageMeterState::Warning,
+                    (_, Some(_), _) => ProviderAccountUsageMeterState::Healthy,
+                    (ProviderAccountUsageMeterKind::CreditBalance, None, Some(value))
+                        if value <= 0.0 =>
+                    {
+                        ProviderAccountUsageMeterState::Exhausted
+                    }
+                    (ProviderAccountUsageMeterKind::CreditBalance, None, Some(_)) => {
+                        ProviderAccountUsageMeterState::Healthy
+                    }
+                    _ => ProviderAccountUsageMeterState::Unknown,
                 };
                 let window_duration_minutes = integer_field(
                     object,
@@ -260,10 +274,15 @@ fn collect_usage_meters(
                         "window_duration_minutes",
                     ],
                 );
-                let label = match window_duration_minutes {
-                    Some(300) => "5-hour".to_string(),
-                    Some(10_080) => "Weekly".to_string(),
-                    Some(43_200..=44_640) => "Monthly".to_string(),
+                let period_label = match window_duration_minutes {
+                    Some(300) => Some("5-hour"),
+                    Some(10_080) => Some("Weekly"),
+                    Some(43_200..=44_640) => Some("Monthly"),
+                    _ => None,
+                };
+                let label = match (scope_label.as_deref(), period_label) {
+                    (Some(scope), Some(period)) => format!("{scope} · {period}"),
+                    (None, Some(period)) => period.to_string(),
                     _ => scoped_meter_label(path),
                 };
                 // Meter identity is the limit kind plus window duration and,
@@ -315,12 +334,24 @@ fn collect_usage_meters(
                     continue;
                 }
                 let child_path = format!("{path}.{key}");
-                collect_usage_meters(child, &child_path, observed_at_ms, meters);
+                collect_usage_meters(
+                    child,
+                    &child_path,
+                    scope_label.as_deref(),
+                    observed_at_ms,
+                    meters,
+                );
             }
         }
         serde_json::Value::Array(values) => {
             for (index, child) in values.iter().enumerate() {
-                collect_usage_meters(child, &format!("{path}.{index}"), observed_at_ms, meters);
+                collect_usage_meters(
+                    child,
+                    &format!("{path}.{index}"),
+                    scope_label,
+                    observed_at_ms,
+                    meters,
+                );
             }
         }
         _ => {}
@@ -328,7 +359,12 @@ fn collect_usage_meters(
 }
 
 fn number_field(object: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<f64> {
-    keys.iter().find_map(|key| object.get(*key)?.as_f64())
+    keys.iter().find_map(|key| {
+        let value = object.get(*key)?;
+        value
+            .as_f64()
+            .or_else(|| value.as_str()?.trim().parse::<f64>().ok())
+    })
 }
 
 fn integer_field(
@@ -500,15 +536,21 @@ mod tests {
                 },
                 "rateLimitsByLimitId": {
                     "codex": {
+                        "limitName": null,
                         "primary": {"usedPercent": 12.0, "windowDurationMins": 300},
                         "secondary": {"usedPercent": 34.0, "windowDurationMins": 10080}
+                    },
+                    "codex_bengalfox": {
+                        "limitName": "GPT-5.3-Codex-Spark",
+                        "primary": {"usedPercent": 1.0, "windowDurationMins": 300},
+                        "secondary": {"usedPercent": 2.0, "windowDurationMins": 10080}
                     }
                 }
             })),
             None,
         );
 
-        assert_eq!(snapshot.meters.len(), 2);
+        assert_eq!(snapshot.meters.len(), 4);
         let five_hour = snapshot
             .meters
             .iter()
@@ -523,6 +565,33 @@ mod tests {
         assert_eq!(weekly.label, "Weekly");
         assert_eq!(five_hour.meter_id, "rolling/300/codex");
         assert_eq!(weekly.meter_id, "rolling/10080/codex");
+        let spark_labels = snapshot
+            .meters
+            .iter()
+            .filter(|meter| meter.meter_id.ends_with("/codex_bengalfox"))
+            .map(|meter| meter.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(spark_labels.contains(&"GPT-5.3-Codex-Spark · 5-hour"));
+        assert!(spark_labels.contains(&"GPT-5.3-Codex-Spark · Weekly"));
+    }
+
+    #[test]
+    fn parses_string_credit_balances_and_marks_zero_exhausted() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimits": {
+                    "credits": {"hasCredits": false, "balance": "0"}
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 1);
+        let credits = &snapshot.meters[0];
+        assert_eq!(credits.meter_id, "credits");
+        assert_eq!(credits.remaining, Some(0.0));
+        assert_eq!(credits.state, ProviderAccountUsageMeterState::Exhausted);
     }
 
     #[test]
