@@ -32,6 +32,7 @@ pub struct KernelRestartReconciliation {
     pub recoverable_workflow_run_count: usize,
     pub repaired_workflow_prompt_count: usize,
     pub removed_orphaned_workflow_prompt_count: usize,
+    pub removed_terminal_workflow_prompt_count: usize,
     pub interrupted_prompt_count: usize,
     pub stopped_workflow_run_count: usize,
 }
@@ -43,6 +44,7 @@ impl KernelRestartReconciliation {
             || self.interrupted_prompt_count > 0
             || self.repaired_workflow_prompt_count > 0
             || self.removed_orphaned_workflow_prompt_count > 0
+            || self.removed_terminal_workflow_prompt_count > 0
             || self.stopped_workflow_run_count > 0
     }
 }

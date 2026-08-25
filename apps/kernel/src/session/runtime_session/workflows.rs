@@ -677,6 +677,24 @@ impl RuntimeSession {
             reconciliation.cleared_active_provider_run = true;
         }
         reconciliation.cleared_attachment_count = self.clear_attachments();
+        let terminal_workflow_run_ids = self
+            .workflow_runs
+            .iter()
+            .filter(|workflow_run| {
+                matches!(
+                    workflow_run.status(),
+                    WorkflowRunStatus::Completed
+                        | WorkflowRunStatus::Failed
+                        | WorkflowRunStatus::Stopped
+                )
+            })
+            .map(|workflow_run| workflow_run.id().to_string())
+            .collect::<BTreeSet<_>>();
+        reconciliation.removed_terminal_workflow_prompt_count =
+            self.prompt_runtime.remove_active_prompts_by_workflow_runs(
+                &terminal_workflow_run_ids,
+                self.focused_agent_id.as_deref(),
+            );
         reconciliation.recoverable_prompt_count = self
             .prompt_runtime
             .prompt_states()

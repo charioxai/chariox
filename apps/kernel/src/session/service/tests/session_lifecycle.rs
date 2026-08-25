@@ -1214,6 +1214,67 @@ fn kernel_restart_reconciliation_does_not_resurrect_failed_workflow_prompt() {
 }
 
 #[test]
+fn kernel_restart_reconciliation_clears_stopped_workflow_prompt() {
+    let mut service = SessionService::new(&test_config());
+    let mut session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    let mut workflow =
+        WorkflowDefinition::new("workflow-stopped-prompt", Some("stopped".to_string()));
+    let node = workflow.add_node(WorkflowNodeDefinition::new("node-1", "agent-1"));
+    let endpoint = workflow.add_endpoint(WorkflowEndpointDefinition::new(
+        "endpoint-1",
+        Some("entry".to_string()),
+        node.id(),
+    ));
+    session.create_workflow(workflow);
+    let mut workflow_run = WorkflowRun::new(
+        "run-stopped-prompt",
+        "workflow-stopped-prompt",
+        endpoint.id(),
+        node.id(),
+        Some("stopped prompt".to_string()),
+        None,
+        vec![WorkflowNodeRun::new(
+            "node-run-stopped-prompt",
+            node.id(),
+            "agent-1",
+            1,
+            WorkflowNodeRunStatus::Stopped,
+        )],
+        Vec::new(),
+    );
+    workflow_run.set_status(WorkflowRunStatus::Stopped);
+    session.create_workflow_run(workflow_run);
+    session.activate_prompt(
+        crate::session::PromptQueueItem::new(
+            "prompt-stopped-prompt",
+            "attachment-1",
+            "agent-1",
+            "stopped prompt",
+            crate::session::PromptStatus::Running,
+        )
+        .with_workflow_context("run-stopped-prompt", "node-run-stopped-prompt"),
+    );
+
+    let reconciliation = session.reconcile_after_kernel_restart();
+
+    assert_eq!(reconciliation.removed_terminal_workflow_prompt_count, 1);
+    assert!(session
+        .prompt_states()
+        .get("agent-1")
+        .and_then(|state| state.active_prompt())
+        .is_none());
+    assert_eq!(
+        session
+            .workflow_run("run-stopped-prompt")
+            .expect("workflow run should remain inspectable")
+            .status(),
+        WorkflowRunStatus::Stopped
+    );
+}
+
+#[test]
 fn prompt_queue_starts_then_queues_then_advances() {
     let mut service = SessionService::new(&test_config());
     let created = service

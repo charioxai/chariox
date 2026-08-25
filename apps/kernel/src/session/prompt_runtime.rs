@@ -202,6 +202,32 @@ impl PromptRuntimeState {
         removed
     }
 
+    pub(in crate::session) fn remove_active_prompts_by_workflow_runs(
+        &mut self,
+        workflow_run_ids: &std::collections::BTreeSet<String>,
+        focused_agent_id: Option<&str>,
+    ) -> usize {
+        let mut removed = 0;
+        let agent_ids = self.prompt_states.keys().cloned().collect::<Vec<_>>();
+        for agent_id in agent_ids {
+            let remove = self
+                .prompt_states
+                .get(&agent_id)
+                .and_then(AgentPromptState::active_prompt)
+                .and_then(PromptQueueItem::workflow_run_id)
+                .is_some_and(|workflow_run_id| workflow_run_ids.contains(workflow_run_id));
+            if remove {
+                if let Some(prompt_state) = self.prompt_states.get_mut(&agent_id) {
+                    prompt_state.active_prompt.take();
+                    removed += 1;
+                }
+            }
+            self.drop_empty_prompt_state(&agent_id);
+        }
+        self.refresh_after_mutation(focused_agent_id);
+        removed
+    }
+
     #[cfg(test)]
     pub(in crate::session) fn peek_next_queued_prompt(
         &self,
