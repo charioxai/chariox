@@ -26,6 +26,7 @@ ARG CHARIOX_PREBUILT_RUNTIME=0
 RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]; then \
       test -x /opt/chariox-prebuilt/chariox-kernel \
       && test -x /opt/chariox-prebuilt/chariox-relay \
+      && mkdir -p target/release \
       && install -m 0755 /opt/chariox-prebuilt/chariox-kernel target/release/chariox-kernel \
       && install -m 0755 /opt/chariox-prebuilt/chariox-relay target/release/chariox-relay; \
     else \

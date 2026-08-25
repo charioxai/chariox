@@ -18,6 +18,42 @@ const rootlessDockerService = join(repositoryRoot, "deploy/managed-kernel/chario
 const sliceBrokerService = join(repositoryRoot, "deploy/managed-kernel/chariox-slice-broker.service")
 const sourceDateEpoch = "946684800"
 
+test("managed prebuilt slice runtime creates its release directory", async () => {
+  const dockerfile = await readFile(
+    join(repositoryRoot, "apps/kernel/slice-linux-docker/docker/Dockerfile"),
+    "utf8",
+  )
+  const start = dockerfile.indexOf('RUN if [ "$CHARIOX_PREBUILT_RUNTIME" = "1" ]')
+  const end = dockerfile.indexOf("\n\nFROM ", start)
+  assert.notEqual(start, -1, "prebuilt runtime branch is missing")
+  assert.notEqual(end, -1, "prebuilt runtime branch has no stage boundary")
+
+  const fixture = await mkdtemp(join(tmpdir(), "chariox-prebuilt-slice-"))
+  const prebuilt = join(fixture, "prebuilt")
+  try {
+    await mkdir(prebuilt, { recursive: true })
+    for (const name of ["chariox-kernel", "chariox-relay"]) {
+      const path = join(prebuilt, name)
+      await writeFile(path, `${name}\n`)
+      await chmod(path, 0o755)
+    }
+    const command = dockerfile
+      .slice(start + "RUN ".length, end)
+      .replaceAll("\\\n", " ")
+      .replaceAll("/opt/chariox-prebuilt", prebuilt)
+    const result = spawnSync("/bin/sh", ["-c", command], {
+      cwd: fixture,
+      encoding: "utf8",
+      env: { ...process.env, CHARIOX_PREBUILT_RUNTIME: "1" },
+    })
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(await readFile(join(fixture, "target/release/chariox-kernel"), "utf8"), "chariox-kernel\n")
+    assert.equal(await readFile(join(fixture, "target/release/chariox-relay"), "utf8"), "chariox-relay\n")
+  } finally {
+    await rm(fixture, { recursive: true, force: true })
+  }
+})
+
 async function waitForPath(path, timeoutMs = 5000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
