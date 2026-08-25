@@ -112,6 +112,7 @@ pub(super) async fn execute_list_slice_audit_request(
 pub(super) async fn execute_save_slice_state_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceStateSaveRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let operation_guard =
@@ -211,6 +212,7 @@ pub(super) async fn execute_save_slice_state_request(
         let started = execute_start_slice_request(
             runtime_state,
             config_projection,
+            relay_state,
             SliceRefRequest {
                 slice_ref: saved_slice.id.clone(),
             },
@@ -330,6 +332,7 @@ pub(super) async fn execute_create_slice_backup_request(
 pub(super) async fn execute_start_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
@@ -437,13 +440,22 @@ pub(super) async fn execute_start_slice_request(
         }
     };
     if relay.uses_shared_relay() {
-        if let Err(error) = activate_hosted_slice_relay_token(
-            config_projection,
-            &initial_slice,
-            discovered.as_ref().expect("slice worker was discovered"),
-        )
-        .await
-        {
+        let activation_result = match relay_state.as_ref() {
+            Some(relay_state) => {
+                activate_hosted_slice_relay_token(
+                    config_projection,
+                    relay_state,
+                    &initial_slice,
+                    discovered.as_ref().expect("slice worker was discovered"),
+                )
+                .await
+            }
+            None => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: "home relay connection state is unavailable".to_string(),
+            }),
+        };
+        if let Err(error) = activation_result {
             let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
             let _ = runtime_state.record_slice_audit_event(
                 &initial_record,
@@ -756,6 +768,7 @@ async fn hosted_cloud_slice_relay_token(
 
 async fn activate_hosted_slice_relay_token(
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: &Arc<RwLock<RelayClientState>>,
     slice: &crate::slice::SliceRecord,
     worker: &chariox_relay::protocol::RelayKernelPresence,
 ) -> Result<(), DaemonError> {
@@ -787,80 +800,119 @@ async fn activate_hosted_slice_relay_token(
             operation: "activate hosted slice relay token",
             message: "Cloud returned a slice recovery token without an expiry".to_string(),
         })?;
-    let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
-        &config,
-        chariox_relay::protocol::ClientTarget {
-            daemon_id: Some(worker.kernel_id.clone()),
-            daemon_alias: None,
-        },
-        crate::transport::relay_peer::RelayPeerRequest::InstallManagedSliceRelayToken {
-            slice_id: slice.id.clone(),
-            owner_kernel_id: slice.owner_kernel_id.clone(),
-            owner_machine_id: slice.owner_machine_id.clone(),
-            relay_token: crate::transport::relay_peer::RelayManagedSliceToken::new(issued.token),
-            expires_at_ms,
-            relay_recovery_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
-                recovery.token,
-            ),
-            recovery_expires_at_ms,
-        },
-    )
-    .await?;
-    match response {
-        crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenInstalled {
-            slice_id,
-            relay_peer_protocol_version,
-        } if slice_id == slice.id
-            && relay_peer_protocol_version
-                >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
-        {
-            wait_for_hosted_slice_relay_reconnect(config_projection, slice, worker).await
+    let activation_nonce = managed_slice_relay_activation_nonce();
+    relay_state
+        .write()
+        .await
+        .begin_managed_slice_relay_activation(
+            slice.id.clone(),
+            worker.kernel_id.clone(),
+            slice.worker_kernel_ref.clone(),
+            worker.public_key.clone(),
+            activation_nonce.clone(),
+        );
+    let result = async {
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &config,
+            chariox_relay::protocol::ClientTarget {
+                daemon_id: Some(worker.kernel_id.clone()),
+                daemon_alias: None,
+            },
+            crate::transport::relay_peer::RelayPeerRequest::InstallManagedSliceRelayToken {
+                slice_id: slice.id.clone(),
+                owner_kernel_id: slice.owner_kernel_id.clone(),
+                owner_machine_id: slice.owner_machine_id.clone(),
+                activation_nonce: activation_nonce.clone(),
+                relay_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
+                    issued.token,
+                ),
+                expires_at_ms,
+                relay_recovery_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
+                    recovery.token,
+                ),
+                recovery_expires_at_ms,
+            },
+        )
+        .await?;
+        match response {
+            crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                slice_id,
+                activation_nonce: installed_nonce,
+                relay_peer_protocol_version,
+            } if slice_id == slice.id
+                && installed_nonce == activation_nonce
+                && relay_peer_protocol_version
+                    >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+            {
+                wait_for_hosted_slice_relay_activation(
+                    config_projection,
+                    relay_state,
+                    slice,
+                    worker,
+                    &activation_nonce,
+                )
+                .await
+            }
+            crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                code,
+                retryable,
+            } => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: format!(
+                    "slice worker rejected key-bound relay token ({code}, retryable={retryable})"
+                ),
+            }),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: "slice worker returned an incompatible relay-token response".to_string(),
+            }),
         }
-        crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
-            code,
-            retryable,
-        } => Err(DaemonError::LocalTransport {
-            operation: "activate hosted slice relay token",
-            message: format!(
-                "slice worker rejected key-bound relay token ({code}, retryable={retryable})"
-            ),
-        }),
-        _ => Err(DaemonError::LocalTransport {
-            operation: "activate hosted slice relay token",
-            message: "slice worker returned an incompatible relay-token response".to_string(),
-        }),
     }
+    .await;
+    let mut state = relay_state.write().await;
+    if result.is_ok() {
+        state.retain_completed_managed_slice_relay_activation(&slice.id, &activation_nonce);
+    } else {
+        state.discard_managed_slice_relay_activation(&slice.id, &activation_nonce);
+    }
+    result
 }
 
-async fn wait_for_hosted_slice_relay_reconnect(
+async fn wait_for_hosted_slice_relay_activation(
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: &Arc<RwLock<RelayClientState>>,
     slice: &crate::slice::SliceRecord,
     worker: &chariox_relay::protocol::RelayKernelPresence,
+    activation_nonce: &str,
 ) -> Result<(), DaemonError> {
     let deadline = Instant::now() + HOSTED_SLICE_RELAY_RECONNECT_TIMEOUT;
-    let mut saw_offline = false;
     let mut last_probe_error = None;
     let ping_value = format!(
         "managed-slice-relay-activation:{}:{}",
-        slice.id,
-        crate::session::unix_epoch_ms()
+        slice.id, activation_nonce
     );
 
     loop {
         let remaining = deadline.saturating_duration_since(Instant::now());
         if remaining.is_zero() {
-            let phase = if saw_offline {
-                "did not reconnect with the key-bound relay token"
-            } else {
-                "did not disconnect its bootstrap relay socket"
-            };
             let detail = last_probe_error
                 .map(|error: DaemonError| format!("; last probe failed: {error}"))
                 .unwrap_or_default();
             return Err(DaemonError::LocalTransport {
                 operation: "activate hosted slice relay token",
-                message: format!("slice worker {phase} within 15s{detail}"),
+                message: format!(
+                    "slice worker did not confirm key-bound relay-token activation within 15s{detail}"
+                ),
             });
+        }
+
+        if !relay_state
+            .read()
+            .await
+            .managed_slice_relay_activation_confirmed(&slice.id, activation_nonce)
+        {
+            sleep(remaining.min(HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL)).await;
+            continue;
         }
 
         let config = config_projection.snapshot();
@@ -890,11 +942,7 @@ async fn wait_for_hosted_slice_relay_reconnect(
             }
         };
 
-        if hosted_slice_reconnect_presence_ready(
-            &mut saw_offline,
-            presence.as_ref(),
-            &worker.public_key,
-        )? {
+        if hosted_slice_activation_presence_ready(presence.as_ref(), &worker.public_key)? {
             let ping_timeout = deadline
                 .saturating_duration_since(Instant::now())
                 .min(HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT);
@@ -943,18 +991,13 @@ async fn wait_for_hosted_slice_relay_reconnect(
     }
 }
 
-fn hosted_slice_reconnect_presence_ready(
-    saw_offline: &mut bool,
+fn hosted_slice_activation_presence_ready(
     presence: Option<&chariox_relay::protocol::RelayKernelPresence>,
     expected_public_key: &str,
 ) -> Result<bool, DaemonError> {
     let Some(presence) = presence else {
-        *saw_offline = true;
         return Ok(false);
     };
-    if !*saw_offline {
-        return Ok(false);
-    }
     if presence.public_key != expected_public_key {
         return Err(DaemonError::LocalTransport {
             operation: "activate hosted slice relay token",
@@ -962,6 +1005,14 @@ fn hosted_slice_reconnect_presence_ready(
         });
     }
     Ok(true)
+}
+
+fn managed_slice_relay_activation_nonce() -> String {
+    format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    )
 }
 
 fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
@@ -1060,7 +1111,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_slice_activation_requires_offline_then_same_key() {
+    fn hosted_slice_activation_requires_live_same_key_after_confirmation() {
         let worker = chariox_relay::protocol::RelayKernelPresence {
             kernel_id: "worker-1".to_string(),
             machine_id: "machine-slice-1".to_string(),
@@ -1075,33 +1126,24 @@ mod tests {
             local_session_count: 0,
             public_key: "worker-key".to_string(),
         };
-        let mut saw_offline = false;
-
-        assert!(!hosted_slice_reconnect_presence_ready(
-            &mut saw_offline,
-            Some(&worker),
-            "worker-key",
-        )
-        .expect("initial socket should remain pending"));
+        assert!(!hosted_slice_activation_presence_ready(None, "worker-key")
+            .expect("offline worker should remain pending"));
         assert!(
-            !hosted_slice_reconnect_presence_ready(&mut saw_offline, None, "worker-key",)
-                .expect("offline observation should remain pending")
+            hosted_slice_activation_presence_ready(Some(&worker), "worker-key")
+                .expect("same-key worker should be ready after authenticated confirmation")
         );
-        assert!(hosted_slice_reconnect_presence_ready(
-            &mut saw_offline,
-            Some(&worker),
-            "worker-key",
-        )
-        .expect("same-key reconnect should be ready"));
 
         let mut replacement = worker;
         replacement.public_key = "replacement-key".to_string();
-        assert!(hosted_slice_reconnect_presence_ready(
-            &mut saw_offline,
-            Some(&replacement),
-            "worker-key",
-        )
-        .is_err());
+        assert!(hosted_slice_activation_presence_ready(Some(&replacement), "worker-key").is_err());
+    }
+
+    #[test]
+    fn managed_slice_activation_nonce_is_fresh() {
+        let first = managed_slice_relay_activation_nonce();
+        let second = managed_slice_relay_activation_nonce();
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, second);
     }
 
     #[test]

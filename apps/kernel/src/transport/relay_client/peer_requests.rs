@@ -118,6 +118,7 @@ pub(super) async fn handle_daemon_peer_request(
             slice_id,
             owner_kernel_id,
             owner_machine_id,
+            activation_nonce,
             relay_token,
             expires_at_ms,
             relay_recovery_token,
@@ -156,11 +157,62 @@ pub(super) async fn handle_daemon_peer_request(
                     )
                     .await
                 {
-                    Ok(()) => RelayPeerResponse::ManagedSliceRelayTokenInstalled {
-                        slice_id,
-                        relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
-                    },
+                    Ok(()) => {
+                        state
+                            .write()
+                            .await
+                            .stage_managed_slice_activation_confirmation(
+                            super::connection_state::PendingManagedSliceActivationConfirmation::new(
+                                slice_id.clone(),
+                                owner_kernel_id.clone(),
+                                requester_public_key.clone(),
+                                daemon_id.clone(),
+                                activation_nonce.clone(),
+                            ),
+                        );
+                        RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                            slice_id,
+                            activation_nonce,
+                            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                        }
+                    }
                     Err(error) => managed_slice_token_failure_response(&error),
+                }
+            }
+        }
+        RelayPeerRequest::ConfirmManagedSliceRelayToken {
+            slice_id,
+            owner_kernel_id,
+            worker_kernel_id,
+            activation_nonce,
+        } => {
+            let identity =
+                require_bound_kernel_sender(caller_identity.as_ref(), &encrypted_request);
+            let authorized = match identity {
+                Ok(identity)
+                    if daemon_id == owner_kernel_id
+                        && stable_peer_daemon_id(from_daemon_id) == worker_kernel_id =>
+                {
+                    state.write().await.confirm_managed_slice_relay_activation(
+                        &slice_id,
+                        &worker_kernel_id,
+                        &identity.subject,
+                        &requester_public_key,
+                        &activation_nonce,
+                    )
+                }
+                _ => false,
+            };
+            if authorized {
+                RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                    slice_id,
+                    activation_nonce,
+                    relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                }
+            } else {
+                RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code: "unauthorized".to_string(),
+                    retryable: false,
                 }
             }
         }
@@ -1409,6 +1461,107 @@ mod tests {
                 retryable: false,
             } if code == "unauthorized"
         ));
+    }
+
+    #[tokio::test]
+    async fn managed_slice_activation_confirmation_requires_bound_runtime_identity_and_nonce() {
+        let config = DaemonConfig::for_tests();
+        let owner_kernel_id = config.daemon_id.clone();
+        let owner_public_key = config.relay_public_key.clone();
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("test daemon should bootstrap"),
+        ));
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let worker_private_key = relay_crypto::generate_private_key_base64();
+        let worker_public_key =
+            relay_crypto::public_key_from_private_key_base64(&worker_private_key)
+                .expect("worker public key");
+        state.write().await.begin_managed_slice_relay_activation(
+            "slice-1".to_string(),
+            "source-kernel-1".to_string(),
+            "slice:dev".to_string(),
+            worker_public_key.clone(),
+            "activation-1".to_string(),
+        );
+        let request = |activation_nonce: &str| RelayPeerRequest::ConfirmManagedSliceRelayToken {
+            slice_id: "slice-1".to_string(),
+            owner_kernel_id: owner_kernel_id.clone(),
+            worker_kernel_id: "source-kernel-1".to_string(),
+            activation_nonce: activation_nonce.to_string(),
+        };
+
+        let mut unbound_identity = scoped_kernel_identity(None, u64::MAX);
+        unbound_identity.subject = "slice:dev".to_string();
+        let unbound = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            &unbound_identity,
+            &worker_private_key,
+            &owner_public_key,
+            request("activation-1"),
+        )
+        .await;
+        assert!(matches!(
+            unbound,
+            RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+
+        let mut bound_identity =
+            scoped_kernel_identity(Some(public_key_thumbprint(&worker_public_key)), u64::MAX);
+        bound_identity.subject = "slice:dev".to_string();
+        let wrong_nonce = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            &bound_identity,
+            &worker_private_key,
+            &owner_public_key,
+            request("activation-2"),
+        )
+        .await;
+        assert!(matches!(
+            wrong_nonce,
+            RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                ref code,
+                retryable: false,
+            } if code == "unauthorized"
+        ));
+        assert!(!state
+            .read()
+            .await
+            .managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
+
+        let confirmed = send_managed_peer_request(
+            &router,
+            &state,
+            &outgoing_tx,
+            "source-kernel-1",
+            &bound_identity,
+            &worker_private_key,
+            &owner_public_key,
+            request("activation-1"),
+        )
+        .await;
+        assert!(matches!(
+            confirmed,
+            RelayPeerResponse::ManagedSliceRelayTokenActivated {
+                ref slice_id,
+                ref activation_nonce,
+                relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+            } if slice_id == "slice-1" && activation_nonce == "activation-1"
+        ));
+        assert!(state
+            .read()
+            .await
+            .managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
     }
 
     #[tokio::test]

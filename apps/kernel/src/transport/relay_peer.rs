@@ -69,9 +69,9 @@ impl std::fmt::Debug for RelayManagedSliceToken {
     }
 }
 
-/// Version 23 adds a separately scoped, key-bound recovery credential so a
-/// managed slice can renew after its ordinary relay token expires.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 23;
+/// Version 24 adds an authenticated post-reconnect confirmation for managed
+/// slice relay-token activation.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 24;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -358,10 +358,17 @@ pub enum RelayPeerRequest {
         slice_id: String,
         owner_kernel_id: String,
         owner_machine_id: String,
+        activation_nonce: String,
         relay_token: RelayManagedSliceToken,
         expires_at_ms: u64,
         relay_recovery_token: RelayManagedSliceToken,
         recovery_expires_at_ms: u64,
+    },
+    ConfirmManagedSliceRelayToken {
+        slice_id: String,
+        owner_kernel_id: String,
+        worker_kernel_id: String,
+        activation_nonce: String,
     },
     RefreshManagedSliceRelayToken {
         slice_id: String,
@@ -626,6 +633,12 @@ pub enum RelayPeerResponse {
     },
     ManagedSliceRelayTokenInstalled {
         slice_id: String,
+        activation_nonce: String,
+        relay_peer_protocol_version: u32,
+    },
+    ManagedSliceRelayTokenActivated {
+        slice_id: String,
+        activation_nonce: String,
         relay_peer_protocol_version: u32,
     },
     ManagedSliceRelayTokenRefreshed {
@@ -830,6 +843,7 @@ mod tests {
             slice_id: "slice-1".to_string(),
             owner_kernel_id: "kernel-owner".to_string(),
             owner_machine_id: "machine-owner".to_string(),
+            activation_nonce: "activation-1".to_string(),
             relay_token: RelayManagedSliceToken::new("secret-relay-token".to_string()),
             expires_at_ms: 300_000,
             relay_recovery_token: RelayManagedSliceToken::new("secret-recovery-token".to_string()),
@@ -866,5 +880,43 @@ mod tests {
         assert!(debug.contains("[redacted managed-slice relay token]"));
         assert!(!debug.contains("refreshed-secret"));
         assert!(!debug.contains("refreshed-recovery-secret"));
+    }
+
+    #[test]
+    fn managed_slice_activation_confirmation_has_versioned_nonce_wire_shape() {
+        let request = RelayPeerRequest::ConfirmManagedSliceRelayToken {
+            slice_id: "slice-1".to_string(),
+            owner_kernel_id: "kernel-owner".to_string(),
+            worker_kernel_id: "kernel-worker".to_string(),
+            activation_nonce: "activation-1".to_string(),
+        };
+        let request_value = serde_json::to_value(&request).expect("request should serialize");
+        assert_eq!(request_value["kind"], "confirm_managed_slice_relay_token");
+        assert_eq!(request_value["activation_nonce"], "activation-1");
+        assert_eq!(
+            serde_json::from_value::<RelayPeerRequest>(request_value)
+                .expect("request should deserialize"),
+            request
+        );
+
+        let response = RelayPeerResponse::ManagedSliceRelayTokenActivated {
+            slice_id: "slice-1".to_string(),
+            activation_nonce: "activation-1".to_string(),
+            relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+        };
+        let response_value = serde_json::to_value(&response).expect("response should serialize");
+        assert_eq!(
+            response_value["kind"],
+            "managed_slice_relay_token_activated"
+        );
+        assert_eq!(
+            response_value["relay_peer_protocol_version"],
+            RELAY_PEER_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            serde_json::from_value::<RelayPeerResponse>(response_value)
+                .expect("response should deserialize"),
+            response
+        );
     }
 }

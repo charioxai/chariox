@@ -45,7 +45,8 @@ pub(crate) async fn execute_slice_request(
             execute_get_slice_request(runtime_state, request).await
         }
         LocalDaemonRequest::StartSlice(request) => {
-            execute_start_slice_request(runtime_state, config_projection, request).await
+            execute_start_slice_request(runtime_state, config_projection, relay_state, request)
+                .await
         }
         LocalDaemonRequest::StopSlice(request) => {
             execute_stop_slice_request(runtime_state, config_projection, relay_state, request).await
@@ -97,7 +98,8 @@ pub(crate) async fn execute_slice_request(
             execute_list_slice_audit_request(runtime_state, request).await
         }
         LocalDaemonRequest::SaveSliceState(request) => {
-            execute_save_slice_state_request(runtime_state, config_projection, request).await
+            execute_save_slice_state_request(runtime_state, config_projection, relay_state, request)
+                .await
         }
         LocalDaemonRequest::GetSliceStateStatus(request) => {
             execute_get_slice_state_status_request(runtime_state, request).await
