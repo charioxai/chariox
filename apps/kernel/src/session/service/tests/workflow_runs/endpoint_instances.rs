@@ -805,6 +805,78 @@ fn design_op_alias_edit_retargets_compatible_runtime_instances() {
 }
 
 #[test]
+fn source_agent_config_change_invalidates_idle_clones_but_retargets_primary() {
+    let mut service = SessionService::new(&test_config());
+    let session = service
+        .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
+        .expect("session should be created");
+    seed_agents(&mut service, session.id(), &["agent-1", "agent-2"]);
+    let TestWorkflowEndpoint { workflow, endpoint } =
+        workflow_with_endpoint(&mut service, session.id(), "review", "agent-1");
+    let workflow = service
+        .resolve_workflow_ref(session.id(), workflow.id())
+        .expect("workflow should resolve");
+    let previous_revision = workflow.revision();
+    register_primary_instance(
+        &mut service,
+        session.id(),
+        &workflow,
+        &endpoint,
+        "instance-primary",
+    );
+    let clone_node_agent_ids = workflow
+        .nodes()
+        .iter()
+        .map(|node| (node.id().to_string(), "agent-2".to_string()))
+        .collect::<BTreeMap<_, _>>();
+    service
+        .register_workflow_runtime_instance(
+            session.id(),
+            crate::session::WorkflowEndpointRuntimeInstance::new(
+                "instance-clone",
+                workflow.id(),
+                endpoint.id(),
+                previous_revision,
+                2,
+                false,
+                clone_node_agent_ids,
+                "worktree-2",
+            ),
+        )
+        .expect("clone instance should register");
+
+    let affected = service
+        .invalidate_workflow_runtime_instances_for_agent_change(session.id(), "agent-1")
+        .expect("source-agent change should invalidate copied instances");
+
+    assert_eq!(affected, vec![workflow.id().to_string()]);
+    let snapshot = service
+        .get_session(session.id())
+        .expect("session should exist");
+    let current_revision = snapshot
+        .workflow(workflow.id())
+        .expect("workflow should remain")
+        .revision();
+    assert_eq!(current_revision, previous_revision + 1);
+    let primary = snapshot
+        .workflow_runtime_instance("instance-primary")
+        .expect("primary should remain reusable");
+    assert_eq!(primary.workflow_revision(), current_revision);
+    assert_eq!(
+        primary.status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Idle
+    );
+    let clone = snapshot
+        .workflow_runtime_instance("instance-clone")
+        .expect("clone should remain until runtime cleanup removes its resources");
+    assert_eq!(clone.workflow_revision(), previous_revision);
+    assert_eq!(
+        clone.status(),
+        crate::session::WorkflowEndpointRuntimeInstanceStatus::Stale
+    );
+}
+
+#[test]
 fn pool_shrink_keeps_a_busy_excess_clone_until_its_run_finishes() {
     let mut service = SessionService::new(&test_config());
     let session = service

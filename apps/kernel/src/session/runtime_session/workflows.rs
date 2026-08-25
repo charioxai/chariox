@@ -454,6 +454,41 @@ impl RuntimeSession {
         }
     }
 
+    pub(crate) fn invalidate_workflow_runtime_instances_for_agent_change(
+        &mut self,
+        agent_id: &str,
+    ) -> Vec<String> {
+        let mut affected = BTreeMap::new();
+        for workflow in &mut self.workflows {
+            if workflow
+                .nodes()
+                .iter()
+                .any(|node| node.agent_id() == agent_id)
+            {
+                workflow.bump_revision();
+                affected.insert(workflow.id().to_string(), workflow.revision());
+            }
+        }
+        if affected.is_empty() {
+            return Vec::new();
+        }
+
+        // The primary instance uses the edited source agents directly and can stay
+        // reusable at the new revision. Copies contain materialized agent snapshots;
+        // leave them on the old revision so reconciliation retires idle copies now
+        // and busy copies as soon as their current run finishes.
+        for instance in &mut self.workflow_runtime_instances {
+            let Some(revision) = affected.get(instance.workflow_id()).copied() else {
+                continue;
+            };
+            if instance.primary() {
+                instance.retarget_workflow_revision(revision);
+            }
+        }
+        self.reconcile_workflow_runtime_instances();
+        affected.into_keys().collect()
+    }
+
     pub fn reconcile_workflow_runtime_instances(&mut self) {
         let active_runs = self
             .workflow_runs

@@ -755,6 +755,20 @@ impl SessionService {
             .map(Some)
     }
 
+    pub(crate) fn invalidate_workflow_runtime_instances_for_agent_change(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<Vec<String>, DaemonError> {
+        let session =
+            self.store
+                .get_mut(session_id)
+                .ok_or_else(|| DaemonError::SessionNotFound {
+                    session_id: session_id.to_string(),
+                })?;
+        Ok(session.invalidate_workflow_runtime_instances_for_agent_change(agent_id))
+    }
+
     pub(crate) fn register_workflow_runtime_instance(
         &mut self,
         session_id: &str,
