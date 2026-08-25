@@ -116,6 +116,27 @@ test("automation prompt submit does not relaunch when the session has an active 
   assert.deepEqual(result, { promptText: "hello", submitted: true })
 })
 
+test("automation prompt submit delegates provider recovery to the ordinary TUI submit path", async () => {
+  let promptText = ""
+  let submitted = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => true,
+    sessionState: () => automationSession({ active_provider_run_id: null }),
+    setPromptText: (value) => {
+      promptText = value
+    },
+    submitPrompt: async () => {
+      submitted = true
+    },
+    snapshot: () => ({ promptText, submitted }),
+  })
+
+  const result = await handler({ action: "submit_prompt", prompt: "hello" })
+
+  assert.deepEqual(result, { promptText: "hello", submitted: true })
+})
+
 test("automation prompt submit skips local provider launch for remote-backed focused agents", async () => {
   let promptText = ""
   let submitted = false
