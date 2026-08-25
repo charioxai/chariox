@@ -47,10 +47,12 @@ import signal
 import socket
 import sys
 import threading
+import time
 
 listen_port = int(os.environ["CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT"])
 target_port = int(os.environ["CHARIOX_OPENCODE_PORT"])
 parent_pid = os.getppid()
+deadline = time.monotonic() + 300
 stopping = threading.Event()
 
 def stop(_signum=None, _frame=None):
@@ -93,7 +95,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
     server.bind(("127.0.0.1", listen_port))
     server.listen()
     server.settimeout(0.1)
-    while not stopping.is_set() and os.getppid() == parent_pid:
+    while not stopping.is_set() and os.getppid() == parent_pid and time.monotonic() < deadline:
         try:
             client, _addr = server.accept()
         except socket.timeout:

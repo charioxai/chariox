@@ -3,7 +3,23 @@ use std::net::TcpStream;
 use std::time::Duration;
 
 mod support;
-use support::runtime_integration::MockOpenCodeServer;
+use support::runtime_integration::{create_opencode_fixture_script, MockOpenCodeServer};
+
+#[test]
+fn managed_fixture_has_parent_and_absolute_lifetime_guards() {
+    let fixture_path = create_opencode_fixture_script();
+    let script = std::fs::read_to_string(&fixture_path)
+        .expect("managed OpenCode fixture script should be readable");
+
+    assert!(script.contains("os.getppid() == parent_pid"), "{script}");
+    assert!(
+        script.contains("deadline = time.monotonic() + 300"),
+        "{script}"
+    );
+    assert!(script.contains("time.monotonic() < deadline"), "{script}");
+
+    std::fs::remove_file(fixture_path).expect("managed OpenCode fixture should be removed");
+}
 
 #[test]
 fn mock_opencode_reports_the_runtime_mcp_as_connected() {
