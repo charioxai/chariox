@@ -88,6 +88,7 @@ impl KernelRuntimeOwnedState {
         request.adapter_key =
             crate::provider::adapter_key_for_provider(&request.adapter_key).to_string();
         let session = self.session_store.get_session(&request.session_id)?;
+        let config = self.config_projection.snapshot();
         if request.agent_id.is_none() {
             request.agent_id = self
                 .session_store
@@ -120,6 +121,30 @@ impl KernelRuntimeOwnedState {
                     ),
                 });
             }
+            request = request.with_owner_user_id(agent.owner_user_id().to_string());
+        } else {
+            request = request.with_owner_user_id(session.owner_user_id().to_string());
+        }
+        if crate::provider::canonical_provider_family(&request.provider)
+            .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
+        {
+            let account_owner_user_id =
+                crate::account_profile::provider_account_authority_owner_user_id(
+                    &config,
+                    &request.owner_user_id,
+                );
+            let profile = self.provider_account_profiles.get(
+                &account_owner_user_id,
+                &request.provider,
+                &request.account_profile,
+            )?;
+            let provider_account_env = self.provider_account_profiles.resolve_environment(
+                &account_owner_user_id,
+                &request.provider,
+                &profile.profile_id,
+            )?;
+            request.account_profile = profile.profile_id;
+            request = request.with_provider_account_env(provider_account_env);
         }
         let effective_config =
             crate::session::effective_agent_execution_config(&session, agent.as_ref());
@@ -146,7 +171,6 @@ impl KernelRuntimeOwnedState {
             );
         }
         if request.uses_workspace_live_sync() && request.workspace_live_sync_roots.is_empty() {
-            let config = self.config_projection.snapshot();
             let workspace_live_sync_roots = crate::app::workspace_live_sync_protected_roots(
                 &session,
                 request.working_directory.as_deref(),
@@ -154,6 +178,21 @@ impl KernelRuntimeOwnedState {
                 &config.daemon_id,
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
+        }
+        if crate::provider::managed_provider_isolation_required() {
+            let project = self.session_store.get_project(session.project_id())?;
+            let mut roots = project
+                .workspace_ids()
+                .iter()
+                .filter(|workspace| !workspace.trim().is_empty())
+                .map(std::path::PathBuf::from)
+                .collect::<Vec<_>>();
+            for root in std::mem::take(&mut request.workspace_live_sync_roots) {
+                if !roots.iter().any(|existing| existing == &root) {
+                    roots.push(root);
+                }
+            }
+            request = request.with_workspace_live_sync_roots(roots);
         }
         if request.runtime_mcp_binding.is_none() {
             let shared_auth_token = request
@@ -171,12 +210,17 @@ impl KernelRuntimeOwnedState {
             ));
         }
         if request.provider_env_remove.is_empty() {
-            let credential_env_names = crate::credential::load_user_credentials()
-                .map(|credentials| {
-                    crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
-                })
-                .unwrap_or_default();
-            request = request.with_provider_env_remove(credential_env_names.into_iter().collect());
+            request =
+                request.with_provider_env_remove(crate::app::default_provider_env_remove(&config));
+        }
+        for name in crate::account_profile::provider_auth_env_vars(&request.provider) {
+            if !request
+                .provider_env_remove
+                .iter()
+                .any(|existing| existing == name)
+            {
+                request.provider_env_remove.push((*name).to_string());
+            }
         }
         if request.mcp_servers.is_empty() {
             if let Some(agent) = agent.as_ref() {
@@ -188,7 +232,6 @@ impl KernelRuntimeOwnedState {
                     )?);
             }
         }
-        let config = self.config_projection.snapshot();
         let mcp_servers = std::mem::take(&mut request.mcp_servers);
         request = request.with_mcp_servers(crate::app::resolve_mcp_credentials_for_launch(
             &config,
@@ -196,5 +239,179 @@ impl KernelRuntimeOwnedState {
         )?);
         request = crate::app::apply_metaagent_launch_policy(request, agent.as_ref());
         Ok(request)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    #[tokio::test]
+    async fn owned_launch_preparation_preserves_provider_account_and_project_repositories() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owned-provider-launch-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let primary = root.join("primary");
+        let supporting = root.join("supporting");
+        std::fs::create_dir_all(&primary).expect("primary workspace");
+        std::fs::create_dir_all(&supporting).expect("supporting workspace");
+
+        let mut app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap");
+        let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(
+                crate::session::CreateSessionRequest::new(
+                    primary.to_string_lossy(),
+                    primary.to_string_lossy(),
+                )
+                .with_project_selection(crate::session::SessionProjectSelection::New),
+            )
+            .expect("session");
+        app.sessions_mut()
+            .update_project_workspaces(
+                session.project_id(),
+                vec![
+                    primary.to_string_lossy().into_owned(),
+                    supporting.to_string_lossy().into_owned(),
+                ],
+                crate::session::DEFAULT_LOCAL_USER_ID,
+            )
+            .expect("project workspaces");
+        let registry = app.provider_account_profile_registry();
+        let profile = registry
+            .create_managed(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                "Owned launch test",
+            )
+            .expect("managed Codex profile");
+        let environment = registry
+            .resolve_environment(
+                crate::session::DEFAULT_LOCAL_USER_ID,
+                "codex",
+                &profile.profile_id,
+            )
+            .expect("profile environment");
+        std::fs::write(
+            Path::new(&environment["CODEX_HOME"]).join("auth.json"),
+            br#"{"tokens":{"access_token":"test"}}"#,
+        )
+        .expect("Codex credential fixture");
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "codex",
+            "codex",
+            profile.profile_id,
+            "gpt-5.6-luna",
+        )
+        .with_agent_id(agent.id());
+
+        let _env = crate::env_lock::lock();
+        let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let prepared = runtime
+            .owned
+            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string())
+            .expect("owned launch preparation");
+        match previous_isolation {
+            Some(value) => {
+                std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, value)
+            }
+            None => std::env::remove_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV),
+        }
+
+        assert_eq!(prepared.provider_account_env, environment);
+        assert_eq!(
+            prepared.workspace_live_sync_roots,
+            vec![primary.clone(), supporting.clone()]
+        );
+        for name in ["OPENAI_API_KEY", "CODEX_API_KEY"] {
+            assert!(prepared
+                .provider_env_remove
+                .iter()
+                .any(|existing| existing == name));
+        }
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app = app.lock().await;
+            (
+                app.config_projection_store(),
+                app.session_state_store(),
+                app.agents().clone(),
+                app.attachments().clone(),
+                app.providers().clone(),
+                app.provider_process_tracking_store(),
+                app.slices(),
+                app.session_state_projection_store(),
+                app.provider_run_projection_store(),
+                app.operational_history_store(),
+                app.durable_state_store(),
+                app.prompt_state_owner(),
+                app.active_turn_store(),
+                app.prompt_activity_store(),
+                app.prompt_workspace_claim_store(),
+                app.structured_output_record_store(),
+                app.terminal_stream_store(),
+                app.workflow_design_event_store(),
+                app.metaagent_event_store(),
+                app.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            Arc::clone(app),
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
     }
 }

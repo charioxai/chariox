@@ -10,7 +10,7 @@ use crate::provider::{
 };
 use crate::session::RuntimeSession;
 
-pub(super) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
+pub(crate) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> {
     let credentials = crate::credential::load_user_credentials().unwrap_or_default();
     let _ = config;
     let mut names = crate::secret::RuntimeSecretService::credential_env_names_from(&credentials)
