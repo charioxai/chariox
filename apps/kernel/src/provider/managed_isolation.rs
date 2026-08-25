@@ -143,12 +143,30 @@ pub(crate) fn apply_managed_provider_isolation(
 
         launch.pty_program = Some(BWRAP_PATH.to_string());
         launch.pty_args = args;
-        // The sandbox path does not exist until bubblewrap assembles the
-        // namespace. Spawn bubblewrap from the real provider home and let its
-        // own --chdir select the approved in-sandbox directory.
-        launch.working_directory = Some(provider_home);
+        // Provider-account utilities use the synthetic sandbox home, which
+        // does not exist until bubblewrap assembles the namespace. Ordinary
+        // runs keep the real workspace as both the process cwd and the
+        // provider protocol cwd so turns do not fall back to /tmp.
+        launch.working_directory = Some(managed_launch_working_directory(
+            request,
+            &provider_home,
+            &working_directory,
+        ));
         launch.process_label = format!("{}:managed-isolated", launch.process_label);
         Ok(launch)
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn managed_launch_working_directory(
+    request: &LaunchProviderRequest,
+    provider_home: &Path,
+    sandbox_working_directory: &Path,
+) -> PathBuf {
+    if request.session_id == "provider-account" {
+        provider_home.to_path_buf()
+    } else {
+        sandbox_working_directory.to_path_buf()
     }
 }
 
@@ -694,6 +712,41 @@ mod tests {
         assert!(args
             .windows(3)
             .any(|args| args == ["--setenv", "SHELL", "/bin/sh"]));
+    }
+
+    #[test]
+    fn managed_launch_keeps_the_workspace_as_the_provider_protocol_cwd() {
+        let request =
+            LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.6-luna");
+
+        assert_eq!(
+            managed_launch_working_directory(
+                &request,
+                Path::new("/var/lib/chariox/home/provider-accounts/codex/default"),
+                Path::new("/var/lib/chariox/home/workspaces/repo"),
+            ),
+            PathBuf::from("/var/lib/chariox/home/workspaces/repo"),
+        );
+    }
+
+    #[test]
+    fn managed_provider_account_launch_starts_from_the_real_profile_home() {
+        let request = LaunchProviderRequest::new(
+            "provider-account",
+            "managed-utility",
+            "managed-utility",
+            "default",
+            "default",
+        );
+
+        assert_eq!(
+            managed_launch_working_directory(
+                &request,
+                Path::new("/var/lib/chariox/home/provider-accounts/codex/default"),
+                Path::new(SANDBOX_HOME),
+            ),
+            PathBuf::from("/var/lib/chariox/home/provider-accounts/codex/default"),
+        );
     }
 
     #[test]
