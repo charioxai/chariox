@@ -282,6 +282,7 @@ fn collect_usage_meters(
                 };
                 let label = match (scope_label.as_deref(), period_label) {
                     (Some(scope), Some(period)) => format!("{scope} · {period}"),
+                    (Some(scope), None) => scope.to_string(),
                     (None, Some(period)) => period.to_string(),
                     _ => scoped_meter_label(path),
                 };
@@ -293,9 +294,16 @@ fn collect_usage_meters(
                 // the account merge from showing duplicate or orphaned window
                 // meters while keeping distinct same-duration limits
                 // separate.
+                let scoped_limit_id = scope_label
+                    .as_deref()
+                    .and_then(|_| scoped_meter_identity(path));
                 let meter_id = match kind {
-                    ProviderAccountUsageMeterKind::CreditBalance => "credits".to_string(),
-                    ProviderAccountUsageMeterKind::SpendLimit => "spend".to_string(),
+                    ProviderAccountUsageMeterKind::CreditBalance => scoped_limit_id
+                        .map(|limit_id| format!("credits/{limit_id}"))
+                        .unwrap_or_else(|| "credits".to_string()),
+                    ProviderAccountUsageMeterKind::SpendLimit => scoped_limit_id
+                        .map(|limit_id| format!("spend/{limit_id}"))
+                        .unwrap_or_else(|| "spend".to_string()),
                     _ => match (window_duration_minutes, scoped_meter_identity(path)) {
                         (Some(minutes), Some(limit_id)) => format!("rolling/{minutes}/{limit_id}"),
                         (Some(minutes), None) => format!("rolling/{minutes}"),
@@ -614,6 +622,61 @@ mod tests {
         ];
         assert!(ids.contains(&"rolling/300/codex".to_string()));
         assert!(ids.contains(&"rolling/300/gpt5".to_string()));
+    }
+
+    #[test]
+    fn preserves_scoped_labels_without_a_known_window_duration() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "codex_bengalfox": {
+                        "limitName": "GPT-5.3-Codex-Spark",
+                        "primary": {"usedPercent": 12.0}
+                    }
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 1);
+        assert_eq!(snapshot.meters[0].label, "GPT-5.3-Codex-Spark");
+    }
+
+    #[test]
+    fn keeps_scoped_credit_balances_distinct() {
+        let snapshot = normalize_codex_usage(
+            "work",
+            Some(&json!({
+                "rateLimitsByLimitId": {
+                    "personal": {
+                        "limitName": "Personal credits",
+                        "creditBalance": {"balance": "5"}
+                    },
+                    "team": {
+                        "limitName": "Team credits",
+                        "creditBalance": {"balance": "9"}
+                    }
+                }
+            })),
+            None,
+        );
+
+        assert_eq!(snapshot.meters.len(), 2);
+        let ids = snapshot
+            .meters
+            .iter()
+            .map(|meter| meter.meter_id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ids.contains(&"credits/personal"));
+        assert!(ids.contains(&"credits/team"));
+        let labels = snapshot
+            .meters
+            .iter()
+            .map(|meter| meter.label.as_str())
+            .collect::<Vec<_>>();
+        assert!(labels.contains(&"Personal credits"));
+        assert!(labels.contains(&"Team credits"));
     }
 
     #[test]
