@@ -8,6 +8,7 @@ import test from 'node:test'
 import {
   HUMAN_HTTP_FORM_INVOKE_PATH,
   assertDeployedWorkflowViewerFormPage,
+  cloudProfilePath,
   copyCloudProfile,
   deployedWorkflowFormInvokeRequest,
   deployedWorkflowFormResultEventsPath,
@@ -25,6 +26,22 @@ test('cloud relay drill profile is copied into the isolated kernel home', async 
   await copyCloudProfile(charioxHome, source)
 
   assert.equal(await readFile(path.join(charioxHome, 'daemon', 'config.json'), 'utf8'), payload)
+})
+
+test('cloud relay drill profile follows kernel configuration-home precedence', () => {
+  assert.equal(
+    cloudProfilePath({ CHARIOX_HOME: '/chariox', XDG_CONFIG_HOME: '/xdg', HOME: '/home' }),
+    path.join('/chariox', 'daemon', 'config.json'),
+  )
+  assert.equal(
+    cloudProfilePath({ XDG_CONFIG_HOME: '/xdg', HOME: '/home' }),
+    path.join('/xdg', 'chariox', 'daemon', 'config.json'),
+  )
+  assert.equal(
+    cloudProfilePath({ HOME: '/home' }),
+    path.join('/home', '.chariox', 'daemon', 'config.json'),
+  )
+  assert.throws(() => cloudProfilePath({}), /profile home is unavailable/)
 })
 
 test('human HTTP form invoke requests target the fixed publication form endpoint', () => {

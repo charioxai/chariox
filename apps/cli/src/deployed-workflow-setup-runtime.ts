@@ -308,17 +308,25 @@ async function bindSetupRuntime(
     throw new Error("kernel returned an invalid deployment binding state")
   }
   if (payload.state === "running" && publicationUsesHttpIngress(setup.configuration.publication.transport)) {
-    await registerPublicationDeploymentLocalBackend({
-      profile,
-      deploymentId,
-      runtimeSessionId: requiredText(payload.runtime_session_id, "deployment runtime session ID"),
-      tunnelUrl: requiredText(payload.tunnel_url, "deployment tunnel URL"),
-    })
+    try {
+      await registerPublicationDeploymentLocalBackend({
+        profile,
+        deploymentId,
+        runtimeSessionId: requiredText(payload.runtime_session_id, "deployment runtime session ID"),
+        tunnelUrl: requiredText(payload.tunnel_url, "deployment tunnel URL"),
+      })
+    } catch (cause) {
+      throw new Error(
+        "deployment runtime is bound, but ingress backend registration failed; resume this setup to retry registration safely",
+        { cause },
+      )
+    }
   }
   return { operationalDeploymentId: deploymentId, state: payload.state }
 }
 
 function publicationUsesHttpIngress(transport: unknown): boolean {
+  // Schedule-only and event-based publications run without a public HTTP tunnel.
   return Boolean(
     transport
     && typeof transport === "object"

@@ -815,7 +815,17 @@ export function run(command, args, options = {}) {
   })
 }
 
-export async function copyCloudProfile(charioxHome, source = path.join(process.env.HOME, '.chariox', 'daemon', 'config.json')) {
+export function cloudProfilePath(env = process.env) {
+  const charioxHome = env.CHARIOX_HOME?.trim()
+  if (charioxHome) return path.join(charioxHome, 'daemon', 'config.json')
+  const xdgConfigHome = env.XDG_CONFIG_HOME?.trim()
+  if (xdgConfigHome) return path.join(xdgConfigHome, 'chariox', 'daemon', 'config.json')
+  const home = env.HOME?.trim()
+  if (!home) throw new Error('cloud relay profile home is unavailable')
+  return path.join(home, '.chariox', 'daemon', 'config.json')
+}
+
+export async function copyCloudProfile(charioxHome, source = cloudProfilePath()) {
   const target = path.join(charioxHome, 'daemon', 'config.json')
   await mkdir(path.dirname(target), { recursive: true })
   await cp(source, target)

@@ -177,6 +177,31 @@ test("TUI local setup pauses for a missing relay and resumes idempotently", asyn
   }
 })
 
+test("TUI local setup reports a bound runtime registration failure as safely resumable", async () => {
+  const fixture = await setupFixture({ mode: "local_runtime", localBackendAvailable: false })
+  try {
+    await assert.rejects(
+      executeDeploymentSetupCommand(profile, [
+        "publication", "publication-1",
+        "--slug", "backend-resume",
+        "--mode", "local-runtime",
+      ], fixture.runtime),
+      /runtime is bound.*resume this setup/i,
+    )
+    assert.equal(fixture.cloud.setup?.status, "active")
+    assert.equal(fixture.cloud.setup?.stage, "runtime")
+
+    fixture.cloud.localBackendAvailable = true
+    const resumed = await executeDeploymentSetupCommand(profile, [
+      "resume", fixture.cloud.setup!.id,
+    ], fixture.runtime)
+    assert.equal(resumed.footer, "deployment backend-resume ready")
+    assert.equal(fixture.cloud.localBackendUpdates.length, 1)
+  } finally {
+    await fixture.cleanup()
+  }
+})
+
 test("TUI deployment setup rejects package paths that escape its temporary root", async () => {
   const escapeName = `chariox-setup-escape-${randomUUID()}`
   const fixture = await setupFixture({ mode: "hosted_container", unsafePackagePath: `../${escapeName}` })
@@ -202,6 +227,7 @@ async function setupFixture(options: {
   readonly mode: "local_runtime" | "hosted_container"
   readonly credentialsReady?: boolean
   readonly bindStates?: Array<"running" | "waiting_for_relay">
+  readonly localBackendAvailable?: boolean
   readonly unsafePackagePath?: string
 }) {
   const packageRoot = await deployedWorkflowPackageFixture()
@@ -218,7 +244,11 @@ async function setupFixture(options: {
   })))
   if (options.unsafePackagePath) packageFiles[0] = { ...packageFiles[0]!, path: options.unsafePackagePath }
 
-  const cloud = new FakeDeploymentCloud(options.mode, options.credentialsReady ?? true)
+  const cloud = new FakeDeploymentCloud(
+    options.mode,
+    options.credentialsReady ?? true,
+    options.localBackendAvailable ?? true,
+  )
   const kernelVariants: string[] = []
   const bindInputs: Record<string, unknown>[] = []
   const bindStates = [...(options.bindStates ?? ["running"])]
@@ -276,6 +306,7 @@ async function setupFixture(options: {
 class FakeDeploymentCloud {
   setup: DeploymentSetup | null = null
   credentialsReady: boolean
+  localBackendAvailable: boolean
   readonly checkpoints: DeploymentSetupCheckpoint[] = []
   readonly promotionKeys: string[] = []
   readonly audienceMutations: Record<string, unknown>[] = []
@@ -314,8 +345,10 @@ class FakeDeploymentCloud {
   constructor(
     private readonly mode: "local_runtime" | "hosted_container",
     credentialsReady: boolean,
+    localBackendAvailable: boolean,
   ) {
     this.credentialsReady = credentialsReady
+    this.localBackendAvailable = localBackendAvailable
   }
 
   readonly fetch = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
@@ -429,6 +462,9 @@ class FakeDeploymentCloud {
       }, 202, { "x-request-id": "promotion-request" })
     }
     if (url.pathname === "/publication-deployments/deployment-1/local-backend" && method === "POST") {
+      if (!this.localBackendAvailable) {
+        return jsonResponse({ error: { message: "local backend unavailable" } }, 503)
+      }
       this.localBackendUpdates.push(body as unknown as (typeof this.localBackendUpdates)[number])
       return jsonResponse({ deployment: { id: "deployment-1" } })
     }

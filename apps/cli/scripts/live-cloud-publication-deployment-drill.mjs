@@ -512,6 +512,10 @@ async function main() {
         workspace,
         agentRef: deferredExtensionCleanup.agentRef,
         state: deferredExtensionCleanup.state,
+      }).catch((error) => ({
+        revoked: [],
+        uninstalled: [],
+        failures: [`cleanup:${errorMessage(error)}`],
       })
       logStep('extension_cleanup', {
         revoked: outcome.revoked.length,
