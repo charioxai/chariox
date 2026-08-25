@@ -52,6 +52,9 @@ const { createDefaultShellContext, parseShellCommand } = await import('../../../
 const { executeShellCommand } = await import('../../../packages/kernel-client/dist/shell-executor.js')
 const { loadPreferences, relayCloudProfile } = await import('../dist/preferences.js')
 const { connectKernelCloudRelay } = await import('../dist/relay-api.js')
+const { executeDeploymentSetupCommand } = await import('../dist/deployed-workflow-setup-command.js')
+const { getDeploymentSetup } = await import('../dist/deployed-workflow-setup-api.js')
+const { getDeploymentProject } = await import('../dist/deployed-workflow-api.js')
 const {
   changePublicationDeployment,
   createPublicationDeploymentFromPackage,
@@ -78,6 +81,7 @@ const {
   uninstallMcpServerRequest,
   updateWorkflowNodeInstructionsRequest,
   exportWorkflowPublicationPackageRequest,
+  getSessionStateRequest,
 } = requests
 
 const REAL_DASHBOARD_PROMPT = [
@@ -320,6 +324,7 @@ async function main() {
   let client = null
   let deploymentId = null
   let profile = null
+  let deferredExtensionCleanup = null
   let succeeded = false
   let failure = null
   const sessionIds = []
@@ -367,7 +372,9 @@ async function main() {
       agentAppShopping: options.agentAppShopping,
       actionPort,
       extensions: extensionPlan?.main ?? null,
+      deferExtensionCleanup: options.transport === 'human_http' && !options.agentAppShopping,
     })
+    deferredExtensionCleanup = publicationContext.extensionCleanup
     profile = explicitCloudProfile(options) ?? relayCloudProfile(await loadPreferences())
     if (!profile) throw new Error('cloud is not linked. Run /cloud login from the TUI before this drill.')
     if (options.mode === 'hosted_container' && extensionPlan) {
@@ -388,17 +395,26 @@ async function main() {
       })
     }
     logStep('deploy', { mode: options.mode, transport: options.transport, slug: options.slug })
-    const deployment = await createPublicationDeploymentFromPackage({
-      profile,
-      packagePath: packageDir,
-      mode: options.mode,
-      slug: options.slug,
-      ...(options.credentialProfile ? { credentialProfile: options.credentialProfile } : {}),
-      start: options.mode === 'hosted_container',
-    })
+    const modernSetup = options.transport === 'human_http' && !options.agentAppShopping
+    const deployment = modernSetup
+      ? await createModernDeploymentSetup({
+        client,
+        profile,
+        publicationContext,
+        mode: options.mode,
+        slug: options.slug,
+      })
+      : await createPublicationDeploymentFromPackage({
+        profile,
+        packagePath: packageDir,
+        mode: options.mode,
+        slug: options.slug,
+        ...(options.credentialProfile ? { credentialProfile: options.credentialProfile } : {}),
+        start: options.mode === 'hosted_container',
+      })
     deploymentId = deployment.id
     let readyDeployment = deployment
-    if (options.mode === 'local_runtime') {
+    if (options.mode === 'local_runtime' && !modernSetup) {
       if (options.agentAppShopping) {
         actionServer = startProcess(process.execPath, [path.join(packageDir, 'app', 'actions.mjs')], {
           ...env,
@@ -424,7 +440,7 @@ async function main() {
         throw new Error(`${errorMessage(error)}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
       })
     }
-    readyDeployment = await waitForDeploymentReady(profile, deployment.id).catch((error) => {
+    readyDeployment = modernSetup ? deployment : await waitForDeploymentReady(profile, deployment.id).catch((error) => {
       throw new Error(`${errorMessage(error)}\nkernel stdout:\n${kernel?.logs?.stdout ?? ''}\nkernel stderr:\n${kernel?.logs?.stderr ?? ''}\nserve stdout:\n${serve?.logs?.stdout ?? ''}\nserve stderr:\n${serve?.logs?.stderr ?? ''}`)
     })
     logStep('deployment_ready', {
@@ -487,6 +503,22 @@ async function main() {
       await changePublicationDeployment(profile, deploymentId, 'stop').catch((error) => {
         logStep('cleanup_warning', { action: 'stop-deployment', error: errorMessage(error) })
       })
+    }
+    if (deferredExtensionCleanup) {
+      const outcome = await cleanupDrillExtensionState({
+        client,
+        workspace,
+        agentRef: deferredExtensionCleanup.agentRef,
+        state: deferredExtensionCleanup.state,
+      })
+      logStep('extension_cleanup', {
+        revoked: outcome.revoked.length,
+        uninstalled: outcome.uninstalled.length,
+        failures: outcome.failures,
+      })
+      if (outcome.failures.length > 0) {
+        logStep('cleanup_warning', { action: 'extensions', failures: outcome.failures })
+      }
     }
     await stopProcess(serve).catch((error) => logStep('cleanup_warning', { process: 'serve', error: errorMessage(error) }))
     await stopProcess(actionServer).catch((error) => logStep('cleanup_warning', { process: 'actionServer', error: errorMessage(error) }))
@@ -721,17 +753,76 @@ async function createPublicationPackage(input) {
   } catch (error) {
     bodyError = error
   }
-  const outcome = await cleanupDrillExtensionState({ client, workspace, agentRef: agent.id, state: extensionState })
-  logStep('extension_cleanup', {
-    revoked: outcome.revoked.length,
-    uninstalled: outcome.uninstalled.length,
-    failures: outcome.failures,
-  })
-  if (bodyError) throw bodyError
-  if (outcome.failures.length > 0) {
-    throw new Error(`drill extension cleanup incomplete: ${outcome.failures.join(', ')}`)
+  if (bodyError || !input.deferExtensionCleanup) {
+    const outcome = await cleanupDrillExtensionState({ client, workspace, agentRef: agent.id, state: extensionState })
+    logStep('extension_cleanup', {
+      revoked: outcome.revoked.length,
+      uninstalled: outcome.uninstalled.length,
+      failures: outcome.failures,
+    })
+    if (bodyError) throw bodyError
+    if (outcome.failures.length > 0) {
+      throw new Error(`drill extension cleanup incomplete: ${outcome.failures.join(', ')}`)
+    }
+    return { ...publicationResult, extensionCleanup: null }
   }
-  return publicationResult
+  return {
+    ...publicationResult,
+    extensionCleanup: { agentRef: agent.id, state: extensionState },
+  }
+}
+
+async function createModernDeploymentSetup(input) {
+  const sessionResponse = await input.client.send(getSessionStateRequest(input.publicationContext.sessionId))
+  const session = sessionResponse.SessionState?.session ?? sessionResponse.SessionStateLoaded?.session
+  if (!session) throw new Error('kernel did not return the deployment source session')
+  const command = await executeDeploymentSetupCommand(
+    input.profile,
+    [
+      'publication',
+      input.publicationContext.publicationId,
+      '--slug',
+      input.slug,
+      '--mode',
+      input.mode,
+      '--access',
+      'public',
+    ],
+    {
+      isAttached: () => true,
+      sessionState: () => session,
+      sendDeploymentSetupKernelRequest: (request) => input.client.send(request),
+    },
+  )
+  const setupId = /^setup\s+(\S+)/m.exec(command.notice)?.[1]
+  if (!setupId) throw new Error(`deployment setup did not return its identity: ${command.notice}`)
+  const setup = (await getDeploymentSetup(input.profile, setupId)).setup
+  if (setup.status !== 'completed' || setup.stage !== 'complete') {
+    throw new Error(`deployment setup ${setup.id} stopped at ${setup.status}/${setup.stage}`)
+  }
+  const projectId = requiredDrillText(setup.projectId, 'deployment project ID')
+  const environmentId = requiredDrillText(setup.environmentId, 'deployment environment ID')
+  const state = (await getDeploymentProject(input.profile, projectId)).state
+  const environment = state.environments.find((candidate) => candidate.id === environmentId)
+  if (!environment) throw new Error(`deployment environment ${environmentId} was not returned by Cloud`)
+  const deploymentId = requiredDrillText(
+    setup.operationalDeploymentId ?? environment.operationalDeploymentId,
+    'operational deployment ID',
+  )
+  const publicBaseUrl = requiredDrillText(environment.publicUrl, 'deployment public URL')
+  return {
+    id: deploymentId,
+    status: environment.observedState,
+    publicBaseUrl,
+    setupId: setup.id,
+    projectId,
+    environmentId,
+  }
+}
+
+function requiredDrillText(value, label) {
+  if (typeof value !== 'string' || !value.trim()) throw new Error(`${label} is unavailable`)
+  return value.trim()
 }
 
 async function cleanupDrillExtensionState(input) {
