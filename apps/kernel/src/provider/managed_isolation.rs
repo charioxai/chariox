@@ -16,6 +16,9 @@ const CLAUDE_SANDBOX_ENV: &str = "IS_SANDBOX";
 pub(crate) const MANAGED_PROVIDER_HOME_ENV: &str = "CHARIOX_MANAGED_PROVIDER_HOME";
 pub(crate) const MANAGED_PROVIDER_ISOLATION_MARKER_ENV: &str =
     "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE";
+const MANAGED_WORKSPACE_ROOT_COUNT_ENV: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT";
+const MANAGED_WORKSPACE_ROOT_ENV_PREFIX: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_";
+const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
 
 #[cfg(target_os = "linux")]
 const BWRAP_PATH: &str = "/usr/bin/bwrap";
@@ -60,8 +63,58 @@ pub(crate) fn managed_provider_isolation_required() -> bool {
         })
 }
 
-pub(crate) fn managed_provider_control_env_remove() -> &'static [&'static str] {
-    CONTROL_ENVIRONMENT_NAMES
+pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
+    let mut names = CONTROL_ENVIRONMENT_NAMES
+        .iter()
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    names.push(MANAGED_WORKSPACE_ROOT_COUNT_ENV.to_string());
+    names.extend(std::env::vars_os().filter_map(|(name, _)| {
+        let name = name.into_string().ok()?;
+        name.starts_with(MANAGED_WORKSPACE_ROOT_ENV_PREFIX)
+            .then_some(name)
+    }));
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
+    // The trusted slice provisioner injects the individually validated
+    // development publication mounts into the worker kernel environment.
+    // Hidden leased sessions have no local Project row, so this is their
+    // source of approved provider-sandbox roots.
+    let Some(raw_count) = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV) else {
+        return Ok(Vec::new());
+    };
+    let raw_count = raw_count
+        .into_string()
+        .map_err(|_| isolation_error("managed workspace root count must be valid UTF-8"))?;
+    let count = raw_count
+        .parse::<usize>()
+        .map_err(|_| isolation_error("managed workspace root count must be an unsigned integer"))?;
+    if count > MAX_MANAGED_WORKSPACE_ROOTS {
+        return Err(isolation_error(format!(
+            "managed workspace root count exceeds {MAX_MANAGED_WORKSPACE_ROOTS}"
+        )));
+    }
+    let mut roots = Vec::with_capacity(count);
+    for index in 0..count {
+        let name = format!("{MANAGED_WORKSPACE_ROOT_ENV_PREFIX}{index}");
+        let value = std::env::var_os(&name)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| isolation_error(format!("managed workspace root {index} is missing")))?;
+        let root = PathBuf::from(value);
+        if !root.is_absolute() {
+            return Err(isolation_error(format!(
+                "managed workspace root {index} must be absolute"
+            )));
+        }
+        if roots.iter().all(|existing| existing != &root) {
+            roots.push(root);
+        }
+    }
+    Ok(roots)
 }
 
 pub(crate) fn apply_managed_provider_isolation(
@@ -127,10 +180,10 @@ pub(crate) fn apply_managed_provider_isolation(
         }
 
         append_managed_namespace_environment(&mut args, request);
-        for name in CONTROL_ENVIRONMENT_NAMES {
-            args.extend(["--unsetenv".to_string(), (*name).to_string()]);
-            if !launch.pty_env_remove.iter().any(|value| value == name) {
-                launch.pty_env_remove.push((*name).to_string());
+        for name in managed_provider_control_env_remove() {
+            args.extend(["--unsetenv".to_string(), name.clone()]);
+            if !launch.pty_env_remove.iter().any(|value| value == &name) {
+                launch.pty_env_remove.push(name);
             }
         }
         args.extend([
@@ -260,10 +313,7 @@ pub(crate) fn managed_isolated_utility_launch(
         pty_program: Some(program.into()),
         pty_args: args,
         pty_env: environment,
-        pty_env_remove: CONTROL_ENVIRONMENT_NAMES
-            .iter()
-            .map(|name| (*name).to_string())
-            .collect(),
+        pty_env_remove: managed_provider_control_env_remove(),
         working_directory,
         structured_endpoint: None,
     };
@@ -417,6 +467,11 @@ fn managed_workspace_roots(request: &LaunchProviderRequest) -> Result<Vec<PathBu
         return Ok(Vec::new());
     }
     let mut roots = request.workspace_live_sync_roots.clone();
+    for root in managed_slice_workspace_roots()? {
+        if roots.iter().all(|existing| existing != &root) {
+            roots.push(root);
+        }
+    }
     if roots.is_empty() {
         let working_directory = request
             .working_directory
@@ -750,6 +805,64 @@ mod tests {
     }
 
     #[test]
+    fn managed_slice_workspace_roots_are_loaded_and_removed_from_provider_environment() {
+        let primary = std::env::temp_dir().join(format!(
+            "chariox-managed-slice-primary-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let supporting = std::env::temp_dir().join(format!(
+            "chariox-managed-slice-supporting-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&primary).expect("primary workspace should exist");
+        std::fs::create_dir_all(&supporting).expect("supporting workspace should exist");
+
+        let _env = crate::env_lock::lock();
+        let previous_count = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
+        let previous_primary = std::env::var_os("CHARIOX_MANAGED_WORKSPACE_ROOT_0");
+        let previous_supporting = std::env::var_os("CHARIOX_MANAGED_WORKSPACE_ROOT_1");
+        std::env::set_var(MANAGED_WORKSPACE_ROOT_COUNT_ENV, "2");
+        std::env::set_var("CHARIOX_MANAGED_WORKSPACE_ROOT_0", &primary);
+        std::env::set_var("CHARIOX_MANAGED_WORKSPACE_ROOT_1", &supporting);
+
+        let roots =
+            managed_slice_workspace_roots().expect("managed slice workspace roots should load");
+        #[cfg(target_os = "linux")]
+        let isolated_roots = managed_workspace_roots(
+            &LaunchProviderRequest::new(
+                "hidden-session",
+                "codex",
+                "codex",
+                "default",
+                "gpt-5.6-luna",
+            )
+            .with_working_directory(primary.clone())
+            .with_workspace_live_sync_roots(vec![primary.clone()]),
+        )
+        .expect("managed live-sync isolation should retain every slice workspace root");
+        let removed = managed_provider_control_env_remove();
+
+        restore_env(MANAGED_WORKSPACE_ROOT_COUNT_ENV, previous_count);
+        restore_env("CHARIOX_MANAGED_WORKSPACE_ROOT_0", previous_primary);
+        restore_env("CHARIOX_MANAGED_WORKSPACE_ROOT_1", previous_supporting);
+
+        assert_eq!(roots, vec![primary.clone(), supporting.clone()]);
+        #[cfg(target_os = "linux")]
+        assert_eq!(isolated_roots, vec![primary.clone(), supporting.clone()]);
+        for name in [
+            MANAGED_WORKSPACE_ROOT_COUNT_ENV,
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
+            "CHARIOX_MANAGED_WORKSPACE_ROOT_1",
+        ] {
+            assert!(removed.iter().any(|removed| removed == name));
+        }
+        let _ = std::fs::remove_dir_all(primary);
+        let _ = std::fs::remove_dir_all(supporting);
+    }
+
+    #[test]
     fn managed_namespace_exposes_runtime_directory_read_only_before_the_command() {
         let mut args = vec![
             "--tmpfs".to_string(),
@@ -779,5 +892,12 @@ mod tests {
                 "/tmp/chariox-claude-runtime-test",
             ]
         );
+    }
+
+    fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 }

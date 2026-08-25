@@ -348,7 +348,109 @@ fn local_docker_slice_mounts_only_development_repositories() {
     assert!(script.contains(
         "-v \"$development_mount_source:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE\""
     ));
+    assert!(script
+        .contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT\""));
+    assert!(
+        script.contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount\"")
+    );
+    assert!(script.contains("local workspace_root_env_args=()"));
+    assert!(script.contains("\"${workspace_root_env_args[@]}\""));
     assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_slice_runtime_forwards_managed_workspace_roots() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("existing-slice-workspace-roots");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  if [ "${3:-}" = "-f" ]; then
+    printf 'sha256:fixture\n'
+  fi
+  exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  printf 'sha256:fixture\n'
+  exit 0
+fi
+if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
+  printf 'true\n'
+  exit 0
+fi
+for argument in "$@"; do
+  if [ "$argument" = "df" ]; then
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'fixture 1000000 1 999999 1%% /\n'
+    exit 0
+  fi
+done
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/provision-linux-docker-slice.sh");
+    let mut paths = vec![bin];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("start-runtime")
+        .env("PATH", path)
+        .env("TMPDIR", &root)
+        .env("DOCKER_LOG", &log)
+        .env("CHARIOX_SLICE_NAME", "saved-slice")
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", "fixture")
+        .env("CHARIOX_SLICE_BASE_IMAGE", "fixture")
+        .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT", "2")
+        .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_0", "/development/primary")
+        .env(
+            "CHARIOX_SLICE_DEVELOPMENT_MOUNT_1",
+            "/development/supporting",
+        )
+        .output()
+        .expect("slice runtime command should execute");
+    assert!(
+        output.status.success(),
+        "slice runtime failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    assert!(
+        !calls.lines().any(|call| call.starts_with("create ")),
+        "existing container must be reused: {calls}"
+    );
+    let runtime_call = calls
+        .lines()
+        .find(|call| call.ends_with(" saved-slice /opt/chariox-slice/start-runtime.sh"))
+        .expect("runtime Docker exec should be recorded");
+    for expected in [
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=2",
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_0=/development/primary",
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_1=/development/supporting",
+    ] {
+        assert!(
+            runtime_call.contains(expected),
+            "runtime call is missing {expected}: {runtime_call}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[test]

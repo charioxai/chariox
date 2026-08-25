@@ -517,12 +517,14 @@ ensure_container() {
       )
     fi
     if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
+      docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
       for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
         mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
         mount_source_variable="${mount_variable}_SOURCE"
         development_mount="${!mount_variable:-}"
         development_mount_source="${!mount_source_variable:-$development_mount}"
         [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
+        docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
         docker_create_args+=(-v "$development_mount_source:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE")
       done
     elif [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
@@ -602,6 +604,17 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  local workspace_root_env_args=()
+  if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
+    workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
+    local mount_index mount_variable development_mount
+    for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
+      mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
+      development_mount="${!mount_variable:-}"
+      [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
+      workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
+    done
+  fi
   local relay_token_path="/tmp/chariox-slice-state/relay-token"
   local relay_token_input
   relay_token_input="$(mktemp "${TMPDIR:-/tmp}/chariox-slice-relay-token.XXXXXX")"
@@ -643,6 +656,7 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
     "${relay_env_args[@]}" \
+    "${workspace_root_env_args[@]}" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \

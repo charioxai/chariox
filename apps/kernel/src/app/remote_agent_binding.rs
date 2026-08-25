@@ -897,7 +897,12 @@ impl DaemonApp {
     ) -> Option<String> {
         self.slices
             .resolve_by_worker_kernel_ref(kernel_ref)
-            .map(|_| "/workspace".to_string())
+            .map(|slice| {
+                slice
+                    .development_publication
+                    .map(|publication| publication.primary_repository_path)
+                    .unwrap_or_else(|| "/workspace".to_string())
+            })
             .or(requested_worktree_id)
     }
 
@@ -1197,6 +1202,29 @@ mod tests {
             )
             .as_deref(),
             Some("/workspace")
+        );
+        app.slices()
+            .set_development_publication(
+                &slice.id,
+                crate::slice::SliceDevelopmentPublication {
+                    publication_id: "development".to_string(),
+                    destination_root: "/state/development".to_string(),
+                    primary_repository_path: "/state/development/primary".to_string(),
+                    repository_paths: vec![
+                        "/state/development/primary".to_string(),
+                        "/state/development/supporting".to_string(),
+                    ],
+                },
+                43,
+            )
+            .expect("slice publication should update");
+        assert_eq!(
+            app.worker_worktree_id_for_kernel_ref(
+                &slice.worker_kernel_ref,
+                Some("/host/worktree".to_string()),
+            )
+            .as_deref(),
+            Some("/state/development/primary")
         );
         assert_eq!(
             app.worker_worktree_id_for_kernel_ref(

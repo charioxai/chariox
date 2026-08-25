@@ -179,7 +179,9 @@ impl KernelRuntimeOwnedState {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
-        if crate::provider::managed_provider_isolation_required() {
+        if crate::provider::managed_provider_isolation_required()
+            && !session.project_id().is_empty()
+        {
             let project = self.session_store.get_project(session.project_id())?;
             let mut roots = project
                 .workspace_ids()
@@ -341,6 +343,61 @@ mod tests {
         }
 
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[tokio::test]
+    async fn owned_launch_preparation_allows_hidden_remote_lease_session_under_managed_isolation() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-owned-hidden-provider-launch-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("hidden session workspace should exist");
+        let app = crate::app::DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap");
+        let session = app
+            .sessions_mut()
+            .create_ephemeral_session(
+                crate::session::CreateSessionRequest::new(
+                    root.to_string_lossy(),
+                    root.to_string_lossy(),
+                )
+                .with_hidden(true),
+            )
+            .expect("hidden remote lease session should create");
+        assert!(session.project_id().is_empty());
+
+        let app = Arc::new(Mutex::new(app));
+        let runtime = owned_runtime_state(&app).await;
+        let request = crate::provider::LaunchProviderRequest::new(
+            session.id(),
+            "dev-stub",
+            "dev-stub",
+            "default",
+            "model",
+        );
+
+        let _env = crate::env_lock::lock();
+        let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let prepared = runtime
+            .owned
+            .prepare_provider_launch_request(request, "http://127.0.0.1:43120/mcp".to_string());
+        restore_env(
+            crate::provider::MANAGED_PROVIDER_ISOLATION_ENV,
+            previous_isolation,
+        );
+        let prepared = prepared.expect("hidden provider launch should prepare");
+        assert_eq!(prepared.working_directory.as_deref(), Some(root.as_path()));
+        assert!(prepared.workspace_live_sync_roots.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     async fn owned_runtime_state(app: &Arc<Mutex<crate::app::DaemonApp>>) -> KernelRuntimeState {

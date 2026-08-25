@@ -89,7 +89,9 @@ impl DaemonApp {
             );
             request = request.with_workspace_live_sync_roots(workspace_live_sync_roots);
         }
-        if crate::provider::managed_provider_isolation_required() {
+        if crate::provider::managed_provider_isolation_required()
+            && !session.project_id().is_empty()
+        {
             let project = self.sessions.get_project(session.project_id())?;
             let mut roots = project
                 .workspace_ids()
@@ -303,6 +305,50 @@ mod tests {
             prepared.mcp_servers.is_empty(),
             "metaagent provider runs should not receive user MCP servers"
         );
+    }
+
+    #[test]
+    fn app_launch_preparation_allows_hidden_remote_lease_session_under_managed_isolation() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-hidden-provider-launch-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        std::fs::create_dir_all(&root).expect("hidden session workspace should exist");
+        run_git_init(&root);
+        let app =
+            DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests()).expect("daemon boot");
+        let session = app
+            .sessions_mut()
+            .create_ephemeral_session(
+                CreateSessionRequest::new(root.to_string_lossy(), root.to_string_lossy())
+                    .with_hidden(true),
+            )
+            .expect("hidden remote lease session should create");
+        assert!(session.project_id().is_empty());
+
+        let _env = crate::env_lock::lock();
+        let previous_isolation = std::env::var_os(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV);
+        std::env::set_var(crate::provider::MANAGED_PROVIDER_ISOLATION_ENV, "1");
+        let prepared = app.prepare_app_provider_launch_request(
+            LaunchProviderRequest::new(session.id(), "dev-stub", "dev-stub", "default", "model"),
+            "test.launch",
+        );
+        restore_env(
+            crate::provider::MANAGED_PROVIDER_ISOLATION_ENV,
+            previous_isolation,
+        );
+        let prepared = prepared.expect("hidden provider launch should prepare");
+        assert_eq!(prepared.working_directory.as_deref(), Some(root.as_path()));
+        assert!(prepared.workspace_live_sync_roots.is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    fn restore_env(name: &str, previous: Option<std::ffi::OsString>) {
+        match previous {
+            Some(value) => std::env::set_var(name, value),
+            None => std::env::remove_var(name),
+        }
     }
 
     fn run_git_init(path: &std::path::Path) {

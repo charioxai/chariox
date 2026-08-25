@@ -17,8 +17,8 @@ pub(crate) fn default_provider_env_remove(config: &DaemonConfig) -> Vec<String> 
         .into_iter()
         .collect::<Vec<_>>();
     for name in crate::provider::managed_provider_control_env_remove() {
-        if !names.iter().any(|existing| existing == name) {
-            names.push((*name).to_string());
+        if !names.iter().any(|existing| existing == &name) {
+            names.push(name);
         }
     }
     names
