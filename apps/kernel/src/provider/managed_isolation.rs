@@ -68,11 +68,17 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
         .iter()
         .map(|name| (*name).to_string())
         .collect::<Vec<_>>();
-    names.push(MANAGED_WORKSPACE_ROOT_COUNT_ENV.to_string());
+    names.extend([
+        MANAGED_WORKSPACE_ROOT_COUNT_ENV.to_string(),
+        "GIT_CONFIG_COUNT".to_string(),
+        "GIT_CONFIG_PARAMETERS".to_string(),
+    ]);
     names.extend(std::env::vars_os().filter_map(|(name, _)| {
         let name = name.into_string().ok()?;
-        name.starts_with(MANAGED_WORKSPACE_ROOT_ENV_PREFIX)
-            .then_some(name)
+        (name.starts_with(MANAGED_WORKSPACE_ROOT_ENV_PREFIX)
+            || name.starts_with("GIT_CONFIG_KEY_")
+            || name.starts_with("GIT_CONFIG_VALUE_"))
+        .then_some(name)
     }));
     names.sort();
     names.dedup();
@@ -175,17 +181,25 @@ pub(crate) fn apply_managed_provider_isolation(
         for root in runtime_roots {
             append_bind(&mut args, &root, &root, &mut created_directories);
         }
-        for root in workspace_roots {
-            append_bind(&mut args, &root, &root, &mut created_directories);
+        for root in &workspace_roots {
+            append_bind(&mut args, root, root, &mut created_directories);
         }
 
         append_managed_namespace_environment(&mut args, request);
-        for name in managed_provider_control_env_remove() {
+        let mut environment_remove = managed_provider_control_env_remove();
+        environment_remove.extend(launch.pty_env.keys().filter_map(|name| {
+            (name.starts_with("GIT_CONFIG_KEY_") || name.starts_with("GIT_CONFIG_VALUE_"))
+                .then_some(name.clone())
+        }));
+        environment_remove.sort();
+        environment_remove.dedup();
+        for name in environment_remove {
             args.extend(["--unsetenv".to_string(), name.clone()]);
             if !launch.pty_env_remove.iter().any(|value| value == &name) {
                 launch.pty_env_remove.push(name);
             }
         }
+        append_managed_git_safe_directory_environment(&mut args, &workspace_roots);
         args.extend([
             "--chdir".to_string(),
             working_directory.display().to_string(),
@@ -250,6 +264,38 @@ fn append_managed_namespace_environment(args: &mut Vec<String>, request: &Launch
         ]);
     } else {
         args.extend(["--unsetenv".to_string(), CLAUDE_SANDBOX_ENV.to_string()]);
+    }
+}
+
+#[cfg(any(target_os = "linux", test))]
+fn append_managed_git_safe_directory_environment(
+    args: &mut Vec<String>,
+    workspace_roots: &[PathBuf],
+) {
+    if workspace_roots.is_empty() {
+        return;
+    }
+    args.extend([
+        "--setenv".to_string(),
+        "GIT_CONFIG_COUNT".to_string(),
+        workspace_roots.len().saturating_add(1).to_string(),
+        "--setenv".to_string(),
+        "GIT_CONFIG_KEY_0".to_string(),
+        "safe.directory".to_string(),
+        "--setenv".to_string(),
+        "GIT_CONFIG_VALUE_0".to_string(),
+        String::new(),
+    ]);
+    for (index, root) in workspace_roots.iter().enumerate() {
+        let index = index.saturating_add(1);
+        args.extend([
+            "--setenv".to_string(),
+            format!("GIT_CONFIG_KEY_{index}"),
+            "safe.directory".to_string(),
+            "--setenv".to_string(),
+            format!("GIT_CONFIG_VALUE_{index}"),
+            root.display().to_string(),
+        ]);
     }
 }
 
@@ -770,6 +816,79 @@ mod tests {
     }
 
     #[test]
+    fn managed_git_trusts_only_approved_workspace_roots() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-managed-git-safe-directory-{}-{}",
+            std::process::id(),
+            crate::session::unix_epoch_ms()
+        ));
+        let approved_primary = root.join("primary");
+        let approved_supporting = root.join("supporting");
+        let unapproved = root.join("unapproved");
+        let global_config = root.join("hostile-global.gitconfig");
+        for repository in [&approved_primary, &approved_supporting, &unapproved] {
+            std::fs::create_dir_all(repository).expect("repository root should create");
+            let status = Command::new("git")
+                .arg("-C")
+                .arg(repository)
+                .args(["init", "--quiet"])
+                .status()
+                .expect("Git fixture should start");
+            assert!(status.success(), "Git fixture should initialize");
+        }
+        std::fs::write(&global_config, "[safe]\n\tdirectory = *\n")
+            .expect("hostile global Git config should write");
+        let approved_primary = approved_primary
+            .canonicalize()
+            .expect("primary repository should canonicalize");
+        let approved_supporting = approved_supporting
+            .canonicalize()
+            .expect("supporting repository should canonicalize");
+        let unapproved = unapproved
+            .canonicalize()
+            .expect("unapproved repository should canonicalize");
+        let mut args = Vec::new();
+        append_managed_git_safe_directory_environment(
+            &mut args,
+            &[approved_primary.clone(), approved_supporting.clone()],
+        );
+
+        let git_status = |repository: &Path| {
+            let mut command = Command::new("git");
+            command
+                .arg("-C")
+                .arg(repository)
+                .args(["status", "--porcelain"])
+                .env("GIT_TEST_ASSUME_DIFFERENT_OWNER", "1")
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", &global_config);
+            for environment in args.windows(3) {
+                if environment[0] == "--setenv" && environment[1].starts_with("GIT_CONFIG_") {
+                    command.env(&environment[1], &environment[2]);
+                }
+            }
+            command.output().expect("Git status should run")
+        };
+
+        for approved in [&approved_primary, &approved_supporting] {
+            let output = git_status(approved);
+            assert!(
+                output.status.success(),
+                "approved repository should be trusted: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let denied = git_status(&unapproved);
+        assert!(
+            !denied.status.success(),
+            "unapproved repository must stay untrusted"
+        );
+        assert!(String::from_utf8_lossy(&denied.stderr).contains("dubious ownership"));
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn managed_launch_keeps_the_workspace_as_the_provider_protocol_cwd() {
         let request =
             LaunchProviderRequest::new("session-1", "codex", "codex", "default", "gpt-5.6-luna");
@@ -823,9 +942,13 @@ mod tests {
         let previous_count = std::env::var_os(MANAGED_WORKSPACE_ROOT_COUNT_ENV);
         let previous_primary = std::env::var_os("CHARIOX_MANAGED_WORKSPACE_ROOT_0");
         let previous_supporting = std::env::var_os("CHARIOX_MANAGED_WORKSPACE_ROOT_1");
+        let previous_git_key = std::env::var_os("GIT_CONFIG_KEY_17");
+        let previous_git_value = std::env::var_os("GIT_CONFIG_VALUE_17");
         std::env::set_var(MANAGED_WORKSPACE_ROOT_COUNT_ENV, "2");
         std::env::set_var("CHARIOX_MANAGED_WORKSPACE_ROOT_0", &primary);
         std::env::set_var("CHARIOX_MANAGED_WORKSPACE_ROOT_1", &supporting);
+        std::env::set_var("GIT_CONFIG_KEY_17", "unsafe.fixture");
+        std::env::set_var("GIT_CONFIG_VALUE_17", "unsafe-fixture");
 
         let roots =
             managed_slice_workspace_roots().expect("managed slice workspace roots should load");
@@ -847,6 +970,8 @@ mod tests {
         restore_env(MANAGED_WORKSPACE_ROOT_COUNT_ENV, previous_count);
         restore_env("CHARIOX_MANAGED_WORKSPACE_ROOT_0", previous_primary);
         restore_env("CHARIOX_MANAGED_WORKSPACE_ROOT_1", previous_supporting);
+        restore_env("GIT_CONFIG_KEY_17", previous_git_key);
+        restore_env("GIT_CONFIG_VALUE_17", previous_git_value);
 
         assert_eq!(roots, vec![primary.clone(), supporting.clone()]);
         #[cfg(target_os = "linux")]
@@ -855,6 +980,10 @@ mod tests {
             MANAGED_WORKSPACE_ROOT_COUNT_ENV,
             "CHARIOX_MANAGED_WORKSPACE_ROOT_0",
             "CHARIOX_MANAGED_WORKSPACE_ROOT_1",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_KEY_17",
+            "GIT_CONFIG_VALUE_17",
         ] {
             assert!(removed.iter().any(|removed| removed == name));
         }
