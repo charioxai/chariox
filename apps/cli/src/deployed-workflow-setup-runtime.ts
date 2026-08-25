@@ -307,7 +307,7 @@ async function bindSetupRuntime(
   if (payload.state !== "running" && payload.state !== "waiting_for_relay") {
     throw new Error("kernel returned an invalid deployment binding state")
   }
-  if (payload.state === "running") {
+  if (payload.state === "running" && publicationUsesHttpIngress(setup.configuration.publication.transport)) {
     await registerPublicationDeploymentLocalBackend({
       profile,
       deploymentId,
@@ -316,6 +316,15 @@ async function bindSetupRuntime(
     })
   }
   return { operationalDeploymentId: deploymentId, state: payload.state }
+}
+
+function publicationUsesHttpIngress(transport: unknown): boolean {
+  return Boolean(
+    transport
+    && typeof transport === "object"
+    && !Array.isArray(transport)
+    && (transport as Record<string, unknown>).kind === "human_http",
+  )
 }
 
 async function promoteSetup(
