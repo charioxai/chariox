@@ -332,7 +332,13 @@ function validateProvisioner(action, environment, files) {
       validateSharedPath(value, name)
     }
   }
-  const commonEnvironment = new Set(["CHARIOX_SLICE_ID", "CHARIOX_SLICE_NAME", "CHARIOX_SLICE_HOME_VOLUME"])
+  const commonEnvironment = new Set([
+    "CHARIOX_SLICE_ID",
+    "CHARIOX_SLICE_NAME",
+    "CHARIOX_SLICE_HOME_VOLUME",
+    "CHARIOX_SLICE_OWNER_KERNEL_ID",
+    "CHARIOX_SLICE_OWNER_MACHINE_ID",
+  ])
   const authEnvironment = new Set([
     ...commonEnvironment,
     "CHARIOX_SLICE_AUTH_PROVIDER",

@@ -93,6 +93,25 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   )
   assert.equal(provision.status, 0, provision.stderr)
 
+  for (const action of ["stop", "destroy"]) {
+    const lifecycle = validate(
+      {
+        kind: "provisioner",
+        action,
+        environment: {
+          CHARIOX_SLICE_NAME: "chariox-slice-dev",
+          CHARIOX_SLICE_ID: "slice-dev",
+          CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+          CHARIOX_SLICE_OWNER_KERNEL_ID: "kernel-dev",
+          CHARIOX_SLICE_OWNER_MACHINE_ID: "machine-dev",
+        },
+        files: [],
+      },
+      share,
+    )
+    assert.equal(lifecycle.status, 0, lifecycle.stderr)
+  }
+
   const hostBind = validate(
     {
       kind: "docker",

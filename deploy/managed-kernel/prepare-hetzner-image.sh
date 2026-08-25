@@ -208,6 +208,16 @@ for _attempt in $(seq 1 30); do
 done
 [ "$rootless_docker_ready" -eq 1 ] || fail "rootless Docker daemon is not ready"
 "$script_root/verify-rootless-handle-lifecycle.sh"
+slice_base_image=node:22.17.1-bookworm@sha256:37ff334612f77d8f999c10af8797727b731629c26f2e83caa6af390998bdc49c
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker pull "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image inspect "$slice_base_image" >/dev/null
+runuser -u chariox-docker -- env \
+  DOCKER_HOST=unix:///run/chariox-docker/docker.sock \
+  docker image rm "$slice_base_image" >/dev/null
 if runuser -u chariox -- env DOCKER_HOST=unix:///run/chariox-docker/docker.sock docker info >/dev/null 2>&1; then
   fail "managed kernel user can access the rootless Docker daemon"
 fi

@@ -653,6 +653,7 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
         "ProtectSystem=strict",
         "ExecStart=/usr/share/docker.io/contrib/dockerd-rootless.sh --host=unix:///run/chariox-docker/docker.sock --data-root=/var/lib/chariox-docker/data --exec-opt native.cgroupdriver=cgroupfs",
         "ProtectKernelTunables=false",
+        "RestrictSUIDSGID=false",
         "ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker",
     ] {
         assert!(
@@ -664,6 +665,7 @@ fn managed_rootless_docker_unit_never_exposes_the_rootful_socket() {
     assert!(!unit.contains("User=root"));
     assert!(!unit.contains("SupplementaryGroups=chariox-slice"));
     assert!(!unit.contains("/var/lib/chariox/home"));
+    assert!(!unit.contains("RestrictSUIDSGID=true"));
 }
 
 #[test]

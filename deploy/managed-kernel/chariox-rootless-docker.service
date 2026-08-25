@@ -25,7 +25,9 @@ ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=false
 ProtectKernelModules=true
-RestrictSUIDSGID=true
+# OCI layers may contain setuid/setgid metadata. The daemon remains an
+# unprivileged user inside its rootless user namespace.
+RestrictSUIDSGID=false
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
 ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share/.broker-private /var/lib/chariox-slice-share/slices/development /run/chariox-docker
 UMask=0077
