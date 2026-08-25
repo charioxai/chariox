@@ -12,6 +12,7 @@ fn managed_fixture_has_parent_and_absolute_lifetime_guards() {
         .expect("managed OpenCode fixture script should be readable");
 
     assert!(script.contains("os.getppid() == parent_pid"), "{script}");
+    assert!(script.contains("exec python3 - <<'PY'"), "{script}");
     assert!(
         script.contains("deadline = time.monotonic() + 300"),
         "{script}"

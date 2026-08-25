@@ -41,7 +41,7 @@ if [ -z "$PORT" ] || [ -z "$CHARIOX_OPENCODE_PORT" ]; then
 fi
 
 export CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT="$PORT"
-python3 - <<'PY'
+exec python3 - <<'PY'
 import os
 import signal
 import socket
