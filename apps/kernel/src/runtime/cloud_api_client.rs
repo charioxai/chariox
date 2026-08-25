@@ -77,6 +77,7 @@ pub(crate) const MANAGED_SLICE_RELAY_RUNTIME_ACTIONS: [&str; 5] = [
 ];
 pub(crate) const MANAGED_SLICE_RELAY_RECOVERY_ACTIONS: [&str; 3] =
     ["daemon.register", "daemon.heartbeat", "peer.request"];
+pub(crate) const MANAGED_SLICE_RELAY_BOOTSTRAP_TOKEN_TTL_MS: u64 = 30 * 60_000;
 pub(crate) const MANAGED_SLICE_RELAY_RECOVERY_TOKEN_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Default)]
@@ -316,6 +317,7 @@ fn cloud_slice_runtime_token_options(
         }
     } else {
         CloudRuntimeTokenRequestOptions {
+            ttl_ms: Some(MANAGED_SLICE_RELAY_BOOTSTRAP_TOKEN_TTL_MS),
             allowed_actions: Some(vec![
                 "daemon.register".to_string(),
                 "daemon.heartbeat".to_string(),
@@ -403,6 +405,27 @@ mod tests {
                 "worker-public-key"
             ))
         );
+    }
+
+    #[test]
+    fn managed_slice_bootstrap_token_outlives_the_bounded_broker_operation() {
+        let options =
+            cloud_slice_runtime_token_options("machine-owner".to_string(), "kernel-owner", None);
+
+        assert_eq!(
+            options.ttl_ms,
+            Some(MANAGED_SLICE_RELAY_BOOTSTRAP_TOKEN_TTL_MS)
+        );
+        assert!(options.ttl_ms.unwrap() > 21 * 60_000);
+        assert_eq!(
+            options.allowed_actions,
+            Some(vec![
+                "daemon.register".to_string(),
+                "daemon.heartbeat".to_string(),
+            ])
+        );
+        assert_eq!(options.allowed_targets, None);
+        assert_eq!(options.public_key_thumbprint, None);
     }
 
     #[test]
