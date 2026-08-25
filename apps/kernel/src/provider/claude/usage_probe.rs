@@ -41,7 +41,7 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    validate_claude_probe_environment(environment, profile_home_is_supported())?;
+    validate_claude_probe_environment(environment, linux_profile_home_is_supported())?;
     let root = create_claude_runtime_files_root()?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
@@ -239,15 +239,15 @@ fn validate_claude_probe_environment(
 ) -> Result<(), DaemonError> {
     if environment.contains_key("HOME") && !profile_home_is_supported {
         return Err(probe_error(
-            "Claude account profiles must select credentials with CLAUDE_CONFIG_DIR on macOS; refusing to override HOME because it breaks Keychain discovery"
+            "HOME-based Claude account profiles are supported only on Linux; refusing to override HOME on this platform"
                 .to_string(),
         ));
     }
     Ok(())
 }
 
-fn profile_home_is_supported() -> bool {
-    !cfg!(target_os = "macos")
+fn linux_profile_home_is_supported() -> bool {
+    cfg!(target_os = "linux")
 }
 
 fn cleanup_probe_session(
@@ -257,7 +257,7 @@ fn cleanup_probe_session(
     let config_root = claude_config_root(
         environment,
         std::env::var_os("HOME").map(PathBuf::from),
-        profile_home_is_supported(),
+        linux_profile_home_is_supported(),
     )
     .ok_or_else(|| probe_error("cannot locate Claude account storage".to_string()))?;
     let projects_root = config_root.join("projects");
@@ -566,7 +566,7 @@ process.stdin.resume()
 
         let error = validate_claude_probe_environment(&environment, false)
             .expect_err("profile HOME must be rejected");
-        assert!(error.to_string().contains("on macOS"));
+        assert!(error.to_string().contains("supported only on Linux"));
         assert!(error.to_string().contains("refusing to override HOME"));
     }
 
