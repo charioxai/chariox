@@ -61,7 +61,7 @@ export type CliAutomationActionDeps = {
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void | Promise<void>
-  restoreTerminalAndExit: (exitCode: number) => Promise<void>
+  requestExit: () => Promise<unknown>
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
@@ -379,7 +379,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         return snapshot
       }
       case "exit":
-        void deps.restoreTerminalAndExit(0)
+        void deps.requestExit()
         return { exiting: true }
       default:
         throw new Error(`unknown automation action '${action || String(request.action)}'`)

@@ -917,7 +917,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     toggleAgentPaneTurn: toggleAuxiliaryPaneTurn,
     toggleBlob,
     toggleAgentPaneBlob: toggleAuxiliaryPaneBlob,
-    restoreTerminalAndExit, sleep, closingStateController, supportsKernelEventStream,
+    requestExit, sleep, closingStateController, supportsKernelEventStream,
     resizeSession: (sessionId: string) => maybeResize(client, sessionId),
     setDaemonDisconnected, setStatusLine, updateSessionChrome, appendNotice,
     working, recoverProviderRun, recordTurnActivity, resolveTerminalRecordAgentId,

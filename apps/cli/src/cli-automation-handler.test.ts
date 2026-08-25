@@ -67,6 +67,22 @@ test("automation action handler waits until snapshot filters match", async () =>
   assert.equal(attempts, 3)
 })
 
+test("automation exit uses the ordinary CLI cleanup path", async () => {
+  let exitRequests = 0
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    requestExit: async () => {
+      exitRequests += 1
+    },
+  })
+
+  const result = await handler({ action: "exit" })
+  await Promise.resolve()
+
+  assert.deepEqual(result, { exiting: true })
+  assert.equal(exitRequests, 1)
+})
+
 test("automation action handler sets focused interaction custom reply", async () => {
   const writes: Array<{ interactionId: string; reply: string }> = []
   const editing: Array<{ interactionId: string; editing: boolean }> = []
@@ -698,7 +714,7 @@ function baseDeps() {
     queuedPromptStripItemsForAgent: () => [],
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
-    restoreTerminalAndExit: async () => {},
+    requestExit: async () => {},
     waitingRoomState: () => waitingRoomFixture(),
     setWaitingRoomState: () => {},
     externalProviderSessionsState: () => [],

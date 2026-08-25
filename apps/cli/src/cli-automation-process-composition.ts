@@ -92,7 +92,7 @@ export type CliAutomationProcessCompositionDeps = {
   toggleAgentPaneTurn?: AnyFn
   toggleBlob: AnyFn
   toggleAgentPaneBlob?: AnyFn
-  restoreTerminalAndExit: AnyFn
+  requestExit: AnyFn
   sleep: AnyFn
 }
 
@@ -180,7 +180,7 @@ export function createCliAutomationProcessComposition(deps: CliAutomationProcess
     queuedPromptStripItemsForAgent: deps.queuedPromptStripItemsForAgent,
     selectedQueuedPromptIndexForAgent: deps.selectedQueuedPromptIndexForAgent,
     onQueuedPromptAction: deps.onQueuedPromptAction,
-    restoreTerminalAndExit: deps.restoreTerminalAndExit,
+    requestExit: deps.requestExit,
     sleep: deps.sleep,
   })
 
