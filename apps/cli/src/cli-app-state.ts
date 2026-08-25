@@ -158,6 +158,13 @@ export function createCliAppState(options: {
     waitingRoomLaunchOwnership.update(next)
     return next
   }) as typeof setWaitingRoomStateSignal
+  const setWaitingRoomStateProjection = ((
+    value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
+  ) => {
+    const next = setWaitingRoomStateSignal(value)
+    waitingRoomLaunchOwnership.synchronize(next)
+    return next
+  }) as typeof setWaitingRoomStateSignal
   const waitingRoomLaunchOwnershipRevision = waitingRoomLaunchOwnership.revision
   const initialWorkspaceTarget = initialSession.workspace_id || cliOptions.workspace || options.cwd
   const initialWorktreeTarget = initialSession.worktree_id || cliOptions.worktree || initialWorkspaceTarget
@@ -283,6 +290,7 @@ export function createCliAppState(options: {
     setSessionBrowserIndex,
     waitingRoomState,
     setWaitingRoomState,
+    setWaitingRoomStateProjection,
     waitingRoomLaunchOwnershipRevision,
     pendingWorkspaceTarget,
     setPendingWorkspaceTarget,

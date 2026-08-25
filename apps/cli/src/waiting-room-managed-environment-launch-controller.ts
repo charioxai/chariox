@@ -9,6 +9,7 @@ import type {
   ManagedEnvironmentSummary,
 } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import type { WaitingRoomLaunchConfig } from "./waiting-room-controller.js"
+import type { SessionProjectSelection } from "./waiting-room-projects.js"
 
 type ManagedEnvironmentLaunchSelection = NonNullable<WaitingRoomLaunchConfig["managedEnvironment"]>
 
@@ -17,6 +18,7 @@ export type PreparedManagedEnvironmentLaunch = {
   readonly launchTarget: ManagedContextLaunchTarget
   readonly workspacePath: string
   readonly worktreePath: string
+  readonly projectSelection: SessionProjectSelection
   commit(): Promise<void>
   rollback(): Promise<void>
 }
@@ -243,6 +245,9 @@ export class WaitingRoomManagedEnvironmentLaunchController {
             launchTarget,
             workspacePath,
             worktreePath: workspacePath,
+            projectSelection: launchTarget.development.kind === "from_source"
+              ? { kind: "existing", project_id: launchTarget.development.projectId }
+              : { kind: "default" },
             commit: connection.commit,
             rollback: connection.rollback,
           }

@@ -29,6 +29,7 @@ test("managed TUI launch creates Empty context and returns the target workspace"
   assert.deepEqual(harness.connectedKernels, [{ machineId: "machine-managed", kernelId: "kernel-managed" }])
   assert.equal(prepared.workspacePath, "/managed/empty/context-1")
   assert.equal(prepared.worktreePath, "/managed/empty/context-1")
+  assert.deepEqual(prepared.projectSelection, { kind: "default" })
   await prepared.commit()
   assert.equal(harness.connectionCommits, 1)
   assert.equal(harness.connectionRollbacks, 0)
@@ -53,6 +54,10 @@ test("managed TUI launch starts and monitors direct source transfer", async () =
   assert.deepEqual(harness.transferStatusRequests, ["context-1"])
   assert.equal(prepared.workspacePath, "/managed/context-1/primary")
   assert.equal(prepared.launchTarget.development.kind, "from_source")
+  assert.deepEqual(prepared.projectSelection, {
+    kind: "existing",
+    project_id: "project-1",
+  })
 })
 
 test("managed TUI launch starts a converged stopped environment", async () => {

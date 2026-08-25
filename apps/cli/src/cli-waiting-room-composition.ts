@@ -75,6 +75,7 @@ import type {
 import {
   clearStagedWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
+import { existingProjectSelectionId } from "./waiting-room-projects.js"
 import {
   managedEnvironmentMachineRef,
 } from "./waiting-room-managed-environments.js"
@@ -94,6 +95,7 @@ export type CliWaitingRoomCompositionDeps = {
   kernelConnected: AnyFn
   waitingRoomState: AnyFn
   setWaitingRoomState: AnyFn
+  setWaitingRoomStateProjection: AnyFn
   waitingRoomLaunchOwnershipRevision: AnyFn
   availableSessions: AnyFn
   setAvailableSessions: AnyFn
@@ -192,6 +194,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const waitingRoomReconcileController = createWaitingRoomReconcileController({
     getCurrentState: deps.waitingRoomState,
     setWaitingRoomState: deps.setWaitingRoomState,
+    setProjectedWaitingRoomState: deps.setWaitingRoomStateProjection,
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
@@ -253,7 +256,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
       }, false).then((catalog) => {
         if (revision !== providerCatalogSelectionRevision) return
         deps.setProviderCatalogState(catalog)
-        reconcileWaitingRoom(deps.waitingRoomState())
+        reconcileWaitingRoomProjection(deps.waitingRoomState())
       }).catch((error) => {
         deps.appLogger?.warn("failed to refresh provider catalog for account selection", {
           error: deps.formatError(error),
@@ -262,6 +265,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     },
   })
   const reconcileWaitingRoom = waitingRoomReconcileController.reconcile
+  const reconcileWaitingRoomProjection = waitingRoomReconcileController.reconcileProjection
 
   const waitingRoomInventoryRefreshController = createWaitingRoomInventoryRefreshController({
     isKernelConnected: deps.kernelConnected,
@@ -298,7 +302,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     setSlices: deps.setSlicesState,
     setExternalProviderSessions: deps.setExternalProviderSessionsState,
     setExternalProviderSessionsPage: deps.setExternalProviderSessionsPageState,
-    reconcileWaitingRoom,
+    reconcileWaitingRoom: reconcileWaitingRoomProjection,
     warn: (message, fields) => deps.appLogger?.warn(message, fields),
     formatError: deps.formatError,
     cachedInventories: cachedWaitingRoomInventories,
@@ -315,11 +319,11 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
   const applyRemoteMachinesChanged = waitingRoomInventoryRefreshController.applyRemoteMachinesChanged
   const applyProviderCatalogChanged = (catalog: ProviderCatalog) => {
     deps.setProviderCatalogState(catalog)
-    reconcileWaitingRoom(deps.waitingRoomState())
+    reconcileWaitingRoomProjection(deps.waitingRoomState())
   }
   const applySlicesChanged = (slices: SliceRecord[]) => {
     deps.setSlicesState(slices)
-    reconcileWaitingRoom(deps.waitingRoomState())
+    reconcileWaitingRoomProjection(deps.waitingRoomState())
   }
 
   const detachedKernelConnectController = createDetachedKernelConnectController({
@@ -564,7 +568,9 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         ...deps.waitingRoomState(),
         selectedMachineRef: expectedMachineRef,
         selectedKernelRef: prepared.environment.runtimeKernelId ?? "",
-        projectSelectionId: "default",
+        projectSelectionId: prepared.projectSelection.kind === "existing"
+          ? existingProjectSelectionId(prepared.projectSelection.project_id)
+          : "default",
         worktreeSelectionId: `existing:${prepared.worktreePath}`,
         sliceSelectionId: "none",
       })
@@ -575,7 +581,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
           ...ordinaryLaunch,
           ownerMachineRef: prepared.environment.runtimeMachineId,
           ownerKernelRef: prepared.environment.runtimeKernelId,
-          projectSelection: { kind: "default" as const },
+          projectSelection: prepared.projectSelection,
         },
         assertActive,
         commit: prepared.commit,
@@ -648,7 +654,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
         hasMore: page.hasMore,
         nextCursor: page.nextCursor,
       })
-      reconcileWaitingRoom(deps.waitingRoomState())
+      reconcileWaitingRoomProjection(deps.waitingRoomState())
       return page.sessions.length
     },
     browseKernelInventory: async (kernelId, machineId) => {
@@ -815,6 +821,7 @@ export function createCliWaitingRoomComposition(deps: CliWaitingRoomCompositionD
     promptMetaParts: providerPromptProjectionController.promptMetaParts,
     promptUsageMeta: providerPromptProjectionController.promptUsageMeta,
     reconcileWaitingRoom,
+    reconcileWaitingRoomProjection,
     refreshWaitingRoomData,
     refreshWaitingRoomDataNow,
     startSessionFromWaitingRoomDefaults,

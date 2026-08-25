@@ -175,7 +175,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     waitingRoomCloudNotice, setWaitingRoomCloudNotice, terminalPairingOpen, setTerminalPairingOpen,
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, agentLocationLabel, sessionBrowserIndex,
-    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, waitingRoomLaunchOwnershipRevision, pendingWorkspaceTarget,
+    setSessionBrowserIndex, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
+    waitingRoomLaunchOwnershipRevision, pendingWorkspaceTarget,
     setPendingWorkspaceTarget, pendingWorktreeTarget, setPendingWorktreeTarget, multiAgentResponseLayout,
     setMultiAgentResponseLayout, entries, setEntries, activeStatusLabel,
     setActiveStatusLabel, providerActivityLabel, setProviderActivityLabel, agentActivityLabels,
@@ -382,11 +383,13 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     applyWaitingRoomRowsChanged, applyWaitingRoomSessionLifecycleAction, connectDetachedKernelFromWaitingRoom, currentModelId,
     restoreWaitingRoomProject, renameWaitingRoomProject,
     currentProviderSelection, currentVariantId, promptMetaParts, promptUsageMeta,
-    reconcileWaitingRoom, refreshWaitingRoomData, refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
+    reconcileWaitingRoom, reconcileWaitingRoomProjection, refreshWaitingRoomData,
+    refreshWaitingRoomDataNow, startSessionFromWaitingRoomDefaults,
     waitingRoomTargets,
   } = createCliWaitingRoomComposition({
     client, options, appLogger, formatError,
-    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, waitingRoomLaunchOwnershipRevision,
+    isAttached, kernelConnected, waitingRoomState, setWaitingRoomState, setWaitingRoomStateProjection,
+    waitingRoomLaunchOwnershipRevision,
     availableSessions, setAvailableSessions, waitingRoomProjects, setWaitingRoomProjects,
     providerCatalogState, setProviderCatalogState,
     providerCommandCatalogState, setProviderCommandCatalogState, themeRegistryState, waitingRoomCloudNotice,
@@ -798,7 +801,8 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     resetPromptStop: () => {
       promptStopController.reset()
     },
-    bumpHistoryLoadGeneration, reconcileWaitingRoom, refreshWaitingRoomData,
+    bumpHistoryLoadGeneration, reconcileWaitingRoom: reconcileWaitingRoomProjection,
+    refreshWaitingRoomData,
     requestRootRender: () => {
       ;(renderer as { requestRender?: () => void }).requestRender?.()
     },

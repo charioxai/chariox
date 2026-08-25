@@ -26,6 +26,28 @@ test("waiting room launch ownership ignores a derived kernel projection", () => 
   assert.equal(tracker.revision(), 0)
 })
 
+test("waiting room launch ownership synchronizes derived target inventory without cancelling", () => {
+  const initial = state({
+    selectedMachineRef: "managed:environment:one",
+    modelId: "gpt-5.6-luna",
+    projectSelectionId: "existing:project-one",
+  })
+  const tracker = createWaitingRoomLaunchOwnershipTracker(initial)
+
+  const projected = {
+    ...initial,
+    modelId: "gpt-5.6-sol",
+    projectSelectionId: "default",
+  }
+  tracker.synchronize(projected)
+
+  assert.equal(tracker.revision(), 0)
+
+  tracker.update({ ...projected, projectSelectionId: "existing:project-two" })
+
+  assert.equal(tracker.revision(), 1)
+})
+
 test("waiting room launch ownership tracks managed provider account selection", () => {
   const initial = state({
     selectedMachineRef: "managed:new",

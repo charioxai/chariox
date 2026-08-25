@@ -11,6 +11,9 @@ export function createWaitingRoomLaunchOwnershipTracker(initialState: WaitingRoo
         revision += 1
       }
     },
+    synchronize(state: WaitingRoomState): void {
+      signature = waitingRoomLaunchIntentSignature(state)
+    },
     revision: () => revision,
   }
 }
