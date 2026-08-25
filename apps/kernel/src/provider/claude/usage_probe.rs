@@ -41,6 +41,7 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
+    validate_claude_probe_environment(environment)?;
     let root = create_claude_runtime_files_root()?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
@@ -79,12 +80,6 @@ fn probe_claude_account_usage_with_timeout(
         "--ax-screen-reader",
     ]);
     for (name, value) in environment {
-        // Credential profiles isolate Claude accounts with
-        // CLAUDE_CONFIG_DIR. HOME must remain the inherited macOS login home
-        // so Claude can resolve and persist its Keychain credentials.
-        if name == "HOME" {
-            continue;
-        }
         command.env(name, value);
     }
     for name in [
@@ -236,6 +231,18 @@ fn probe_claude_account_usage_with_timeout(
         };
         append_probe_error(error, diagnostic)
     })
+}
+
+fn validate_claude_probe_environment(
+    environment: &BTreeMap<String, String>,
+) -> Result<(), DaemonError> {
+    if environment.contains_key("HOME") {
+        return Err(probe_error(
+            "Claude account profiles must select credentials with CLAUDE_CONFIG_DIR; refusing to override HOME because it breaks macOS Keychain discovery"
+                .to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn cleanup_probe_session(
@@ -431,10 +438,6 @@ process.stdin.resume()
         let inherited_home = std::env::var("HOME").expect("test HOME");
         let environment = BTreeMap::from([
             (
-                "HOME".to_string(),
-                fixture.join("wrong-home").display().to_string(),
-            ),
-            (
                 "CLAUDE_CONFIG_DIR".to_string(),
                 claude_config_dir.display().to_string(),
             ),
@@ -539,13 +542,12 @@ process.stdin.resume()
     }
 
     #[test]
-    fn account_environment_cannot_replace_home_for_cleanup() {
-        let inherited_home = PathBuf::from("/real/home");
+    fn rejects_account_environment_home_override() {
         let environment = BTreeMap::from([("HOME".to_string(), "/wrong/home".to_string())]);
 
-        assert_eq!(
-            claude_config_root(&environment, Some(inherited_home)),
-            Some(PathBuf::from("/real/home/.claude"))
-        );
+        let error = validate_claude_probe_environment(&environment)
+            .expect_err("profile HOME must be rejected");
+        assert!(error.to_string().contains("CLAUDE_CONFIG_DIR"));
+        assert!(error.to_string().contains("refusing to override HOME"));
     }
 }
