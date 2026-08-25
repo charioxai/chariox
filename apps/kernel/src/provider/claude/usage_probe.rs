@@ -41,7 +41,7 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    validate_claude_probe_environment(environment)?;
+    validate_claude_probe_environment(environment, profile_home_is_supported())?;
     let root = create_claude_runtime_files_root()?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
@@ -235,22 +235,31 @@ fn probe_claude_account_usage_with_timeout(
 
 fn validate_claude_probe_environment(
     environment: &BTreeMap<String, String>,
+    profile_home_is_supported: bool,
 ) -> Result<(), DaemonError> {
-    if environment.contains_key("HOME") {
+    if environment.contains_key("HOME") && !profile_home_is_supported {
         return Err(probe_error(
-            "Claude account profiles must select credentials with CLAUDE_CONFIG_DIR; refusing to override HOME because it breaks macOS Keychain discovery"
+            "Claude account profiles must select credentials with CLAUDE_CONFIG_DIR on macOS; refusing to override HOME because it breaks Keychain discovery"
                 .to_string(),
         ));
     }
     Ok(())
 }
 
+fn profile_home_is_supported() -> bool {
+    !cfg!(target_os = "macos")
+}
+
 fn cleanup_probe_session(
     environment: &BTreeMap<String, String>,
     session_id: &str,
 ) -> Result<(), DaemonError> {
-    let config_root = claude_config_root(environment, std::env::var_os("HOME").map(PathBuf::from))
-        .ok_or_else(|| probe_error("cannot locate Claude account storage".to_string()))?;
+    let config_root = claude_config_root(
+        environment,
+        std::env::var_os("HOME").map(PathBuf::from),
+        profile_home_is_supported(),
+    )
+    .ok_or_else(|| probe_error("cannot locate Claude account storage".to_string()))?;
     let projects_root = config_root.join("projects");
     let metadata = match fs::symlink_metadata(&projects_root) {
         Ok(metadata) => metadata,
@@ -309,10 +318,20 @@ fn cleanup_probe_session(
 fn claude_config_root(
     environment: &BTreeMap<String, String>,
     inherited_home: Option<PathBuf>,
+    profile_home_is_supported: bool,
 ) -> Option<PathBuf> {
     environment
         .get("CLAUDE_CONFIG_DIR")
         .map(PathBuf::from)
+        .or_else(|| {
+            profile_home_is_supported
+                .then(|| {
+                    environment
+                        .get("HOME")
+                        .map(|home| PathBuf::from(home).join(".claude"))
+                })
+                .flatten()
+        })
         .or_else(|| inherited_home.map(|home| home.join(".claude")))
 }
 
@@ -545,9 +564,37 @@ process.stdin.resume()
     fn rejects_account_environment_home_override() {
         let environment = BTreeMap::from([("HOME".to_string(), "/wrong/home".to_string())]);
 
-        let error = validate_claude_probe_environment(&environment)
+        let error = validate_claude_probe_environment(&environment, false)
             .expect_err("profile HOME must be rejected");
-        assert!(error.to_string().contains("CLAUDE_CONFIG_DIR"));
+        assert!(error.to_string().contains("on macOS"));
         assert!(error.to_string().contains("refusing to override HOME"));
+    }
+
+    #[test]
+    fn linux_profile_home_selects_the_matching_cleanup_root() {
+        let environment = BTreeMap::from([("HOME".to_string(), "/profile/home".to_string())]);
+
+        validate_claude_probe_environment(&environment, true)
+            .expect("Linux profile HOME should be supported");
+        assert_eq!(
+            claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
+            Some(PathBuf::from("/profile/home/.claude"))
+        );
+    }
+
+    #[test]
+    fn explicit_claude_config_dir_precedes_linux_profile_home() {
+        let environment = BTreeMap::from([
+            ("HOME".to_string(), "/profile/home".to_string()),
+            (
+                "CLAUDE_CONFIG_DIR".to_string(),
+                "/profile/claude".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
+            Some(PathBuf::from("/profile/claude"))
+        );
     }
 }
