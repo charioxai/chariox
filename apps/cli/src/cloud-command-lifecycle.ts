@@ -197,15 +197,6 @@ export async function startHostedCloudLink(deps: CloudCommandLifecycleDeps): Pro
     if (polled.status === "approved") {
       let profile = polled.profile
       await deps.saveCloudRelayProfile(profile)
-      if (deps.pairCloudRelayMachine) {
-        profile = await deps.pairCloudRelayMachine(
-          profile,
-          relayStatus.machine_id,
-          relayStatus.machine_alias || undefined,
-        )
-        await deps.saveCloudRelayProfile(profile)
-        appendCloudNotice(deps, `cloud machine linked: ${profile.machineId ?? relayStatus.machine_id}`)
-      }
       if ((deps.issueCloudMachineRelayToken || deps.issueCloudKernelRelayToken) && deps.getRelayStatus && deps.configureRelay) {
         const refreshedRelayStatus = await deps.getRelayStatus()
         const issued = profile.machineId && deps.issueCloudMachineRelayToken

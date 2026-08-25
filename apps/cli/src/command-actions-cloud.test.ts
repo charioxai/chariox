@@ -330,10 +330,14 @@ test("/cloud link triggers hosted device login flow", async () => {
         realmId: "realm-1",
         relayUrl: "wss://relay.example",
         issuerId: "issuer-1",
+        machineId: "machine-1",
+        machineAlias: "laptop",
       },
     }),
-    pairCloudRelayMachine: async (profile: Record<string, unknown>) => profile,
-    issueCloudKernelRelayToken: async () => ({
+    pairCloudRelayMachine: async () => {
+      throw new Error("device login must not pair the already-provisioned machine again")
+    },
+    issueCloudMachineRelayToken: async () => ({
       relayUrl: "wss://relay.example",
       relayToken: "relay-token",
       tokenExpiresAtMs: 1234,

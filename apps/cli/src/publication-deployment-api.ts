@@ -277,6 +277,7 @@ async function postJson<TResponse = unknown>(
 ): Promise<TResponse> {
   const response = await fetch(`${normalizeApiUrl(profile.apiUrl)}${pathname}`, {
     method: "POST",
+    redirect: "manual",
     headers: cloudHeaders(profile),
     body: JSON.stringify(body),
   })
@@ -290,6 +291,9 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
       ? body.error.message
       : `publication deployment request failed with ${response.status}`
     throw new Error(message)
+  }
+  if (body === null) {
+    throw new Error(`publication deployment request returned non-JSON HTTP ${response.status}`)
   }
   return body as TResponse
 }

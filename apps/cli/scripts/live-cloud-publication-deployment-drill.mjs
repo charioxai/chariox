@@ -8,7 +8,6 @@ import {
   assertDeploymentContractMatchesRequirements,
   assertExtensionRequirementsExact,
   assertHostedRejectsLocalOnly,
-  assertMissingDefinitionBlockedPublication,
   assertActivationBlockedBeforeCredentialSetup,
   assertUnrelatedExtensionAbsent,
   drillExtensionCleanupSteps,
@@ -138,7 +137,7 @@ function usage() {
     '  --debug-hold-ms MS',
     '  --skip-extension-probes',
   '    (default: prove exact extension transfer, unrelated-extension absence,',
-  '     granted-but-missing publication block, local-only hosted rejection with',
+  '     missing-extension grant rejection, local-only hosted rejection with',
   '     connected-ingress guidance, and activation blocked before credential setup)',
   ].join('\n')
 }
@@ -639,16 +638,16 @@ async function createPublicationPackage(input) {
       extensionState.installed.push({ name: extensions.unrelatedName })
       await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', extensions.grantedName))
       extensionState.granted.push({ agentRef: agent.id, name: extensions.grantedName })
-      await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', extensions.missingName))
-      extensionState.granted.push({ agentRef: agent.id, name: extensions.missingName })
-      const blockedExport = await executeShellCommand(
-        parseShellCommand(`workflow trigger export ${publication.id} ${exportDir} --kernel-url ${kernelUrl}`),
-        createDefaultShellContext({ workspace, worktree: workspace, sessionId: session.id, workflowId: workflow.id }),
-        { client },
-      )
-      assertMissingDefinitionBlockedPublication(blockedExport.ok ? 'publication export unexpectedly succeeded' : blockedExport.message)
-      await client.send(revokeAgentExtensionRequest(agent.id, 'mcp', extensions.missingName))
-      extensionState.granted = extensionState.granted.filter((grant) => grant.name !== extensions.missingName)
+      let missingGrantError = null
+      try {
+        await client.send(grantAgentExtensionRequest(workspace, agent.id, 'mcp', extensions.missingName))
+      } catch (error) {
+        missingGrantError = error
+      }
+      if (!missingGrantError || !/not installed/i.test(errorMessage(missingGrantError))) {
+        throw new Error('granting an uninstalled MCP must fail at the grant boundary')
+      }
+      logStep('missing_extension_grant_rejected', { name: extensions.missingName })
       extensionExpectations = [expectedMcpRequirement({
         name: extensions.grantedName,
         agentId: agent.id,

@@ -6,7 +6,6 @@ import {
   assertDeploymentContractMatchesRequirements,
   assertExtensionRequirementsExact,
   assertHostedRejectsLocalOnly,
-  assertMissingDefinitionBlockedPublication,
   assertUnrelatedExtensionAbsent,
   drillExtensionCleanupSteps,
   drillExtensionRunNames,
@@ -187,11 +186,6 @@ test('deployment contract capabilities must deep-equal the immutable requirement
 })
 
 test('negative-path matchers pin the exact rejection semantics', () => {
-  assert.doesNotThrow(() => assertMissingDefinitionBlockedPublication(
-    'extension `ghost-mcp` is granted to a workflow agent but has no installed mcp definition',
-  ))
-  assert.throws(() => assertMissingDefinitionBlockedPublication('export ok'), /must fail when a granted extension/)
-
   assert.doesNotThrow(() => assertHostedRejectsLocalOnly(
     'Hosted deployment cannot run local-only extensions. mcp:x: stdio. Use connected ingress or publish a portable replacement.',
   ))

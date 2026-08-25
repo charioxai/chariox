@@ -1,6 +1,5 @@
 import assert from 'node:assert/strict'
 
-export const MISSING_MCP_DEFINITION_MESSAGE = /is granted to a workflow agent but has no installed mcp definition/
 export const HOSTED_LOCAL_ONLY_REJECTION = {
   rejection: /cannot run local-only extensions/i,
   guidance: /connected ingress/i,
@@ -158,14 +157,6 @@ export function assertDeploymentContractMatchesRequirements(contract, requiremen
       `contract network policy must include ${destination.id}`,
     )
   }
-}
-
-export function assertMissingDefinitionBlockedPublication(errorText) {
-  assert.match(
-    String(errorText),
-    MISSING_MCP_DEFINITION_MESSAGE,
-    'publication export must fail when a granted extension has no installed definition',
-  )
 }
 
 export function assertHostedRejectsLocalOnly(errorText) {
