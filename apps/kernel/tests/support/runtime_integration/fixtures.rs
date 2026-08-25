@@ -1,6 +1,6 @@
 use super::*;
 
-pub fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
+pub fn create_opencode_fixture_script() -> PathBuf {
     let path = std::env::temp_dir().join(format!(
         "chariox-opencode-fixture-{}-{}.sh",
         std::process::id(),
@@ -9,8 +9,7 @@ pub fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
             .expect("system time should be monotonic enough")
             .as_nanos()
     ));
-    fs::write(&path, fixture_script_contents(delay_seconds))
-        .expect("fixture script should be created");
+    fs::write(&path, fixture_script_contents()).expect("fixture script should be created");
     #[cfg(unix)]
     {
         let mut permissions = fs::metadata(&path)
@@ -22,9 +21,8 @@ pub fn create_opencode_fixture_script(delay_seconds: u64) -> PathBuf {
     path
 }
 
-fn fixture_script_contents(delay_seconds: u64) -> String {
-    format!(
-        r#"#!/bin/sh
+fn fixture_script_contents() -> String {
+    r#"#!/bin/sh
 PORT=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
@@ -43,19 +41,16 @@ if [ -z "$PORT" ] || [ -z "$CHARIOX_OPENCODE_PORT" ]; then
 fi
 
 export CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT="$PORT"
-export CHARIOX_OPENCODE_FIXTURE_MAX_SECONDS="{delay_seconds}"
 python3 - <<'PY'
 import os
 import signal
 import socket
 import sys
 import threading
-import time
 
 listen_port = int(os.environ["CHARIOX_OPENCODE_FIXTURE_LISTEN_PORT"])
 target_port = int(os.environ["CHARIOX_OPENCODE_PORT"])
-max_seconds = float(os.environ["CHARIOX_OPENCODE_FIXTURE_MAX_SECONDS"])
-deadline = time.monotonic() + max_seconds
+parent_pid = os.getppid()
 stopping = threading.Event()
 
 def stop(_signum=None, _frame=None):
@@ -98,7 +93,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
     server.bind(("127.0.0.1", listen_port))
     server.listen()
     server.settimeout(0.1)
-    while not stopping.is_set() and time.monotonic() < deadline:
+    while not stopping.is_set() and os.getppid() == parent_pid:
         try:
             client, _addr = server.accept()
         except socket.timeout:
@@ -110,7 +105,7 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
 sys.exit(0)
 PY
 "#
-    )
+    .to_string()
 }
 
 pub fn output_timeout_ms() -> u64 {
