@@ -42,11 +42,6 @@ pub(super) fn workflow_publication_package_files(
         package_file("workflow.snapshot.json", pretty_json(snapshot)?, false),
         package_file("requirements.json", pretty_json(&requirements)?, false),
         package_file("bindings.example.json", pretty_json(&bindings)?, false),
-        package_file(
-            "event-bindings.example.json",
-            pretty_json(&event_bindings)?,
-            false,
-        ),
         package_file("publication.config.json", pretty_json(&config)?, false),
         package_file(
             ".env.example",
@@ -60,6 +55,13 @@ pub(super) fn workflow_publication_package_files(
             false,
         ),
     ];
+    if publication.kind() == crate::session::WORKFLOW_PUBLICATION_KIND_EVENT_BASED {
+        files.push(package_file(
+            "event-bindings.example.json",
+            pretty_json(&event_bindings)?,
+            false,
+        ));
+    }
     if publication_uses_http_ingress(&publication_value) {
         files.extend([
             package_file(
@@ -500,9 +502,13 @@ fn workflow_publication_readme(
         route.to_string()
     };
     let mut readme = format!(
-        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n",
+        "# Workflow Publication {}\n\nThis directory is a Chariox workflow-gateway package. It runs only when a Chariox kernel is reachable.\n\n## Files\n\n- `publication.json`: workflow trigger package metadata\n- `deployment-contract.json`: immutable release requirements and compatibility contract\n- `workflow.snapshot.json`: captured workflow, endpoint, queues, schedules, and agents\n- `requirements.json`: exact non-secret extension definitions, usage, credential slots, network destinations, readiness tests, and portability\n- `bindings.example.json`: provider/model override template\n",
         publication.alias().unwrap_or(publication.id())
     );
+    if publication_package.get("event_bindings_path").is_some() {
+        readme.push_str("- `event-bindings.example.json`: non-secret event requirements; authorize a target connection or explicitly transfer an existing same-environment route\n");
+    }
+    readme.push_str("- `publication.config.json`: gateway config for existing scripts\n- `.env.example`: environment template\n- `run.sh`: launcher for `chariox-workflow-gateway`\n");
     if uses_http_ingress {
         readme.push_str(&format!(
             "- `public/`: editable browser assets\n\n## Invoke\n\n```bash\nBASE_URL=http://127.0.0.1:3000\ncurl -sS \"$BASE_URL{}\"\n```\n\n",

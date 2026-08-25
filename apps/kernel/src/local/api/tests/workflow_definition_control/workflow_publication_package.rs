@@ -105,6 +105,12 @@ fn publication_creation_is_revision_safe_idempotent_and_source_independent() {
         _ => panic!("unexpected local response"),
     };
     let before_source_removal = export();
+    let publication_json = package_json_file(&before_source_removal.2, "publication.json");
+    assert!(publication_json.get("event_bindings_path").is_none());
+    assert!(before_source_removal
+        .2
+        .iter()
+        .all(|file| file.path != "event-bindings.example.json"));
 
     harness
         .dispatch(LocalDaemonRequest::ApplyWorkflowDesignOp(

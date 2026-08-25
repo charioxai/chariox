@@ -571,6 +571,10 @@ fn event_publication_binding_supports_fanout_and_uses_workflow_queue() {
     assert!(!binding_template.contains("connection-local"));
     let publication_json = package_json_file(&package_files, "publication.json");
     assert_eq!(
+        publication_json["event_bindings_path"],
+        serde_json::json!("event-bindings.local.json")
+    );
+    assert_eq!(
         publication_json["hooks"][0]["transport"],
         serde_json::json!("event_based")
     );
