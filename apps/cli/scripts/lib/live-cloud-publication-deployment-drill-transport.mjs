@@ -815,9 +815,9 @@ export function run(command, args, options = {}) {
   })
 }
 
-export async function copyCloudProfile(configHome) {
-  const source = path.join(process.env.HOME, '.chariox', 'config.json')
-  const target = path.join(configHome, 'chariox', 'config.json')
+export async function copyCloudProfile(charioxHome, source = path.join(process.env.HOME, '.chariox', 'daemon', 'config.json')) {
+  const target = path.join(charioxHome, 'daemon', 'config.json')
+  await mkdir(path.dirname(target), { recursive: true })
   await cp(source, target)
 }
 

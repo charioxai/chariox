@@ -48,6 +48,16 @@ test("TUI deployment setup publishes a draft and binds a local runtime", async (
     assert.deepEqual(fixture.cloud.setup?.configuration.publication.parser, { kind: "query_params" })
     assert.equal(fixture.cloud.promotionKeys[0], fixture.cloud.setup?.operationKeys.runtime)
     assert.equal(fixture.cloud.checkpoints.at(-1)?.kind, "runtime_bound")
+    assert.deepEqual(fixture.cloud.localBackendUpdates, [{
+      accountId: "account-1",
+      status: "ready",
+      runtimeSessionId: "session-1",
+      backendTarget: {
+        kind: "local_runtime",
+        url: "https://relay.example.test/display/deployment-1/",
+        updated_at_ms: fixture.cloud.localBackendUpdates[0]?.backendTarget.updated_at_ms,
+      },
+    }])
     assert.deepEqual(fixture.bindInputs, [{
       session_id: "session-1",
       publication_ref: "publication-1",
@@ -235,6 +245,8 @@ async function setupFixture(options: {
           WorkflowPublicationDeploymentBound: {
             ...input,
             state: bindStates.shift() ?? "running",
+            runtime_session_id: "session-1",
+            tunnel_url: "https://relay.example.test/display/deployment-1/",
           },
         }
       }
@@ -267,6 +279,12 @@ class FakeDeploymentCloud {
   readonly checkpoints: DeploymentSetupCheckpoint[] = []
   readonly promotionKeys: string[] = []
   readonly audienceMutations: Record<string, unknown>[] = []
+  readonly localBackendUpdates: Array<{
+    accountId: string
+    status: string
+    runtimeSessionId: string
+    backendTarget: { kind: string; url: string; updated_at_ms: number }
+  }> = []
   private audience = {
     mode: "restricted" as "public" | "restricted",
     defaultRoles: [] as string[],
@@ -409,6 +427,10 @@ class FakeDeploymentCloud {
         },
         environment: environment(this.mode),
       }, 202, { "x-request-id": "promotion-request" })
+    }
+    if (url.pathname === "/publication-deployments/deployment-1/local-backend" && method === "POST") {
+      this.localBackendUpdates.push(body as unknown as (typeof this.localBackendUpdates)[number])
+      return jsonResponse({ deployment: { id: "deployment-1" } })
     }
     return jsonResponse({ error: { message: `unexpected ${method} ${url.pathname}` } }, 500)
   }

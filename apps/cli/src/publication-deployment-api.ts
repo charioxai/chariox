@@ -152,6 +152,28 @@ export async function changePublicationDeployment(profile: RelayCloudProfile, de
   })
 }
 
+export async function registerPublicationDeploymentLocalBackend(input: {
+  readonly profile: RelayCloudProfile
+  readonly deploymentId: string
+  readonly runtimeSessionId: string
+  readonly tunnelUrl: string
+}): Promise<void> {
+  await postJson(
+    input.profile,
+    `/publication-deployments/${encodeURIComponent(input.deploymentId)}/local-backend`,
+    {
+      accountId: input.profile.accountId,
+      status: "ready",
+      runtimeSessionId: input.runtimeSessionId,
+      backendTarget: {
+        kind: "local_runtime",
+        url: input.tunnelUrl,
+        updated_at_ms: Date.now(),
+      },
+    },
+  )
+}
+
 export async function listPublicationDeploymentLogs(profile: RelayCloudProfile, deploymentId: string): Promise<readonly { readonly level: string; readonly message: string; readonly occurredAt: string }[]> {
   const url = new URL(`${normalizeApiUrl(profile.apiUrl)}/publication-deployments/${encodeURIComponent(deploymentId)}/logs`)
   url.searchParams.set("accountId", profile.accountId)

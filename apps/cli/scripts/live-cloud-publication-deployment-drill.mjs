@@ -334,7 +334,9 @@ async function main() {
     await mkdir(path.join(serverConfigHome, 'chariox'), { recursive: true })
     await writeFile(path.join(configHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
     await writeFile(path.join(serverConfigHome, 'chariox', 'config.toml'), 'version = 1\n', 'utf8')
-    if (!options.cloudApiUrl) await copyCloudProfile(configHome).catch(() => {})
+    if (options.mode === 'local_runtime' && !useLocalRelay) {
+      await copyCloudProfile(charioxHome)
+    }
 
     const kernelBinary = await buildRustBinary('chariox-kernel')
     const relayBinary = await buildRustBinary('chariox-relay')
@@ -732,6 +734,13 @@ async function createPublicationPackage(input) {
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`)
   }
     await makePortablePackage(exportDir, packageDir)
+    if (transport === 'human_http') {
+      const packaged = JSON.parse(await readFile(path.join(packageDir, 'publication.json'), 'utf8'))
+      const methods = packaged.hooks?.[0]?.methods ?? []
+      if (!methods.includes('GET') || !methods.includes('POST')) {
+        throw new Error(`human HTTP drill package must expose GET and POST, got ${JSON.stringify(methods)}`)
+      }
+    }
     if (extensionExpectations) {
       const requirements = JSON.parse(await readFile(path.join(packageDir, 'requirements.json'), 'utf8'))
       const contract = JSON.parse(await readFile(path.join(packageDir, 'deployment-contract.json'), 'utf8'))
@@ -962,7 +971,7 @@ function routeForTransport(transport) {
 }
 
 function methodsForTransport(transport) {
-  if (transport === 'human_http') return ['GET']
+  if (transport === 'human_http') return ['GET', 'POST']
   return ['POST']
 }
 

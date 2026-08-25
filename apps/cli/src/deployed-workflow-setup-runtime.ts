@@ -24,6 +24,7 @@ import {
   setDeploymentAudiencePolicy,
   upsertDeploymentAudienceGrant,
 } from "./deployed-workflow-api.js"
+import { registerPublicationDeploymentLocalBackend } from "./publication-deployment-api.js"
 import { preparePublicationReleasePackage } from "./deployed-workflow-package.js"
 import { publicationTransportKind } from "./deployed-workflow-setup-options.js"
 import type { DeploymentSetup } from "./deployed-workflow-setup-api.js"
@@ -305,6 +306,14 @@ async function bindSetupRuntime(
   }
   if (payload.state !== "running" && payload.state !== "waiting_for_relay") {
     throw new Error("kernel returned an invalid deployment binding state")
+  }
+  if (payload.state === "running") {
+    await registerPublicationDeploymentLocalBackend({
+      profile,
+      deploymentId,
+      runtimeSessionId: requiredText(payload.runtime_session_id, "deployment runtime session ID"),
+      tunnelUrl: requiredText(payload.tunnel_url, "deployment tunnel URL"),
+    })
   }
   return { operationalDeploymentId: deploymentId, state: payload.state }
 }

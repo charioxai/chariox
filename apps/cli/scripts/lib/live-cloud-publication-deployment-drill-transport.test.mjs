@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
@@ -8,10 +8,24 @@ import test from 'node:test'
 import {
   HUMAN_HTTP_FORM_INVOKE_PATH,
   assertDeployedWorkflowViewerFormPage,
+  copyCloudProfile,
   deployedWorkflowFormInvokeRequest,
   deployedWorkflowFormResultEventsPath,
   validateTransport,
 } from './live-cloud-publication-deployment-drill-transport.mjs'
+
+test('cloud relay drill profile is copied into the isolated kernel home', async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'chariox-cloud-profile-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const source = path.join(root, 'source.json')
+  const charioxHome = path.join(root, 'chariox-home')
+  const payload = '{"cloud_relay":{"api_url":"https://cloud.example"}}\n'
+  await writeFile(source, payload, 'utf8')
+
+  await copyCloudProfile(charioxHome, source)
+
+  assert.equal(await readFile(path.join(charioxHome, 'daemon', 'config.json'), 'utf8'), payload)
+})
 
 test('human HTTP form invoke requests target the fixed publication form endpoint', () => {
   assert.deepEqual(deployedWorkflowFormInvokeRequest('review the exact head'), {
