@@ -17,7 +17,7 @@ use crate::runtime::cloud_api_client::{
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
-    cloud_runtime_token_subject, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+    cloud_runtime_token_subject, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
@@ -281,16 +281,15 @@ async fn issue_cloud_relay_client_token(
         &profile,
         &client_id,
         "client",
-        CloudRuntimeTokenRequestOptions {
-            allowed_targets: Some(vec![request.target_daemon_alias]),
-            client_id: Some(client_id.clone()),
-            machine_id: profile
+        cloud_relay_client_token_options(
+            request.target_daemon_alias,
+            client_id.clone(),
+            profile
                 .machine_credential
                 .as_ref()
                 .and(profile.machine_id.clone()),
-            session_id: request.session_id,
-            ..CloudRuntimeTokenRequestOptions::default()
-        },
+            request.session_id,
+        ),
     )
     .await
     {
@@ -306,6 +305,22 @@ async fn issue_cloud_relay_client_token(
         token_expires_at: issued.expires_at,
     };
     Ok((cloud_profile_from_persisted(&profile), token))
+}
+
+fn cloud_relay_client_token_options(
+    target_daemon_alias: String,
+    client_id: String,
+    machine_id: Option<String>,
+    session_id: Option<String>,
+) -> CloudRuntimeTokenRequestOptions {
+    CloudRuntimeTokenRequestOptions {
+        ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
+        allowed_targets: Some(vec![target_daemon_alias]),
+        client_id: Some(client_id),
+        machine_id,
+        session_id,
+        ..CloudRuntimeTokenRequestOptions::default()
+    }
 }
 
 async fn resolve_relay_kernel_presence_with_refresh<F, Fut>(
@@ -435,6 +450,25 @@ mod tests {
             local_session_count: 0,
             public_key: "public-key".to_string(),
         }
+    }
+
+    #[test]
+    fn client_connection_token_outlives_bounded_slice_operations() {
+        let options = cloud_relay_client_token_options(
+            "kernel-new".to_string(),
+            "client-1".to_string(),
+            Some("machine-home".to_string()),
+            Some("session-1".to_string()),
+        );
+
+        assert_eq!(options.ttl_ms, Some(30 * 60_000));
+        assert_eq!(
+            options.allowed_targets,
+            Some(vec!["kernel-new".to_string()])
+        );
+        assert_eq!(options.client_id.as_deref(), Some("client-1"));
+        assert_eq!(options.machine_id.as_deref(), Some("machine-home"));
+        assert_eq!(options.session_id.as_deref(), Some("session-1"));
     }
 
     #[tokio::test]

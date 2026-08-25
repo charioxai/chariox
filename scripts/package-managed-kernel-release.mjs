@@ -10,6 +10,7 @@ const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex")
 const REQUIRED_OPTIONS = [
   "kernel",
   "supervisor",
+  "relay",
   "builder-attestation",
   "builder-attestation-signature",
   "trusted-builder-public-key",
@@ -33,7 +34,7 @@ const SLICE_BUILD_CONTEXT_SOURCES = [
 ]
 
 function usage() {
-  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
+  return "usage: package-managed-kernel-release --kernel <path> --supervisor <path> --relay <path> --builder-attestation <path> --builder-attestation-signature <path> --trusted-builder-public-key <path> --signing-key <path> --source-repository <git-worktree> --source-commit <40-hex-commit> --output <directory>"
 }
 
 function parseOptions(argv) {
@@ -199,6 +200,12 @@ async function installFile(source, destination, mode) {
   await chmod(destination, mode)
 }
 
+async function replaceFile(source, destination, mode) {
+  await mkdir(dirname(destination), { recursive: true, mode: 0o755 })
+  await copyFile(source, destination)
+  await chmod(destination, mode)
+}
+
 function sourceDateEpoch() {
   const value = process.env.SOURCE_DATE_EPOCH ?? "0"
   if (!/^(?:0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) {
@@ -218,6 +225,8 @@ async function normalizeTree(root, timestamp) {
       const executable =
         path.endsWith("/usr/local/bin/chariox-kernel") ||
         path.endsWith("/usr/local/bin/chariox-managed-bootstrap") ||
+        path.endsWith("/slice-linux-docker/prebuilt/chariox-kernel") ||
+        path.endsWith("/slice-linux-docker/prebuilt/chariox-relay") ||
         path.endsWith("/enter-rootless-docker-namespace.sh") ||
         path.endsWith("/provision-linux-docker-slice.sh") ||
         path.endsWith("/managed-publication-access.sh")
@@ -285,13 +294,14 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
     attestation.sourceTree !== sourceIdentity.tree ||
     attestation.target !== BUILD_TARGET ||
     !Array.isArray(attestation.artifacts) ||
-    attestation.artifacts.length !== 2
+    attestation.artifacts.length !== 3
   ) {
     throw new Error("builder attestation identity or target does not match the release")
   }
   const expectedArtifacts = [
     ["chariox-kernel", artifactDigests.kernel],
     ["chariox-managed-bootstrap", artifactDigests.supervisor],
+    ["chariox-relay", artifactDigests.relay],
   ]
   for (const [index, artifact] of attestation.artifacts.entries()) {
     validateObjectKeys(artifact, ["name", "sha256"], "builder attestation artifact")
@@ -324,6 +334,7 @@ async function verifyBuilderAttestation(options, sourceIdentity, artifactDigests
 async function packageRelease(options) {
   await requireRegularFile(options.kernel, "kernel binary")
   await requireRegularFile(options.supervisor, "bootstrap supervisor")
+  await requireRegularFile(options.relay, "relay binary")
   await requireRegularFile(options["builder-attestation"], "builder attestation", 64 * 1024)
   await requireRegularFile(options["builder-attestation-signature"], "builder attestation signature", 1024)
   await requireRegularFile(options["trusted-builder-public-key"], "trusted builder public key", 1024)
@@ -343,6 +354,12 @@ async function packageRelease(options) {
   const supervisorDestination = join(rootfs, "usr/local/bin/chariox-managed-bootstrap")
   const releaseDirectory = join(rootfs, "usr/lib/chariox")
   const sliceBuildContext = join(rootfs, SLICE_BUILD_CONTEXT_PATH.slice(1))
+  const slicePrebuiltRoot = join(
+    sliceBuildContext,
+    "apps/kernel/slice-linux-docker/prebuilt",
+  )
+  const sliceKernelDestination = join(slicePrebuiltRoot, "chariox-kernel")
+  const sliceRelayDestination = join(slicePrebuiltRoot, "chariox-relay")
   const serviceDestination = join(
     rootfs,
     "etc/systemd/system/chariox-managed-bootstrap.service",
@@ -387,16 +404,32 @@ async function packageRelease(options) {
   await installBytes(rootlessDockerServiceBytes, rootlessDockerServiceDestination, 0o644)
   await installBytes(sliceBrokerServiceBytes, sliceBrokerServiceDestination, 0o644)
   await installSliceBuildContext(repositoryRoot, sliceBuildContext, sourceIdentity.commit)
+  await replaceFile(options.kernel, sliceKernelDestination, 0o755)
+  await replaceFile(options.relay, sliceRelayDestination, 0o755)
+  await installBytes(
+    Buffer.from("builder-attested\n"),
+    join(slicePrebuiltRoot, ".managed-release"),
+    0o644,
+  )
   await normalizeTree(sliceBuildContext, timestamp)
   const sourceKernelDigest = await sha256File(options.kernel)
   const packagedKernelDigest = await sha256File(kernelDestination)
   if (sourceKernelDigest !== packagedKernelDigest) {
     throw new Error("kernel binary changed while the release was packaged")
   }
+  const packagedSliceKernelDigest = await sha256File(sliceKernelDestination)
+  if (sourceKernelDigest !== packagedSliceKernelDigest) {
+    throw new Error("slice kernel binary changed while the release was packaged")
+  }
   const sourceSupervisorDigest = await sha256File(options.supervisor)
   const packagedSupervisorDigest = await sha256File(supervisorDestination)
   if (sourceSupervisorDigest !== packagedSupervisorDigest) {
     throw new Error("bootstrap supervisor changed while the release was packaged")
+  }
+  const sourceRelayDigest = await sha256File(options.relay)
+  const packagedSliceRelayDigest = await sha256File(sliceRelayDestination)
+  if (sourceRelayDigest !== packagedSliceRelayDigest) {
+    throw new Error("slice relay binary changed while the release was packaged")
   }
   const packagedServiceDigest = await sha256File(serviceDestination)
   if (`sha256:${createHash("sha256").update(serviceBytes).digest("hex")}` !== packagedServiceDigest) {
@@ -414,6 +447,7 @@ async function packageRelease(options) {
   const builderAttestation = await verifyBuilderAttestation(options, sourceIdentity, {
     kernel: packagedKernelDigest,
     supervisor: packagedSupervisorDigest,
+    relay: packagedSliceRelayDigest,
   })
   const signingKeyMetadata = await requireRegularFile(
     options["signing-key"],

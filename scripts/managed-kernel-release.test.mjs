@@ -49,6 +49,7 @@ function rawPublicKey(publicKey) {
 function packagerArguments({
   kernel,
   supervisor,
+  relay,
   builderAttestation,
   builderAttestationSignature,
   trustedBuilderPublicKey,
@@ -61,6 +62,7 @@ function packagerArguments({
     packager,
     "--kernel", kernel,
     "--supervisor", supervisor,
+    "--relay", relay,
     "--builder-attestation", builderAttestation,
     "--builder-attestation-signature", builderAttestationSignature,
     "--trusted-builder-public-key", trustedBuilderPublicKey,
@@ -126,11 +128,14 @@ async function treeDigest(root) {
 async function makeFixture(root, variant = "") {
   const kernel = join(root, "chariox-kernel")
   const supervisor = join(root, "chariox-managed-bootstrap")
+  const relay = join(root, "chariox-relay")
   const signingKey = join(root, "release-key.pem")
   const trustedPublicKey = join(root, "trusted-release-public-key")
   const kernelContents = variant ? `kernel fixture ${variant}\n` : "kernel fixture\n"
+  const relayContents = variant ? `relay fixture ${variant}\n` : "relay fixture\n"
   await writeFile(kernel, kernelContents, { mode: 0o755 })
   await writeFile(supervisor, "supervisor fixture\n", { mode: 0o755 })
+  await writeFile(relay, relayContents, { mode: 0o755 })
   const { privateKey, publicKey } = generateKeyPairSync("ed25519")
   await writeFile(signingKey, privateKey.export({ format: "pem", type: "pkcs8" }), { mode: 0o600 })
   await writeFile(trustedPublicKey, rawPublicKey(publicKey).toString("base64"), { mode: 0o600 })
@@ -200,6 +205,7 @@ async function makeFixture(root, variant = "") {
     artifacts: [
       { name: "chariox-kernel", sha256: binaryDigest(kernelContents) },
       { name: "chariox-managed-bootstrap", sha256: binaryDigest("supervisor fixture\n") },
+      { name: "chariox-relay", sha256: binaryDigest(relayContents) },
     ],
   }))
   await writeFile(builderAttestation, attestationBytes, { mode: 0o644 })
@@ -215,6 +221,8 @@ async function makeFixture(root, variant = "") {
     kernel,
     kernelContents,
     supervisor,
+    relay,
+    relayContents,
     signingKey,
     trustedPublicKey,
     builderAttestation,
@@ -271,6 +279,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-publication-access.sh",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/.managed-release",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel",
+    "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay",
     "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/toolchain/package-lock.json",
     "usr/lib/chariox/slice-build-context/Cargo.lock",
     "usr/lib/chariox/slice-build-context/apps/kernel/src/transport/relay_peer.rs",
@@ -348,6 +359,20 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     ),
     /SLICE_BUILD_IMAGE=fixture/,
   )
+  assert.equal(
+    await readFile(
+      join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-kernel"),
+      "utf8",
+    ),
+    fixture.kernelContents,
+  )
+  assert.equal(
+    await readFile(
+      join(releaseRoot, "usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/prebuilt/chariox-relay"),
+      "utf8",
+    ),
+    fixture.relayContents,
+  )
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-kernel").mode, 0o755)
   assert.equal(snapshot.find((entry) => entry.path === "usr/local/bin/chariox-managed-bootstrap").mode, 0o755)
   assert.equal(
@@ -362,6 +387,8 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
     snapshot.find((entry) => entry.path.endsWith("/managed-publication-access.sh")).mode,
     0o755,
   )
+  assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-kernel")).mode, 0o755)
+  assert.equal(snapshot.find((entry) => entry.path.endsWith("/prebuilt/chariox-relay")).mode, 0o755)
   assert.equal(
     snapshot
       .filter((entry) =>
@@ -369,7 +396,9 @@ test("managed kernel release packages one reproducible signed rootfs", async (co
         !entry.path.startsWith("usr/local/bin/") &&
         !entry.path.endsWith("/enter-rootless-docker-namespace.sh") &&
         !entry.path.endsWith("/provision-linux-docker-slice.sh") &&
-        !entry.path.endsWith("/managed-publication-access.sh"),
+        !entry.path.endsWith("/managed-publication-access.sh") &&
+        !entry.path.endsWith("/prebuilt/chariox-kernel") &&
+        !entry.path.endsWith("/prebuilt/chariox-relay"),
       )
       .every((entry) => entry.mode === 0o644),
     true,
@@ -607,6 +636,10 @@ case "$1" in
         [ -f '${extractionState}' ]
         printf 'supervisor from archived commit\n'
         ;;
+      *chariox-relay)
+        [ -f '${extractionState}' ]
+        printf 'relay from archived commit\n'
+        ;;
       *) exit 32 ;;
     esac
     ;;
@@ -657,7 +690,7 @@ esac
   assert.equal(attestation.target, "x86_64-unknown-linux-gnu")
   assert.deepEqual(
     attestation.artifacts.map((artifact) => artifact.name),
-    ["chariox-kernel", "chariox-managed-bootstrap"],
+    ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"],
   )
   const signature = Buffer.from(await readFile(join(output, "build-attestation.sig"), "utf8"), "base64")
   assert.equal(verify(null, attestationBytes, fixture.publicKey, signature), true)
@@ -699,7 +732,7 @@ test("managed kernel release requires a matching trusted builder attestation", a
 
   await writeAttestation({
     ...original,
-    artifacts: [original.artifacts[1], original.artifacts[0]],
+    artifacts: [original.artifacts[1], original.artifacts[0], original.artifacts[2]],
   })
   const wrongArtifacts = runPackager({ ...fixture, output: join(root, "wrong-artifacts") })
   assert.equal(wrongArtifacts.status, 1)

@@ -347,7 +347,18 @@ image_runtime_compatible() {
 
 build_standard_runtime_image() {
   local image="$1"
+  local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
   log "building $image"
+  if [[ -f "$prebuilt_marker" ]]; then
+    docker build \
+      --build-arg "CHARIOX_PREBUILT_RUNTIME=1" \
+      --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+      --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
+      -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
+      -t "$image" \
+      "$REPO_ROOT"
+    return
+  fi
   docker build \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \

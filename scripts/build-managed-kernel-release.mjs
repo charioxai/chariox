@@ -145,7 +145,7 @@ async function build(options) {
     if (!/^sha256:[a-f0-9]{64}$/.test(builderImage)) {
       throw new Error("managed release builder image ID is invalid")
     }
-    for (const name of ["chariox-kernel", "chariox-managed-bootstrap"]) {
+    for (const name of ["chariox-kernel", "chariox-managed-bootstrap", "chariox-relay"]) {
       const sourceBinary = join(pending, name)
       const output = await open(sourceBinary, "wx", 0o755)
       let copied
@@ -175,6 +175,7 @@ async function build(options) {
       artifacts: [
         { name: "chariox-kernel", sha256: await sha256File(join(pending, "chariox-kernel")) },
         { name: "chariox-managed-bootstrap", sha256: await sha256File(join(pending, "chariox-managed-bootstrap")) },
+        { name: "chariox-relay", sha256: await sha256File(join(pending, "chariox-relay")) },
       ],
     }))
     await writeFile(join(pending, "build-attestation.json"), attestation, { flag: "wx", mode: 0o644 })

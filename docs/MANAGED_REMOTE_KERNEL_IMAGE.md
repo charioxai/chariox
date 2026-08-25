@@ -7,8 +7,8 @@ manager; it does not provision managed machines or build their images.
 
 ## Release inputs
 
-Use the OpenShip builder to build `chariox-kernel` and
-`chariox-managed-bootstrap` for `x86_64-unknown-linux-gnu` from an exact pushed
+Use the OpenShip builder to build `chariox-kernel`, `chariox-managed-bootstrap`,
+and `chariox-relay` for `x86_64-unknown-linux-gnu` from an exact pushed
 OSS revision. The builder must hold a dedicated Ed25519 PKCS8 attestation key
 outside the repository with mode `0600`. Its build command archives the Git
 object into a new temporary directory, runs a locked one-job release build, and
@@ -31,6 +31,7 @@ SOURCE_DATE_EPOCH="$(git show -s --format=%ct HEAD)" \
 node scripts/package-managed-kernel-release.mjs \
   --kernel <build-output>/chariox-kernel \
   --supervisor <build-output>/chariox-managed-bootstrap \
+  --relay <build-output>/chariox-relay \
   --builder-attestation <build-output>/build-attestation.json \
   --builder-attestation-signature <build-output>/build-attestation.sig \
   --trusted-builder-public-key <openship-builder-public-key> \
@@ -43,7 +44,7 @@ node scripts/package-managed-kernel-release.mjs \
 Record the printed `sha256:` release digest. Keep both private keys private.
 Copy only the generated root filesystem and a separate copy of its release
 public key to the image builder. The packager verifies the detached builder
-signature, exact commit and tree IDs, target, and both staged binary digests
+signature, exact commit and tree IDs, target, and all three staged binary digests
 before it reads the release-signing key. The signed release retains the builder
 attestation and records the full Git commit and tree IDs. Its systemd units and
 slice context come from that exact Git object; working-tree changes and
@@ -129,8 +130,10 @@ namespaces, and exposes only the approved provider profile and repository
 roots. Ordinary local Docker slices retain Docker's defaults unless the user
 enables the advanced compatibility option.
 
-The first local Docker slice builds its runtime image lazily from the complete
-signed context. Its cache fingerprint covers the Dockerfile and all build
+The first managed Docker slice builds its runtime image lazily from the complete
+signed context, using the builder-attested kernel and relay binaries rather than
+compiling them again on the managed host. Ordinary local source builds retain
+the Cargo build path. The cache fingerprint covers the Dockerfile and all build
 inputs; base images, Debian snapshots, the Cargo lock, and the provider npm
 integrity lock are pinned. Host provider commands are installed with `npm ci`
 from the same signed lock. The script enables the bootstrap and rootless Docker

@@ -350,6 +350,17 @@ test("managed slice image locks every network and compiler input", async () => {
   }
 })
 
+test("managed slices use builder-attested runtime binaries instead of compiling on the host", async () => {
+  const dockerfile = await readFile(sliceDockerfileUrl, "utf8")
+  const provisioner = await readFile(sliceProvisionerUrl, "utf8")
+
+  assert.match(dockerfile, /ARG CHARIOX_PREBUILT_RUNTIME=0/)
+  assert.match(dockerfile, /test -x \/opt\/chariox-prebuilt\/chariox-kernel/)
+  assert.match(dockerfile, /test -x \/opt\/chariox-prebuilt\/chariox-relay/)
+  assert.match(provisioner, /prebuilt\/\.managed-release/)
+  assert.match(provisioner, /--build-arg "CHARIOX_PREBUILT_RUNTIME=1"/)
+})
+
 test("managed Docker authority and publication access remain narrowly separated", async () => {
   const managed = await readFile(managedServiceUrl, "utf8")
   const rootless = await readFile(rootlessServiceUrl, "utf8")

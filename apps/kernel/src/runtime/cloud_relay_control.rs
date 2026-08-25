@@ -3,6 +3,7 @@ use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
+pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 30 * 60_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
