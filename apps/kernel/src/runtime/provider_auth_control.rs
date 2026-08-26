@@ -14,8 +14,6 @@ use crate::provider::ProviderLoginStart;
 use crate::pty::{PtyProcessState, PtySpawnRequest};
 use crate::runtime::state::KernelRuntimeState;
 
-const PROVIDER_LOGIN_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
-
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -59,6 +57,36 @@ pub(crate) async fn execute_get_provider_auth_status_request(
     .map_err(|error| provider_auth_task_error("get provider auth status", error))?
 }
 
+async fn reconcile_running_terminal_provider_auth(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    provider: &str,
+) -> Result<(), DaemonError> {
+    let records = runtime_state
+        .provider_login_process_store()
+        .running_for_owner_provider(owner_user_id, provider);
+    for record in records {
+        let request = GetProviderLoginStatusRequest {
+            login_id: record.login_id.clone(),
+        };
+        if execute_get_provider_login_status_request(runtime_state, owner_user_id, request)
+            .await
+            .is_err()
+        {
+            let _ = runtime_state
+                .with_app_side_effect(|app| app.pty_mut().remove_process(&record.login_id))
+                .await;
+            runtime_state.provider_login_process_store().set_state(
+                owner_user_id,
+                &record.login_id,
+                ProviderLoginProcessState::Failed,
+                crate::session::unix_epoch_ms(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 async fn start_terminal_provider_auth(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -83,6 +111,7 @@ async fn start_terminal_provider_auth(
             "provider `{provider}` does not require an interactive logout workflow"
         )));
     }
+    reconcile_running_terminal_provider_auth(runtime_state, owner_user_id, provider).await?;
     let registry = runtime_state.provider_account_profile_registry();
     let profile = registry.get(owner_user_id, provider, &account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
@@ -186,7 +215,9 @@ pub(crate) async fn execute_get_provider_login_status_request(
         });
     }
     let now_ms = crate::session::unix_epoch_ms();
-    if now_ms.saturating_sub(record.started_at_ms) >= PROVIDER_LOGIN_TIMEOUT_MS {
+    if now_ms.saturating_sub(record.started_at_ms)
+        >= crate::runtime::state::PROVIDER_LOGIN_TIMEOUT_MS
+    {
         if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
             cancel_codex_login(
                 runtime_state,

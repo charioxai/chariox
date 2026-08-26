@@ -114,6 +114,7 @@ pub(crate) fn provider_auth_env_vars(provider: &str) -> &'static [&'static str] 
             "ANTHROPIC_AUTH_TOKEN",
             "ANTHROPIC_BASE_URL",
             "ANTHROPIC_CUSTOM_HEADERS",
+            "CLAUDE_CONFIG_DIR",
         ],
         Some("opencode") => &[
             "OPENAI_API_KEY",
@@ -310,6 +311,8 @@ pub(crate) enum ProviderAccountLocator {
     },
     Claude {
         claude_config_dir: PathBuf,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ambient_default: Option<bool>,
     },
     Opencode {
         xdg_data_home: PathBuf,
@@ -328,6 +331,7 @@ impl ProviderAccountLocator {
             }),
             "claude" => Ok(Self::Claude {
                 claude_config_dir: root.join("claude"),
+                ambient_default: Some(false),
             }),
             "opencode" => {
                 let config = root.join("config");
@@ -348,6 +352,7 @@ impl ProviderAccountLocator {
             "codex" => Ok(Self::Codex { codex_home: root }),
             "claude" => Ok(Self::Claude {
                 claude_config_dir: root,
+                ambient_default: Some(false),
             }),
             "opencode" => Self::managed(provider, &root),
             _ => Err(unsupported_provider(provider)),
@@ -362,12 +367,15 @@ impl ProviderAccountLocator {
                     .map(PathBuf::from)
                     .unwrap_or_else(|| home.join(".codex")),
             }),
-            "claude" => Ok(Self::Claude {
-                claude_config_dir: std::env::var_os("CLAUDE_CONFIG_DIR")
+            "claude" => {
+                let configured = std::env::var_os("CLAUDE_CONFIG_DIR")
                     .filter(|value| !value.is_empty())
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| home.join(".claude")),
-            }),
+                    .map(PathBuf::from);
+                Ok(Self::Claude {
+                    claude_config_dir: configured.clone().unwrap_or_else(|| home.join(".claude")),
+                    ambient_default: Some(configured.is_none()),
+                })
+            }
             "opencode" => {
                 let data = effective_xdg("XDG_DATA_HOME", home.join(".local/share"));
                 let config = effective_xdg("XDG_CONFIG_HOME", home.join(".config"));
@@ -392,7 +400,9 @@ impl ProviderAccountLocator {
     fn roots(&self) -> Vec<&Path> {
         match self {
             Self::Codex { codex_home } => vec![codex_home],
-            Self::Claude { claude_config_dir } => vec![claude_config_dir],
+            Self::Claude {
+                claude_config_dir, ..
+            } => vec![claude_config_dir],
             Self::Opencode {
                 xdg_data_home,
                 xdg_config_home,
@@ -414,7 +424,9 @@ impl ProviderAccountLocator {
             Self::Codex { codex_home } => {
                 BTreeMap::from([("CODEX_HOME".to_string(), codex_home.display().to_string())])
             }
-            Self::Claude { claude_config_dir } => BTreeMap::from([(
+            Self::Claude {
+                claude_config_dir, ..
+            } => BTreeMap::from([(
                 "CLAUDE_CONFIG_DIR".to_string(),
                 claude_config_dir.display().to_string(),
             )]),
@@ -535,9 +547,27 @@ impl ProviderAccountProfileRegistry {
         let mut document = self.write_document()?;
         let mut changed = false;
         for provider in SUPPORTED_PROVIDERS {
-            if document.profiles.iter().any(|profile| {
+            if let Some(profile) = document.profiles.iter_mut().find(|profile| {
                 profile.public.owner_user_id == owner_user_id && profile.public.provider == provider
             }) {
+                if provider == "claude"
+                    && profile.public.origin == ProviderAccountProfileOrigin::Default
+                {
+                    let ProviderAccountLocator::Claude {
+                        ambient_default, ..
+                    } = &mut profile.locator
+                    else {
+                        continue;
+                    };
+                    if ambient_default.is_none() {
+                        // Legacy registries did not preserve whether this path came from an
+                        // ambient default or an explicit CLAUDE_CONFIG_DIR. The two are
+                        // indistinguishable when the explicit value was `$HOME/.claude`, so
+                        // preserve scoped behavior rather than risk switching accounts.
+                        *ambient_default = Some(false);
+                        changed = true;
+                    }
+                }
                 continue;
             }
             let locator = ProviderAccountLocator::effective_default(provider, home)?;
@@ -755,7 +785,23 @@ impl ProviderAccountProfileRegistry {
                 enforce_codex_file_credentials(codex_home)?;
             }
         }
-        Ok(locator.environment())
+        let mut environment = locator.environment();
+        #[cfg(target_os = "macos")]
+        // Claude Code's macOS default uses its unscoped Keychain service. Injecting the
+        // conventional config directory changes the Keychain service and hides that login.
+        if provider == "claude"
+            && origin == ProviderAccountProfileOrigin::Default
+            && matches!(
+                locator,
+                ProviderAccountLocator::Claude {
+                    ambient_default: Some(true),
+                    ..
+                }
+            )
+        {
+            environment.remove("CLAUDE_CONFIG_DIR");
+        }
+        Ok(environment)
     }
 
     pub fn create_managed(
@@ -963,7 +1009,9 @@ impl ProviderAccountProfileRegistry {
                 collect_optional_file(codex_home, "auth.json", "auth.json", &mut files)?;
                 collect_optional_file(codex_home, "config.toml", "config.toml", &mut files)?;
             }
-            ProviderAccountLocator::Claude { claude_config_dir } => {
+            ProviderAccountLocator::Claude {
+                claude_config_dir, ..
+            } => {
                 for name in [".credentials.json", "settings.json", "stats-cache.json"] {
                     collect_optional_file(claude_config_dir, name, name, &mut files)?;
                 }
@@ -1040,7 +1088,9 @@ impl ProviderAccountProfileRegistry {
                 )?;
                 require_materialization_file(&files, "auth.json", provider, profile_id)?;
             }
-            ProviderAccountLocator::Claude { claude_config_dir } => {
+            ProviderAccountLocator::Claude {
+                claude_config_dir, ..
+            } => {
                 validate_materialization_root(claude_config_dir)?;
                 collect_optional_file_bounded(
                     claude_config_dir,
@@ -2394,9 +2444,9 @@ fn materialization_destination(
     }
     match locator {
         ProviderAccountLocator::Codex { codex_home } => Ok(codex_home.join(relative)),
-        ProviderAccountLocator::Claude { claude_config_dir } => {
-            Ok(claude_config_dir.join(relative))
-        }
+        ProviderAccountLocator::Claude {
+            claude_config_dir, ..
+        } => Ok(claude_config_dir.join(relative)),
         ProviderAccountLocator::Opencode {
             xdg_data_home,
             xdg_config_home,
@@ -2700,6 +2750,23 @@ mod tests {
         fs::create_dir_all(&root).unwrap();
         let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
         (root, registry)
+    }
+
+    #[cfg(target_os = "macos")]
+    fn strip_persisted_claude_scope_for_legacy_fixture(path: &Path) {
+        let mut document: serde_json::Value =
+            serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        let profile = document["profiles"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|profile| profile["provider"] == "claude")
+            .unwrap();
+        profile["locator"]
+            .as_object_mut()
+            .unwrap()
+            .remove("ambient_default");
+        fs::write(path, serde_json::to_vec_pretty(&document).unwrap()).unwrap();
     }
 
     #[test]
@@ -3398,6 +3465,104 @@ mod tests {
             .resolve_environment("owner-a", "claude", "default")
             .unwrap();
         assert!(environment["CLAUDE_CONFIG_DIR"].contains(&work.profile_id));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn ambient_default_claude_profile_does_not_force_a_scoped_keychain() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+
+        let (root, registry) = fixture();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        drop(registry);
+        std::env::set_var("CLAUDE_CONFIG_DIR", root.join("later-explicit-config"));
+
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        assert!(!environment.contains_key("CLAUDE_CONFIG_DIR"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn legacy_default_claude_profile_fails_safe_to_scoped_keychain() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        drop(registry);
+        strip_persisted_claude_scope_for_legacy_fixture(&root.join("accounts.json"));
+
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &home)
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        assert_eq!(
+            environment.get("CLAUDE_CONFIG_DIR"),
+            Some(&home.join(".claude").display().to_string())
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn explicit_default_claude_config_dir_is_preserved() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        let (root, registry) = fixture();
+        let explicit = root.join("explicit-claude-config");
+        std::env::set_var("CLAUDE_CONFIG_DIR", &explicit);
+
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        drop(registry);
+        strip_persisted_claude_scope_for_legacy_fixture(&root.join("accounts.json"));
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let registry = ProviderAccountProfileRegistry::open(root.join("accounts.json")).unwrap();
+        registry
+            .migrate_effective_defaults("owner-a", &root.join("home"))
+            .unwrap();
+        let environment = registry
+            .resolve_environment("owner-a", "claude", "default")
+            .unwrap();
+
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        assert_eq!(
+            environment.get("CLAUDE_CONFIG_DIR"),
+            Some(&explicit.display().to_string())
+        );
         let _ = fs::remove_dir_all(root);
     }
 

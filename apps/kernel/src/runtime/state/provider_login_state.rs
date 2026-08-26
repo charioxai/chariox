@@ -7,6 +7,7 @@ use crate::error::DaemonError;
 use crate::local::{ProviderLoginProcessState, ProviderLoginStatus};
 
 const MAX_PROVIDER_LOGIN_OUTPUT_BYTES: usize = 64 * 1024;
+pub(in crate::runtime) const PROVIDER_LOGIN_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(in crate::runtime) enum ProviderLoginProcessBackend {
@@ -114,15 +115,27 @@ impl std::fmt::Debug for ProviderLoginProcessStore {
 impl ProviderLoginProcessStore {
     pub fn insert(&self, record: ProviderLoginProcessRecord) -> Result<(), DaemonError> {
         let mut records = self.inner.lock().unwrap_or_else(PoisonError::into_inner);
+        let now_ms = crate::session::unix_epoch_ms();
+        for existing in records.values_mut() {
+            if existing.state == ProviderLoginProcessState::Running
+                && now_ms.saturating_sub(existing.started_at_ms) >= PROVIDER_LOGIN_TIMEOUT_MS
+            {
+                existing.state = ProviderLoginProcessState::Failed;
+                existing.updated_at_ms = now_ms;
+            }
+        }
         if records.values().any(|existing| {
             existing.owner_user_id == record.owner_user_id
                 && existing.provider == record.provider
-                && existing.account_profile == record.account_profile
                 && existing.state == ProviderLoginProcessState::Running
+                && (existing.account_profile == record.account_profile
+                    || record.provider == "claude")
         }) {
-            return Err(login_error(
-                "a provider login is already running for this account profile",
-            ));
+            return Err(login_error(if record.provider == "claude" {
+                "a Claude login is already running; finish or cancel it before authenticating another Claude profile"
+            } else {
+                "a provider login is already running for this account profile"
+            }));
         }
         records.insert(record.login_id.clone(), record);
         Ok(())
@@ -158,6 +171,24 @@ impl ProviderLoginProcessStore {
                     && record.account_profile == account_profile
                     && record.state == ProviderLoginProcessState::Running
             })
+    }
+
+    pub fn running_for_owner_provider(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+    ) -> Vec<ProviderLoginProcessRecord> {
+        self.inner
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .values()
+            .filter(|record| {
+                record.owner_user_id == owner_user_id
+                    && record.provider == provider
+                    && record.state == ProviderLoginProcessState::Running
+            })
+            .cloned()
+            .collect()
     }
 
     pub fn remove(&self, login_id: &str) {
@@ -225,6 +256,7 @@ mod tests {
     use super::*;
 
     fn record(owner: &str, login_id: &str) -> ProviderLoginProcessRecord {
+        let now_ms = crate::session::unix_epoch_ms();
         ProviderLoginProcessRecord {
             owner_user_id: owner.to_string(),
             provider: "claude".to_string(),
@@ -234,8 +266,8 @@ mod tests {
             backend: ProviderLoginProcessBackend::Terminal,
             operation: ProviderAuthProcessOperation::Login,
             output: Vec::new(),
-            started_at_ms: 1,
-            updated_at_ms: 1,
+            started_at_ms: now_ms,
+            updated_at_ms: now_ms,
         }
     }
 
@@ -257,6 +289,53 @@ mod tests {
             )
             .unwrap();
         assert!(!store.has_running_for_profile("owner-a", "claude", "work"));
+    }
+
+    #[test]
+    fn claude_logins_are_single_flight_per_owner_across_profiles() {
+        let store = ProviderLoginProcessStore::default();
+        store.insert(record("owner-a", "login-work")).unwrap();
+
+        let mut personal = record("owner-a", "login-personal");
+        personal.account_profile = "personal".to_string();
+
+        assert!(store.insert(personal).is_err());
+    }
+
+    #[test]
+    fn expired_claude_login_does_not_block_another_profile() {
+        let store = ProviderLoginProcessStore::default();
+        let mut expired = record("owner-a", "login-work");
+        expired.started_at_ms = expired
+            .started_at_ms
+            .saturating_sub(PROVIDER_LOGIN_TIMEOUT_MS);
+        store.insert(expired).unwrap();
+
+        let mut personal = record("owner-a", "login-personal");
+        personal.account_profile = "personal".to_string();
+        store.insert(personal).unwrap();
+
+        assert_eq!(
+            store
+                .record_for_owner("owner-a", "login-work")
+                .unwrap()
+                .state,
+            ProviderLoginProcessState::Failed
+        );
+    }
+
+    #[test]
+    fn opencode_logins_remain_independent_across_profiles() {
+        let store = ProviderLoginProcessStore::default();
+        let mut work = record("owner-a", "login-work");
+        work.provider = "opencode".to_string();
+        store.insert(work).unwrap();
+
+        let mut personal = record("owner-a", "login-personal");
+        personal.provider = "opencode".to_string();
+        personal.account_profile = "personal".to_string();
+
+        store.insert(personal).unwrap();
     }
 
     #[test]
