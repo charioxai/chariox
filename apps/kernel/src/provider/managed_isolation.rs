@@ -1002,9 +1002,10 @@ mod tests {
             "--".to_string(),
             "/usr/local/bin/claude".to_string(),
         ];
-        let directory = Path::new("/tmp/chariox-claude-runtime-test");
+        let directory = std::env::temp_dir().join("chariox-claude-runtime-test");
+        let directory_text = directory.display().to_string();
 
-        expose_runtime_directory_in_managed_namespace(&mut args, directory)
+        expose_runtime_directory_in_managed_namespace(&mut args, &directory)
             .expect("managed runtime directory should be exposed");
 
         let separator = args
@@ -1015,10 +1016,10 @@ mod tests {
             &args[separator - 5..separator],
             [
                 "--dir",
-                "/tmp/chariox-claude-runtime-test",
+                directory_text.as_str(),
                 "--ro-bind",
-                "/tmp/chariox-claude-runtime-test",
-                "/tmp/chariox-claude-runtime-test",
+                directory_text.as_str(),
+                directory_text.as_str(),
             ]
         );
     }
