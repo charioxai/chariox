@@ -3373,6 +3373,7 @@ mod tests {
         }
     }
 
+    #[cfg(target_os = "macos")]
     #[test]
     fn claude_keychain_service_is_scoped_to_the_config_directory() {
         assert_eq!(
