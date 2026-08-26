@@ -110,7 +110,36 @@ impl ManagedKernelActivityReporter {
                         );
                         (change_sequence, running_agent_count) =
                             runtime.managed_activity_snapshot();
-                        retry_delay = MIN_RETRY_DELAY;
+                        if cursor.requires_confirmation {
+                            crate::logging::warn_with_fields(
+                                "managed_kernel.activity",
+                                "Cloud activity cursor remains ahead; confirmation will be delayed",
+                                serde_json::json!({
+                                    "environment_id": self.binding.environment_id,
+                                    "machine_id": self.binding.machine_id,
+                                    "kernel_id": self.binding.kernel_id,
+                                    "sequence": accepted.sequence,
+                                    "retry_delay_ms": retry_delay.as_millis(),
+                                }),
+                            );
+                            let sleep = tokio::time::sleep(jittered(retry_delay));
+                            tokio::pin!(sleep);
+                            loop {
+                                tokio::select! {
+                                    changed = shutdown.changed() => {
+                                        if changed.is_err() || *shutdown.borrow() {
+                                            return Ok(());
+                                        }
+                                    }
+                                    _ = &mut sleep => break,
+                                }
+                            }
+                            (change_sequence, running_agent_count) =
+                                runtime.managed_activity_snapshot();
+                            retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
+                        } else {
+                            retry_delay = MIN_RETRY_DELAY;
+                        }
                         continue;
                     }
                     Err(error) => {
@@ -521,6 +550,76 @@ mod tests {
         assert_eq!(
             second_body["runningAgentCount"], 1,
             "the confirmation must use activity observed while the restart report was in flight"
+        );
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reporter_backs_off_when_cloud_cursor_stays_ahead() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (unexpected_third_tx, unexpected_third_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            for accepted_sequence in [51, 60] {
+                let (mut stream, _) = listener.accept().expect("accept activity report");
+                let _request = read_http_request(&mut stream);
+                write_http_response(
+                    &mut stream,
+                    &serde_json::json!({
+                        "acceptedSequence": accepted_sequence,
+                        "runningAgentCount": 0,
+                    }),
+                );
+            }
+
+            listener
+                .set_nonblocking(true)
+                .expect("observe confirmation backoff");
+            let deadline = std::time::Instant::now() + Duration::from_millis(750);
+            let mut saw_third_request = false;
+            while std::time::Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((_stream, _)) => {
+                        saw_third_request = true;
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("observe activity confirmation: {error}"),
+                }
+            }
+            unexpected_third_tx
+                .send(saw_third_request)
+                .expect("publish confirmation observation");
+        });
+
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+
+        let saw_third_request = tokio::time::timeout(Duration::from_secs(4), unexpected_third_rx)
+            .await
+            .expect("confirmation observation should finish")
+            .expect("activity fixture should stay available");
+        assert!(
+            !saw_third_request,
+            "repeated ahead responses must not create an unthrottled confirmation loop"
         );
 
         shutdown_tx.send(true).expect("stop activity reporter");
