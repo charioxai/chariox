@@ -960,56 +960,41 @@ fn dev_stub_provider_catalog() -> OpenCodeProviderCatalog {
 }
 
 fn opencode_backend_catalog(catalog: OpenCodeProviderCatalog) -> OpenCodeProviderCatalog {
-    let mut models = BTreeMap::new();
-    let mut first_model = None;
-    let mut connected = false;
-
-    for provider in catalog
+    let source_connected = catalog.connected;
+    let source_default = catalog.default;
+    let mut all = catalog
         .all
         .into_iter()
-        .filter(|provider| provider.id == "opencode")
-    {
-        connected = connected || catalog.connected.iter().any(|id| id == &provider.id);
-        for (model_id, model) in provider.models {
-            if first_model.is_none() {
-                first_model = Some(model_id.clone());
-            }
-            models.insert(model_id, model);
-        }
-    }
+        .filter(|provider| matches!(provider.id.as_str(), "opencode" | "opencode-go"))
+        .filter(|provider| !provider.models.is_empty())
+        .map(|mut provider| {
+            provider.remote_machine_aliases.clear();
+            provider
+        })
+        .collect::<Vec<_>>();
+    all.sort_by(|left, right| left.id.cmp(&right.id));
 
-    if models.is_empty() {
-        return OpenCodeProviderCatalog {
-            all: Vec::new(),
-            default: Default::default(),
-            connected: Vec::new(),
-        };
-    }
-
-    let default_model = catalog
-        .default
-        .get("opencode")
-        .filter(|model_id| models.contains_key(*model_id))
-        .cloned()
-        .or(first_model);
-
-    let default = default_model
-        .map(|model_id| BTreeMap::from([("opencode".to_string(), model_id)]))
-        .unwrap_or_default();
+    let connected = all
+        .iter()
+        .filter(|provider| source_connected.iter().any(|id| id == &provider.id))
+        .map(|provider| provider.id.clone())
+        .collect();
+    let default = all
+        .iter()
+        .filter_map(|provider| {
+            let model_id = source_default
+                .get(&provider.id)
+                .filter(|model_id| provider.models.contains_key(*model_id))
+                .cloned()
+                .or_else(|| provider.models.keys().next().cloned())?;
+            Some((provider.id.clone(), model_id))
+        })
+        .collect();
 
     OpenCodeProviderCatalog {
-        all: vec![OpenCodeProviderInfo {
-            id: "opencode".to_string(),
-            name: "OpenCode".to_string(),
-            remote_machine_aliases: Vec::new(),
-            models,
-        }],
+        all,
         default,
-        connected: if connected {
-            vec!["opencode".to_string()]
-        } else {
-            Vec::new()
-        },
+        connected,
     }
 }
 
@@ -1414,7 +1399,7 @@ exit 2
     }
 
     #[test]
-    fn opencode_backend_catalog_hides_upstream_provider_ids() {
+    fn opencode_backend_catalog_keeps_zen_and_go_but_hides_upstream_provider_ids() {
         let catalog = opencode_backend_catalog(OpenCodeProviderCatalog {
             all: vec![
                 OpenCodeProviderInfo {
@@ -1447,22 +1432,53 @@ exit 2
                         },
                     )]),
                 },
+                OpenCodeProviderInfo {
+                    id: "opencode-go".to_string(),
+                    name: "OpenCode Go".to_string(),
+                    remote_machine_aliases: Vec::new(),
+                    models: BTreeMap::from([(
+                        "deepseek-v4-pro".to_string(),
+                        OpenCodeProviderModel {
+                            id: "deepseek-v4-pro".to_string(),
+                            name: "DeepSeek V4 Pro".to_string(),
+                            status: "active".to_string(),
+                            limit: None,
+                            variants: BTreeMap::from([("high".to_string(), json!({}))]),
+                        },
+                    )]),
+                },
             ],
             default: BTreeMap::from([
                 ("openai".to_string(), "gpt-5.2".to_string()),
                 ("opencode".to_string(), "gpt-5.2".to_string()),
+                ("opencode-go".to_string(), "deepseek-v4-pro".to_string()),
             ]),
-            connected: vec!["openai".to_string(), "opencode".to_string()],
+            connected: vec![
+                "openai".to_string(),
+                "opencode".to_string(),
+                "opencode-go".to_string(),
+            ],
         });
 
-        assert_eq!(catalog.connected, vec!["opencode".to_string()]);
+        assert_eq!(
+            catalog.connected,
+            vec!["opencode".to_string(), "opencode-go".to_string()]
+        );
         assert_eq!(
             catalog.default.get("opencode"),
             Some(&"gpt-5.2".to_string())
         );
-        assert_eq!(catalog.all.len(), 1);
+        assert_eq!(
+            catalog.default.get("opencode-go"),
+            Some(&"deepseek-v4-pro".to_string())
+        );
+        assert_eq!(catalog.all.len(), 2);
         assert_eq!(catalog.all[0].id, "opencode");
+        assert_eq!(catalog.all[0].name, "OpenCode Zen");
         assert!(catalog.all[0].models.contains_key("gpt-5.2"));
+        assert_eq!(catalog.all[1].id, "opencode-go");
+        assert_eq!(catalog.all[1].name, "OpenCode Go");
+        assert!(catalog.all[1].models.contains_key("deepseek-v4-pro"));
     }
 
     #[test]
