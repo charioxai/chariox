@@ -528,6 +528,7 @@ mod tests {
             "preserved slice edit\n",
         )
         .expect("edit materialized primary repository");
+        configure_test_repository_identity(&primary.destination_path);
         git(&primary.destination_path, &["add", "primary.txt"]);
         git(&primary.destination_path, &["commit", "-m", "slice edit"]);
         let recovered = materialize_slice_development_publication(
@@ -613,11 +614,15 @@ mod tests {
     fn init_repository(path: &Path, file: &str, contents: &str) {
         fs::create_dir_all(path).expect("create repository");
         git(path, &["init", "-b", "main"]);
-        git(path, &["config", "user.email", "tests@chariox.local"]);
-        git(path, &["config", "user.name", "Chariox Tests"]);
+        configure_test_repository_identity(path);
         fs::write(path.join(file), contents).expect("write repository file");
         git(path, &["add", file]);
         git(path, &["commit", "-m", "initial"]);
+    }
+
+    fn configure_test_repository_identity(path: &Path) {
+        git(path, &["config", "user.email", "tests@chariox.local"]);
+        git(path, &["config", "user.name", "Chariox Tests"]);
     }
 
     fn git(path: &Path, args: &[&str]) {
