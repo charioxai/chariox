@@ -417,13 +417,12 @@ fn opencode_auth_status(
         String::from_utf8_lossy(&output.stderr)
     );
     let normalized = strip_ansi(&text);
+    let credential_inspection = inspect_opencode_credentials(environment);
     let has_credentials = output.status.success()
         && !normalized.trim().is_empty()
         && !normalized.to_ascii_lowercase().contains("0 credentials")
         && !normalized.to_ascii_lowercase().contains("no credentials")
-        && opencode_provider_api_key(environment, "opencode-go")
-            .or_else(|| opencode_provider_api_key(environment, "opencode"))
-            .is_some();
+        && credential_inspection != OpenCodeCredentialInspection::Malformed;
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
         auth_state: if has_credentials {
@@ -436,7 +435,12 @@ fn opencode_auth_status(
         identity_summary: has_credentials.then(|| "Provider credentials configured".to_string()),
         plan: None,
         login_hint: Some(
-            "Use Provider Accounts to run `opencode auth login` for this account.".to_string(),
+            if credential_inspection == OpenCodeCredentialInspection::Malformed {
+                "Stored OpenCode credentials are malformed; reauthenticate this account."
+                    .to_string()
+            } else {
+                "Use Provider Accounts to run `opencode auth login` for this account.".to_string()
+            },
         ),
         detected_version: command_version(&executable).ok(),
     })
@@ -595,16 +599,69 @@ fn opencode_provider_api_key(
     environment: &BTreeMap<String, String>,
     provider_id: &str,
 ) -> Option<String> {
-    let data_home = environment.get("XDG_DATA_HOME")?;
-    let auth_path = std::path::Path::new(data_home).join("opencode/auth.json");
-    let value: serde_json::Value = serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()?;
+    let value = read_opencode_auth_document(environment)?;
     value
         .get(provider_id)?
         .get("key")?
         .as_str()
         .map(str::trim)
-        .filter(|key| key.len() >= 16 && key.bytes().all(|byte| byte.is_ascii_graphic()))
+        .filter(|key| valid_opencode_secret(key))
         .map(str::to_string)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OpenCodeCredentialInspection {
+    NotObserved,
+    Valid,
+    Malformed,
+}
+
+fn inspect_opencode_credentials(
+    environment: &BTreeMap<String, String>,
+) -> OpenCodeCredentialInspection {
+    let Some(document) = read_opencode_auth_document(environment) else {
+        return OpenCodeCredentialInspection::NotObserved;
+    };
+    let Some(entries) = document.as_object() else {
+        return OpenCodeCredentialInspection::Malformed;
+    };
+    let mut observed_malformed = false;
+    for credential in entries.values() {
+        let credential_type = credential.get("type").and_then(serde_json::Value::as_str);
+        let secret_field = match credential_type {
+            Some("api") => Some("key"),
+            Some("oauth") => Some("access"),
+            _ => None,
+        };
+        let Some(secret_field) = secret_field else {
+            continue;
+        };
+        let secret = credential
+            .get(secret_field)
+            .and_then(serde_json::Value::as_str);
+        if secret.is_some_and(valid_opencode_secret) {
+            return OpenCodeCredentialInspection::Valid;
+        }
+        observed_malformed = true;
+    }
+    if observed_malformed {
+        OpenCodeCredentialInspection::Malformed
+    } else {
+        OpenCodeCredentialInspection::NotObserved
+    }
+}
+
+fn read_opencode_auth_document(
+    environment: &BTreeMap<String, String>,
+) -> Option<serde_json::Value> {
+    let data_home = environment.get("XDG_DATA_HOME")?;
+    let auth_path = std::path::Path::new(data_home).join("opencode/auth.json");
+    serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()
+}
+
+fn valid_opencode_secret(secret: &str) -> bool {
+    let secret = secret.trim();
+    !secret.is_empty() && !secret.chars().any(char::is_whitespace)
 }
 
 fn opencode_go_usage_from_value(
@@ -1585,6 +1642,48 @@ exit 2
             BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
 
         assert_eq!(opencode_provider_api_key(&environment, "opencode-go"), None);
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Malformed
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn accepts_opencode_oauth_and_short_opaque_api_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-valid-credentials-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"openai":{"type":"oauth","access":"oauth-token","refresh":"refresh-token"}}"#,
+        )
+        .expect("OAuth auth file should write");
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Valid
+        );
+
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"短鍵"}}"#,
+        )
+        .expect("API auth file should write");
+        assert_eq!(
+            opencode_provider_api_key(&environment, "opencode-go").as_deref(),
+            Some("短鍵")
+        );
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Valid
+        );
         let _ = fs::remove_dir_all(root);
     }
 }
