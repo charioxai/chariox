@@ -740,6 +740,7 @@ fn local_docker_slice_relay_for_config(
                 relay_url: relay_url.clone(),
                 container_relay_url: Some(relay_url),
                 relay_token,
+                owner_public_key: Some(config.relay_public_key.clone()),
                 // The home kernel's Cloud profile contains machine credentials and
                 // session tokens. It must never be copied into a provider-visible slice.
                 cloud_relay_config_json: None,
@@ -1163,6 +1164,10 @@ mod tests {
             Some("wss://relay.example.test")
         );
         assert_eq!(relay.relay_token, "shared-token");
+        assert_eq!(
+            relay.owner_public_key.as_deref(),
+            Some(config.relay_public_key.as_str())
+        );
         assert_eq!(relay.cloud_relay_config_json, None);
     }
 
@@ -1183,6 +1188,10 @@ mod tests {
 
         assert_eq!(relay.cloud_relay_config_json, None);
         assert_eq!(relay.relay_token, "fresh-worker-token");
+        assert_eq!(
+            relay.owner_public_key.as_deref(),
+            Some(config.relay_public_key.as_str())
+        );
     }
 
     #[test]
@@ -1217,6 +1226,7 @@ mod tests {
         assert!(relay.relay_url.starts_with("ws://127.0.0.1:"));
         assert_eq!(relay.container_relay_url, None);
         assert_eq!(relay.relay_token, "slice-local-kernel-1-slice-1");
+        assert_eq!(relay.owner_public_key, None);
         assert_eq!(relay.cloud_relay_config_json, None);
     }
 

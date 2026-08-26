@@ -160,9 +160,17 @@ impl DaemonConfig {
             managed_slice_relay_recovery_token: persisted_config
                 .as_ref()
                 .and_then(|config| config.managed_slice_relay_recovery_token.clone()),
-            managed_slice_relay_owner_public_key: persisted_config
-                .as_ref()
-                .and_then(|config| config.managed_slice_relay_owner_public_key.clone()),
+            managed_slice_relay_owner_public_key: env::var(
+                "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY",
+            )
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.trim().is_empty())
+            .or_else(|| {
+                persisted_config
+                    .as_ref()
+                    .and_then(|config| config.managed_slice_relay_owner_public_key.clone())
+            }),
             cloud_relay: if env_relay_configured {
                 env_cloud_relay
             } else {

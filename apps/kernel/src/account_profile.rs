@@ -1365,9 +1365,15 @@ impl ProviderAccountProfileRegistry {
         materialization: &ProviderAccountMaterialization,
     ) -> Result<ManagedContextProviderAccountReceipt, DaemonError> {
         let materialization_sha256 = provider_account_materialization_sha256(materialization)?;
+        let mut target_materialization = materialization.clone();
+        if materialization.profile.is_default {
+            target_materialization.profile.profile_id = self
+                .get(owner_user_id, &materialization.profile.provider, "default")?
+                .profile_id;
+        }
         let profile = self.materialize_replica_internal(
             owner_user_id,
-            materialization,
+            &target_materialization,
             Some(ManagedContextReplicaIntent {
                 context_id,
                 package_sha256,
@@ -1867,9 +1873,7 @@ fn managed_context_default_can_be_replaced(
     !stored.materialized_replica
         && stored.managed_context_replica.is_none()
         && stored.public.origin == ProviderAccountProfileOrigin::Default
-        && stored.public.profile_id == "default"
         && stored.public.is_default
-        && materialization.profile.profile_id == "default"
         && materialization.profile.is_default
 }
 

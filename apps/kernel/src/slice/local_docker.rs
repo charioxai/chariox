@@ -47,6 +47,7 @@ pub struct LocalDockerSliceRelay {
     pub relay_url: String,
     pub container_relay_url: Option<String>,
     pub relay_token: String,
+    pub owner_public_key: Option<String>,
     pub cloud_relay_config_json: Option<String>,
 }
 
@@ -1009,6 +1010,7 @@ fn configure_local_docker_slice_command(
         let LocalDockerSliceRelay {
             relay_token,
             container_relay_url,
+            owner_public_key,
             cloud_relay_config_json,
             ..
         } = relay;
@@ -1027,6 +1029,9 @@ fn configure_local_docker_slice_command(
             );
         }
         command.env("CHARIOX_SLICE_RELAY_TOKEN", relay_token);
+        if let Some(owner_public_key) = owner_public_key {
+            command.env("CHARIOX_SLICE_OWNER_PUBLIC_KEY", owner_public_key);
+        }
         if let Some(container_relay_url) = container_relay_url {
             command.env(
                 "CHARIOX_SLICE_RELAY_URL",
@@ -1165,6 +1170,7 @@ pub fn local_docker_private_relay(record: &SliceRecord) -> LocalDockerSliceRelay
         relay_url: format!("ws://127.0.0.1:{}", ports.relay),
         container_relay_url: None,
         relay_token: local_docker_private_relay_token(record),
+        owner_public_key: None,
         cloud_relay_config_json: None,
     }
 }

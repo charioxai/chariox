@@ -823,6 +823,9 @@ async function readJson<TResponse>(response: Response): Promise<TResponse> {
       : `deployed workflow request failed with ${response.status}`
     throw new Error(message)
   }
+  if (body === null) {
+    throw new Error(`deployed workflow request returned non-JSON HTTP ${response.status}`)
+  }
   return body as TResponse
 }
 

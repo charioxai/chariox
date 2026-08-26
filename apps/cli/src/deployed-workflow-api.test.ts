@@ -354,6 +354,23 @@ test("deployed workflow API scopes the destination credential lifecycle", async 
   }
 })
 
+test("deployed workflow API rejects successful non-JSON credential responses", async () => {
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async () => new Response("<html>Access login</html>", {
+    status: 200,
+    headers: { "content-type": "text/html" },
+  })
+
+  try {
+    await assert.rejects(
+      listDeploymentCredentialProfiles(profile),
+      /deployed workflow request returned non-JSON HTTP 200/,
+    )
+  } finally {
+    globalThis.fetch = originalFetch
+  }
+})
+
 test("deployed workflow enrollment details propagate member authorization denial", async () => {
   const originalFetch = globalThis.fetch
   globalThis.fetch = async () => jsonResponse({

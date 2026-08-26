@@ -217,6 +217,7 @@ mod tests {
             relay_url: "wss://relay.example.test".to_string(),
             container_relay_url: Some("wss://relay.example.test".to_string()),
             relay_token: "worker-bootstrap-token".to_string(),
+            owner_public_key: Some("owner-public".to_string()),
             cloud_relay_config_json: None,
         };
 
@@ -291,6 +292,7 @@ mod tests {
             relay_url: "wss://relay.example.test".to_string(),
             container_relay_url: Some("wss://relay.example.test".to_string()),
             relay_token: "worker-bootstrap-token".to_string(),
+            owner_public_key: Some("owner-public".to_string()),
             cloud_relay_config_json: None,
         };
         let provision_state = Arc::clone(&provisioned);

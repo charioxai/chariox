@@ -566,6 +566,7 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
         relay_url: "wss://relay.example.test".to_string(),
         container_relay_url: Some("wss://relay.example.test".to_string()),
         relay_token: "shared-token".to_string(),
+        owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
     };
     let mut command = Command::new("slice-provisioner");
@@ -582,6 +583,23 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
         Some(&"wss://relay.example.test")
     );
     assert_eq!(envs.get("CHARIOX_SLICE_RELAY_TOKEN"), Some(&"shared-token"));
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_OWNER_PUBLIC_KEY"),
+        Some(&"owner-public")
+    );
+
+    let provisioner = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    let runtime = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/start-runtime.sh"),
+    )
+    .expect("slice runtime should be readable");
+    assert!(provisioner.contains("-e CHARIOX_SLICE_OWNER_PUBLIC_KEY=\"$SLICE_OWNER_PUBLIC_KEY\""));
+    assert!(runtime
+        .contains("CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY=\"$SLICE_OWNER_PUBLIC_KEY\""));
 }
 
 #[test]
@@ -592,6 +610,7 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         relay_url: "ws://127.0.0.1:43130".to_string(),
         container_relay_url: None,
         relay_token: "slice-local-token".to_string(),
+        owner_public_key: None,
         cloud_relay_config_json: None,
     };
     let mut command = Command::new("slice-provisioner");
@@ -616,6 +635,7 @@ fn hosted_relay_discovery_uses_owner_metadata_credential() {
         relay_url: "wss://relay.example.test".to_string(),
         container_relay_url: Some("wss://relay.example.test".to_string()),
         relay_token: "worker-bootstrap-token".to_string(),
+        owner_public_key: Some("owner-public".to_string()),
         cloud_relay_config_json: None,
     };
     let mut owner_config = DaemonConfig::for_tests();
@@ -637,6 +657,7 @@ fn private_relay_discovery_uses_private_relay_credential() {
         relay_url: "ws://127.0.0.1:43130".to_string(),
         container_relay_url: None,
         relay_token: "slice-private-token".to_string(),
+        owner_public_key: None,
         cloud_relay_config_json: None,
     };
     let mut owner_config = DaemonConfig::for_tests();

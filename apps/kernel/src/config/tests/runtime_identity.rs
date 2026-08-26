@@ -319,6 +319,46 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
 }
 
 #[test]
+fn managed_slice_owner_public_key_loads_from_runtime_environment() {
+    let _guard = crate::env_lock::lock();
+    let temp_home = std::env::temp_dir().join(format!(
+        "chariox-config-slice-owner-key-test-{}",
+        generate_identity_suffix()
+    ));
+    let old_home = env::var_os("HOME");
+    let old_xdg_config_home = env::var_os("XDG_CONFIG_HOME");
+    let old_xdg_state_home = env::var_os("XDG_STATE_HOME");
+    let old_owner_public_key = env::var_os("CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY");
+    unsafe {
+        env::set_var("HOME", &temp_home);
+        env::remove_var("XDG_CONFIG_HOME");
+        env::remove_var("XDG_STATE_HOME");
+        env::set_var(
+            "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY",
+            "  slice-owner-public-key  ",
+        );
+    }
+
+    let config = DaemonConfig::load_from_env();
+
+    unsafe {
+        restore_env_var("HOME", old_home);
+        restore_env_var("XDG_CONFIG_HOME", old_xdg_config_home);
+        restore_env_var("XDG_STATE_HOME", old_xdg_state_home);
+        restore_env_var(
+            "CHARIOX_MANAGED_SLICE_RELAY_OWNER_PUBLIC_KEY",
+            old_owner_public_key,
+        );
+    }
+    let _ = fs::remove_dir_all(temp_home);
+
+    assert_eq!(
+        config.managed_slice_relay_owner_public_key.as_deref(),
+        Some("slice-owner-public-key")
+    );
+}
+
+#[test]
 fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
     let _guard = crate::env_lock::lock();
     let temp_home = std::env::temp_dir().join(format!(

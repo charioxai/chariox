@@ -336,6 +336,9 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
     target_registry
         .migrate_effective_defaults("owner-a", &target_home)
         .expect("create target defaults");
+    let target_default_profile = target_registry
+        .get("owner-a", "codex", "default")
+        .expect("resolve target default before import");
     let provider_target = ManagedContextProviderAccountImportTarget {
         registry: target_registry.clone(),
         owner_user_id: "owner-a".to_string(),
@@ -360,6 +363,15 @@ fn provider_account_package_round_trips_replays_without_overwrite_and_rolls_back
         panic!("selected provider account became None")
     };
     assert_eq!(accounts.len(), 1);
+    assert_eq!(accounts[0].profile_id, target_default_profile.profile_id);
+    assert_eq!(
+        target_registry
+            .list("owner-a", Some("codex"))
+            .expect("list imported target accounts")
+            .len(),
+        1,
+        "a selected default must replace the empty target default instead of creating a dead duplicate",
+    );
     let imported_environment = target_registry
         .resolve_environment("owner-a", "codex", "default")
         .expect("resolve imported target account");
