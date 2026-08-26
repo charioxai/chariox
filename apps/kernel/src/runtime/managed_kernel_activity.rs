@@ -39,6 +39,7 @@ struct AcceptedActivity {
 struct ActivityCursor {
     accepted: Option<AcceptedActivity>,
     pending: Option<AcceptedActivity>,
+    requires_confirmation: bool,
 }
 
 #[derive(Serialize)]
@@ -81,8 +82,7 @@ impl ManagedKernelActivityReporter {
         mut shutdown: tokio::sync::watch::Receiver<bool>,
     ) -> Result<(), DaemonError> {
         let mut cursor = ActivityCursor::default();
-        let mut change_sequence = runtime.managed_activity_change_sequence();
-        let mut running_agent_count = runtime.managed_running_agent_count();
+        let (mut change_sequence, mut running_agent_count) = runtime.managed_activity_snapshot();
         let mut retry_delay = MIN_RETRY_DELAY;
 
         loop {
@@ -108,6 +108,8 @@ impl ManagedKernelActivityReporter {
                                 "running_agent_count": accepted.running_agent_count,
                             }),
                         );
+                        (change_sequence, running_agent_count) =
+                            runtime.managed_activity_snapshot();
                         retry_delay = MIN_RETRY_DELAY;
                         continue;
                     }
@@ -238,7 +240,10 @@ impl ActivityCursor {
                 sequence: 1,
                 running_agent_count,
             },
-            Some(accepted) if accepted.running_agent_count == running_agent_count => {
+            Some(accepted)
+                if accepted.running_agent_count == running_agent_count
+                    && !self.requires_confirmation =>
+            {
                 return Ok(None);
             }
             Some(accepted) if accepted.sequence < MAX_ACTIVITY_SEQUENCE => AcceptedActivity {
@@ -270,6 +275,7 @@ impl ActivityCursor {
             sequence: response.accepted_sequence,
             running_agent_count: response.running_agent_count,
         };
+        self.requires_confirmation = response.accepted_sequence > pending.sequence;
         self.accepted = Some(accepted);
         self.pending = None;
         Ok(accepted)
@@ -312,6 +318,13 @@ fn activity_error(message: impl Into<String>) -> DaemonError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    use crate::runtime::router::CommandRouter;
+    use crate::DaemonApp;
 
     fn binding() -> ManagedKernelActivityBinding {
         ManagedKernelActivityBinding {
@@ -399,6 +412,173 @@ mod tests {
                 running_agent_count: 1,
             })
         );
+    }
+
+    #[test]
+    fn cursor_confirms_same_count_after_cloud_resynchronization() {
+        let mut cursor = ActivityCursor::default();
+        assert_eq!(
+            cursor.next_report(0).expect("restart report"),
+            Some(AcceptedActivity {
+                sequence: 1,
+                running_agent_count: 0,
+            })
+        );
+        cursor
+            .accept_response(ReportActivityResponse {
+                accepted_sequence: 51,
+                running_agent_count: 0,
+            })
+            .expect("stored Cloud cursor should synchronize");
+        assert_eq!(
+            cursor.next_report(0).expect("post-start confirmation"),
+            Some(AcceptedActivity {
+                sequence: 52,
+                running_agent_count: 0,
+            }),
+            "a replayed restart report must be followed by a fresh report even when the count is unchanged"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reporter_refreshes_activity_changed_while_resynchronization_is_in_flight() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
+        let (release_first_tx, release_first_rx) = std::sync::mpsc::channel();
+        let (second_request_tx, second_request_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            let (mut first_stream, _) = listener.accept().expect("accept first activity report");
+            let first_request = read_http_request(&mut first_stream);
+            first_request_tx
+                .send(first_request)
+                .expect("publish first activity report");
+            release_first_rx
+                .recv()
+                .expect("release first activity response");
+            write_http_response(
+                &mut first_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 51,
+                    "runningAgentCount": 0,
+                }),
+            );
+
+            let (mut second_stream, _) = listener.accept().expect("accept confirmation report");
+            let second_request = read_http_request(&mut second_stream);
+            write_http_response(
+                &mut second_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 52,
+                    "runningAgentCount": 1,
+                }),
+            );
+            second_request_tx
+                .send(second_request)
+                .expect("publish confirmation report");
+        });
+
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_runtime = runtime.clone();
+        let reporter_task =
+            tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
+
+        let first_request = tokio::time::timeout(Duration::from_secs(2), first_request_rx)
+            .await
+            .expect("first activity report should arrive")
+            .expect("first activity fixture should stay available");
+        let first_body = http_request_body(&first_request);
+        assert_eq!(first_body["sequence"], 1);
+        assert_eq!(first_body["runningAgentCount"], 0);
+
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_waiting_room_change();
+        release_first_tx
+            .send(())
+            .expect("release first activity response");
+
+        let second_request = tokio::time::timeout(Duration::from_secs(2), second_request_rx)
+            .await
+            .expect("confirmation activity report should arrive")
+            .expect("activity fixture should stay available");
+        let second_body = http_request_body(&second_request);
+        assert_eq!(second_body["sequence"], 52);
+        assert_eq!(
+            second_body["runningAgentCount"], 1,
+            "the confirmation must use activity observed while the restart report was in flight"
+        );
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    fn read_http_request(stream: &mut TcpStream) -> String {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("activity fixture timeout");
+        let mut request = Vec::new();
+        let mut buffer = [0_u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).expect("read activity request");
+            assert!(read > 0, "activity request ended before its body arrived");
+            request.extend_from_slice(&buffer[..read]);
+            let Some(header_end) = request.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                return String::from_utf8(request).expect("activity request UTF-8");
+            }
+        }
+    }
+
+    fn http_request_body(request: &str) -> serde_json::Value {
+        let (_, body) = request
+            .split_once("\r\n\r\n")
+            .expect("activity request body");
+        serde_json::from_str(body).expect("activity request JSON")
+    }
+
+    fn write_http_response(stream: &mut TcpStream, body: &serde_json::Value) {
+        let body = body.to_string();
+        let response = format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+            body.len(),
+            body,
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write activity response");
     }
 
     #[test]

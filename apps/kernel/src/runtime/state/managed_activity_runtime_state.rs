@@ -5,6 +5,16 @@ impl KernelRuntimeState {
         self.owned.runtime_projection_changes.sequence()
     }
 
+    pub(crate) fn managed_activity_snapshot(&self) -> (u64, u8) {
+        loop {
+            let sequence = self.managed_activity_change_sequence();
+            let running_agent_count = self.managed_running_agent_count();
+            if sequence == self.managed_activity_change_sequence() {
+                return (sequence, running_agent_count);
+            }
+        }
+    }
+
     pub(crate) async fn wait_for_managed_activity_transition_after(
         &self,
         mut sequence: u64,
