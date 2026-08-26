@@ -278,7 +278,9 @@ function schedulePublicationEndpointRegistration(
   if (!publication) return
   const interval = setInterval(() => {
     void registerServedPublicationEndpoint(publication, host, port, logger)
-  }, 5 * 60 * 1_000)
+  // This registration also refreshes the Cloud deployment health observation.
+  // Keep it below Cloud's default two-minute stale-health threshold.
+  }, 60_000)
   interval.unref?.()
 }
 
