@@ -30,6 +30,9 @@ mod composition;
 mod dispatch;
 pub(crate) mod event_connection_lifecycle;
 mod managed_context_bridge;
+pub(crate) use managed_context_bridge::{
+    RelayManagedContextArmRequest, RelayManagedContextChunkRequest,
+};
 mod meta_runtime_command;
 mod pre_lane_dispatch;
 mod priority_dispatch;
@@ -37,6 +40,7 @@ mod refresh_dispatch;
 mod relay_peer_bridge;
 mod runtime_tool_bridge;
 mod slice_relay_token_bridge;
+pub(crate) use slice_relay_token_bridge::ManagedSliceRelayTokenInstallRequest;
 mod status_projection_bridge;
 mod transport_bridge;
 

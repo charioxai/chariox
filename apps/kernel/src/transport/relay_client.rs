@@ -60,7 +60,7 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
-use incoming_envelopes::handle_incoming_envelope;
+use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
 pub(crate) use peer_client::send_peer_request_to_known_kernel_via_relay;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;

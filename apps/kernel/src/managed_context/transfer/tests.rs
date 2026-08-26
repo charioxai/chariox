@@ -49,9 +49,11 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            first,
-            &sha256_bytes(first),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: first,
+                sha256: &sha256_bytes(first),
+            },
             now + 2,
         )
         .expect("upload first chunk");
@@ -60,9 +62,11 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            first,
-            &sha256_bytes(first),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: first,
+                sha256: &sha256_bytes(first),
+            },
             now + 3,
         )
         .expect("retry first chunk idempotently");
@@ -90,9 +94,11 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            8,
-            rest,
-            &sha256_bytes(rest),
+            ManagedContextTransferChunk {
+                offset: 8,
+                bytes: rest,
+                sha256: &sha256_bytes(rest),
+            },
             now + 5,
         )
         .expect("finish upload");
@@ -141,7 +147,7 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     ));
     let receipt = r#"{"transfer_id":"transfer-1"}"#;
     store
-        .commit_import(&armed.transfer_id, &receipt, now + 20_001)
+        .commit_import(&armed.transfer_id, receipt, now + 20_001)
         .expect("consume transfer");
     assert!(matches!(
         store
@@ -154,7 +160,7 @@ fn transfer_resumes_retries_and_consumes_once_across_restart() {
     ));
     assert!(!ready.archive_path.exists());
     store
-        .commit_import(&armed.transfer_id, &receipt, now + 20_002)
+        .commit_import(&armed.transfer_id, receipt, now + 20_002)
         .expect("replay identical receipt");
     assert_eq!(
         store
@@ -198,9 +204,11 @@ fn consumed_import_keeps_authoritative_launch_target_after_transfer_pruning_and_
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -622,9 +630,11 @@ fn combined_receipt_can_wrap_a_near_limit_development_receipt() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -746,9 +756,11 @@ fn near_capacity_state_can_commit_the_launch_target_reserved_at_arm() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload final import");
@@ -934,9 +946,11 @@ fn transfer_rejects_wrong_bindings_conflicts_expiry_and_oversize_chunks() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            &archive[..4],
-            &sha256_bytes(&archive[..4]),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: &archive[..4],
+                sha256: &sha256_bytes(&archive[..4]),
+            },
             now + 2,
         )
         .expect("accept first chunk");
@@ -945,9 +959,11 @@ fn transfer_rejects_wrong_bindings_conflicts_expiry_and_oversize_chunks() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            b"xxxx",
-            &sha256_bytes(b"xxxx"),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: b"xxxx",
+                sha256: &sha256_bytes(b"xxxx"),
+            },
             now + 3,
         )
         .is_err());
@@ -957,9 +973,11 @@ fn transfer_rejects_wrong_bindings_conflicts_expiry_and_oversize_chunks() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            4,
-            &oversized,
-            &sha256_bytes(&oversized),
+            ManagedContextTransferChunk {
+                offset: 4,
+                bytes: &oversized,
+                sha256: &sha256_bytes(&oversized),
+            },
             now + 4,
         )
         .is_err());
@@ -1157,9 +1175,11 @@ fn nonretryable_import_retirement_retains_replay_but_removes_artifacts_and_capac
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -1243,9 +1263,11 @@ fn interrupted_import_remains_recoverable_after_upload_and_restart_expiry() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -1331,9 +1353,11 @@ fn schema_v1_active_transfers_are_retired_without_blocking_startup() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -1395,9 +1419,11 @@ fn schema_v1_consumed_receipt_is_retired_without_blocking_startup() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -1473,9 +1499,11 @@ fn legacy_consumed_marker_capacity_never_persists_an_unstartable_state() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload boundary archive");
@@ -1515,9 +1543,11 @@ fn startup_cleans_failed_artifacts_before_pruning_the_terminal_record() {
             &armed.transfer_id,
             &armed.capability,
             &caller,
-            0,
-            archive,
-            &sha256_bytes(archive),
+            ManagedContextTransferChunk {
+                offset: 0,
+                bytes: archive,
+                sha256: &sha256_bytes(archive),
+            },
             now + 2,
         )
         .expect("upload archive");
@@ -1579,9 +1609,11 @@ fn startup_accepts_a_missing_workspace_parent_for_interrupted_and_failed_imports
                 &armed.transfer_id,
                 &armed.capability,
                 &caller,
-                0,
-                archive,
-                &sha256_bytes(archive),
+                ManagedContextTransferChunk {
+                    offset: 0,
+                    bytes: archive,
+                    sha256: &sha256_bytes(archive),
+                },
                 now + 2,
             )
             .expect("upload archive");
@@ -1688,7 +1720,7 @@ fn write_legacy_consumed_state(root: &std::path::Path, count: usize, now: u64) {
 
 fn claimed(claim: ManagedContextImportClaim) -> ReadyManagedContextImport {
     match claim {
-        ManagedContextImportClaim::Claimed(ready) => ready,
+        ManagedContextImportClaim::Claimed(ready) => *ready,
         other => panic!("expected claimed import, got {other:?}"),
     }
 }

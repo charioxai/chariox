@@ -284,8 +284,9 @@ fn kernel_context_exports_one_unified_extension_set() {
         KernelExtensionDefinition::Skill {
             package,
             executable_paths,
-        } if package.metadata.path == PathBuf::from("SKILL.md")
-            && executable_paths == &["review.sh".to_string()]
+        } if package.metadata.path == std::path::Path::new("SKILL.md")
+            && executable_paths.len() == 1
+            && executable_paths[0] == "review.sh"
     )));
     assert_eq!(snapshot.snapshot_sha256.len(), 64);
     let serialized = serde_json::to_string(&snapshot).expect("snapshot should serialize");

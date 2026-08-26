@@ -49,7 +49,7 @@ pub(crate) const MAX_MANAGED_CONTEXT_PACKAGE_BYTES: u64 = MAX_DEVELOPMENT_BYTES
 #[derive(Clone, PartialEq)]
 pub enum ManagedContextPackageKernel {
     Empty,
-    FromKernel(KernelContextSnapshot),
+    FromKernel(Box<KernelContextSnapshot>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -107,19 +107,14 @@ pub enum ManagedContextDevelopmentSelection {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedContextProviderAccountSelection {
+    #[default]
     None,
     Selected {
         accounts: Vec<ManagedContextProviderAccount>,
     },
-}
-
-impl Default for ManagedContextProviderAccountSelection {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -129,17 +124,14 @@ pub struct ManagedContextProviderAccount {
     pub account_profile: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ManagedContextGitCredentialSelection {
+    #[default]
     None,
-    Selected { credential_ids: Vec<String> },
-}
-
-impl Default for ManagedContextGitCredentialSelection {
-    fn default() -> Self {
-        Self::None
-    }
+    Selected {
+        credential_ids: Vec<String>,
+    },
 }
 
 impl std::fmt::Debug for ManagedContextPackageKernel {
@@ -263,34 +255,24 @@ pub(crate) struct ManagedContextPackageImportReceipt {
     pub git_credentials: ManagedContextImportedGitCredentials,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManagedContextImportedProviderAccounts {
+    #[default]
     None,
     Selected {
         accounts: Vec<ManagedContextProviderAccountReceipt>,
     },
 }
 
-impl Default for ManagedContextImportedProviderAccounts {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(crate) enum ManagedContextImportedGitCredentials {
+    #[default]
     None,
     Selected {
         credentials: Vec<ManagedContextGitCredentialReceipt>,
     },
-}
-
-impl Default for ManagedContextImportedGitCredentials {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -316,7 +298,7 @@ pub(crate) struct ExtractedManagedContextPackage {
     pub kernel_context: ManagedContextPackageKernel,
     pub provider_accounts: ManagedContextPackageProviderAccounts,
     pub git_credentials: ManagedContextPackageGitCredentials,
-    cleanup: PackageExtractionCleanup,
+    _cleanup: PackageExtractionCleanup,
 }
 
 #[derive(Debug)]
@@ -328,9 +310,10 @@ pub(crate) enum ExtractedManagedContextDevelopment {
     },
 }
 
+#[cfg(test)]
 impl ExtractedManagedContextPackage {
     pub(crate) fn component_root(&self) -> &Path {
-        &self.cleanup.root
+        &self._cleanup.root
     }
 }
 
@@ -370,9 +353,10 @@ enum KernelContextComponentManifest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum ProviderAccountComponentManifest {
+    #[default]
     None,
     Selected {
         size_bytes: u64,
@@ -381,27 +365,16 @@ enum ProviderAccountComponentManifest {
     },
 }
 
-impl Default for ProviderAccountComponentManifest {
-    fn default() -> Self {
-        Self::None
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 enum GitCredentialComponentManifest {
+    #[default]
     None,
     Selected {
         size_bytes: u64,
         sha256: String,
         credential_count: usize,
     },
-}
-
-impl Default for GitCredentialComponentManifest {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 pub fn export_managed_context_package(
@@ -734,7 +707,7 @@ pub(crate) fn apply_managed_context_package(
             ManagedContextPackageKernel::FromKernel(snapshot) => {
                 let (capability_root, vault_path) = configured_managed_kernel_context_paths()?;
                 let receipt = import_kernel_context(KernelContextImportRequest {
-                    snapshot: snapshot.clone(),
+                    snapshot: snapshot.as_ref().clone(),
                     expected_source: TransferredVaultSourceBinding {
                         context_id: request.expected_binding.plan.context_id.clone(),
                         source_kernel_id: request.expected_binding.source_kernel_id.clone(),
@@ -1263,7 +1236,7 @@ pub(crate) fn extract_managed_context_package(
                 ));
             }
             validate_snapshot_binding(&snapshot, &request.expected_binding)?;
-            ManagedContextPackageKernel::FromKernel(snapshot)
+            ManagedContextPackageKernel::FromKernel(Box::new(snapshot))
         }
     };
     let provider_accounts = match &manifest.provider_accounts {
@@ -1365,7 +1338,7 @@ pub(crate) fn extract_managed_context_package(
         kernel_context,
         provider_accounts,
         git_credentials,
-        cleanup,
+        _cleanup: cleanup,
     })
 }
 

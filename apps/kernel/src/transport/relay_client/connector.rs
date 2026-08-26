@@ -322,14 +322,16 @@ fn spawn_managed_slice_token_refresh(
                 {
                     router
                         .install_managed_slice_relay_token(
-                            &slice_id,
-                            &owner_kernel_id,
-                            &owner_machine_id,
-                            relay_token.into_inner(),
-                            expires_at_ms,
-                            relay_recovery_token.into_inner(),
-                            recovery_expires_at_ms,
-                            owner_public_key,
+                            crate::runtime::router::ManagedSliceRelayTokenInstallRequest {
+                                slice_id: slice_id.clone(),
+                                owner_kernel_id: owner_kernel_id.clone(),
+                                owner_machine_id: owner_machine_id.clone(),
+                                relay_token: relay_token.into_inner(),
+                                expires_at_ms,
+                                relay_recovery_token: relay_recovery_token.into_inner(),
+                                recovery_expires_at_ms,
+                                owner_public_key,
+                            },
                         )
                         .await
                 }
@@ -1010,13 +1012,15 @@ async fn run_daemon_relay_connector_inner(
                             match incoming {
                                 Some(Ok(Message::Text(payload))) => {
                                     if let Err(error) = handle_incoming_envelope(
-                                        &router,
-                                        &command_sequence,
-                                        &state,
-                                        &outgoing_tx,
-                                        &subscription_tasks,
-                                        &event_runtime,
-                                        &command_result_cache,
+                                        IncomingEnvelopeContext {
+                                            router: &router,
+                                            command_sequence: &command_sequence,
+                                            state: &state,
+                                            outgoing_tx: &outgoing_tx,
+                                            subscription_tasks: &subscription_tasks,
+                                            event_runtime: &event_runtime,
+                                            command_result_cache: &command_result_cache,
+                                        },
                                         static_relay.is_none().then_some((
                                             relay_url.as_str(),
                                             active_relay_token.as_str(),

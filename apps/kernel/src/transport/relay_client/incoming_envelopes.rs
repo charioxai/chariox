@@ -2,17 +2,30 @@
 
 use super::*;
 
+pub(super) struct IncomingEnvelopeContext<'a> {
+    pub router: &'a Arc<CommandRouter>,
+    pub command_sequence: &'a Arc<AtomicU64>,
+    pub state: &'a Arc<RwLock<RelayClientState>>,
+    pub outgoing_tx: &'a RelayOutgoingSender,
+    pub subscription_tasks: &'a RelaySubscriptionTasks,
+    pub event_runtime: &'a Arc<RelayEventRuntime>,
+    pub command_result_cache: &'a RelayCommandResultCache,
+}
+
 pub(super) async fn handle_incoming_envelope(
-    router: &Arc<CommandRouter>,
-    command_sequence: &Arc<AtomicU64>,
-    state: &Arc<RwLock<RelayClientState>>,
-    outgoing_tx: &RelayOutgoingSender,
-    subscription_tasks: &RelaySubscriptionTasks,
-    event_runtime: &Arc<RelayEventRuntime>,
-    command_result_cache: &RelayCommandResultCache,
+    context: IncomingEnvelopeContext<'_>,
     active_dynamic_relay: Option<(&str, &str)>,
     payload: &str,
 ) -> Result<(), DaemonError> {
+    let IncomingEnvelopeContext {
+        router,
+        command_sequence,
+        state,
+        outgoing_tx,
+        subscription_tasks,
+        event_runtime,
+        command_result_cache,
+    } = context;
     let envelope = serde_json::from_str::<RelayEnvelope>(payload).map_err(|error| {
         DaemonError::LocalTransport {
             operation: "parse relay envelope",

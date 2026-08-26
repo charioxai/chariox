@@ -628,7 +628,7 @@ fn prepare_managed_context_package(
                 &ticket.target.kernel_id,
                 &ticket.target.relay_public_key,
             )?;
-            ManagedContextPackageKernel::FromKernel(export_kernel_context(
+            ManagedContextPackageKernel::FromKernel(Box::new(export_kernel_context(
                 KernelContextExportRequest {
                     context_id: plan.context_id.clone(),
                     source_kernel_id: config.daemon_id.clone(),
@@ -637,7 +637,7 @@ fn prepare_managed_context_package(
                     target_key_thumbprint: ticket.target.key_thumbprint.clone(),
                     vault,
                 },
-            )?)
+            )?))
         }
     };
     let development_archive_path = match &development {
@@ -1972,8 +1972,7 @@ mod tests {
             &store,
             &ticket,
         )
-        .err()
-        .expect("unverifiable binding must not be retired");
+        .expect_err("unverifiable binding must not be retired");
         let terminal_error = outbound_service_error("Cloud rejected the source ticket", false);
         let mut status = ManagedContextOutboundOperationStatus {
             context_id: "context-corrupt".to_string(),

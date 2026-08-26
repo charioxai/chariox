@@ -62,17 +62,15 @@ pub(super) fn initialize_managed_docker_broker() {
         for _ in 0..80 {
             match UnixStream::connect(&socket) {
                 Ok(stream) => {
-                    if broker_lease_is_safe {
-                        if configure_broker_stream_deadlines(&stream).is_ok() {
-                            let Ok(reader) = stream.try_clone() else {
-                                return;
-                            };
-                            monitor_broker_lease(stream.try_clone().ok());
-                            *lease = Some(BrokerLease {
-                                reader: BufReader::new(reader),
-                                writer: stream,
-                            });
-                        }
+                    if broker_lease_is_safe && configure_broker_stream_deadlines(&stream).is_ok() {
+                        let Ok(reader) = stream.try_clone() else {
+                            return;
+                        };
+                        monitor_broker_lease(stream.try_clone().ok());
+                        *lease = Some(BrokerLease {
+                            reader: BufReader::new(reader),
+                            writer: stream,
+                        });
                     }
                     return;
                 }

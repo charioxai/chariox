@@ -110,7 +110,7 @@ pub(crate) struct ReadyManagedContextImport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ManagedContextImportClaim {
-    Claimed(ReadyManagedContextImport),
+    Claimed(Box<ReadyManagedContextImport>),
     InProgress(ManagedContextTransferStatus),
     Terminal(ManagedContextTransferStatus),
 }

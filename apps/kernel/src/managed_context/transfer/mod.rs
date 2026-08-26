@@ -126,6 +126,12 @@ pub(crate) struct ManagedContextLaunchRecoveryBinding {
     pub plan: crate::managed_context::package::ManagedContextPlanBinding,
 }
 
+pub(crate) struct ManagedContextTransferChunk<'a> {
+    pub offset: u64,
+    pub bytes: &'a [u8],
+    pub sha256: &'a str,
+}
+
 #[derive(Clone)]
 pub(crate) struct ManagedContextTransferStore {
     root: PathBuf,
@@ -134,6 +140,7 @@ pub(crate) struct ManagedContextTransferStore {
 }
 
 impl ManagedContextTransferStore {
+    #[cfg(test)]
     pub(crate) fn open(root: PathBuf) -> Result<Self, DaemonError> {
         Self::open_with_launch_recovery(root, None)
     }
@@ -339,11 +346,14 @@ impl ManagedContextTransferStore {
         transfer_id: &str,
         capability: &str,
         caller: &ManagedContextTransferCaller,
-        offset: u64,
-        bytes: &[u8],
-        chunk_sha256: &str,
+        chunk: ManagedContextTransferChunk<'_>,
         now_ms: u64,
     ) -> Result<ManagedContextTransferStatus, DaemonError> {
+        let ManagedContextTransferChunk {
+            offset,
+            bytes,
+            sha256: chunk_sha256,
+        } = chunk;
         if bytes.is_empty() || bytes.len() > MAX_TRANSFER_CHUNK_BYTES {
             return Err(transfer_error(format!(
                 "managed context chunk must contain between 1 and {MAX_TRANSFER_CHUNK_BYTES} bytes"
@@ -411,15 +421,7 @@ impl ManagedContextTransferStore {
         entry.accepted_bytes = end;
         let result = status(transfer_id, entry);
         if let Err(error) = self.persist_locked(&state) {
-            if let Err(reconciliation) = self.reconcile_uncertain_chunk_persist(
-                &mut state,
-                transfer_id,
-                offset,
-                end,
-                &archive,
-            ) {
-                return Err(reconciliation);
-            }
+            self.reconcile_uncertain_chunk_persist(&mut state, transfer_id, offset, end, &archive)?;
             return Err(error);
         }
         Ok(result)
@@ -459,11 +461,11 @@ impl ManagedContextTransferStore {
                 )));
             }
             active_imports.insert(transfer_id.to_string());
-            return Ok(ManagedContextImportClaim::Claimed(ready_import(
+            return Ok(ManagedContextImportClaim::Claimed(Box::new(ready_import(
                 &self.archive_path(transfer_id),
                 transfer_id,
                 entry,
-            )));
+            ))));
         }
         if !matches!(
             entry.phase,
@@ -495,7 +497,7 @@ impl ManagedContextTransferStore {
             active_imports.remove(transfer_id);
             return Err(error);
         }
-        Ok(ManagedContextImportClaim::Claimed(ready))
+        Ok(ManagedContextImportClaim::Claimed(Box::new(ready)))
     }
 
     pub(crate) fn release_import(&self, transfer_id: &str) -> Result<(), DaemonError> {

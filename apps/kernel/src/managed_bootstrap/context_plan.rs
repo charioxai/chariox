@@ -115,6 +115,7 @@ enum ManagedKernelGitCredentials {
 }
 
 impl ManagedKernelContextPlan {
+    #[cfg(test)]
     pub(crate) fn context_id(&self) -> &str {
         &self.context_id
     }

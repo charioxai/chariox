@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::RngCore;
@@ -285,7 +285,7 @@ fn identity_is_invalid(identity: &RuntimeIdentity) -> bool {
         || identity.relay_private_key.trim().is_empty()
 }
 
-fn persist_kernel_registry(path: &PathBuf, registry: &KernelRegistry) {
+fn persist_kernel_registry(path: &Path, registry: &KernelRegistry) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent);
     }

@@ -1121,7 +1121,7 @@ fn bundle_verification_rejects_oversized_header_lines() {
     init_repository(&repository, "tracked.txt", "base\n");
     let bundle = root.join("oversized.bundle");
     let mut bytes = b"# v2 git bundle\n".to_vec();
-    bytes.extend(std::iter::repeat(b'a').take(MAX_GIT_BUNDLE_HEADER_BYTES + 1));
+    bytes.extend(std::iter::repeat_n(b'a', MAX_GIT_BUNDLE_HEADER_BYTES + 1));
     fs::write(&bundle, bytes).expect("write oversized bundle header");
     let error = verify_git_bundle(
         &repository,

@@ -18,6 +18,7 @@ pub(crate) const MANAGED_PROVIDER_ISOLATION_MARKER_ENV: &str =
     "CHARIOX_MANAGED_PROVIDER_ISOLATION_ACTIVE";
 const MANAGED_WORKSPACE_ROOT_COUNT_ENV: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT";
 const MANAGED_WORKSPACE_ROOT_ENV_PREFIX: &str = "CHARIOX_MANAGED_WORKSPACE_ROOT_";
+#[cfg(any(target_os = "linux", test))]
 const MAX_MANAGED_WORKSPACE_ROOTS: usize = 128;
 
 #[cfg(target_os = "linux")]
@@ -85,6 +86,7 @@ pub(crate) fn managed_provider_control_env_remove() -> Vec<String> {
     names
 }
 
+#[cfg(any(target_os = "linux", test))]
 fn managed_slice_workspace_roots() -> Result<Vec<PathBuf>, DaemonError> {
     // The trusted slice provisioner injects the individually validated
     // development publication mounts into the worker kernel environment.
@@ -145,9 +147,9 @@ pub(crate) fn apply_managed_provider_isolation(
     #[cfg(not(target_os = "linux"))]
     {
         let _ = (program, request);
-        return Err(isolation_error(
+        Err(isolation_error(
             "managed provider isolation is only supported on Linux",
-        ));
+        ))
     }
 
     #[cfg(target_os = "linux")]

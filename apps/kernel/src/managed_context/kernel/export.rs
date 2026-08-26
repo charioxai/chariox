@@ -218,7 +218,10 @@ fn export_mcps(
     for config in registry.list()? {
         let (config, runtime) = export_portable_mcp(root, original_root, config)?;
         let name = config.name.clone();
-        let definition = KernelExtensionDefinition::Mcp { config, runtime };
+        let definition = KernelExtensionDefinition::Mcp {
+            config: Box::new(config),
+            runtime,
+        };
         push_extension(
             extensions,
             budget,
@@ -484,7 +487,7 @@ fn is_standard_runtime_path(path: &Path, allowed_names: &[&str]) -> bool {
     let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    if !allowed_names.iter().any(|allowed| *allowed == file_name) {
+    if !allowed_names.contains(&file_name) {
         return false;
     }
     if path.components().count() == 1 {
@@ -823,7 +826,9 @@ fn export_credentials(
         push_dependency(
             dependencies,
             budget,
-            KernelExtensionDependency::Credential { credential },
+            KernelExtensionDependency::Credential {
+                credential: Box::new(credential),
+            },
         )?;
     }
     Ok(())

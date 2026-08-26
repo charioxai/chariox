@@ -596,7 +596,7 @@ mod tests {
             &request(),
             false,
             Duration::from_millis(1),
-            || std::future::pending::<Result<(), DaemonError>>(),
+            std::future::pending::<Result<(), DaemonError>>,
         )
         .await
         .expect_err("timed out refresh should fail connection resolution");

@@ -146,14 +146,16 @@ pub(super) async fn handle_daemon_peer_request(
             } else {
                 match router
                     .install_managed_slice_relay_token(
-                        &slice_id,
-                        &owner_kernel_id,
-                        &owner_machine_id,
-                        relay_token.into_inner(),
-                        expires_at_ms,
-                        relay_recovery_token.into_inner(),
-                        recovery_expires_at_ms,
-                        requester_public_key.clone(),
+                        crate::runtime::router::ManagedSliceRelayTokenInstallRequest {
+                            slice_id: slice_id.clone(),
+                            owner_kernel_id: owner_kernel_id.clone(),
+                            owner_machine_id: owner_machine_id.clone(),
+                            relay_token: relay_token.into_inner(),
+                            expires_at_ms,
+                            relay_recovery_token: relay_recovery_token.into_inner(),
+                            recovery_expires_at_ms,
+                            owner_public_key: requester_public_key.clone(),
+                        },
                     )
                     .await
                 {
@@ -1086,16 +1088,18 @@ pub(super) async fn handle_daemon_peer_request(
                 .expect("managed context caller checked before dispatch");
             let result = router
                 .relay_arm_managed_context_import(
-                    identity,
-                    source_kernel_id,
-                    context_id,
-                    plan_digest,
-                    target_environment_id,
-                    target_kernel_id,
-                    target_key_thumbprint,
-                    capability.into_inner(),
-                    archive_sha256,
-                    archive_size_bytes,
+                    crate::runtime::router::RelayManagedContextArmRequest {
+                        identity,
+                        source_kernel_id,
+                        context_id,
+                        plan_digest,
+                        target_environment_id,
+                        target_kernel_id,
+                        target_key_thumbprint,
+                        capability: capability.into_inner(),
+                        archive_sha256,
+                        archive_size_bytes,
+                    },
                 )
                 .await;
             match result {
@@ -1131,7 +1135,7 @@ pub(super) async fn handle_daemon_peer_request(
             chunk_sha256,
         } => {
             const MAX_ENCODED_CHUNK_BYTES: usize =
-                ((crate::managed_context::transfer::MAX_TRANSFER_CHUNK_BYTES + 2) / 3) * 4;
+                crate::managed_context::transfer::MAX_TRANSFER_CHUNK_BYTES.div_ceil(3) * 4;
             let data_base64 = data_base64.into_inner();
             let bytes = if data_base64.len() > MAX_ENCODED_CHUNK_BYTES {
                 None
@@ -1162,13 +1166,15 @@ pub(super) async fn handle_daemon_peer_request(
                 .expect("managed context caller checked before dispatch");
             let result = router
                 .relay_upload_managed_context_chunk(
-                    identity,
-                    source_kernel_id,
-                    transfer_id,
-                    capability.into_inner(),
-                    offset,
-                    bytes,
-                    chunk_sha256,
+                    crate::runtime::router::RelayManagedContextChunkRequest {
+                        identity,
+                        source_kernel_id,
+                        transfer_id,
+                        capability: capability.into_inner(),
+                        offset,
+                        bytes,
+                        chunk_sha256,
+                    },
                 )
                 .await;
             match result {
@@ -1264,8 +1270,8 @@ fn encrypt_peer_response(
         }
     };
     match relay_crypto::encrypt_payload_for_peer(
-        &daemon_private_key,
-        &requester_public_key,
+        daemon_private_key,
+        requester_public_key,
         &plaintext,
     ) {
         Ok(encrypted_response) => RelayRequestOutcome {
@@ -1474,6 +1480,11 @@ mod tests {
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let peer_harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let worker_private_key = relay_crypto::generate_private_key_base64();
         let worker_public_key =
             relay_crypto::public_key_from_private_key_base64(&worker_private_key)
@@ -1495,9 +1506,7 @@ mod tests {
         let mut unbound_identity = scoped_kernel_identity(None, u64::MAX);
         unbound_identity.subject = "slice:dev".to_string();
         let unbound = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             "source-kernel-1",
             &unbound_identity,
             &worker_private_key,
@@ -1517,9 +1526,7 @@ mod tests {
             scoped_kernel_identity(Some(public_key_thumbprint(&worker_public_key)), u64::MAX);
         bound_identity.subject = "slice:dev".to_string();
         let wrong_nonce = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             "source-kernel-1",
             &bound_identity,
             &worker_private_key,
@@ -1540,9 +1547,7 @@ mod tests {
             .managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
 
         let confirmed = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             "source-kernel-1",
             &bound_identity,
             &worker_private_key,
@@ -1621,6 +1626,11 @@ mod tests {
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let peer_harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let request = RelayPeerRequest::ArmManagedContextImport {
             context_id: plan.context_id,
             plan_digest: plan.plan_digest,
@@ -1646,10 +1656,8 @@ mod tests {
             (source_kernel_id, wrong_realm),
             (source_kernel_id, wrong_owner),
         ] {
-            let response = send_managed_peer_request_from(
-                &router,
-                &state,
-                &outgoing_tx,
+            let response = send_managed_peer_request(
+                &peer_harness,
                 peer_kernel_id,
                 &rejected_identity,
                 &source_private_key,
@@ -1686,10 +1694,8 @@ mod tests {
         ));
         assert!(mismatched_key_outcome.encrypted_response.is_none());
 
-        let armed = send_managed_peer_request_from(
-            &router,
-            &state,
-            &outgoing_tx,
+        let armed = send_managed_peer_request(
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -1705,10 +1711,8 @@ mod tests {
             } => (transfer_id, capability),
             response => panic!("machine-bound arm failed: {response:?}"),
         };
-        let begun = send_managed_peer_request_from(
-            &router,
-            &state,
-            &outgoing_tx,
+        let begun = send_managed_peer_request(
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -1726,10 +1730,8 @@ mod tests {
                     && status.phase == RelayManagedContextTransferPhase::Receiving
                     && status.accepted_bytes == 0
         ));
-        let status = send_managed_peer_request_from(
-            &router,
-            &state,
-            &outgoing_tx,
+        let status = send_managed_peer_request(
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -1885,6 +1887,11 @@ mod tests {
         );
         let state = Arc::new(RwLock::new(RelayClientState::default()));
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let peer_harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let source_vault_path = root.join("source-vault.json");
         let target_vault_path = root.join("target-vault.json");
         let capability_root = root.join("target-capabilities");
@@ -1951,7 +1958,7 @@ mod tests {
                 archive_path: archive_path.clone(),
                 archive_sha256: exported.archive_sha256.clone(),
             },
-            kernel_context: ManagedContextPackageKernel::FromKernel(kernel_context),
+            kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(kernel_context)),
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
@@ -1961,16 +1968,18 @@ mod tests {
 
         let wrong_context_error = router
             .relay_arm_managed_context_import(
-                identity.clone(),
-                source_kernel_id.to_string(),
-                "wrong-context".to_string(),
-                plan_digest.clone(),
-                "environment-managed-1".to_string(),
-                target_kernel_id.clone(),
-                target_key_thumbprint.clone(),
-                "w".repeat(43),
-                package.package_sha256.clone(),
-                package.package_size_bytes,
+                crate::runtime::router::RelayManagedContextArmRequest {
+                    identity: identity.clone(),
+                    source_kernel_id: source_kernel_id.to_string(),
+                    context_id: "wrong-context".to_string(),
+                    plan_digest: plan_digest.clone(),
+                    target_environment_id: "environment-managed-1".to_string(),
+                    target_kernel_id: target_kernel_id.clone(),
+                    target_key_thumbprint: target_key_thumbprint.clone(),
+                    capability: "w".repeat(43),
+                    archive_sha256: package.package_sha256.clone(),
+                    archive_size_bytes: package.package_size_bytes,
+                },
             )
             .await
             .expect_err("Cloud context ID must bind the import");
@@ -1985,16 +1994,18 @@ mod tests {
         wrong_source_identity.subject = "other-source-kernel".to_string();
         let wrong_source_error = router
             .relay_arm_managed_context_import(
-                wrong_source_identity,
-                source_kernel_id.to_string(),
-                context_id.clone(),
-                plan_digest.clone(),
-                "environment-managed-1".to_string(),
-                target_kernel_id.clone(),
-                target_key_thumbprint.clone(),
-                "w".repeat(43),
-                package.package_sha256.clone(),
-                package.package_size_bytes,
+                crate::runtime::router::RelayManagedContextArmRequest {
+                    identity: wrong_source_identity,
+                    source_kernel_id: source_kernel_id.to_string(),
+                    context_id: context_id.clone(),
+                    plan_digest: plan_digest.clone(),
+                    target_environment_id: "environment-managed-1".to_string(),
+                    target_kernel_id: target_kernel_id.clone(),
+                    target_key_thumbprint: target_key_thumbprint.clone(),
+                    capability: "w".repeat(43),
+                    archive_sha256: package.package_sha256.clone(),
+                    archive_size_bytes: package.package_size_bytes,
+                },
             )
             .await
             .expect_err("Cloud source kernel must bind the import");
@@ -2007,9 +2018,7 @@ mod tests {
         ));
 
         let armed = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2040,9 +2049,7 @@ mod tests {
             response => panic!("unexpected arm response: {response:?}"),
         };
         send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2057,9 +2064,7 @@ mod tests {
         let mut offset = 0_u64;
         for chunk in archive.chunks(max_chunk_bytes) {
             send_managed_peer_request(
-                &router,
-                &state,
-                &outgoing_tx,
+                &peer_harness,
                 source_kernel_id,
                 &identity,
                 &source_private_key,
@@ -2078,9 +2083,7 @@ mod tests {
             offset += chunk.len() as u64;
         }
         let unavailable = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2106,9 +2109,7 @@ mod tests {
             "managed-context import must publish its Project before Cloud can expose readiness"
         );
         let completed = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2166,9 +2167,7 @@ mod tests {
             "managed context\n"
         );
         let replayed = send_managed_peer_request(
-            &router,
-            &state,
-            &outgoing_tx,
+            &peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2205,8 +2204,8 @@ mod tests {
         let terminal_capability_root = root.join("terminal-capabilities");
         let terminal_vault_path = root.join("terminal-vault.json");
         let terminal_vault_envelope_path = terminal_vault_path.with_file_name(format!(
-            "terminal-vault.json.managed-context-key-{}.json",
-            format!("{:x}", Sha256::digest(target_kernel_id.as_bytes()))
+            "terminal-vault.json.managed-context-key-{:x}.json",
+            Sha256::digest(target_kernel_id.as_bytes())
         ));
         let _terminal_capability_env = ScopedEnv::set(
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -2267,10 +2266,12 @@ mod tests {
                 archive_path: terminal_archive_path,
                 archive_sha256: terminal_exported.archive_sha256,
             },
-            kernel_context: ManagedContextPackageKernel::FromKernel(KernelContextSnapshot {
-                payload: terminal_payload,
-                snapshot_sha256: terminal_snapshot_sha256,
-            }),
+            kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
+                KernelContextSnapshot {
+                    payload: terminal_payload,
+                    snapshot_sha256: terminal_snapshot_sha256,
+                },
+            )),
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
@@ -2286,10 +2287,13 @@ mod tests {
                     context_plan: Some(terminal_plan),
                 }),
         );
+        let terminal_peer_harness = ManagedPeerRequestHarness {
+            router: &terminal_router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let terminal_armed = send_managed_peer_request(
-            &terminal_router,
-            &state,
-            &outgoing_tx,
+            &terminal_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2317,9 +2321,7 @@ mod tests {
                 response => panic!("unexpected terminal arm response: {response:?}"),
             };
         send_managed_peer_request(
-            &terminal_router,
-            &state,
-            &outgoing_tx,
+            &terminal_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2335,9 +2337,7 @@ mod tests {
         let mut terminal_offset = 0_u64;
         for chunk in terminal_archive.chunks(terminal_max_chunk_bytes) {
             send_managed_peer_request(
-                &terminal_router,
-                &state,
-                &outgoing_tx,
+                &terminal_peer_harness,
                 source_kernel_id,
                 &identity,
                 &source_private_key,
@@ -2356,9 +2356,7 @@ mod tests {
             terminal_offset += chunk.len() as u64;
         }
         let retirement_unavailable = send_managed_peer_request(
-            &terminal_router,
-            &state,
-            &outgoing_tx,
+            &terminal_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2384,9 +2382,7 @@ mod tests {
             .expect("restore transfer state after retirement failure");
 
         let terminal = send_managed_peer_request(
-            &terminal_router,
-            &state,
-            &outgoing_tx,
+            &terminal_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2424,9 +2420,7 @@ mod tests {
             "terminal rollback must preserve a Project from an earlier completed import"
         );
         let terminal_replay = send_managed_peer_request(
-            &terminal_router,
-            &state,
-            &outgoing_tx,
+            &terminal_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2503,8 +2497,8 @@ mod tests {
         let recovery_capability_root = root.join("recovery-capabilities");
         let recovery_vault_path = root.join("recovery-vault.json");
         let recovery_vault_envelope_path = recovery_vault_path.with_file_name(format!(
-            "recovery-vault.json.managed-context-key-{}.json",
-            format!("{:x}", Sha256::digest(target_kernel_id.as_bytes()))
+            "recovery-vault.json.managed-context-key-{:x}.json",
+            Sha256::digest(target_kernel_id.as_bytes())
         ));
         let _recovery_capability_env = ScopedEnv::set(
             "CHARIOX_CAPABILITY_ISOLATION_ROOT",
@@ -2565,10 +2559,12 @@ mod tests {
                 archive_path: root.join("development.tar.gz"),
                 archive_sha256: exported.archive_sha256,
             },
-            kernel_context: ManagedContextPackageKernel::FromKernel(KernelContextSnapshot {
-                payload: recovery_payload,
-                snapshot_sha256: recovery_snapshot_sha256,
-            }),
+            kernel_context: ManagedContextPackageKernel::FromKernel(Box::new(
+                KernelContextSnapshot {
+                    payload: recovery_payload,
+                    snapshot_sha256: recovery_snapshot_sha256,
+                },
+            )),
             provider_accounts: ManagedContextPackageProviderAccounts::None,
             git_credentials:
                 crate::managed_context::package::ManagedContextPackageGitCredentials::None,
@@ -2584,10 +2580,13 @@ mod tests {
                     context_plan: Some(recovery_plan.clone()),
                 }),
         );
+        let recovery_peer_harness = ManagedPeerRequestHarness {
+            router: &recovery_router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let recovery_armed = send_managed_peer_request(
-            &recovery_router,
-            &state,
-            &outgoing_tx,
+            &recovery_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2615,9 +2614,7 @@ mod tests {
                 response => panic!("unexpected recovery arm response: {response:?}"),
             };
         send_managed_peer_request(
-            &recovery_router,
-            &state,
-            &outgoing_tx,
+            &recovery_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2633,9 +2630,7 @@ mod tests {
         let mut recovery_offset = 0_u64;
         for chunk in recovery_archive.chunks(recovery_max_chunk_bytes) {
             send_managed_peer_request(
-                &recovery_router,
-                &state,
-                &outgoing_tx,
+                &recovery_peer_harness,
                 source_kernel_id,
                 &identity,
                 &source_private_key,
@@ -2728,10 +2723,13 @@ mod tests {
                     context_plan: Some(mismatched_plan),
                 }),
         );
+        let restarted_peer_harness = ManagedPeerRequestHarness {
+            router: &restarted_router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
         let rebound = send_managed_peer_request(
-            &restarted_router,
-            &state,
-            &outgoing_tx,
+            &restarted_peer_harness,
             source_kernel_id,
             &identity,
             &source_private_key,
@@ -2801,33 +2799,14 @@ mod tests {
         }
     }
 
-    async fn send_managed_peer_request(
-        router: &Arc<CommandRouter>,
-        state: &Arc<RwLock<RelayClientState>>,
-        outgoing_tx: &RelayOutgoingSender,
-        source_kernel_id: &str,
-        identity: &RelayCallerIdentity,
-        source_private_key: &str,
-        target_public_key: &str,
-        request: RelayPeerRequest,
-    ) -> RelayPeerResponse {
-        send_managed_peer_request_from(
-            router,
-            state,
-            outgoing_tx,
-            source_kernel_id,
-            identity,
-            source_private_key,
-            target_public_key,
-            request,
-        )
-        .await
+    struct ManagedPeerRequestHarness<'a> {
+        router: &'a Arc<CommandRouter>,
+        state: &'a Arc<RwLock<RelayClientState>>,
+        outgoing_tx: &'a RelayOutgoingSender,
     }
 
-    async fn send_managed_peer_request_from(
-        router: &Arc<CommandRouter>,
-        state: &Arc<RwLock<RelayClientState>>,
-        outgoing_tx: &RelayOutgoingSender,
+    async fn send_managed_peer_request(
+        harness: &ManagedPeerRequestHarness<'_>,
         source_kernel_id: &str,
         identity: &RelayCallerIdentity,
         source_private_key: &str,
@@ -2841,9 +2820,9 @@ mod tests {
         )
         .expect("encrypt peer request");
         let outcome = handle_daemon_peer_request(
-            router,
-            state,
-            outgoing_tx,
+            harness.router,
+            harness.state,
+            harness.outgoing_tx,
             source_kernel_id,
             Some(identity.clone()),
             encrypted_request,

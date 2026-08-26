@@ -627,9 +627,9 @@ fn provider_account_rollback_attempts_every_import_after_one_failure() {
 fn source_kernel_package_round_trips_with_identity_bindings() {
     let fixture = PackageFixture::new("source");
     let snapshot = fixture.kernel_snapshot();
-    let exported = export_managed_context_package(
-        fixture.export_request(ManagedContextPackageKernel::FromKernel(snapshot.clone())),
-    )
+    let exported = export_managed_context_package(fixture.export_request(
+        ManagedContextPackageKernel::FromKernel(Box::new(snapshot.clone())),
+    ))
     .expect("export source-kernel package");
     assert_eq!(
         exported.kernel_context_snapshot_sha256.as_deref(),
@@ -638,7 +638,9 @@ fn source_kernel_package_round_trips_with_identity_bindings() {
     let extracted = extract_managed_context_package(fixture.import_request(&exported))
         .expect("extract source-kernel package");
     match &extracted.kernel_context {
-        ManagedContextPackageKernel::FromKernel(imported) => assert_eq!(imported, &snapshot),
+        ManagedContextPackageKernel::FromKernel(imported) => {
+            assert_eq!(imported.as_ref(), &snapshot)
+        }
         ManagedContextPackageKernel::Empty => panic!("source context silently became Empty"),
     }
     drop(extracted);
@@ -650,7 +652,7 @@ fn receipt_capacity_is_rejected_before_context_publication() {
     let _env_guard = crate::env_lock::lock();
     let fixture = PackageFixture::new("receipt-capacity");
     let exported = export_managed_context_package(fixture.export_request(
-        ManagedContextPackageKernel::FromKernel(fixture.kernel_snapshot()),
+        ManagedContextPackageKernel::FromKernel(Box::new(fixture.kernel_snapshot())),
     ))
     .expect("export receipt-capacity package");
     let binding = ManagedContextPackageBinding {

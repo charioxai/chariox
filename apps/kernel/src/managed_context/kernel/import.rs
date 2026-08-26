@@ -2292,10 +2292,10 @@ mod tests {
 
     fn fixture_snapshot(vault: crate::secret::TransferredVaultSnapshot) -> KernelContextSnapshot {
         let mcp_definition = KernelExtensionDefinition::Mcp {
-            config: crate::mcp::CharioxMcpServerConfig::streamable_http(
+            config: Box::new(crate::mcp::CharioxMcpServerConfig::streamable_http(
                 "docs",
                 "https://example.test/mcp",
-            ),
+            )),
             runtime: None,
         };
         let stdio_bytes = b"#!/bin/sh\nexit 0\n";
@@ -2307,7 +2307,11 @@ mod tests {
             content_base64: base64::engine::general_purpose::STANDARD.encode(stdio_bytes),
         }];
         let stdio_definition = KernelExtensionDefinition::Mcp {
-            config: crate::mcp::CharioxMcpServerConfig::stdio("portable", "bin/server", Vec::new()),
+            config: Box::new(crate::mcp::CharioxMcpServerConfig::stdio(
+                "portable",
+                "bin/server",
+                Vec::new(),
+            )),
             runtime: Some(super::super::KernelMcpStdioRuntimeSnapshot {
                 command_path: "bin/server".to_string(),
                 cwd_path: None,

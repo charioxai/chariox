@@ -290,7 +290,7 @@ fn ensure_snapshot_parent(temporary_root: &Path) -> Result<PathBuf, DaemonError>
 fn snapshot_parent_directory_name() -> String {
     #[cfg(unix)]
     {
-        return format!("{SNAPSHOT_PARENT_DIRECTORY}-{}", unsafe { libc::geteuid() });
+        format!("{SNAPSHOT_PARENT_DIRECTORY}-{}", unsafe { libc::geteuid() })
     }
     #[cfg(not(unix))]
     SNAPSHOT_PARENT_DIRECTORY.to_string()

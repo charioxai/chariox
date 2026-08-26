@@ -366,7 +366,7 @@ pub(super) fn capture_home_archive(
                 "managed home archive digest is invalid",
             ));
         }
-        return Ok(Some((captured.path.into(), captured.size_bytes)));
+        Ok(Some((captured.path.into(), captured.size_bytes)))
     }
     #[cfg(not(unix))]
     unreachable!()
@@ -389,7 +389,7 @@ pub(super) fn remove_home_archive(scope: &str, id: &str) -> io::Result<bool> {
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
-        return Ok(true);
+        Ok(true)
     }
     #[cfg(not(unix))]
     unreachable!()
@@ -422,7 +422,7 @@ pub(super) fn remove_home_archive_path(
                 String::from_utf8_lossy(&output.stderr)
             )));
         }
-        return Ok(true);
+        Ok(true)
     }
     #[cfg(not(unix))]
     unreachable!()

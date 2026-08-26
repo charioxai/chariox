@@ -270,6 +270,7 @@ pub(crate) fn cleanup_development_context_publication(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn import_development_context_with_budgets(
     request: DevelopmentContextImportRequest,
     maximum_project_checkout_bytes: u64,
@@ -512,7 +513,6 @@ pub(super) fn snapshot_and_hash_archive(
             "development context archive grew beyond {MAX_PACKAGE_BYTES} bytes while hashing"
         )));
     }
-    drop(bounded);
     snapshot
         .sync_all()
         .map_err(|error| context_io_error("sync development context archive snapshot", error))?;

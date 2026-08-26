@@ -185,7 +185,7 @@ impl KernelRuntimeOwnedState {
                     &granted_skill_context,
                 );
                 let (source_client_id, _source_user_id) =
-                    self.prompt_source_attribution(&started_next);
+                    self.prompt_source_attribution(started_next);
                 let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                     agent_id,
                     self.agent_store.get_agent(agent_id)?.is_metaagent(),

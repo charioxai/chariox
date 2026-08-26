@@ -772,7 +772,7 @@ fn github_auth_configuration_is_absent(
             "GitHub credential status could not be verified",
         ));
     };
-    Ok(!hosts.contains_key(&serde_yaml::Value::String(GITHUB_HOSTNAME.to_string())))
+    Ok(!hosts.contains_key(serde_yaml::Value::String(GITHUB_HOSTNAME.to_string())))
 }
 
 fn ensure_github_git_helper(context: &GitCredentialCommandContext) -> Result<(), DaemonError> {

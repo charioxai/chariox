@@ -846,7 +846,7 @@ const result = spawnSync("/usr/bin/install", filtered, { stdio: "inherit" })
 process.exit(result.status ?? 1)
 `)
   await writeHarnessCommand(join(bin, "mv"), `#!/bin/sh
-if [ "$1" = -Tf ]; then shift; exec /bin/mv -fh "$@"; fi
+if [ "$1" = -Tf ]; then echo 'mv -T is not portable' >&2; exit 64; fi
 exec /bin/mv "$@"
 `)
   return { bin, state, installRoot }
@@ -1083,7 +1083,7 @@ test("managed image installer atomically pivots current to a different release",
   )
 })
 
-test("concurrent managed image installs cannot mutate users or state before the lock", async (context) => {
+test("a terminated managed image install releases the lock for a concurrent install", async (context) => {
   const root = await mkdtemp(join(tmpdir(), "chariox-managed-install-lock-"))
   context.after(() => rm(root, { recursive: true, force: true }))
   const fixture = await makeFixture(root)
@@ -1116,8 +1116,11 @@ test("concurrent managed image installs cannot mutate users or state before the 
   for (const name of ["group-chariox", "group-chariox-slice", "group-chariox-docker", "user-chariox", "user-chariox-docker"]) {
     assert.equal(await lstat(join(harness.state, name)).then(() => true, () => false), false)
   }
+  first.kill("SIGTERM")
   await writeFile(join(harness.state, "flock-release-first"), "release\n")
-  assert.equal((await withTimeout(firstExit, "first installer timed out"))[0], 0)
+  const [firstCode, firstSignal] = await withTimeout(firstExit, "terminated installer timed out")
+  assert.equal(firstCode, null)
+  assert.equal(firstSignal, "SIGTERM")
   await waitForPath(join(harness.state, "flock-acquired-second"))
   await writeFile(join(harness.state, "flock-release-second"), "release\n")
   assert.equal((await withTimeout(secondExit, "second installer timed out"))[0], 0)
@@ -1141,5 +1144,7 @@ test("managed image installer has no runtime start or network path", async () =>
   }
   assert.doesNotMatch(contents, /systemctl (?:start|restart|enable --now)/)
   assert.doesNotMatch(contents, /\b(?:curl|wget|ssh|scp)\b/)
+  assert.doesNotMatch(contents, /\bmv\s+-T/)
+  assert.match(contents, /renameSync\(source, destination\)/)
   assert.doesNotMatch(contents, /\.arroba/)
 })

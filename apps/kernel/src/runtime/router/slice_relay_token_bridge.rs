@@ -13,6 +13,17 @@ use crate::runtime::cloud_relay_control::{
     CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS,
 };
 
+pub(crate) struct ManagedSliceRelayTokenInstallRequest {
+    pub slice_id: String,
+    pub owner_kernel_id: String,
+    pub owner_machine_id: String,
+    pub relay_token: String,
+    pub expires_at_ms: u64,
+    pub relay_recovery_token: String,
+    pub recovery_expires_at_ms: u64,
+    pub owner_public_key: String,
+}
+
 pub(crate) struct ManagedSliceRelayIdentity {
     pub(crate) slice_id: String,
     pub(crate) relay_subject: String,
@@ -105,15 +116,18 @@ impl CommandRouter {
 
     pub(crate) async fn install_managed_slice_relay_token(
         &self,
-        slice_id: &str,
-        owner_kernel_id: &str,
-        owner_machine_id: &str,
-        relay_token: String,
-        expires_at_ms: u64,
-        relay_recovery_token: String,
-        recovery_expires_at_ms: u64,
-        owner_public_key: String,
+        request: ManagedSliceRelayTokenInstallRequest,
     ) -> Result<(), DaemonError> {
+        let ManagedSliceRelayTokenInstallRequest {
+            slice_id,
+            owner_kernel_id,
+            owner_machine_id,
+            relay_token,
+            expires_at_ms,
+            relay_recovery_token,
+            recovery_expires_at_ms,
+            owner_public_key,
+        } = request;
         let Some(identity) = self.managed_slice_relay_identity() else {
             return Err(slice_token_error(
                 "kernel is not a managed slice relay worker",

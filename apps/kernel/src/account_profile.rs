@@ -2361,6 +2361,7 @@ fn claude_credentials_are_portable(contents: &[u8]) -> bool {
         })
 }
 
+#[cfg(target_os = "macos")]
 fn claude_keychain_service_name(claude_config_dir: &Path) -> String {
     let digest = format!(
         "{:x}",
@@ -2380,7 +2381,7 @@ fn collect_scoped_claude_keychain_credentials(
 #[cfg(not(target_os = "macos"))]
 fn collect_scoped_claude_keychain_credentials(
     _claude_config_dir: &Path,
-    _files: &mut Vec<ProviderAccountMaterializationFile>,
+    _files: &mut [ProviderAccountMaterializationFile],
 ) -> Result<(), DaemonError> {
     Ok(())
 }
@@ -2422,7 +2423,7 @@ fn collect_claude_keychain_credentials(
 
 #[cfg(not(target_os = "macos"))]
 fn collect_legacy_claude_keychain_credentials(
-    _files: &mut Vec<ProviderAccountMaterializationFile>,
+    _files: &mut [ProviderAccountMaterializationFile],
 ) -> Result<(), DaemonError> {
     Ok(())
 }

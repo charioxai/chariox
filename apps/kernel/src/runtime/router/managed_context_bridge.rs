@@ -16,8 +16,8 @@ use crate::managed_context::package::{
 };
 use crate::managed_context::transfer::{
     ArmManagedContextTransfer, ManagedContextImportClaim, ManagedContextTransferCaller,
-    ManagedContextTransferPhase, ManagedContextTransferStatus, ManagedContextTransferStore,
-    MAX_TRANSFER_CHUNK_BYTES,
+    ManagedContextTransferChunk, ManagedContextTransferPhase, ManagedContextTransferStatus,
+    ManagedContextTransferStore, MAX_TRANSFER_CHUNK_BYTES,
 };
 use crate::runtime::terminal_pairings::public_key_thumbprint;
 use crate::runtime_transport::KERNEL_RUNTIME_THREAD_STACK_SIZE;
@@ -37,20 +37,46 @@ struct AuthorizedManagedContextCaller {
     plan: crate::managed_context::package::ManagedContextPlanBinding,
 }
 
+pub(crate) struct RelayManagedContextArmRequest {
+    pub identity: RelayCallerIdentity,
+    pub source_kernel_id: String,
+    pub context_id: String,
+    pub plan_digest: String,
+    pub target_environment_id: String,
+    pub target_kernel_id: String,
+    pub target_key_thumbprint: String,
+    pub capability: String,
+    pub archive_sha256: String,
+    pub archive_size_bytes: u64,
+}
+
+pub(crate) struct RelayManagedContextChunkRequest {
+    pub identity: RelayCallerIdentity,
+    pub source_kernel_id: String,
+    pub transfer_id: String,
+    pub capability: String,
+    pub offset: u64,
+    pub bytes: Vec<u8>,
+    pub chunk_sha256: String,
+}
+
 impl CommandRouter {
     pub(crate) async fn relay_arm_managed_context_import(
         &self,
-        identity: RelayCallerIdentity,
-        source_kernel_id: String,
-        context_id: String,
-        plan_digest: String,
-        target_environment_id: String,
-        target_kernel_id: String,
-        target_key_thumbprint: String,
-        capability: String,
-        archive_sha256: String,
-        archive_size_bytes: u64,
+        request: RelayManagedContextArmRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let RelayManagedContextArmRequest {
+            identity,
+            source_kernel_id,
+            context_id,
+            plan_digest,
+            target_environment_id,
+            target_kernel_id,
+            target_key_thumbprint,
+            capability,
+            archive_sha256,
+            archive_size_bytes,
+        } = request;
         let authorization = managed_context_caller(self, &identity, &source_kernel_id)?;
         if authorization.plan.context_id != context_id
             || authorization.plan.plan_digest != plan_digest
@@ -130,14 +156,17 @@ impl CommandRouter {
 
     pub(crate) async fn relay_upload_managed_context_chunk(
         &self,
-        identity: RelayCallerIdentity,
-        source_kernel_id: String,
-        transfer_id: String,
-        capability: String,
-        offset: u64,
-        bytes: Vec<u8>,
-        chunk_sha256: String,
+        request: RelayManagedContextChunkRequest,
     ) -> Result<RelayPeerResponse, DaemonError> {
+        let RelayManagedContextChunkRequest {
+            identity,
+            source_kernel_id,
+            transfer_id,
+            capability,
+            offset,
+            bytes,
+            chunk_sha256,
+        } = request;
         let caller = managed_context_caller(self, &identity, &source_kernel_id)?.caller;
         let store = self.managed_context_transfers.clone();
         let status = run_blocking(move || {
@@ -145,9 +174,11 @@ impl CommandRouter {
                 &transfer_id,
                 &capability,
                 &caller,
-                offset,
-                &bytes,
-                &chunk_sha256,
+                ManagedContextTransferChunk {
+                    offset,
+                    bytes: &bytes,
+                    sha256: &chunk_sha256,
+                },
                 crate::session::unix_epoch_ms(),
             )
         })

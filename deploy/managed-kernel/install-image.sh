@@ -24,7 +24,18 @@ cleanup() {
   fi
   rm -rf -- "$staging_root"
 }
-trap cleanup EXIT HUP INT TERM
+terminate() {
+  signal=$1
+  trap - EXIT HUP INT TERM
+  set +e
+  cleanup
+  kill -s "$signal" "$$"
+  exit 1
+}
+trap cleanup EXIT
+trap 'terminate HUP' HUP
+trap 'terminate INT' INT
+trap 'terminate TERM' TERM
 
 if [ -L "$image_root" ] || [ ! -d "$image_root" ]; then
   echo "managed kernel image root must be a directory, not a symlink" >&2
@@ -159,7 +170,11 @@ atomic_symlink() {
     return
   fi
   ln -s "$target_path" "$temporary_link"
-  mv -Tf -- "$temporary_link" "$link_path"
+  node - "$temporary_link" "$link_path" <<'NODE'
+const { renameSync } = require("node:fs")
+const [source, destination] = process.argv.slice(2)
+renameSync(source, destination)
+NODE
 }
 
 releases_root=$install_root/usr/lib/chariox/releases
