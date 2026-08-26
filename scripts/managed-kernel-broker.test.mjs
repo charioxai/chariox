@@ -280,7 +280,16 @@ test("managed slice broker materializes bounded credential bytes privately", asy
   const inputRoot = join(root, "broker-input")
   await mkdir(share)
   const provisioner = join(root, "provisioner.sh")
-  await writeFile(provisioner, "#!/bin/sh\nset -eu\n[ \"$(stat -f '%Lp' \"$CHARIOX_SLICE_CODEX_AUTH\" 2>/dev/null || stat -c '%a' \"$CHARIOX_SLICE_CODEX_AUTH\")\" = 600 ]\ncat \"$CHARIOX_SLICE_CODEX_AUTH\"\n")
+  await writeFile(provisioner, `#!${process.execPath}
+const { readFileSync, statSync } = require("node:fs")
+const credential = process.env.CHARIOX_SLICE_CODEX_AUTH
+const mode = statSync(credential).mode & 0o777
+if (mode !== 0o600) {
+  console.error("credential mode is " + mode.toString(8) + ", expected 600")
+  process.exit(1)
+}
+process.stdout.write(readFileSync(credential))
+`)
   await chmod(provisioner, 0o755)
   const request = {
     kind: "provisioner",
@@ -308,9 +317,10 @@ test("managed slice broker materializes bounded credential bytes privately", asy
       CHARIOX_SLICE_DOCKER_HANDLE_STATE: join(root, "handles.json"),
     },
   })
-  assert.equal(result.status, 0, result.stderr)
   const response = JSON.parse(result.stdout)
-  assert.equal(response.status, 0, Buffer.from(response.stderrBase64, "base64").toString())
+  const brokerStderr = Buffer.from(response.stderrBase64, "base64").toString()
+  assert.equal(result.status, 0, `${result.stderr}${brokerStderr}`)
+  assert.equal(response.status, 0, brokerStderr)
   assert.equal(Buffer.from(response.stdoutBase64, "base64").toString(), "credential-bytes")
   assert.deepEqual(await access(inputRoot).then(() => true, () => false), true)
   assert.deepEqual(await import("node:fs/promises").then(({ readdir }) => readdir(inputRoot)), [])
