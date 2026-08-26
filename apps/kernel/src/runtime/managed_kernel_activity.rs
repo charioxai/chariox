@@ -84,6 +84,7 @@ impl ManagedKernelActivityReporter {
         let mut cursor = ActivityCursor::default();
         let (mut change_sequence, mut running_agent_count) = runtime.managed_activity_snapshot();
         let mut retry_delay = MIN_RETRY_DELAY;
+        let mut confirmation_delay = MIN_RETRY_DELAY;
 
         loop {
             if *shutdown.borrow() {
@@ -110,6 +111,7 @@ impl ManagedKernelActivityReporter {
                         );
                         (change_sequence, running_agent_count) =
                             runtime.managed_activity_snapshot();
+                        retry_delay = MIN_RETRY_DELAY;
                         if cursor.requires_confirmation {
                             crate::logging::warn_with_fields(
                                 "managed_kernel.activity",
@@ -119,10 +121,10 @@ impl ManagedKernelActivityReporter {
                                     "machine_id": self.binding.machine_id,
                                     "kernel_id": self.binding.kernel_id,
                                     "sequence": accepted.sequence,
-                                    "retry_delay_ms": retry_delay.as_millis(),
+                                    "confirmation_delay_ms": confirmation_delay.as_millis(),
                                 }),
                             );
-                            let sleep = tokio::time::sleep(jittered(retry_delay));
+                            let sleep = tokio::time::sleep(jittered(confirmation_delay));
                             tokio::pin!(sleep);
                             loop {
                                 tokio::select! {
@@ -131,14 +133,25 @@ impl ManagedKernelActivityReporter {
                                             return Ok(());
                                         }
                                     }
-                                    _ = &mut sleep => break,
+                                    _transition = runtime.wait_for_managed_activity_transition_after(
+                                        change_sequence,
+                                        running_agent_count,
+                                    ) => {
+                                        confirmation_delay = MIN_RETRY_DELAY;
+                                        break;
+                                    }
+                                    _ = &mut sleep => {
+                                        confirmation_delay = confirmation_delay
+                                            .saturating_mul(2)
+                                            .min(MAX_RETRY_DELAY);
+                                        break;
+                                    }
                                 }
                             }
                             (change_sequence, running_agent_count) =
                                 runtime.managed_activity_snapshot();
-                            retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
                         } else {
-                            retry_delay = MIN_RETRY_DELAY;
+                            confirmation_delay = MIN_RETRY_DELAY;
                         }
                         continue;
                     }
@@ -170,6 +183,7 @@ impl ManagedKernelActivityReporter {
                             ) => {
                                 (change_sequence, running_agent_count) = transition;
                                 retry_delay = MIN_RETRY_DELAY;
+                                confirmation_delay = MIN_RETRY_DELAY;
                             }
                             _ = &mut sleep => {
                                 retry_delay = retry_delay.saturating_mul(2).min(MAX_RETRY_DELAY);
@@ -192,6 +206,7 @@ impl ManagedKernelActivityReporter {
                 ) => {
                     (change_sequence, running_agent_count) = transition;
                     retry_delay = MIN_RETRY_DELAY;
+                    confirmation_delay = MIN_RETRY_DELAY;
                 }
             }
         }
@@ -621,6 +636,156 @@ mod tests {
             !saw_third_request,
             "repeated ahead responses must not create an unthrottled confirmation loop"
         );
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn successful_ahead_response_uses_confirmation_backoff_not_transport_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (confirmation_tx, confirmation_rx) = tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            let (mut failed_stream, _) = listener.accept().expect("accept failed activity report");
+            let _request = read_http_request(&mut failed_stream);
+            drop(failed_stream);
+
+            let (mut recovered_stream, _) =
+                listener.accept().expect("accept recovered activity report");
+            let _request = read_http_request(&mut recovered_stream);
+            write_http_response(
+                &mut recovered_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 51,
+                    "runningAgentCount": 0,
+                }),
+            );
+            let accepted_at = std::time::Instant::now();
+
+            let (mut confirmation_stream, _) = listener.accept().expect("accept confirmation");
+            let confirmation = http_request_body(&read_http_request(&mut confirmation_stream));
+            write_http_response(
+                &mut confirmation_stream,
+                &serde_json::json!({
+                    "acceptedSequence": 52,
+                    "runningAgentCount": 0,
+                }),
+            );
+            confirmation_tx
+                .send((accepted_at.elapsed(), confirmation))
+                .expect("publish recovered confirmation");
+        });
+
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
+
+        let (confirmation_delay, confirmation) =
+            tokio::time::timeout(Duration::from_secs(5), confirmation_rx)
+                .await
+                .expect("recovered confirmation should arrive")
+                .expect("activity fixture should stay available");
+        assert_eq!(confirmation["sequence"], 52);
+        assert_eq!(confirmation["runningAgentCount"], 0);
+        assert!(
+            confirmation_delay < Duration::from_millis(1_800),
+            "transport failures must not inflate the first successful confirmation delay: {confirmation_delay:?}"
+        );
+
+        shutdown_tx.send(true).expect("stop activity reporter");
+        tokio::time::timeout(Duration::from_secs(2), reporter_task)
+            .await
+            .expect("activity reporter should stop")
+            .expect("activity reporter task should not panic")
+            .expect("activity reporter should succeed");
+        fixture.join().expect("activity fixture should stop");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn real_activity_transition_wakes_confirmation_backoff() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
+        let address = listener.local_addr().expect("activity fixture address");
+        let (second_ahead_tx, second_ahead_rx) = tokio::sync::oneshot::channel();
+        let (transition_confirmation_tx, transition_confirmation_rx) =
+            tokio::sync::oneshot::channel();
+        let fixture = std::thread::spawn(move || {
+            for accepted_sequence in [51, 60] {
+                let (mut stream, _) = listener.accept().expect("accept activity report");
+                let _request = read_http_request(&mut stream);
+                write_http_response(
+                    &mut stream,
+                    &serde_json::json!({
+                        "acceptedSequence": accepted_sequence,
+                        "runningAgentCount": 0,
+                    }),
+                );
+            }
+            second_ahead_tx
+                .send(())
+                .expect("publish second ahead response");
+
+            let (mut stream, _) = listener.accept().expect("accept transition confirmation");
+            let confirmation = http_request_body(&read_http_request(&mut stream));
+            write_http_response(
+                &mut stream,
+                &serde_json::json!({
+                    "acceptedSequence": 61,
+                    "runningAgentCount": 1,
+                }),
+            );
+            transition_confirmation_tx
+                .send(confirmation)
+                .expect("publish transition confirmation");
+        });
+
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let runtime = CommandRouter::with_interactive_capacity(app, 1).runtime_state();
+        let mut activity_binding = binding();
+        activity_binding.api_url = format!("http://{address}");
+        let reporter = ManagedKernelActivityReporter {
+            binding: activity_binding,
+        };
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let reporter_runtime = runtime.clone();
+        let reporter_task =
+            tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
+
+        tokio::time::timeout(Duration::from_secs(4), second_ahead_rx)
+            .await
+            .expect("second ahead response should arrive")
+            .expect("activity fixture should stay available");
+        tokio::time::sleep(Duration::from_millis(250)).await;
+        runtime.start_active_turn_with_trace_id(
+            "session-1",
+            "agent-1",
+            "prompt-1",
+            "provider-run-1",
+            "trace-1",
+        );
+        runtime.record_waiting_room_change();
+
+        let confirmation = tokio::time::timeout(Duration::from_secs(1), transition_confirmation_rx)
+            .await
+            .expect("real activity transition should wake confirmation backoff")
+            .expect("activity fixture should stay available");
+        assert_eq!(confirmation["sequence"], 61);
+        assert_eq!(confirmation["runningAgentCount"], 1);
 
         shutdown_tx.send(true).expect("stop activity reporter");
         tokio::time::timeout(Duration::from_secs(2), reporter_task)
