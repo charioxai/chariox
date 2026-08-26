@@ -354,7 +354,8 @@ pub enum ProviderCredentialKind {
 pub fn supported_provider_enrollment_methods(provider: &str) -> &'static [&'static str] {
     match crate::provider::canonical_provider_family(provider) {
         Some("codex") => &["device_code"],
-        Some("claude") | Some("opencode") => &["terminal"],
+        Some("claude") => &["terminal"],
+        Some("opencode") => &["opencode_go_api_key", "opencode_zen_api_key", "terminal"],
         _ => &[],
     }
 }
@@ -3429,7 +3430,7 @@ mod tests {
         );
         assert_eq!(
             supported_provider_enrollment_methods("opencode"),
-            &["terminal"]
+            &["opencode_go_api_key", "opencode_zen_api_key", "terminal",]
         );
         let expected_empty: &[&str] = &[];
         assert_eq!(
@@ -3439,6 +3440,8 @@ mod tests {
 
         validate_provider_enrollment_method("codex", Some("device_code")).unwrap();
         validate_provider_enrollment_method("claude", Some("terminal")).unwrap();
+        validate_provider_enrollment_method("opencode", Some("opencode_go_api_key")).unwrap();
+        validate_provider_enrollment_method("opencode", Some("opencode_zen_api_key")).unwrap();
         validate_provider_enrollment_method("opencode", None).unwrap();
 
         let unsupported = validate_provider_enrollment_method("codex", Some("api_key"))

@@ -420,7 +420,10 @@ fn opencode_auth_status(
     let has_credentials = output.status.success()
         && !normalized.trim().is_empty()
         && !normalized.to_ascii_lowercase().contains("0 credentials")
-        && !normalized.to_ascii_lowercase().contains("no credentials");
+        && !normalized.to_ascii_lowercase().contains("no credentials")
+        && opencode_provider_api_key(environment, "opencode-go")
+            .or_else(|| opencode_provider_api_key(environment, "opencode"))
+            .is_some();
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
         auth_state: if has_credentials {
@@ -550,7 +553,9 @@ fn opencode_go_usage(
     environment: &BTreeMap<String, String>,
     observed_at_ms: u64,
 ) -> OpenCodeGoUsage {
-    let Some(key) = opencode_zen_api_key(environment) else {
+    let Some(key) = opencode_provider_api_key(environment, "opencode-go")
+        .or_else(|| opencode_provider_api_key(environment, "opencode"))
+    else {
         return OpenCodeGoUsage::Unavailable;
     };
     let response = ureq::AgentBuilder::new()
@@ -586,16 +591,19 @@ fn opencode_go_usage(
     }
 }
 
-fn opencode_zen_api_key(environment: &BTreeMap<String, String>) -> Option<String> {
+fn opencode_provider_api_key(
+    environment: &BTreeMap<String, String>,
+    provider_id: &str,
+) -> Option<String> {
     let data_home = environment.get("XDG_DATA_HOME")?;
     let auth_path = std::path::Path::new(data_home).join("opencode/auth.json");
     let value: serde_json::Value = serde_json::from_slice(&std::fs::read(auth_path).ok()?).ok()?;
     value
-        .get("opencode")?
+        .get(provider_id)?
         .get("key")?
         .as_str()
         .map(str::trim)
-        .filter(|key| !key.is_empty())
+        .filter(|key| key.len() >= 16 && key.bytes().all(|byte| byte.is_ascii_graphic()))
         .map(str::to_string)
 }
 
@@ -1532,7 +1540,7 @@ exit 2
     }
 
     #[test]
-    fn reads_only_the_selected_opencode_profile_key() {
+    fn reads_only_valid_opencode_provider_keys() {
         let root = std::env::temp_dir().join(format!(
             "chariox-opencode-go-key-{}-{}",
             std::process::id(),
@@ -1542,16 +1550,41 @@ exit 2
         fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
         fs::write(
             data_home.join("opencode/auth.json"),
-            r#"{"opencode":{"type":"api","key":"selected-profile-key"},"openai":{"type":"oauth","access":"ignored"}}"#,
+            r#"{"opencode-go":{"type":"api","key":"go-selected-profile-key"},"opencode":{"type":"api","key":"zen-selected-profile-key"},"openai":{"type":"oauth","access":"ignored"}}"#,
         )
         .expect("auth file should write");
         let environment =
             BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
 
         assert_eq!(
-            opencode_zen_api_key(&environment).as_deref(),
-            Some("selected-profile-key")
+            opencode_provider_api_key(&environment, "opencode-go").as_deref(),
+            Some("go-selected-profile-key")
         );
+        assert_eq!(
+            opencode_provider_api_key(&environment, "opencode").as_deref(),
+            Some("zen-selected-profile-key")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_menu_output_as_an_opencode_api_key() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-invalid-key-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"└ enter"}}"#,
+        )
+        .expect("auth file should write");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(opencode_provider_api_key(&environment, "opencode-go"), None);
         let _ = fs::remove_dir_all(root);
     }
 }

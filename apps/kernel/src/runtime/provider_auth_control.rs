@@ -95,6 +95,7 @@ async fn start_terminal_provider_auth(
     provider: String,
     account_profile: String,
     operation: crate::runtime::state::ProviderAuthProcessOperation,
+    method: Option<String>,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let provider = crate::provider::canonical_provider_family(&provider)
         .ok_or_else(|| provider_login_error("unsupported provider"))?;
@@ -125,15 +126,15 @@ async fn start_terminal_provider_auth(
     let (program, args) = match (provider, operation) {
         ("claude", crate::runtime::state::ProviderAuthProcessOperation::Login) => (
             crate::provider::resolve_claude_executable()?,
-            vec!["auth".to_string(), "login".to_string()],
+            terminal_provider_auth_args(provider, operation, method.as_deref()),
         ),
         ("opencode", crate::runtime::state::ProviderAuthProcessOperation::Login) => (
             crate::provider::resolve_opencode_executable()?,
-            vec!["auth".to_string(), "login".to_string()],
+            terminal_provider_auth_args(provider, operation, method.as_deref()),
         ),
         ("opencode", crate::runtime::state::ProviderAuthProcessOperation::Logout) => (
             crate::provider::resolve_opencode_executable()?,
-            vec!["auth".to_string(), "logout".to_string()],
+            terminal_provider_auth_args(provider, operation, None),
         ),
         _ => unreachable!(),
     };
@@ -209,6 +210,45 @@ async fn start_terminal_provider_auth(
             LocalDaemonResponse::ProviderLogoutStarted { logout: workflow }
         },
     )
+}
+
+fn terminal_provider_auth_args(
+    provider: &str,
+    operation: crate::runtime::state::ProviderAuthProcessOperation,
+    method: Option<&str>,
+) -> Vec<String> {
+    match (provider, operation, method) {
+        (
+            "opencode",
+            crate::runtime::state::ProviderAuthProcessOperation::Login,
+            Some("opencode_go_api_key"),
+        ) => vec![
+            "auth".to_string(),
+            "login".to_string(),
+            "--provider".to_string(),
+            "opencode-go".to_string(),
+            "--method".to_string(),
+            "API key".to_string(),
+        ],
+        (
+            "opencode",
+            crate::runtime::state::ProviderAuthProcessOperation::Login,
+            Some("opencode_zen_api_key"),
+        ) => vec![
+            "auth".to_string(),
+            "login".to_string(),
+            "--provider".to_string(),
+            "opencode".to_string(),
+            "--method".to_string(),
+            "API key".to_string(),
+        ],
+        (_, crate::runtime::state::ProviderAuthProcessOperation::Login, _) => {
+            vec!["auth".to_string(), "login".to_string()]
+        }
+        (_, crate::runtime::state::ProviderAuthProcessOperation::Logout, _) => {
+            vec!["auth".to_string(), "logout".to_string()]
+        }
+    }
 }
 
 pub(crate) async fn execute_get_provider_login_status_request(
@@ -635,6 +675,7 @@ pub(crate) async fn execute_start_provider_login_request(
             request.provider,
             request.account_profile,
             crate::runtime::state::ProviderAuthProcessOperation::Login,
+            request.method,
         )
         .await;
     }
@@ -748,6 +789,7 @@ pub(crate) async fn execute_logout_provider_request(
             request.provider,
             request.account_profile,
             crate::runtime::state::ProviderAuthProcessOperation::Logout,
+            None,
         )
         .await;
     }
@@ -798,6 +840,7 @@ mod tests {
     use super::{
         provider_auth_credential_scope, provider_auth_process_succeeded,
         provider_auth_refresh_failure_message, refresh_provider_account_family_after_login,
+        terminal_provider_auth_args,
     };
     use crate::account_profile::{ProviderAccountAuthState, ProviderAccountProfileRegistry};
     use rand::Rng as _;
@@ -815,6 +858,42 @@ mod tests {
             .migrate_effective_defaults("owner-a", &root.join("home"))
             .expect("defaults should migrate");
         (root, registry)
+    }
+
+    #[test]
+    fn opencode_login_methods_skip_both_native_menus() {
+        use crate::runtime::state::ProviderAuthProcessOperation;
+
+        assert_eq!(
+            terminal_provider_auth_args(
+                "opencode",
+                ProviderAuthProcessOperation::Login,
+                Some("opencode_go_api_key"),
+            ),
+            [
+                "auth",
+                "login",
+                "--provider",
+                "opencode-go",
+                "--method",
+                "API key"
+            ]
+        );
+        assert_eq!(
+            terminal_provider_auth_args(
+                "opencode",
+                ProviderAuthProcessOperation::Login,
+                Some("opencode_zen_api_key"),
+            ),
+            [
+                "auth",
+                "login",
+                "--provider",
+                "opencode",
+                "--method",
+                "API key"
+            ]
+        );
     }
 
     #[test]
