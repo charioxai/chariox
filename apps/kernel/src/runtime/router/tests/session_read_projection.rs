@@ -471,103 +471,111 @@ fn warmed_session_list_projection_tracks_create_and_delete_responses() {
         .enable_all()
         .build()
         .expect("projection test runtime should build");
-    runtime.block_on(async {
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
-        ));
-        let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    runtime
+        .block_on(runtime.spawn(async {
+            let app = Arc::new(Mutex::new(
+                DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+            ));
+            let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
 
-        let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
-        let list_command =
-            KernelCommand::from_local_request("cmd-list-empty", None, None, &list_request);
-        router
-            .dispatch(list_command, list_request)
-            .await
-            .expect("initial list should warm an empty projection");
-
-        let create_request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
-            "workspace-list-projection",
-            "worktree-list-projection",
-        ));
-        let create_command =
-            KernelCommand::from_local_request("cmd-create-for-list", None, None, &create_request);
-        let created_session_id = match router
-            .dispatch(create_command, create_request)
-            .await
-            .expect("create should succeed")
-        {
-            LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
-            _ => panic!("unexpected create response"),
-        };
-
-        let app_guard = app.lock().await;
-        let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
-        let projected_list_command = KernelCommand::from_local_request(
-            "cmd-list-after-create",
-            None,
-            None,
-            &projected_list_request,
-        );
-        let list_router = router.clone();
-        let list_task = tokio::spawn(async move {
-            list_router
-                .dispatch(projected_list_command, projected_list_request)
+            let list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+            let list_command =
+                KernelCommand::from_local_request("cmd-list-empty", None, None, &list_request);
+            router
+                .dispatch(list_command, list_request)
                 .await
-        });
-        tokio::task::yield_now().await;
-        assert!(list_task.is_finished());
-        drop(app_guard);
-        let list_response = list_task
-            .await
-            .expect("list task should join")
-            .expect("list should resolve");
-        match list_response {
-            LocalDaemonResponse::SessionsListed { sessions } => {
-                assert_eq!(sessions.len(), 1);
-                assert_eq!(sessions[0].id(), created_session_id);
-            }
-            _ => panic!("unexpected list response"),
-        }
+                .expect("initial list should warm an empty projection");
 
-        let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
-            session_ref: created_session_id.clone(),
-            workspace_id: None,
-        });
-        let delete_command =
-            KernelCommand::from_local_request("cmd-delete-for-list", None, None, &delete_request);
-        router
-            .dispatch(delete_command, delete_request)
-            .await
-            .expect("delete should succeed");
-
-        let app_guard = app.lock().await;
-        let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
-        let projected_list_command = KernelCommand::from_local_request(
-            "cmd-list-after-delete",
-            None,
-            None,
-            &projected_list_request,
-        );
-        let list_router = router.clone();
-        let list_task = tokio::spawn(async move {
-            list_router
-                .dispatch(projected_list_command, projected_list_request)
+            let create_request = LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-list-projection",
+                "worktree-list-projection",
+            ));
+            let create_command = KernelCommand::from_local_request(
+                "cmd-create-for-list",
+                None,
+                None,
+                &create_request,
+            );
+            let created_session_id = match router
+                .dispatch(create_command, create_request)
                 .await
-        });
-        tokio::task::yield_now().await;
-        assert!(list_task.is_finished());
-        drop(app_guard);
-        let list_response = list_task
-            .await
-            .expect("list task should join")
-            .expect("list should resolve");
-        match list_response {
-            LocalDaemonResponse::SessionsListed { sessions } => {
-                assert!(sessions.is_empty());
+                .expect("create should succeed")
+            {
+                LocalDaemonResponse::SessionCreated { session, .. } => session.id().to_string(),
+                _ => panic!("unexpected create response"),
+            };
+
+            let app_guard = app.lock().await;
+            let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+            let projected_list_command = KernelCommand::from_local_request(
+                "cmd-list-after-create",
+                None,
+                None,
+                &projected_list_request,
+            );
+            let list_router = router.clone();
+            let list_task = tokio::spawn(async move {
+                list_router
+                    .dispatch(projected_list_command, projected_list_request)
+                    .await
+            });
+            let list_response = timeout(Duration::from_secs(1), list_task)
+                .await
+                .expect("projected list after create should not wait for the app lock")
+                .expect("list task should join")
+                .expect("list should resolve");
+            drop(app_guard);
+            match list_response {
+                LocalDaemonResponse::SessionsListed { sessions } => {
+                    assert_eq!(sessions.len(), 1);
+                    assert_eq!(sessions[0].id(), created_session_id);
+                }
+                _ => panic!("unexpected list response"),
             }
-            _ => panic!("unexpected list response"),
-        }
-    });
+
+            let delete_request = LocalDaemonRequest::DeleteSession(DeleteSessionRequest {
+                session_ref: created_session_id.clone(),
+                workspace_id: None,
+            });
+            let delete_command = KernelCommand::from_local_request(
+                "cmd-delete-for-list",
+                None,
+                None,
+                &delete_request,
+            );
+            router
+                .dispatch(delete_command, delete_request)
+                .await
+                .expect("delete should succeed");
+
+            let app_guard = app.lock().await;
+            let projected_list_request = LocalDaemonRequest::ListSessions(ListSessionsRequest);
+            let projected_list_command = KernelCommand::from_local_request(
+                "cmd-list-after-delete",
+                None,
+                None,
+                &projected_list_request,
+            );
+            let list_router = router.clone();
+            let list_task = tokio::spawn(async move {
+                list_router
+                    .dispatch(projected_list_command, projected_list_request)
+                    .await
+            });
+            let list_response = timeout(Duration::from_secs(1), list_task)
+                .await
+                .expect("projected list after delete should not wait for the app lock")
+                .expect("list task should join")
+                .expect("list should resolve");
+            drop(app_guard);
+            match list_response {
+                LocalDaemonResponse::SessionsListed { sessions } => {
+                    assert!(sessions.is_empty());
+                }
+                _ => panic!("unexpected list response"),
+            }
+        }))
+        .expect("projection test task should join");
 }
 
 #[tokio::test]
