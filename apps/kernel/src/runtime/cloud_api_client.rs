@@ -306,6 +306,7 @@ pub(crate) async fn issue_cloud_slice_recovery_token(
 pub(crate) async fn issue_cloud_slice_discovery_token(
     profile: &PersistedCloudRelayProfile,
     owner_kernel_ref: &str,
+    worker_kernel_ref: &str,
 ) -> Result<CloudRuntimeTokenResponse, DaemonError> {
     let machine_id = profile
         .machine_id
@@ -322,11 +323,15 @@ pub(crate) async fn issue_cloud_slice_discovery_token(
     }
     issue_cloud_runtime_token(
         profile,
-        &format!("slice-discovery:{owner_kernel_ref}"),
+        &cloud_slice_discovery_subject(owner_kernel_ref, worker_kernel_ref),
         "client",
         cloud_slice_discovery_token_options(machine_id),
     )
     .await
+}
+
+fn cloud_slice_discovery_subject(owner_kernel_ref: &str, worker_kernel_ref: &str) -> String {
+    format!("slice-discovery:{owner_kernel_ref}:{worker_kernel_ref}")
 }
 
 fn cloud_slice_discovery_token_options(machine_id: String) -> CloudRuntimeTokenRequestOptions {
@@ -489,6 +494,18 @@ mod tests {
         assert!(options.allow_unpaired_client_subject);
         assert_eq!(options.allowed_targets, None);
         assert_eq!(options.public_key_thumbprint, None);
+    }
+
+    #[test]
+    fn managed_slice_discovery_subject_is_unique_per_worker() {
+        assert_eq!(
+            cloud_slice_discovery_subject("kernel-owner", "kernel-worker-a"),
+            "slice-discovery:kernel-owner:kernel-worker-a"
+        );
+        assert_ne!(
+            cloud_slice_discovery_subject("kernel-owner", "kernel-worker-a"),
+            cloud_slice_discovery_subject("kernel-owner", "kernel-worker-b")
+        );
     }
 
     #[test]

@@ -376,6 +376,7 @@ pub(super) async fn execute_start_slice_request(
         runtime_state,
         config_projection,
         &relay,
+        &initial_slice.worker_kernel_ref,
         Box::new(move || {
             crate::slice::run_local_docker_slice_action(
                 &supervisor_slice,

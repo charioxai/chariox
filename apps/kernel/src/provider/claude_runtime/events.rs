@@ -389,11 +389,7 @@ fn emit_authoritative_text(
     *emitted = text.to_string();
 }
 
-fn claude_stream_block_key(
-    state: &ClaudeRuntimeState,
-    event: &Value,
-    block_kind: &str,
-) -> String {
+fn claude_stream_block_key(state: &ClaudeRuntimeState, event: &Value, block_kind: &str) -> String {
     let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
     claude_scoped_block_key(state.active_stream_message_id.as_deref(), block_kind, index)
 }
@@ -418,11 +414,7 @@ fn claude_assistant_block_key(
     key
 }
 
-fn claude_scoped_block_key(
-    message_id: Option<&str>,
-    block_kind: &str,
-    index: u64,
-) -> String {
+fn claude_scoped_block_key(message_id: Option<&str>, block_kind: &str, index: u64) -> String {
     match message_id {
         Some(message_id) => format!("message:{message_id}:{block_kind}:{index}"),
         None => format!("legacy:{block_kind}:{index}"),

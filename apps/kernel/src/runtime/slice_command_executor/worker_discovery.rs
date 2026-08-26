@@ -15,6 +15,7 @@ pub(super) async fn provision_and_prepare_worker_discovery(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     relay: &LocalDockerSliceRelay,
+    worker_kernel_ref: &str,
     provision: SliceWorkerProvision,
 ) -> Result<DaemonConfig, DaemonError> {
     tokio::task::spawn_blocking(provision)
@@ -28,7 +29,9 @@ pub(super) async fn provision_and_prepare_worker_discovery(
     }
     let mut config = relay.worker_discovery_config(config_projection.snapshot());
     if let Some(profile) = config.cloud_relay.as_ref() {
-        let discovery_token = issue_cloud_slice_discovery_token(profile, &config.daemon_id).await?;
+        let discovery_token =
+            issue_cloud_slice_discovery_token(profile, &config.daemon_id, worker_kernel_ref)
+                .await?;
         config.relay_token = Some(discovery_token.token);
     }
     Ok(config)
@@ -180,7 +183,9 @@ mod tests {
                 .expect("accept discovery token request");
             let request = read_async_http_request(&mut stream).await;
             assert!(request.starts_with("POST /relay/token HTTP/1.1"));
-            assert!(request.contains(r#""subject":"slice-discovery:daemon-test""#));
+            assert!(
+                request.contains(r#""subject":"slice-discovery:daemon-test:kernel-slice-test""#)
+            );
             assert!(request.contains(r#""subjectKind":"client""#));
             assert!(request.contains(r#""allowUnpairedClientSubject":true"#));
             assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
@@ -219,6 +224,7 @@ mod tests {
             &runtime_state,
             &projection,
             &relay,
+            "kernel-slice-test",
             Box::new(|| Ok(())),
         )
         .await
@@ -260,6 +266,8 @@ mod tests {
                 assert!(request.contains(r#""machineCredential":"machine-secret""#));
                 if let Some(expected) = expected {
                     assert!(request.contains(expected));
+                    assert!(request
+                        .contains(r#""subject":"slice-discovery:daemon-test:kernel-slice-test""#));
                 }
                 let body = format!(r#"{{"token":"{token}","expiresAt":"2099-01-01T00:00:00Z"}}"#);
                 write!(
@@ -291,6 +299,7 @@ mod tests {
             &runtime_state,
             &projection,
             &relay,
+            "kernel-slice-test",
             Box::new(move || {
                 provision_state.store(true, Ordering::SeqCst);
                 Ok(())
