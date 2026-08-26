@@ -515,7 +515,7 @@ async function main() {
       }).catch((error) => ({
         revoked: [],
         uninstalled: [],
-        failures: [`cleanup:${errorMessage(error)}`],
+        failures: [`cleanup:extension-state:${errorMessage(error)}`],
       })
       logStep('extension_cleanup', {
         revoked: outcome.revoked.length,

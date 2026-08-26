@@ -202,6 +202,27 @@ test("TUI local setup reports a bound runtime registration failure as safely res
   }
 })
 
+test("TUI local setup reports an invalid bound runtime without calling it resumable", async () => {
+  const fixture = await setupFixture({ mode: "local_runtime", omitRuntimeSessionId: true })
+  try {
+    await assert.rejects(
+      executeDeploymentSetupCommand(profile, [
+        "publication", "publication-1",
+        "--slug", "invalid-runtime-binding",
+        "--mode", "local-runtime",
+      ], fixture.runtime),
+      (error: unknown) => {
+        assert.match(String(error), /deployment runtime session ID/i)
+        assert.doesNotMatch(String(error), /resume this setup/i)
+        return true
+      },
+    )
+    assert.equal(fixture.cloud.localBackendUpdates.length, 0)
+  } finally {
+    await fixture.cleanup()
+  }
+})
+
 test("TUI deployment setup rejects package paths that escape its temporary root", async () => {
   const escapeName = `chariox-setup-escape-${randomUUID()}`
   const fixture = await setupFixture({ mode: "hosted_container", unsafePackagePath: `../${escapeName}` })
@@ -229,6 +250,7 @@ async function setupFixture(options: {
   readonly bindStates?: Array<"running" | "waiting_for_relay">
   readonly localBackendAvailable?: boolean
   readonly unsafePackagePath?: string
+  readonly omitRuntimeSessionId?: boolean
 }) {
   const packageRoot = await deployedWorkflowPackageFixture()
   const prepared = await preparePublicationReleasePackage(packageRoot)
@@ -275,7 +297,7 @@ async function setupFixture(options: {
           WorkflowPublicationDeploymentBound: {
             ...input,
             state: bindStates.shift() ?? "running",
-            runtime_session_id: "session-1",
+            ...(options.omitRuntimeSessionId ? {} : { runtime_session_id: "session-1" }),
             tunnel_url: "https://relay.example.test/display/deployment-1/",
           },
         }

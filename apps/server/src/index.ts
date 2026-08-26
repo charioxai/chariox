@@ -276,10 +276,14 @@ function schedulePublicationEndpointRegistration(
   logger: CharioxLogger,
 ) {
   if (!publication) return
-  const interval = setInterval(() => {
-    void registerServedPublicationEndpoint(publication, host, port, logger)
+  let registering = false
   // This registration also refreshes the Cloud deployment health observation.
   // Keep it below Cloud's default two-minute stale-health threshold.
+  const interval = setInterval(() => {
+    if (registering) return
+    registering = true
+    void registerServedPublicationEndpoint(publication, host, port, logger)
+      .finally(() => { registering = false })
   }, 60_000)
   interval.unref?.()
 }

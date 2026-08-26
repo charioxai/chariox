@@ -308,12 +308,14 @@ async function bindSetupRuntime(
     throw new Error("kernel returned an invalid deployment binding state")
   }
   if (payload.state === "running" && publicationUsesHttpIngress(setup.configuration.publication.transport)) {
+    const runtimeSessionId = requiredText(payload.runtime_session_id, "deployment runtime session ID")
+    const tunnelUrl = requiredText(payload.tunnel_url, "deployment tunnel URL")
     try {
       await registerPublicationDeploymentLocalBackend({
         profile,
         deploymentId,
-        runtimeSessionId: requiredText(payload.runtime_session_id, "deployment runtime session ID"),
-        tunnelUrl: requiredText(payload.tunnel_url, "deployment tunnel URL"),
+        runtimeSessionId,
+        tunnelUrl,
       })
     } catch (cause) {
       throw new Error(
