@@ -352,6 +352,60 @@ import_provider_credentials() {
   import_credential_profile "${CHARIOX_PROVIDER_CREDENTIALS_DIR:-/home/chariox/.provider-credentials}"
 }
 
+materialize_credential_bindings() {
+  local source_root="${CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT:-}"
+  local bindings_root="${CHARIOX_CREDENTIAL_BINDINGS_ROOT:-}"
+  if [[ -z "$source_root" ]]; then
+    return
+  fi
+  if [[ -z "$bindings_root" || "$bindings_root" != "$HOME/.credential-bindings" ]]; then
+    echo "publication credential bindings destination is invalid" >&2
+    return 70
+  fi
+  if [[ -L "$source_root" || ! -d "$source_root" ]]; then
+    echo "publication credential bindings source must be a regular directory" >&2
+    return 70
+  fi
+  if [[ -L "$bindings_root" ]]; then
+    echo "publication credential bindings root must not be a symlink: $bindings_root" >&2
+    return 70
+  fi
+  mkdir -p "$bindings_root"
+  shopt -s nullglob
+  local existing=("$bindings_root"/*)
+  if (( ${#existing[@]} > 0 )); then
+    echo "publication credential bindings destination must be empty" >&2
+    return 70
+  fi
+  local count=0
+  local source_profile
+  for source_profile in "$source_root"/*; do
+    local name="${source_profile##*/}"
+    if [[ ! "$name" =~ ^[0-9]{3,}$ ]]; then
+      echo "publication credential binding source name is invalid" >&2
+      return 70
+    fi
+    if [[ -L "$source_profile" || ! -d "$source_profile" ]]; then
+      echo "publication credential binding source must be a regular directory" >&2
+      return 70
+    fi
+    local unsafe_path
+    unsafe_path="$(first_unsafe_tree_path "$source_profile")"
+    if [[ -n "$unsafe_path" ]]; then
+      echo "publication credential binding source contains an unsafe path: $unsafe_path" >&2
+      return 70
+    fi
+    count=$((count + 1))
+    if (( count > 18 )); then
+      echo "publication has too many credential bindings" >&2
+      return 70
+    fi
+    cp -a -- "$source_profile" "$bindings_root/$name"
+  done
+  shopt -u nullglob
+  chmod -R go-rwx "$bindings_root"
+}
+
 import_credential_bindings() {
   local bindings_root="${CHARIOX_CREDENTIAL_BINDINGS_ROOT:-}"
   if [[ -z "$bindings_root" ]]; then
@@ -415,6 +469,7 @@ should_import_credential_binding_to_home() {
 
 validate_credential_destination
 import_provider_credentials
+materialize_credential_bindings
 import_credential_bindings
 if [[ "$(id -u)" -eq 0 ]]; then
   chown chariox:chariox "$HOME"
@@ -432,7 +487,8 @@ chown -R chariox:chariox \
   "$HOME/.claude" \
   "$HOME/.claude.json" \
   "$HOME/.config" \
-  "$HOME/.local" 2>/dev/null || true
+  "$HOME/.local" \
+  "$HOME/.credential-bindings" 2>/dev/null || true
 if [[ "$(id -u)" -eq 0 ]]; then
   chown -R chariox:chariox "$CHARIOX_WORKSPACE_DIR"
 fi

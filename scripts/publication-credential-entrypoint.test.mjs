@@ -122,6 +122,50 @@ test("publication entrypoint imports only the designated default when multiple a
   }
 })
 
+test("publication entrypoint stages root-only account bindings into the ephemeral runtime home", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-accounts-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  const sourceProfile = join(sources, "000")
+  await mkdir(join(sourceProfile, "home", ".codex"), { recursive: true })
+  await writeFile(join(sourceProfile, "profile.json"), JSON.stringify({
+    kind: "provider",
+    provider: "codex",
+    profileId: "profile-secondary",
+  }), { mode: 0o600 })
+  await writeFile(join(sourceProfile, "home", ".codex", "auth.json"), "secondary-fixture", {
+    mode: 0o600,
+  })
+  try {
+    await execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+      env: {
+        ...publicationEntrypointEnvironment({ root, home, bindings }),
+        CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS: JSON.stringify({
+          schema_version: 1,
+          defaults: [],
+          accounts: [{
+            provider: "codex",
+            account_profile: "profile-secondary",
+            label: "Secondary",
+            home: `${bindings}/000/home`,
+          }],
+        }),
+      },
+    })
+    assert.equal(
+      await readFile(join(bindings, "000", "home", ".codex", "auth.json"), "utf8"),
+      "secondary-fixture",
+    )
+    assert.equal(await readFile(join(sourceProfile, "home", ".codex", "auth.json"), "utf8"), "secondary-fixture")
+    assert.equal((await stat(bindings)).mode & 0o777, 0o700)
+    assert.equal((await stat(join(bindings, "000", "home", ".codex", "auth.json"))).mode & 0o077, 0)
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("publication entrypoint rejects unsafe credential profile and destination paths", async () => {
   const cases = [
     {
