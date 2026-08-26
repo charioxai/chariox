@@ -411,18 +411,9 @@ fn opencode_auth_status(
             operation: "get_provider_auth_status",
             message: format!("failed to run OpenCode auth list: {error}"),
         })?;
-    let text = format!(
-        "{}\n{}",
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let normalized = strip_ansi(&text);
     let credential_inspection = inspect_opencode_credentials(environment);
-    let has_credentials = output.status.success()
-        && !normalized.trim().is_empty()
-        && !normalized.to_ascii_lowercase().contains("0 credentials")
-        && !normalized.to_ascii_lowercase().contains("no credentials")
-        && credential_inspection != OpenCodeCredentialInspection::Malformed;
+    let has_credentials =
+        output.status.success() && credential_inspection == OpenCodeCredentialInspection::Valid;
     Ok(ProviderAuthStatus {
         provider: "opencode".to_string(),
         auth_state: if has_credentials {
@@ -661,7 +652,10 @@ fn read_opencode_auth_document(
 
 fn valid_opencode_secret(secret: &str) -> bool {
     let secret = secret.trim();
-    !secret.is_empty() && !secret.chars().any(char::is_whitespace)
+    !secret.is_empty()
+        && !secret
+            .chars()
+            .any(|character| character.is_whitespace() || character.is_control())
 }
 
 fn opencode_go_usage_from_value(
@@ -777,23 +771,6 @@ fn find_numeric_field(value: &serde_json::Value, keys: &[&str]) -> Option<f64> {
             .find_map(|value| find_numeric_field(value, keys)),
         _ => None,
     }
-}
-
-fn strip_ansi(value: &str) -> String {
-    let mut result = String::with_capacity(value.len());
-    let mut escape = false;
-    for character in value.chars() {
-        if escape {
-            if character.is_ascii_alphabetic() {
-                escape = false;
-            }
-        } else if character == '\u{1b}' {
-            escape = true;
-        } else {
-            result.push(character);
-        }
-    }
-    result
 }
 
 fn claude_version() -> Result<String, DaemonError> {
@@ -1683,6 +1660,36 @@ exit 2
         assert_eq!(
             inspect_opencode_credentials(&environment),
             OpenCodeCredentialInspection::Valid
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn rejects_unobserved_and_control_character_opencode_credentials() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-opencode-unobserved-credentials-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let data_home = root.join("data");
+        let environment =
+            BTreeMap::from([("XDG_DATA_HOME".to_string(), data_home.display().to_string())]);
+
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::NotObserved
+        );
+
+        fs::create_dir_all(data_home.join("opencode")).expect("auth directory should create");
+        fs::write(
+            data_home.join("opencode/auth.json"),
+            r#"{"opencode-go":{"type":"api","key":"opaque\u0000key"}}"#,
+        )
+        .expect("auth file should write");
+        assert_eq!(opencode_provider_api_key(&environment, "opencode-go"), None);
+        assert_eq!(
+            inspect_opencode_credentials(&environment),
+            OpenCodeCredentialInspection::Malformed
         );
         let _ = fs::remove_dir_all(root);
     }
