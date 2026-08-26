@@ -138,6 +138,30 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   }, share)
   assert.equal(arbitraryExec.status, 1)
   assert.match(arbitraryExec.stderr, /Docker exec command shape is not allowed/)
+
+  for (const path of [
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/codex/auth.json",
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/opencode/opencode-1/data/opencode/auth.json",
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/claude/claude-1/claude/.credentials.json",
+  ]) {
+    const accountCredential = validate({
+      kind: "docker",
+      args: ["exec", "-u", "slice", "chariox-slice-dev", "test", "-s", path],
+    }, share)
+    assert.equal(accountCredential.status, 0, accountCredential.stderr)
+  }
+
+  for (const path of [
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/../../../../../../etc/shadow",
+    "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/unexpected",
+  ]) {
+    const accountCredentialEscape = validate({
+      kind: "docker",
+      args: ["exec", "-u", "slice", "chariox-slice-dev", "test", "-s", path],
+    }, share)
+    assert.equal(accountCredentialEscape.status, 1)
+    assert.match(accountCredentialEscape.stderr, /Docker exec command shape is not allowed/)
+  }
   const stopInjection = validate({
     kind: "provisioner",
     action: "stop",
