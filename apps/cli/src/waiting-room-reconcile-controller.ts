@@ -19,6 +19,7 @@ export type WaitingRoomProviderDefaults = {
 export type WaitingRoomReconcileControllerDeps = {
   getCurrentState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
+  setProjectedWaitingRoomState?: (state: WaitingRoomState) => void
   getSessions: () => SessionListEntry[]
   getProviderCatalog: () => ProviderCatalog
   getRemoteState: () => WaitingRoomRemoteState
@@ -50,7 +51,10 @@ export function createWaitingRoomReconcileController(
 ) {
   const deriveStateUpdate = deps.deriveStateUpdate ?? deriveWaitingRoomStateUpdate
 
-  const reconcile = (next: WaitingRoomState) => {
+  const reconcileWith = (
+    next: WaitingRoomState,
+    setState: (state: WaitingRoomState) => void,
+  ) => {
     const currentState = deps.getCurrentState()
     const update: WaitingRoomStateUpdate = deriveStateUpdate({
       currentState,
@@ -63,7 +67,7 @@ export function createWaitingRoomReconcileController(
       currentModel: deps.getCurrentModel(),
     })
 
-    deps.setWaitingRoomState(update.normalizedState)
+    setState(update.normalizedState)
     if (
       currentState.providerId !== update.normalizedState.providerId
       || currentState.accountProfileId !== update.normalizedState.accountProfileId
@@ -104,6 +108,10 @@ export function createWaitingRoomReconcileController(
   }
 
   return {
-    reconcile,
+    reconcile: (next: WaitingRoomState) => reconcileWith(next, deps.setWaitingRoomState),
+    reconcileProjection: (next: WaitingRoomState) => reconcileWith(
+      next,
+      deps.setProjectedWaitingRoomState ?? deps.setWaitingRoomState,
+    ),
   }
 }

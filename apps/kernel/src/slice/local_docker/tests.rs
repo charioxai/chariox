@@ -1,6 +1,60 @@
 use super::*;
 use crate::slice::{CreateSliceInput, SliceOperationStatus, SliceStore};
 
+#[test]
+fn selected_broker_credential_replaces_default_and_missing_selection_clears_it() {
+    let mut inputs = vec![broker::ProvisionerInput {
+        environment: "CHARIOX_SLICE_CODEX_AUTH",
+        name: "codex-auth.json",
+        contents: zeroize::Zeroizing::new(b"default".to_vec()),
+    }];
+    replace_broker_input(
+        &mut inputs,
+        "CHARIOX_SLICE_CODEX_AUTH",
+        "codex-auth.json",
+        Some(zeroize::Zeroizing::new(b"selected".to_vec())),
+    )
+    .expect("replace default credential");
+    assert_eq!(inputs.len(), 1);
+    assert_eq!(inputs[0].contents.as_slice(), b"selected");
+
+    replace_broker_input(
+        &mut inputs,
+        "CHARIOX_SLICE_CODEX_AUTH",
+        "codex-auth.json",
+        None,
+    )
+    .expect("clear missing selected credential");
+    assert!(inputs.is_empty());
+}
+
+#[cfg(unix)]
+#[test]
+fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("github-token-timeout");
+    std::fs::create_dir_all(&root).expect("fixture root should create");
+    let success = root.join("gh-success");
+    std::fs::write(&success, "#!/bin/sh\nprintf 'github-token\\n'\n")
+        .expect("success helper should write");
+    std::fs::set_permissions(&success, std::fs::Permissions::from_mode(0o700))
+        .expect("success helper should be executable");
+    let token = bounded_github_token(&success, Duration::from_secs(1))
+        .expect("bounded helper should return a token");
+    assert_eq!(token.as_slice(), b"github-token\n");
+
+    let stalled = root.join("gh-stalled");
+    std::fs::write(&stalled, "#!/bin/sh\nsleep 30\n").expect("stalled helper should write");
+    std::fs::set_permissions(&stalled, std::fs::Permissions::from_mode(0o700))
+        .expect("stalled helper should be executable");
+    let started = std::time::Instant::now();
+    assert!(bounded_github_token(&stalled, Duration::from_millis(50)).is_none());
+    assert!(started.elapsed() < Duration::from_secs(3));
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
 fn test_record() -> SliceRecord {
     let store = SliceStore::default();
     store
@@ -15,6 +69,7 @@ fn test_record() -> SliceRecord {
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: Some("/repo".to_string()),
+                development: None,
                 worker_kernel_ref: None,
                 display_url: None,
                 provider_auth: Vec::new(),
@@ -97,6 +152,8 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "start-providers.sh",
         "slice-screen.sh",
         "browser-cdp.mjs",
+        "managed-provider-isolation-probe.mjs",
+        "managed-provider-isolation-probe-wrapper.sh",
         "provider-port-bridge.mjs",
         "validate-screen.sh",
     ] {
@@ -134,16 +191,69 @@ fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_work
 
     assert!(script.contains("io.chariox.relay-peer-protocol-version"));
     assert!(script.contains("io.chariox.runtime-source-revision"));
+    assert!(script.contains("CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"));
+    assert!(script.contains("^sha256:[a-f0-9]{64}$"));
     assert!(script.contains("refresh_saved_state_runtime"));
     assert!(script.contains("preserving saved state image"));
     assert!(script.contains(
         "saved state image $SLICE_IMAGE is missing; restoring the saved home archive on $SLICE_BASE_IMAGE"
     ));
     assert!(script.contains("git rev-parse --is-inside-work-tree"));
+    assert!(script.contains("Cargo.toml Cargo.lock"));
+    assert!(script.contains("adapters/rust"));
+    assert!(script.contains("apps/aegs-dummy apps/kernel apps/relay"));
+    assert!(script.contains("packages/aegs-sdk packages/event-protocol"));
+    assert!(!script.contains("grep -v '^apps/kernel/slice-linux-docker/'"));
+    assert!(script.contains("packages/event-protocol"));
+    assert!(dockerfile.contains("COPY packages/event-protocol packages/event-protocol"));
+    assert!(dockerfile.contains("COPY Cargo.toml Cargo.lock ./"));
+    assert!(dockerfile.contains("cargo build --locked --release"));
+    assert!(dockerfile.contains("npm ci --omit=dev"));
+    assert!(dockerfile.contains("snapshot.debian.org/archive/debian/20260701T000000Z"));
+    assert!(!dockerfile.contains("npm install -g"));
+    assert!(!dockerfile.contains("rustup.rs"));
+    assert!(!dockerfile.contains("deb.nodesource.com"));
+    for base in dockerfile.lines().filter(|line| line.starts_with("FROM ")) {
+        assert!(
+            base.contains("@sha256:"),
+            "unpinned slice base image: {base}"
+        );
+    }
     assert!(script.contains("runtime image $SLICE_IMAGE is stale and build policy is never"));
     assert!(script.contains("because its worker image is stale"));
     assert!(dockerfile.contains("io.chariox.relay-peer-protocol-version"));
     assert!(dockerfile.contains("io.chariox.runtime-source-revision"));
+}
+
+#[cfg(unix)]
+#[test]
+fn managed_broker_stream_is_close_on_exec_for_provider_children() {
+    use std::os::fd::AsRawFd;
+    let (stream, _peer) = std::os::unix::net::UnixStream::pair().expect("broker stream pair");
+    let flags = unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_GETFD) };
+    assert!(flags >= 0);
+    assert_eq!(
+        unsafe { libc::fcntl(stream.as_raw_fd(), libc::F_SETFD, flags & !libc::FD_CLOEXEC) },
+        0
+    );
+    assert!(!super::broker::broker_stream_is_close_on_exec(&stream));
+    super::broker::mark_broker_stream_close_on_exec(&stream).expect("mark broker lease CLOEXEC");
+    assert!(super::broker::broker_stream_is_close_on_exec(&stream));
+}
+
+#[test]
+fn managed_slice_rust_paths_do_not_bypass_the_broker() {
+    let driver = include_str!("../local_docker.rs");
+    let state = include_str!("state.rs");
+    assert!(!driver.contains("Command::new(\"docker\")"));
+    assert!(!state.contains("Command::new(\"docker\")"));
+    assert!(driver.contains("broker::run_provisioner"));
+    assert!(driver.contains("/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh"));
+    assert!(driver.contains("docker_command()"));
+    assert!(state.contains("docker_command()"));
+    let broker = include_str!("broker.rs");
+    assert!(broker.contains("remove_var(BROKER_SOCKET_ENV)"));
+    assert!(broker.contains("remove_var(BROKER_FD_ENV)"));
 }
 
 #[test]
@@ -152,7 +262,7 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
     let options = test_options();
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, None, &options, true).unwrap();
 
     let provider_bind_host = command
         .get_envs()
@@ -163,6 +273,224 @@ fn local_docker_slice_runtime_uses_loopback_provider_bind_host() {
         })
         .expect("provider bind host should be configured");
     assert_eq!(provider_bind_host, "127.0.0.1");
+}
+
+#[test]
+fn local_docker_slice_mounts_only_development_repositories() {
+    let store = SliceStore::default();
+    let record = store
+        .create(
+            "kernel-1",
+            "machine-1",
+            CreateSliceInput {
+                name: "project-dev".to_string(),
+                backend: SliceBackendKind::SshDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                workspace_id: Some("/source/primary".to_string()),
+                worktree_id: Some("/source/primary-worktree".to_string()),
+                workspace_mount: Some("/source/primary-worktree".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 42,
+            },
+        )
+        .expect("slice should create");
+    let record = store
+        .set_development_publication(
+            &record.id,
+            crate::slice::SliceDevelopmentPublication {
+                publication_id: "development".to_string(),
+                destination_root: "/state/development/slice-1/development".to_string(),
+                primary_repository_path: "/state/development/slice-1/development/primary"
+                    .to_string(),
+                repository_paths: vec![
+                    "/state/development/slice-1/development/primary".to_string(),
+                    "/state/development/slice-1/development/supporting".to_string(),
+                ],
+            },
+            43,
+        )
+        .expect("publication should bind to slice");
+    let mut command = Command::new("slice-provisioner");
+    configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+        .expect("slice command should configure");
+    let envs: std::collections::BTreeMap<_, _> = command
+        .get_envs()
+        .filter_map(|(key, value)| Some((key.to_str()?, value?.to_str()?)))
+        .collect();
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_WORKSPACE"),
+        Some(&"/state/development/slice-1/development/primary")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT"),
+        Some(&"2")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_0"),
+        Some(&"/state/development/slice-1/development/primary")
+    );
+    assert_eq!(
+        envs.get("CHARIOX_SLICE_DEVELOPMENT_MOUNT_1"),
+        Some(&"/state/development/slice-1/development/supporting")
+    );
+    assert!(!envs.contains_key("CHARIOX_SLICE_DEVELOPMENT_ROOT"));
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("slice-linux-docker/provision-linux-docker-slice.sh"),
+    )
+    .expect("slice provisioner should be readable");
+    assert!(script.contains("mount_source_variable=\"${mount_variable}_SOURCE\""));
+    assert!(script.contains(
+        "-v \"$development_mount_source:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE\""
+    ));
+    assert!(script
+        .contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT\""));
+    assert!(
+        script.contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount\"")
+    );
+    assert!(script.contains("local workspace_root_env_args=()"));
+    assert!(script.contains("\"${workspace_root_env_args[@]}\""));
+    assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
+}
+
+#[cfg(unix)]
+#[test]
+fn existing_slice_runtime_forwards_managed_workspace_roots() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let root = test_root("existing-slice-workspace-roots");
+    let bin = root.join("bin");
+    let docker = bin.join("docker");
+    let log = root.join("docker.log");
+    std::fs::create_dir_all(&bin).expect("fake Docker directory should create");
+    std::fs::write(
+        &docker,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$DOCKER_LOG"
+if [ "$1" = "container" ] && [ "$2" = "inspect" ]; then
+  if [ "${3:-}" = "-f" ]; then
+    printf 'sha256:fixture\n'
+  fi
+  exit 0
+fi
+if [ "$1" = "image" ] && [ "$2" = "inspect" ]; then
+  printf 'sha256:fixture\n'
+  exit 0
+fi
+if [ "$1" = "inspect" ] && [ "$2" = "-f" ]; then
+  printf 'true\n'
+  exit 0
+fi
+for argument in "$@"; do
+  if [ "$argument" = "df" ]; then
+    printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+    printf 'fixture 1000000 1 999999 1%% /\n'
+    exit 0
+  fi
+done
+exit 0
+"#,
+    )
+    .expect("fake Docker should write");
+    std::fs::set_permissions(&docker, std::fs::Permissions::from_mode(0o700))
+        .expect("fake Docker should become executable");
+
+    let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("slice-linux-docker/provision-linux-docker-slice.sh");
+    let mut paths = vec![bin];
+    if let Some(existing_path) = std::env::var_os("PATH") {
+        paths.extend(std::env::split_paths(&existing_path));
+    }
+    let path = std::env::join_paths(paths).expect("fake Docker PATH should join");
+    let output = Command::new("bash")
+        .arg(script)
+        .arg("start-runtime")
+        .env("PATH", path)
+        .env("TMPDIR", &root)
+        .env("DOCKER_LOG", &log)
+        .env("CHARIOX_SLICE_NAME", "saved-slice")
+        .env("CHARIOX_SLICE_DOCKER_IMAGE", "fixture")
+        .env("CHARIOX_SLICE_BASE_IMAGE", "fixture")
+        .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT", "2")
+        .env("CHARIOX_SLICE_DEVELOPMENT_MOUNT_0", "/development/primary")
+        .env(
+            "CHARIOX_SLICE_DEVELOPMENT_MOUNT_1",
+            "/development/supporting",
+        )
+        .output()
+        .expect("slice runtime command should execute");
+    assert!(
+        output.status.success(),
+        "slice runtime failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let calls = std::fs::read_to_string(&log).expect("fake Docker log should read");
+    assert!(
+        !calls.lines().any(|call| call.starts_with("create ")),
+        "existing container must be reused: {calls}"
+    );
+    let runtime_call = calls
+        .lines()
+        .find(|call| call.ends_with(" saved-slice /opt/chariox-slice/start-runtime.sh"))
+        .expect("runtime Docker exec should be recorded");
+    for expected in [
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=2",
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_0=/development/primary",
+        "-e CHARIOX_MANAGED_WORKSPACE_ROOT_1=/development/supporting",
+    ] {
+        assert!(
+            runtime_call.contains(expected),
+            "runtime call is missing {expected}: {runtime_call}"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn local_docker_slice_rejects_mounting_development_control_root() {
+    let mut record = SliceStore::default()
+        .create(
+            "kernel-1",
+            "machine-1",
+            CreateSliceInput {
+                name: "project-dev-invalid".to_string(),
+                backend: SliceBackendKind::SshDocker,
+                os: "linux".to_string(),
+                display_mode: SliceDisplayMode::Headless,
+                workspace_id: Some("/source/primary".to_string()),
+                worktree_id: Some("/source/primary-worktree".to_string()),
+                workspace_mount: Some("/source/primary-worktree".to_string()),
+                development: None,
+                worker_kernel_ref: None,
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                now_ms: 42,
+            },
+        )
+        .expect("slice should create");
+    record.development_publication = Some(crate::slice::SliceDevelopmentPublication {
+        publication_id: "development".to_string(),
+        destination_root: "/state/development/slice-1/development".to_string(),
+        primary_repository_path: "/state/development/slice-1/development".to_string(),
+        repository_paths: vec!["/state/development/slice-1/development".to_string()],
+    });
+    let mut command = Command::new("slice-provisioner");
+
+    let error =
+        configure_local_docker_slice_command(&mut command, &record, None, &test_options(), true)
+            .expect_err("publication control root must never be mounted into the slice");
+
+    assert!(error
+        .to_string()
+        .contains("repository mount escaped its publication"));
 }
 
 #[test]
@@ -208,6 +536,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
                 workspace_id: None,
                 worktree_id: None,
                 workspace_mount: Some("/repo".to_string()),
+                development: None,
                 worker_kernel_ref: None,
                 display_url: None,
                 provider_auth: Vec::new(),
@@ -219,7 +548,7 @@ fn local_docker_slice_runtime_starts_desktop_for_headless_slices() {
     let options = test_options();
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, None, &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, None, &options, true).unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -241,7 +570,8 @@ fn local_docker_slice_runtime_projects_shared_relay_env() {
     };
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+        .unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -266,7 +596,8 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
     };
     let mut command = Command::new("slice-provisioner");
 
-    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options).unwrap();
+    configure_local_docker_slice_command(&mut command, &record, Some(relay), &options, true)
+        .unwrap();
 
     let envs: std::collections::BTreeMap<_, _> = command
         .get_envs()
@@ -277,4 +608,47 @@ fn local_docker_slice_runtime_keeps_private_relay_url_unset_for_container() {
         envs.get("CHARIOX_SLICE_RELAY_TOKEN"),
         Some(&"slice-local-token")
     );
+}
+
+#[test]
+fn hosted_relay_discovery_uses_owner_metadata_credential() {
+    let relay = LocalDockerSliceRelay {
+        relay_url: "wss://relay.example.test".to_string(),
+        container_relay_url: Some("wss://relay.example.test".to_string()),
+        relay_token: "worker-bootstrap-token".to_string(),
+        cloud_relay_config_json: None,
+    };
+    let mut owner_config = DaemonConfig::for_tests();
+    owner_config.relay_token = Some("owner-metadata-token".to_string());
+
+    let discovery = relay.worker_discovery_config(owner_config);
+
+    assert!(relay.uses_shared_relay());
+    assert!(!relay.uses_private_relay());
+    assert_eq!(
+        discovery.relay_token.as_deref(),
+        Some("owner-metadata-token")
+    );
+}
+
+#[test]
+fn private_relay_discovery_uses_private_relay_credential() {
+    let relay = LocalDockerSliceRelay {
+        relay_url: "ws://127.0.0.1:43130".to_string(),
+        container_relay_url: None,
+        relay_token: "slice-private-token".to_string(),
+        cloud_relay_config_json: None,
+    };
+    let mut owner_config = DaemonConfig::for_tests();
+    owner_config.relay_token = Some("owner-token".to_string());
+
+    let discovery = relay.worker_discovery_config(owner_config);
+
+    assert!(relay.uses_private_relay());
+    assert!(!relay.uses_shared_relay());
+    assert_eq!(
+        discovery.relay_token.as_deref(),
+        Some("slice-private-token")
+    );
+    assert!(discovery.cloud_relay.is_none());
 }

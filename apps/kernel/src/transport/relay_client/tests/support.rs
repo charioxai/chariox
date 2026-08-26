@@ -42,6 +42,7 @@ where
         .spawn(move || {
             tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
+                .thread_stack_size(32 * 1024 * 1024)
                 .build()
                 .unwrap_or_else(|error| panic!("{name} tokio runtime should build: {error}"))
                 .block_on(test());

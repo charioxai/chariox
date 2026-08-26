@@ -22,6 +22,7 @@ pub(crate) struct PeerHandle {
     pub(crate) realm_id: Option<String>,
     pub(crate) identity: Option<RelayCallerIdentity>,
     pub(crate) allowed_actions: Vec<RelayAction>,
+    pub(crate) allowed_targets: Option<Vec<String>>,
     pub(crate) daemon_registration: Option<DaemonRegistration>,
     pub(crate) client_daemon_key: Option<DaemonKey>,
 }

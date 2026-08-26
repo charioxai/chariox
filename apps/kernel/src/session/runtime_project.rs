@@ -34,7 +34,12 @@ impl Default for SessionProjectSelection {
 pub struct RuntimeProject {
     id: String,
     owner_user_id: String,
+    /// Compatibility shadow for clients and durable snapshots written before
+    /// projects supported more than one Workspace. The first workspace in
+    /// `workspace_ids` is mirrored here, but it is not the session primary.
     workspace_id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    workspace_ids: Vec<String>,
     name: String,
     kind: RuntimeProjectKind,
     status: RuntimeProjectStatus,
@@ -53,10 +58,12 @@ impl RuntimeProject {
         kind: RuntimeProjectKind,
     ) -> Self {
         let now = unix_epoch_ms();
+        let workspace_id = workspace_id.into();
         Self {
             id: id.into(),
             owner_user_id: owner_user_id.into(),
-            workspace_id: workspace_id.into(),
+            workspace_ids: vec![workspace_id.clone()],
+            workspace_id,
             name: name.into(),
             kind,
             status: RuntimeProjectStatus::Active,
@@ -75,7 +82,24 @@ impl RuntimeProject {
     }
 
     pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
+        self.workspace_ids
+            .first()
+            .map(String::as_str)
+            .unwrap_or(&self.workspace_id)
+    }
+
+    pub fn workspace_ids(&self) -> &[String] {
+        if self.workspace_ids.is_empty() {
+            std::slice::from_ref(&self.workspace_id)
+        } else {
+            &self.workspace_ids
+        }
+    }
+
+    pub fn contains_workspace(&self, workspace_id: &str) -> bool {
+        self.workspace_ids()
+            .iter()
+            .any(|candidate| candidate == workspace_id)
     }
 
     pub fn name(&self) -> &str {
@@ -105,6 +129,20 @@ impl RuntimeProject {
     pub(crate) fn rename(&mut self, name: String) {
         self.name = name;
         self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub(crate) fn replace_workspace_ids(&mut self, workspace_ids: Vec<String>) {
+        self.workspace_id = workspace_ids[0].clone();
+        self.workspace_ids = workspace_ids;
+        self.updated_at_ms = unix_epoch_ms();
+    }
+
+    pub(crate) fn normalize_workspace_ids(&mut self) {
+        if self.workspace_ids.is_empty() {
+            self.workspace_ids.push(self.workspace_id.clone());
+        } else {
+            self.workspace_id = self.workspace_ids[0].clone();
+        }
     }
 
     pub(crate) fn archive(&mut self) {

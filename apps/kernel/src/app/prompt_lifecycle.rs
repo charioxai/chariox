@@ -170,16 +170,9 @@ impl<'a> ProviderPromptDispatcher<'a> {
             .providers
             .run_uses_structured_prompt_io(&provider_run)
         {
-            let source_client_id = self
+            let (source_client_id, _source_user_id) = self
                 .app
-                .prompt_owner_active_prompt_for_agent(session_id, &agent_id)?
-                .and_then(|active| {
-                    self.app
-                        .attachments
-                        .get_attachment(active.source_attachment_id())
-                        .ok()
-                })
-                .map(|attachment| attachment.client_id().to_string());
+                .active_prompt_source_attribution(session_id, &agent_id)?;
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 &agent_id,
                 self.app.agents.get_agent(&agent_id)?.is_metaagent(),
@@ -224,12 +217,34 @@ impl<'a> ProviderPromptDispatcher<'a> {
             )?;
             return Ok(());
         }
-        crate::app::terminal_input::ProviderTerminalInput::new(self.app).send_provider_input(
-            session_id,
-            provider_run_id,
-            attachment_id,
-            &crate::app::terminal_input::provider_prompt_input(&provider_prompt),
-        )?;
+        let input = crate::app::terminal_input::provider_prompt_input(&provider_prompt);
+        let source_attachment_is_live = match self.app.attachments.get_attachment(attachment_id) {
+            Ok(attachment) if attachment.session_id() == session_id => true,
+            Ok(_) => {
+                return Err(DaemonError::AttachmentNotInSession {
+                    session_id: session_id.to_string(),
+                    attachment_id: attachment_id.to_string(),
+                });
+            }
+            Err(DaemonError::AttachmentNotFound { .. }) => false,
+            Err(error) => return Err(error),
+        };
+        let mut terminal_input = crate::app::terminal_input::ProviderTerminalInput::new(self.app);
+        if source_attachment_is_live {
+            terminal_input.send_provider_input(
+                session_id,
+                provider_run_id,
+                attachment_id,
+                &input,
+            )?;
+        } else {
+            terminal_input.send_unattached_provider_input(
+                session_id,
+                provider_run_id,
+                attachment_id,
+                &input,
+            )?;
+        }
         self.app.mark_active_prompt_delivery(
             session_id,
             &agent_id,

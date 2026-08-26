@@ -59,6 +59,7 @@ import type {
 import { createWaitingRoomHiddenKernelController } from "./waiting-room-hidden-kernel-controller.js"
 import { createWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomState } from "./waiting-room-types.js"
+import { createWaitingRoomLaunchOwnershipTracker } from "./waiting-room-launch-ownership.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import type {
   WorkspaceScreenMode,
@@ -138,7 +139,7 @@ export function createCliAppState(options: {
   const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
     formatAgentLocationLabel(agent, slicesState())
   const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
-  const [waitingRoomState, setWaitingRoomState] = createSignal<WaitingRoomState>(
+  const [waitingRoomState, setWaitingRoomStateSignal] = createSignal<WaitingRoomState>(
     createWaitingRoomState(
       initialSessions,
       initialProviderCatalog,
@@ -149,6 +150,22 @@ export function createCliAppState(options: {
       initialThemeRegistry,
     ),
   )
+  const waitingRoomLaunchOwnership = createWaitingRoomLaunchOwnershipTracker(waitingRoomState())
+  const setWaitingRoomState = ((
+    value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
+  ) => {
+    const next = setWaitingRoomStateSignal(value)
+    waitingRoomLaunchOwnership.update(next)
+    return next
+  }) as typeof setWaitingRoomStateSignal
+  const setWaitingRoomStateProjection = ((
+    value: WaitingRoomState | ((previous: WaitingRoomState) => WaitingRoomState),
+  ) => {
+    const next = setWaitingRoomStateSignal(value)
+    waitingRoomLaunchOwnership.synchronize(next)
+    return next
+  }) as typeof setWaitingRoomStateSignal
+  const waitingRoomLaunchOwnershipRevision = waitingRoomLaunchOwnership.revision
   const initialWorkspaceTarget = initialSession.workspace_id || cliOptions.workspace || options.cwd
   const initialWorktreeTarget = initialSession.worktree_id || cliOptions.worktree || initialWorkspaceTarget
   const [pendingWorkspaceTarget, setPendingWorkspaceTarget] = createSignal(initialWorkspaceTarget)
@@ -273,6 +290,8 @@ export function createCliAppState(options: {
     setSessionBrowserIndex,
     waitingRoomState,
     setWaitingRoomState,
+    setWaitingRoomStateProjection,
+    waitingRoomLaunchOwnershipRevision,
     pendingWorkspaceTarget,
     setPendingWorkspaceTarget,
     pendingWorktreeTarget,

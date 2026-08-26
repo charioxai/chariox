@@ -12,6 +12,7 @@ fn main() -> Result<(), chariox_kernel::DaemonError> {
         println!("{}", chariox_kernel::local::LOCAL_DAEMON_PROTOCOL_VERSION);
         return Ok(());
     }
+    chariox_kernel::slice::initialize_managed_docker_broker();
     chariox_kernel::runtime_transport::initialize_kernel_local_auth_from_env()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -35,8 +36,16 @@ async fn async_main() -> Result<(), chariox_kernel::DaemonError> {
             }),
         );
     }
+    chariox_kernel::managed_context::kernel::scavenge_source_snapshots();
     let config_started = Instant::now();
     let config = DaemonConfig::load_from_env();
+    for name in [
+        "CHARIOX_RELAY_TOKEN",
+        "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
+        "CHARIOX_CLOUD_RELAY_CONFIG_PATH",
+    ] {
+        std::env::remove_var(name);
+    }
     chariox_kernel::logging::info_with_fields(
         "daemon.startup",
         "daemon config loaded",

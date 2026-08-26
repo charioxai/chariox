@@ -79,6 +79,8 @@ export type CliAutomationSnapshotDeps = {
 
 export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): CliAutomationSnapshot {
   const session = deps.sessionState()
+  const waitingRoomTargets = deps.waitingRoomTargets()
+  const managedEnvironmentCatalog = waitingRoomTargets.managedEnvironmentCatalog
   const selectedWorkflow = session.workflows?.find((workflow) => workflow.id === deps.selectedWorkflowId()) ?? null
   const waitingRoomState = deps.waitingRoomState()
   const shellEntries = deps.workspaceShellEntries()
@@ -172,6 +174,12 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           lastSessionActivityAtMs: project.last_session_activity_at_ms ?? null,
         })),
         rows: waitingRoomRows(waitingRoomState, deps.availableSessions(), deps.providerCatalogState(), {
+          ...(waitingRoomTargets.workspaceId
+            ? { workspaceId: waitingRoomTargets.workspaceId }
+            : {}),
+          ...(waitingRoomTargets.worktreeId
+            ? { worktreeId: waitingRoomTargets.worktreeId }
+            : {}),
           cloudNotice: deps.waitingRoomCloudNotice(),
           inventoryStatus: deps.waitingRoomInventoryStatus(),
           loadingFrame: waitingRoomState.introStep,
@@ -185,7 +193,14 @@ export function buildCliAutomationSnapshot(deps: CliAutomationSnapshotDeps): Cli
           slices: deps.slicesState(),
           providerAccounts: deps.providerAccountsState(),
           projects: deps.waitingRoomProjects?.() ?? [],
-        }, deps.waitingRoomTargets(), deps.themeRegistryState()).map((row) => ({
+          ...(managedEnvironmentCatalog
+            ? {
+                managedComputeClasses: managedEnvironmentCatalog.computeClasses,
+                managedContextSources: managedEnvironmentCatalog.contextSources,
+                managedEnvironments: managedEnvironmentCatalog.environments,
+              }
+            : {}),
+        }, waitingRoomTargets, deps.themeRegistryState()).map((row) => ({
           id: row.id,
           externalSessionId: row.id.startsWith("external-session:") ? row.id.slice("external-session:".length) : null,
           title: row.title,

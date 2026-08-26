@@ -83,6 +83,7 @@ export type RuntimeProject = {
   id: string
   owner_user_id: string
   workspace_id: string
+  workspace_ids?: string[]
   name: string
   kind: RuntimeProjectKind
   status: RuntimeProjectStatus

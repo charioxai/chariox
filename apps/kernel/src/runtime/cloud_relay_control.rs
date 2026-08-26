@@ -1,7 +1,9 @@
 use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
+use base64::Engine;
 use chariox_relay::protocol::DaemonRegistration;
 
 pub(crate) const CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS: u64 = 300_000;
+pub(crate) const CLOUD_RELAY_CLIENT_TOKEN_TTL_MS: u64 = 30 * 60_000;
 pub(crate) const CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS: u64 = 60_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +28,7 @@ pub(crate) fn cloud_relay_token_refresh_due(config: &DaemonConfig, now_ms: u64) 
     }
     config.relay_url.as_deref() != Some(profile.relay_url.as_str())
         || config.relay_token.is_none()
+        || !cloud_relay_token_matches_runtime_key(config)
         || profile
             .token_expires_at_ms
             .is_none_or(|expires_at| expires_at <= now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
@@ -38,9 +41,50 @@ pub(crate) fn cloud_relay_runtime_token_is_fresh(
 ) -> bool {
     config.relay_url.as_deref() == Some(profile.relay_url.as_str())
         && config.relay_token.is_some()
+        && cloud_relay_token_matches_runtime_key(config)
         && profile
             .token_expires_at_ms
             .is_some_and(|expires_at| expires_at > now_ms + CLOUD_RELAY_TOKEN_REFRESH_WINDOW_MS)
+}
+
+fn cloud_relay_token_matches_runtime_key(config: &DaemonConfig) -> bool {
+    let Some(token) = config.relay_token.as_deref() else {
+        return false;
+    };
+    let Some(thumbprint) = relay_token_payload(token).and_then(|claims| {
+        claims
+            .get("public_key_thumbprint")
+            .and_then(serde_json::Value::as_str)
+            .map(str::to_string)
+    }) else {
+        return false;
+    };
+    thumbprint == crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key)
+}
+
+pub(crate) fn relay_token_payload(token: &str) -> Option<serde_json::Value> {
+    if token.len() > 16_384 {
+        return None;
+    }
+    let mut segments = token.trim().split('.');
+    let header = segments.next()?;
+    let payload = segments.next()?;
+    let signature = segments.next()?;
+    if header.is_empty() || payload.is_empty() || signature.is_empty() || segments.next().is_some()
+    {
+        return None;
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .ok()?;
+    serde_json::from_slice(&decoded).ok()
+}
+
+pub(crate) fn relay_token_expiry_ms(token: &str) -> Option<u64> {
+    relay_token_payload(token)?
+        .get("exp")?
+        .as_u64()?
+        .checked_mul(1_000)
 }
 
 pub(crate) fn cloud_runtime_token_subject(
@@ -106,6 +150,8 @@ pub(crate) fn cloud_kernel_presence_body(
             "port": config.kernel_websocket_port,
             "relay_public_key": config.relay_public_key,
             "local_daemon_protocol_version": crate::local::LOCAL_DAEMON_PROTOCOL_VERSION,
+            "managed_context_source_protocol_version":
+                crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION,
             "kernel_started_at_ms": registration.map(|registration| registration.kernel_started_at_ms),
             "available_providers": registration
                 .map(|registration| registration.available_providers.clone())
@@ -160,7 +206,9 @@ mod tests {
             os_name: "test-os".to_string(),
             daemon_alias: Some("dev kernel".to_string()),
             relay_url: Some("wss://relay.test".to_string()),
-            relay_token: Some("relay-token".to_string()),
+            relay_token: Some(bound_token("public")),
+            managed_slice_relay_recovery_token: None,
+            managed_slice_relay_owner_public_key: None,
             cloud_relay: profile,
             relay_public_key: "public".to_string(),
             relay_private_key: "private".to_string(),
@@ -191,6 +239,26 @@ mod tests {
         }
     }
 
+    fn bound_token(public_key: &str) -> String {
+        let payload = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+            serde_json::json!({
+                "public_key_thumbprint": crate::runtime::terminal_pairings::public_key_thumbprint(public_key),
+                "exp": 300,
+            })
+            .to_string(),
+        );
+        format!("header.{payload}.signature")
+    }
+
+    #[test]
+    fn relay_token_payload_requires_exactly_three_nonempty_bounded_segments() {
+        let token = bound_token("public");
+        assert_eq!(relay_token_expiry_ms(&token), Some(300_000));
+        assert!(relay_token_payload(&format!("{token}.extra")).is_none());
+        assert!(relay_token_payload("header..signature").is_none());
+        assert!(relay_token_payload(&"x".repeat(16_385)).is_none());
+    }
+
     #[test]
     fn relay_token_refresh_due_requires_credentials_and_fresh_token() {
         assert!(!cloud_relay_token_refresh_due(&config(None), 100_000));
@@ -216,6 +284,13 @@ mod tests {
             &config(Some(fresh.clone())),
             &fresh,
             100_000
+        ));
+
+        let mut wrong_key = config(Some(fresh.clone()));
+        wrong_key.relay_token = Some(bound_token("different-public-key"));
+        assert!(cloud_relay_token_refresh_due(&wrong_key, 100_000));
+        assert!(!cloud_relay_runtime_token_is_fresh(
+            &wrong_key, &fresh, 100_000
         ));
     }
 
@@ -250,6 +325,10 @@ mod tests {
         assert_eq!(
             body["metadata"]["local_daemon_protocol_version"],
             crate::local::LOCAL_DAEMON_PROTOCOL_VERSION
+        );
+        assert_eq!(
+            body["metadata"]["managed_context_source_protocol_version"],
+            crate::managed_context::MANAGED_CONTEXT_SOURCE_PROTOCOL_VERSION
         );
         assert_eq!(
             body["metadata"]["kernel_started_at_ms"],

@@ -201,6 +201,21 @@ export type CliInputRoutingCompositionDeps = {
 }
 
 export function createCliInputRoutingComposition(deps: CliInputRoutingCompositionDeps) {
+  const waitingRoomRemoteTargets = () => {
+    const targets = deps.waitingRoomTargets()
+    const managedEnvironmentCatalog = targets.managedEnvironmentCatalog
+    return {
+      ...(targets.workspaceId ? { workspaceId: targets.workspaceId } : {}),
+      ...(targets.worktreeId ? { worktreeId: targets.worktreeId } : {}),
+      ...(managedEnvironmentCatalog
+        ? {
+            managedComputeClasses: managedEnvironmentCatalog.computeClasses,
+            managedContextSources: managedEnvironmentCatalog.contextSources,
+            managedEnvironments: managedEnvironmentCatalog.environments,
+          }
+        : {}),
+    }
+  }
   let handleSharedShellCommand = async (_rawCommand: string): Promise<boolean> => false
   let pendingProjectRenameId: string | null = null
   const slashCommandSubmitController = createSlashCommandSubmitController({
@@ -545,7 +560,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     getSessions: deps.availableSessions,
     getProviderCatalog: deps.providerCatalogState,
     getRemoteState: () => ({
-      workspaceId: deps.waitingRoomTargets().workspacePath,
+      ...waitingRoomRemoteTargets(),
       relay: deps.relayStatusState(),
       machines: deps.remoteMachinesState(),
       kernels: deps.remoteKernelsState(),

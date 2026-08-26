@@ -4,7 +4,7 @@ use crate::local::{
     AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
     LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    UpdateSessionConfigRequest,
+    UpdateProjectWorkspacesRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -133,6 +133,22 @@ impl SessionRuntimeStore {
             .rename_project(&request.project_id, request.name, &caller_user_id)
             .await
             .map(|project| LocalDaemonResponse::ProjectRenamed { project });
+        (result, None)
+    }
+
+    pub(super) async fn update_project_workspaces(
+        &self,
+        request: UpdateProjectWorkspacesRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .update_project_workspaces(&request.project_id, request.workspace_ids, &caller_user_id)
+            .await
+            .map(|project| LocalDaemonResponse::ProjectWorkspacesUpdated { project });
         (result, None)
     }
 

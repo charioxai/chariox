@@ -10,6 +10,7 @@ mod command_catalog;
 mod executable_resolution;
 mod external_observation;
 mod launch_contract;
+mod managed_isolation;
 mod mcp_proxy;
 mod opencode;
 mod opencode_binding;
@@ -58,6 +59,13 @@ pub use launch_contract::{
     AgentPermissionLevel, ExternalProviderImportMetadata, ExternalProviderObservedCursor,
     LaunchProviderRequest, ProviderLaunchResult, ProviderResumeState, ProviderWriteAccessMode,
     RuntimeMcpBinding,
+};
+#[cfg(test)]
+pub(crate) use managed_isolation::MANAGED_PROVIDER_ISOLATION_ENV;
+pub(crate) use managed_isolation::{
+    apply_managed_provider_isolation, command_from_provider_launch,
+    managed_isolated_utility_command, managed_provider_control_env_remove,
+    managed_provider_isolation_required,
 };
 pub(crate) use mcp_proxy::{
     dispatch_provider_mcp_proxy_request, shutdown_provider_mcp_proxy_session,

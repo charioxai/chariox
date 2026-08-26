@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 
 use crate::error::DaemonError;
 use crate::provider::{AgentEndpointMode, LaunchProviderRequest, ProviderLaunchResult};
@@ -128,9 +128,13 @@ fn codex_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<Str
 
 pub fn logout_codex(provider_account_env: &BTreeMap<String, String>) -> Result<(), DaemonError> {
     let executable = resolve_codex_executable()?;
-    let mut command = Command::new(executable);
-    command.arg("logout");
-    command.envs(provider_account_env);
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["logout".to_string()],
+        provider_account_env.clone(),
+        None,
+        "codex:logout",
+    )?;
     for name in crate::account_profile::provider_auth_env_vars("codex") {
         command.env_remove(name);
     }

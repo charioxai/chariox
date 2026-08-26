@@ -73,13 +73,18 @@ fn apply_stream_event(
         }
     }
     if event_kind == "content_block_start" {
-        if let Some(text) = event
-            .get("content_block")
-            .and_then(|block| block.get("text"))
-            .and_then(Value::as_str)
-        {
-            push_text_chunk(provider_run_id, batch, text);
-            state.saw_text_delta = true;
+        if let Some(block) = event.get("content_block") {
+            let block_kind = block.get("type").and_then(Value::as_str).unwrap_or("text");
+            if let Some(text) = claude_block_text(block, block_kind) {
+                emit_authoritative_text(
+                    provider_run_id,
+                    state,
+                    batch,
+                    &claude_block_key(event, block_kind),
+                    block_kind,
+                    text,
+                );
+            }
         }
     }
     if event_kind == "content_block_delta" {
@@ -93,8 +98,14 @@ fn apply_stream_event(
         {
             "text_delta" => {
                 if let Some(text) = delta.get("text").and_then(Value::as_str) {
-                    push_text_chunk(provider_run_id, batch, text);
-                    state.saw_text_delta = true;
+                    emit_stream_text_delta(
+                        provider_run_id,
+                        state,
+                        batch,
+                        &claude_block_key(event, "text"),
+                        "text",
+                        text,
+                    );
                 }
             }
             "thinking_delta" => {
@@ -103,7 +114,14 @@ fn apply_stream_event(
                     .or_else(|| delta.get("text"))
                     .and_then(Value::as_str)
                 {
-                    push_reasoning_chunk(provider_run_id, batch, text);
+                    emit_stream_text_delta(
+                        provider_run_id,
+                        state,
+                        batch,
+                        &claude_block_key(event, "thinking"),
+                        "thinking",
+                        text,
+                    );
                 }
             }
             _ => {}
@@ -228,24 +246,17 @@ fn apply_assistant_message(
         batch.resolved_usage_tokens_total = usage.total_tokens;
         batch.resolved_usage = Some(usage);
     }
-    if state.saw_text_delta {
-        return;
-    }
-    let message_id = message
-        .get("id")
-        .and_then(Value::as_str)
-        .unwrap_or("assistant");
     if let Some(content) = message.get("content").and_then(Value::as_array) {
         for (index, block) in content.iter().enumerate() {
             let block_kind = block
                 .get("type")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            let Some(text) = block.get("text").and_then(Value::as_str) else {
+            let Some(text) = claude_block_text(block, block_kind) else {
                 continue;
             };
-            let key = format!("{message_id}:{index}");
-            emit_text_suffix(provider_run_id, state, batch, &key, block_kind, text);
+            let key = format!("{block_kind}:{index}");
+            emit_authoritative_text(provider_run_id, state, batch, &key, block_kind, text);
         }
     }
 }
@@ -307,7 +318,7 @@ fn record_claude_session_id(
     }
 }
 
-fn emit_text_suffix(
+fn emit_stream_text_delta(
     provider_run_id: &str,
     state: &mut ClaudeRuntimeState,
     batch: &mut ProviderPromptSignalBatch,
@@ -315,18 +326,69 @@ fn emit_text_suffix(
     block_kind: &str,
     text: &str,
 ) {
-    let offset = state
-        .emitted_text_offsets
-        .entry(key.to_string())
-        .or_default();
-    if *offset >= text.len() {
+    if text.is_empty() {
         return;
     }
-    let suffix = &text[*offset..];
-    *offset = text.len();
+    state
+        .emitted_text_by_block
+        .entry(key.to_string())
+        .or_default()
+        .push_str(text);
+    match block_kind {
+        "thinking" => push_reasoning_chunk(provider_run_id, batch, text),
+        _ => push_text_chunk(provider_run_id, batch, text),
+    }
+}
+
+fn emit_authoritative_text(
+    provider_run_id: &str,
+    state: &mut ClaudeRuntimeState,
+    batch: &mut ProviderPromptSignalBatch,
+    key: &str,
+    block_kind: &str,
+    text: &str,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let emitted = state
+        .emitted_text_by_block
+        .entry(key.to_string())
+        .or_default();
+    if text == emitted.as_str() || emitted.starts_with(text) {
+        return;
+    }
+    let Some(suffix) = text.strip_prefix(emitted.as_str()) else {
+        crate::logging::debug_with_fields(
+            "daemon.provider.claude",
+            "Claude assistant snapshot did not match the streamed prefix",
+            serde_json::json!({
+                "block_key": key,
+                "streamed_len": emitted.len(),
+                "completed_len": text.len(),
+            }),
+        );
+        return;
+    };
     match block_kind {
         "thinking" => push_reasoning_chunk(provider_run_id, batch, suffix),
         _ => push_text_chunk(provider_run_id, batch, suffix),
+    }
+    *emitted = text.to_string();
+}
+
+fn claude_block_key(event: &Value, block_kind: &str) -> String {
+    let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
+    format!("{block_kind}:{index}")
+}
+
+fn claude_block_text<'a>(block: &'a Value, block_kind: &str) -> Option<&'a str> {
+    match block_kind {
+        "thinking" => block
+            .get("thinking")
+            .or_else(|| block.get("text"))
+            .and_then(Value::as_str),
+        _ => block.get("text").and_then(Value::as_str),
     }
 }
 

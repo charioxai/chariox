@@ -313,8 +313,15 @@ async fn assert_remote_native_terminal_resize(
     assert_eq!(app.pty().size(&worker_provider_run_id), Some((83, 27)));
 }
 
-#[tokio::test(flavor = "multi_thread")]
-async fn remote_machine_agents_execute_prompts_through_the_home_session() {
+#[test]
+fn remote_machine_agents_execute_prompts_through_the_home_session() {
+    run_async_with_large_test_stack(
+        "remote-agents-execute-prompts",
+        remote_machine_agents_execute_prompts_through_the_home_session_async,
+    );
+}
+
+async fn remote_machine_agents_execute_prompts_through_the_home_session_async() {
     let _relay_test_guard = relay_client_test_guard().await;
     let server = RelayServer::new(RelayConfig {
         host: "127.0.0.1".to_string(),

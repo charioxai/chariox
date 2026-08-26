@@ -157,6 +157,12 @@ impl DaemonConfig {
                     .clone()
                     .and_then(|config| config.relay_token)
             }),
+            managed_slice_relay_recovery_token: persisted_config
+                .as_ref()
+                .and_then(|config| config.managed_slice_relay_recovery_token.clone()),
+            managed_slice_relay_owner_public_key: persisted_config
+                .as_ref()
+                .and_then(|config| config.managed_slice_relay_owner_public_key.clone()),
             cloud_relay: if env_relay_configured {
                 env_cloud_relay
             } else {

@@ -36,12 +36,6 @@ const CLAUDE_HEADLESS_STATE_FILE: &str = ".claude.json";
 const CLAUDE_DISABLE_AUTOUPDATER_ENV: &str = "DISABLE_AUTOUPDATER";
 static CLAUDE_EXECUTABLE_RESOLUTION: ExecutableResolutionState =
     ExecutableResolutionState::new("claude");
-const CLAUDE_AUTH_ENV_VARS: &[&str] = &[
-    "ANTHROPIC_API_KEY",
-    "ANTHROPIC_AUTH_TOKEN",
-    "ANTHROPIC_BASE_URL",
-    "ANTHROPIC_CUSTOM_HEADERS",
-];
 pub fn resolve_claude_executable() -> Result<PathBuf, DaemonError> {
     let _guard = crate::env_lock::lock();
     resolve_claude_executable_unlocked()
@@ -358,7 +352,7 @@ fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<St
     let mut names = request
         .map(|request| request.provider_env_remove.clone())
         .unwrap_or_default();
-    for name in CLAUDE_AUTH_ENV_VARS {
+    for name in crate::account_profile::provider_auth_env_vars("claude") {
         if !names.iter().any(|existing| existing == name) {
             names.push((*name).to_string());
         }
@@ -607,6 +601,7 @@ mod tests {
         write_executable_fixture(&path, "#!/bin/sh\nsleep 60\n");
         std::env::set_var("CHARIOX_CLAUDE_BIN", &path);
         std::env::set_var("ANTHROPIC_API_KEY", "not-used-by-chariox");
+        std::env::set_var("CLAUDE_CONFIG_DIR", "");
 
         let request = LaunchProviderRequest::new(
             "session-1",
@@ -622,6 +617,7 @@ mod tests {
 
         std::env::remove_var("CHARIOX_CLAUDE_BIN");
         std::env::remove_var("ANTHROPIC_API_KEY");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
         let _ = fs::remove_file(&path);
 
         assert_eq!(launch.endpoint_mode, AgentEndpointMode::External);
@@ -645,6 +641,10 @@ mod tests {
             .pty_env_remove
             .iter()
             .any(|name| name == "ANTHROPIC_API_KEY"));
+        assert!(launch
+            .pty_env_remove
+            .iter()
+            .any(|name| name == "CLAUDE_CONFIG_DIR"));
         assert_eq!(
             launch
                 .pty_env

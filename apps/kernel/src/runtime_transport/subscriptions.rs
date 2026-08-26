@@ -17,8 +17,8 @@ use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, event_session_id,
     event_stream_id_for_event, kernel_event_trace_payload, provider_run_changed_event,
     runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, waiting_room_rows_changed_event, workflow_run_only_changed,
-    workflow_run_updated_events, KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope,
+    subscription_event_stream_id, workflow_run_only_changed, workflow_run_updated_events,
+    KernelEvent, KernelOutgoingFrame, KernelSubscriptionScope, WaitingRoomInventoryEventProjection,
     WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 
@@ -774,7 +774,7 @@ async fn run_waiting_room_inventory_subscription_loop(
     close_tx: mpsc::UnboundedSender<ConnectionCloseCommand>,
     close_requested: Arc<AtomicBool>,
 ) {
-    let mut previous_waiting_room_snapshot = None;
+    let mut waiting_room_event_projection = WaitingRoomInventoryEventProjection::default();
     let mut previous_relay_status: Option<RelayStatus> = None;
     let mut previous_remote_machines: Option<Vec<RemoteMachineRecord>> = None;
     let mut previous_provider_catalog = None;
@@ -792,11 +792,7 @@ async fn run_waiting_room_inventory_subscription_loop(
             {
                 Ok(snapshot) => {
                     inventory_dirty = false;
-                    if let Some(event) = waiting_room_rows_changed_event(
-                        snapshot.clone(),
-                        previous_waiting_room_snapshot.as_ref(),
-                    ) {
-                        previous_waiting_room_snapshot = Some(snapshot);
+                    for event in waiting_room_event_projection.project(snapshot) {
                         if !emit_kernel_event(
                             &runtime,
                             &outgoing_tx,
@@ -809,7 +805,7 @@ async fn run_waiting_room_inventory_subscription_loop(
                         )
                         .await
                         {
-                            break;
+                            return;
                         }
                     }
                 }

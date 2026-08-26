@@ -2386,11 +2386,8 @@ impl KernelRuntimeState {
             )?;
             let hidden_system_context =
                 join_hidden_context(&dispatch.hidden_system_context, &granted_skill_context);
-            let source_client_id = owned
-                .attachment_store
-                .get_attachment(&dispatch.source_attachment_id)
-                .ok()
-                .map(|attachment| attachment.client_id().to_string());
+            let (source_client_id, _source_user_id) =
+                owned.active_prompt_source_attribution(&dispatch.session_id, &dispatch.agent_id)?;
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 &dispatch.agent_id,
                 owned

@@ -27,6 +27,18 @@ import {
   stageWaitingRoomWorktreeSelection,
 } from "./waiting-room-worktrees.js"
 import type { SessionProjectSelection, WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import type {
+  ManagedEnvironmentAutoStopPolicy,
+  ManagedEnvironmentContextPlanInput,
+} from "@chariox/kernel-client/ipc-managed-environment-requests"
+import {
+  managedEnvironmentAutoStopPolicy,
+  managedEnvironmentContextPlanInput,
+  managedEnvironmentDraftBlockReason,
+  managedEnvironmentIdFromMachineRef,
+  waitingRoomConfiguresNewManagedMachine,
+  waitingRoomProjectDevelopmentSetup,
+} from "./waiting-room-managed-environments.js"
 import { selectedProviderAccount } from "./waiting-room-provider-accounts.js"
 
 export type WaitingRoomLaunchConfig = {
@@ -43,6 +55,15 @@ export type WaitingRoomLaunchConfig = {
   sliceRef?: string | null
   sliceCreate?: { displayMode: "headless" | "headed" } | null
   projectSelection?: SessionProjectSelection | null
+  managedEnvironment?:
+    | {
+        kind: "new"
+        computeClass: string
+        region: string
+        autoStopPolicy: ManagedEnvironmentAutoStopPolicy
+        contextPlan: ManagedEnvironmentContextPlanInput
+      }
+    | { kind: "existing"; environmentId: string }
 }
 
 export type WaitingRoomStateUpdate = {
@@ -263,7 +284,7 @@ export function deriveWaitingRoomActivationDecision(options: {
   remote?: WaitingRoomRemoteState
 }): WaitingRoomActivationDecision {
   const choice = waitingRoomChoice(options.state, options.sessions, options.catalog, options.remote)
-  const launch = {
+  const launch: WaitingRoomLaunchConfig = {
     provider: choice.providerId ?? options.currentProvider,
     accountProfile: choice.accountProfile?.profile_id ?? options.state.accountProfileId ?? "default",
     model: choice.model?.id ?? options.currentModel,
@@ -294,6 +315,10 @@ export function deriveWaitingRoomActivationDecision(options: {
   }
 
   if (options.state.focus !== "session") {
+    const managedEnvironment = waitingRoomManagedLaunchSelection(options.state, options.remote ?? {})
+    if (typeof managedEnvironment === "string") {
+      return { action: "error", message: managedEnvironment }
+    }
     const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
     if (!worktreeSelection.ok) {
       return { action: "error", message: worktreeSelection.message }
@@ -302,7 +327,13 @@ export function deriveWaitingRoomActivationDecision(options: {
     if (staleSlice) {
       return { action: "error", message: staleSlice }
     }
-    return { action: "create", launch }
+    return {
+      action: "create",
+      launch: {
+        ...launch,
+        ...(managedEnvironment ? { managedEnvironment } : {}),
+      },
+    }
   }
 
   clearStagedWaitingRoomWorktreeSelection()
@@ -326,6 +357,10 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   remote?: WaitingRoomRemoteState
 }): WaitingRoomCreateSessionDecision {
   const choice = waitingRoomChoice(options.state, [], options.catalog, options.remote)
+  const managedEnvironment = waitingRoomManagedLaunchSelection(options.state, options.remote ?? {})
+  if (typeof managedEnvironment === "string") {
+    return { action: "error", message: managedEnvironment }
+  }
   const worktreeSelection = stageWaitingRoomWorktreeSelection(options.state.worktreeSelectionId)
   if (!worktreeSelection.ok) {
     return { action: "error", message: worktreeSelection.message }
@@ -346,6 +381,7 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
     ...(options.state.projectSelectionId ? { projectSelection: choice.projectSelection } : {}),
     ...(choice.sliceRef ? { sliceRef: choice.sliceRef } : {}),
     ...(choice.sliceCreate ? { sliceCreate: choice.sliceCreate } : {}),
+    ...(managedEnvironment ? { managedEnvironment } : {}),
   }
   return {
     action: "create",
@@ -353,13 +389,43 @@ export function deriveWaitingRoomCreateSessionDecision(options: {
   }
 }
 
+function waitingRoomManagedLaunchSelection(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState,
+): WaitingRoomLaunchConfig["managedEnvironment"] | string | undefined {
+  if (waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)) {
+    const blockReason = managedEnvironmentDraftBlockReason(state, remote)
+    if (blockReason) return blockReason
+    return {
+      kind: "new",
+      computeClass: state.managedComputeClass ?? "",
+      region: state.managedRegion ?? "",
+      autoStopPolicy: managedEnvironmentAutoStopPolicy(state),
+      contextPlan: managedEnvironmentContextPlanInput(state, remote),
+    }
+  }
+  const environmentId = managedEnvironmentIdFromMachineRef(state.selectedMachineRef)
+  return environmentId ? { kind: "existing", environmentId } : undefined
+}
+
 function waitingRoomUnavailableSliceMessage(
   state: WaitingRoomState,
   remote: WaitingRoomRemoteState | undefined,
 ): string | null {
+  if (
+    state.sliceSelectionId
+    && state.sliceSelectionId !== "none"
+    && state.managedDevelopmentMode === "current_project"
+    && !waitingRoomProjectDevelopmentSetup(state, remote ?? {})
+  ) {
+    return "Choose an existing Project and primary Workspace before using Current Project in a slice."
+  }
   const placement = waitingRoomLaunchPlacement(state, remote)
   const slices = waitingRoomSlices(remote, {
     worktreeSelectionId: state.worktreeSelectionId,
+    projectSelectionId: state.projectSelectionId,
+    developmentMode: state.managedDevelopmentMode,
+    repositorySelection: state.managedRepositorySelection,
     selectedMachineRef: placement.machineRef,
     selectedKernelRef: placement.kernelRef,
   })

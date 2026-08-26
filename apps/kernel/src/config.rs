@@ -13,6 +13,7 @@ mod identity;
 mod pairings;
 mod paths;
 mod persisted_daemon;
+mod private_file;
 mod provider;
 mod relay_profile;
 mod slices;
@@ -29,15 +30,20 @@ pub use credentials::{
 };
 #[cfg(test)]
 use identity::{generate_identity_suffix, RuntimeIdentity};
+pub(crate) use identity::{load_or_create_managed_runtime_identity, ManagedRuntimeIdentity};
 #[cfg(test)]
 use persisted_daemon::PersistedDaemonConfig;
 #[cfg(test)]
 use persisted_daemon::HOSTED_STAGING_RELAY_URL;
+pub(crate) use persisted_daemon::{
+    load_managed_cloud_relay_profile, persist_managed_cloud_relay_profile,
+};
 #[cfg(test)]
 use persisted_daemon::{upsert_client_pairing, upsert_machine_registration};
 pub use persisted_daemon::{
     PersistedClientPairing, PersistedCloudRelayProfile, PersistedMachineRegistration,
 };
+pub(crate) use private_file::write_private_file;
 pub use provider::{UserProviderConfig, WorkspaceLiveSyncConfig, WorkspaceLiveSyncMode};
 pub use slices::{
     SliceImageBuildPolicy, UserLinuxSliceConfig, UserSlicesConfig, DEFAULT_LINUX_SLICE_DOCKER_IMAGE,
@@ -92,6 +98,8 @@ pub struct DaemonConfig {
     pub daemon_alias: Option<String>,
     pub relay_url: Option<String>,
     pub relay_token: Option<String>,
+    pub managed_slice_relay_recovery_token: Option<String>,
+    pub managed_slice_relay_owner_public_key: Option<String>,
     pub cloud_relay: Option<PersistedCloudRelayProfile>,
     pub relay_public_key: String,
     pub relay_private_key: String,
@@ -192,6 +200,8 @@ impl DaemonConfig {
             daemon_alias: None,
             relay_url: None,
             relay_token: None,
+            managed_slice_relay_recovery_token: None,
+            managed_slice_relay_owner_public_key: None,
             cloud_relay: None,
             relay_public_key,
             relay_private_key,

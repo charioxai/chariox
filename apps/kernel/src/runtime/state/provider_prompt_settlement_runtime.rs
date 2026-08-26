@@ -606,6 +606,7 @@ impl KernelRuntimeState {
         let state = self.clone();
         let session_id_for_continuation = session_id.to_string();
         let agent_id_for_continuation = agent_id.clone();
+        let provider_run_id_for_continuation = provider_run_id.to_string();
         let continuation: std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> =
             Box::pin(async move {
                 if let Err(error) = state
@@ -621,6 +622,20 @@ impl KernelRuntimeState {
                         serde_json::json!({
                             "session_id": session_id_for_continuation,
                             "agent_id": agent_id_for_continuation,
+                            "error": error.to_string(),
+                        }),
+                    );
+                }
+                if let Err(error) = state
+                    .owned
+                    .park_detached_idle_provider_run(&session_id_for_continuation)
+                {
+                    crate::logging::warn_with_fields(
+                        "daemon.session",
+                        "failed to park detached provider after prompt completion",
+                        serde_json::json!({
+                            "session_id": session_id_for_continuation,
+                            "provider_run_id": provider_run_id_for_continuation,
                             "error": error.to_string(),
                         }),
                     );

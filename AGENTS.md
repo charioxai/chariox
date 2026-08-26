@@ -68,9 +68,11 @@ Do not merge protocol shape changes without the version bump and test update.
 
 Native provider permission prompts are surfaced to the user out-of-band through Chariox runtime interactions. Do not infer that no approval prompt appeared just because a shell/tool result lacks `approval requested` or `approved` metadata. The result visible to the agent normally contains only the provider tool execution outcome, such as stdout/stderr, exit code, and status after the user has already answered the prompt.
 
-## Claude Credential Transfer For Linux Runners
+## Claude credential transfer for Linux runners
 
-Claude Code on macOS may keep the live login credential in Keychain under `Claude Code-credentials`, while Linux runners and containers expect it at `~/.claude/.credentials.json`. For hosted drills, export that Keychain item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
+Claude Code on macOS stores a live login in a profile-scoped Keychain service named `Claude Code-credentials-<hash>`, where `<hash>` is the first eight hexadecimal characters of SHA-256 over `CLAUDE_CONFIG_DIR`. Older default profiles may use `Claude Code-credentials`. Linux runners and containers expect the credential at `~/.claude/.credentials.json`.
+
+Chariox must export the exact profile-scoped Keychain item automatically when materializing a linked or managed Claude account. It may use the legacy unscoped item only for the default profile. Reject empty or non-refreshable credentials before provisioning instead of copying them. For a manual runner drill outside the managed-context path, export the matching scoped item to a temporary local file, copy it into the runner credential profile home as `.claude/.credentials.json`, set mode `600`, verify with `HOME=<profile-home> claude auth status`, and delete the temporary local file. Never print the credential payload or commit it.
 
 ## Coding style
 

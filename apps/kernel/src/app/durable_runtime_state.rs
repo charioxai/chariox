@@ -1656,6 +1656,7 @@ mod tests {
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: None,
+                    development: None,
                     worker_kernel_ref: None,
                     display_url: None,
                     provider_auth: Vec::new(),

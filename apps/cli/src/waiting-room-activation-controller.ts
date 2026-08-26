@@ -19,6 +19,8 @@ import type {
   WaitingRoomState,
 } from "./waiting-room-types.js"
 import { formatWorkspaceLiveSyncModeLabel } from "@chariox/kernel-client/workspace-live-sync-mode"
+import type { ManagedEnvironmentDevelopmentSetup } from "@chariox/kernel-client/ipc-managed-environment-requests"
+import { waitingRoomProjectDevelopmentSetup } from "./waiting-room-managed-environments.js"
 import {
   waitingRoomExecutionMode,
   waitingRoomPermissionLevel,
@@ -29,6 +31,13 @@ export type WaitingRoomCreateSessionLaunch = WaitingRoomLaunchConfig & {
   execution_mode: "build" | "plan"
   permission_level: "required" | "yolo"
   projectSelection?: WaitingRoomLaunchConfig["projectSelection"]
+}
+
+export type WaitingRoomPreparedManagedLaunch = {
+  launch: WaitingRoomLaunchConfig
+  assertActive: () => void
+  commit: () => Promise<void>
+  rollback: () => Promise<void>
 }
 
 export type WaitingRoomActivationControllerDeps = {
@@ -54,6 +63,7 @@ export type WaitingRoomActivationControllerDeps = {
     worktreePath: string,
     launch: WaitingRoomCreateSessionLaunch,
   ) => Promise<Pick<RuntimeSession, "id"> & Partial<RuntimeSession>>
+  deleteCreatedSession: (sessionId: string, workspacePath: string) => Promise<void>
   importExternalProviderSession?: (
     externalSessionId: string,
   ) => Promise<{ session: RuntimeSession; agent?: unknown; providerRun?: unknown }>
@@ -65,17 +75,22 @@ export type WaitingRoomActivationControllerDeps = {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    developmentSetup?: ManagedEnvironmentDevelopmentSetup | null
     workerKernelRef?: string | null
   }) => Promise<SliceRecord>
   startSlice?: (sliceRef: string) => Promise<SliceRecord>
   updateSlices?: (slice: SliceRecord) => void
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareManagedSessionLaunch?: (
+    launch: WaitingRoomLaunchConfig,
+  ) => Promise<WaitingRoomPreparedManagedLaunch>
   prepareExistingSessionClient?: (session: SessionListEntry) => Promise<void>
   attachBinding: (
     session: Pick<RuntimeSession, "id">,
     createdSession: boolean,
     launch: WaitingRoomLaunchConfig,
   ) => Promise<void>
+  rollbackAttachedSession: (sessionId: string) => Promise<unknown>
   flashFooter: (message: string, tone: "info" | "error") => void
   warn: (message: string, fields: Record<string, unknown>) => void
   formatError: (error: unknown) => string
@@ -246,26 +261,80 @@ export function createWaitingRoomActivationController(
   }
 
   const createAndAttachSession = async (launch: WaitingRoomLaunchConfig) => {
-    await deps.prepareSessionOwnerClient?.(launch)
-    const sliceRef = await prepareSliceForLaunch(launch)
-    const session = await deps.createSession(
-      deps.getWorkspaceTarget(),
-      deps.getWorktreeTarget(),
-      {
-        provider: launch.provider,
-        model: launch.model,
-        effort: launch.effort,
-        account_profile: launch.accountProfile ?? deps.getAccountProfile() ?? "default",
-        execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
-        permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
-        workspaceLiveSyncMode: launch.workspaceLiveSyncMode ?? "off",
-        ...(launch.projectSelection ? { projectSelection: launch.projectSelection } : {}),
-        ...(sliceRef ? { sliceRef } : {}),
-      },
-    )
-    await deps.attachBinding(session, true, launch)
-    deps.flashFooter(createdSessionFooter(session, sliceRef), "info")
-    return session
+    const managedLaunch = Boolean(launch.managedEnvironment)
+    const prepared = launch.managedEnvironment
+      ? await deps.prepareManagedSessionLaunch?.(launch)
+      : {
+          launch,
+          assertActive: () => {},
+          commit: async () => {},
+          rollback: async () => {},
+        }
+    if (!prepared) {
+      throw new Error("managed session launch orchestration is unavailable in this build")
+    }
+    let session: (Pick<RuntimeSession, "id"> & Partial<RuntimeSession>) | null = null
+    let workspacePath = ""
+    try {
+      const preparedLaunch = prepared.launch
+      prepared.assertActive()
+      if (!managedLaunch) {
+        await deps.prepareSessionOwnerClient?.(preparedLaunch)
+        prepared.assertActive()
+      }
+      const sliceRef = await prepareSliceForLaunch(preparedLaunch)
+      prepared.assertActive()
+      workspacePath = deps.getWorkspaceTarget()
+      const worktreePath = deps.getWorktreeTarget()
+      session = await deps.createSession(
+        workspacePath,
+        worktreePath,
+        {
+          provider: preparedLaunch.provider,
+          model: preparedLaunch.model,
+          effort: preparedLaunch.effort,
+          account_profile: preparedLaunch.accountProfile ?? deps.getAccountProfile() ?? "default",
+          execution_mode: waitingRoomExecutionMode(deps.getWaitingRoomState()),
+          permission_level: waitingRoomPermissionLevel(deps.getWaitingRoomState()),
+          workspaceLiveSyncMode: preparedLaunch.workspaceLiveSyncMode ?? "off",
+          ...(preparedLaunch.projectSelection ? { projectSelection: preparedLaunch.projectSelection } : {}),
+          ...(sliceRef ? { sliceRef } : {}),
+        },
+      )
+      prepared.assertActive()
+      await deps.attachBinding(session, true, preparedLaunch)
+      prepared.assertActive()
+      await prepared.commit()
+      deps.flashFooter(createdSessionFooter(session, sliceRef), "info")
+      return session
+    } catch (error) {
+      const cleanupErrors: string[] = []
+      if (managedLaunch && session) {
+        try {
+          await deps.rollbackAttachedSession(session.id)
+        } catch (cleanupError) {
+          cleanupErrors.push(
+            `failed to undo the cancelled session attachment ${session.id}: ${deps.formatError(cleanupError)}`,
+          )
+        }
+        try {
+          await deps.deleteCreatedSession(session.id, workspacePath)
+        } catch (cleanupError) {
+          cleanupErrors.push(
+            `failed to remove cancelled session ${session.id}: ${deps.formatError(cleanupError)}`,
+          )
+        }
+      }
+      try {
+        await prepared.rollback()
+      } catch (rollbackError) {
+        cleanupErrors.push(`failed to restore the source kernel connection: ${deps.formatError(rollbackError)}`)
+      }
+      if (cleanupErrors.length > 0) {
+        throw new Error(`${deps.formatError(error)}; ${cleanupErrors.join("; ")}`)
+      }
+      throw error
+    }
   }
 
   const prepareSliceForLaunch = async (launch: WaitingRoomLaunchConfig): Promise<string | null> => {
@@ -284,12 +353,25 @@ export function createWaitingRoomActivationController(
     }
     const worktreePath = deps.getWorktreeTarget()
     const workspacePath = deps.getWorkspaceTarget()
+    const waitingRoomState = deps.getWaitingRoomState()
+    const developmentSetup = waitingRoomProjectDevelopmentSetup(
+      waitingRoomState,
+      {
+        ...deps.getRemoteState(),
+        workspaceId: workspacePath,
+        worktreeId: worktreePath,
+      },
+    )
+    if (waitingRoomState.managedDevelopmentMode === "current_project" && !developmentSetup) {
+      throw new Error("Choose an existing Project and primary Workspace before using Current Project in a slice.")
+    }
     const slice = await deps.createSlice({
       name: defaultSliceName(worktreePath),
       displayMode: launch.sliceCreate.displayMode,
       workspaceId: workspacePath,
       worktreeId: worktreePath,
       workspaceMount: worktreePath,
+      ...(developmentSetup ? { developmentSetup } : {}),
       ...(launch.workerKernelRef && launch.workerKernelRef !== "local" ? { workerKernelRef: launch.workerKernelRef } : {}),
     })
     deps.updateSlices?.(slice)

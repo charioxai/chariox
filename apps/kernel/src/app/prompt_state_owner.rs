@@ -3,26 +3,47 @@ use crate::error::DaemonError;
 use crate::session::{PromptQueueItem, PromptStatus, PromptSubmissionOutcome, RuntimeSession};
 
 impl DaemonApp {
+    fn prompt_source_attribution(
+        &self,
+        prompt: &PromptQueueItem,
+    ) -> (Option<String>, Option<String>) {
+        let source_attachment = self
+            .attachments
+            .get_attachment(prompt.source_attachment_id())
+            .ok();
+        let source_client_id = prompt.source_client_id().map(str::to_string).or_else(|| {
+            source_attachment
+                .as_ref()
+                .map(|attachment| attachment.client_id().to_string())
+        });
+        let source_user_id = prompt.source_user_id().map(str::to_string).or_else(|| {
+            source_attachment
+                .as_ref()
+                .map(|attachment| attachment.owner_user_id().to_string())
+        });
+        (source_client_id, source_user_id)
+    }
+
+    pub(crate) fn active_prompt_source_attribution(
+        &mut self,
+        session_id: &str,
+        agent_id: &str,
+    ) -> Result<(Option<String>, Option<String>), DaemonError> {
+        let prompt = self
+            .prompt_owner_active_prompt_for_agent(session_id, agent_id)?
+            .ok_or_else(|| DaemonError::NoActivePrompt {
+                session_id: session_id.to_string(),
+            })?;
+        Ok(self.prompt_source_attribution(&prompt))
+    }
+
     pub(crate) fn promoted_prompt_source_attachment_id(
         &self,
         session_id: &str,
         source_attachment_id: &str,
     ) -> Result<String, DaemonError> {
-        if crate::scheduler::runtime::is_workflow_prompt_attachment(source_attachment_id) {
-            return Ok(source_attachment_id.to_string());
-        }
-        let session = self.sessions.get_session(session_id)?;
-        if session.has_attachment(source_attachment_id) {
-            return Ok(source_attachment_id.to_string());
-        }
-        self.attachments
-            .list_session_attachment_ids(session_id)
-            .into_iter()
-            .next()
-            .ok_or_else(|| DaemonError::AttachmentNotInSession {
-                session_id: session_id.to_string(),
-                attachment_id: source_attachment_id.to_string(),
-            })
+        let _ = self.sessions.get_session(session_id)?;
+        Ok(source_attachment_id.to_string())
     }
 
     pub(crate) fn prompt_owner_active_prompt_for_agent(

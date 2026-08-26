@@ -380,11 +380,7 @@ impl KernelRuntimeOwnedState {
                 self.granted_skill_hidden_context(session_id, agent_id, &prompt_with_handoff)?;
             let hidden_system_context =
                 join_hidden_context(started_next.hidden_system_context(), &granted_skill_context);
-            let source_client_id = self
-                .attachment_store
-                .get_attachment(&source_attachment_id)
-                .ok()
-                .map(|attachment| attachment.client_id().to_string());
+            let (source_client_id, _source_user_id) = self.prompt_source_attribution(&started_next);
             let mode = crate::prompt_assembly::provider_turn_mode_for_prompt(
                 agent_id,
                 self.agent_store.get_agent(agent_id)?.is_metaagent(),

@@ -5,6 +5,7 @@ use tokio::sync::{mpsc, RwLock};
 use super::support::*;
 use super::*;
 use crate::auth::DEFAULT_RELAY_REALM_ID;
+use crate::auth::{RelaySubjectKind, VerifiedRelayIdentity};
 use crate::protocol::{ClientTarget, DaemonRegistration, EncryptedRelayPayload};
 use crate::registry::{PendingClientRequest, RelaySender};
 
@@ -49,6 +50,46 @@ fn daemon_registration(daemon_id: &str) -> DaemonRegistration {
     }
 }
 
+#[test]
+fn scoped_daemon_registration_binds_subject_and_public_key() {
+    use sha2::{Digest, Sha256};
+
+    let mut registration = daemon_registration("kernel-random");
+    registration.daemon_alias = Some("slice:dev-1".to_string());
+    registration.public_key = "worker-public-key".to_string();
+    let thumbprint = Sha256::digest(registration.public_key.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let identity = VerifiedRelayIdentity {
+        realm_id: "realm-1".to_string(),
+        subject: "slice:dev-1".to_string(),
+        subject_kind: RelaySubjectKind::Kernel,
+        allowed_actions: vec![RelayAction::DaemonRegister],
+        allowed_targets: None,
+        expires_at_ms: u64::MAX,
+        token_id: Some("token-1".to_string()),
+        user_id: Some("user-1".to_string()),
+        public_key_thumbprint: Some(thumbprint),
+    };
+
+    assert!(validate_daemon_registration_identity(&identity, &registration).is_ok());
+
+    let mut wrong_key = registration.clone();
+    wrong_key.public_key = "attacker-public-key".to_string();
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_key),
+        Err("relay token key does not match daemon registration")
+    );
+
+    let mut wrong_subject = registration;
+    wrong_subject.daemon_alias = Some("slice:other".to_string());
+    assert_eq!(
+        validate_daemon_registration_identity(&identity, &wrong_subject),
+        Err("relay token subject does not match daemon registration")
+    );
+}
+
 fn daemon_peer(sender: RelaySender, registration: DaemonRegistration) -> PeerHandle {
     PeerHandle {
         sender,
@@ -56,6 +97,7 @@ fn daemon_peer(sender: RelaySender, registration: DaemonRegistration) -> PeerHan
         realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
         identity: None,
         allowed_actions: Vec::new(),
+        allowed_targets: None,
         daemon_registration: Some(registration),
         client_daemon_key: None,
     }
@@ -68,6 +110,7 @@ fn client_peer(sender: RelaySender) -> PeerHandle {
         realm_id: Some(DEFAULT_RELAY_REALM_ID.to_string()),
         identity: None,
         allowed_actions: Vec::new(),
+        allowed_targets: None,
         daemon_registration: None,
         client_daemon_key: None,
     }

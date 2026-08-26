@@ -3,13 +3,14 @@ mod model;
 mod ports;
 mod store;
 
+pub(crate) use local_docker::managed_docker_broker_configured;
 pub use local_docker::{
     collect_local_docker_slice_logs, create_local_docker_slice_backup,
     create_local_docker_slice_backup_live, default_local_docker_saved_state,
-    inspect_local_docker_slice_host_runtime, inspect_local_docker_slice_provider_auth,
-    local_docker_private_relay, local_docker_private_relay_endpoint,
-    local_docker_private_relay_token, remove_local_docker_saved_state,
-    run_local_docker_slice_action, save_local_docker_slice_state,
+    initialize_managed_docker_broker, inspect_local_docker_slice_host_runtime,
+    inspect_local_docker_slice_provider_auth, local_docker_private_relay,
+    local_docker_private_relay_endpoint, local_docker_private_relay_token,
+    remove_local_docker_saved_state, run_local_docker_slice_action, save_local_docker_slice_state,
     save_local_docker_slice_state_live, set_local_docker_default_saved_state,
     start_local_docker_slice_provider_login, LocalDockerProviderAccount, LocalDockerSliceOptions,
     LocalDockerSliceRelay,
@@ -21,9 +22,10 @@ use local_docker::{
 };
 pub use model::{
     CreateSliceInput, LocalDockerSliceAction, SliceBackendKind, SliceBackupRecord,
-    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
-    SliceLocalDockerPorts, SliceLogEntry, SliceOperationStatus, SliceProviderLoginStart,
-    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    SliceDevelopmentPublication, SliceDisplayEndpoint, SliceDisplayEndpointAccess,
+    SliceDisplayEndpointKind, SliceDisplayMode, SliceLocalDockerPorts, SliceLogEntry,
+    SliceOperationStatus, SliceProviderLoginStart, SliceRecord, SliceRelayEndpoint,
+    SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
 };
 #[cfg(test)]
 use ports::LocalDockerSlicePorts;
@@ -47,6 +49,7 @@ mod tests {
             workspace_id: None,
             worktree_id: None,
             workspace_mount: Some("/repo".to_string()),
+            development: None,
             worker_kernel_ref: None,
             display_url: Some("http://127.0.0.1:6080".to_string()),
             provider_auth: Vec::new(),

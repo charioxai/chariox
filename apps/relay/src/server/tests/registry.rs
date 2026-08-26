@@ -29,6 +29,7 @@ fn insert_live_registration(
             realm_id: Some(realm_id.to_string()),
             identity: None,
             allowed_actions: Vec::new(),
+            allowed_targets: None,
             daemon_registration: Some(registration),
             client_daemon_key: None,
         },

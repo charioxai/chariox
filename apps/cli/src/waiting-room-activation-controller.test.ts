@@ -6,7 +6,9 @@ import type { BackendProviderId, ProviderCatalog } from "./provider-catalog.js"
 import type { SessionListEntry } from "./sessions.js"
 import {
   createWaitingRoomActivationController,
+  type WaitingRoomActivationControllerDeps,
   type WaitingRoomCreateSessionLaunch,
+  type WaitingRoomPreparedManagedLaunch,
 } from "./waiting-room-activation-controller.js"
 import type {
   WaitingRoomActivationDecision,
@@ -174,6 +176,177 @@ test("waiting room activation creates and starts new headed slices before sessio
   ])
 })
 
+test("waiting room activation sends the selected multi-repository Project to a new slice", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      projectSelectionId: "existing:project-1",
+      managedDevelopmentMode: "current_project",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
+    kind: "source_project",
+    projectId: "project-1",
+    repositories: [
+      { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
+      { role: "supporting", workspaceId: "/supporting", worktreeId: null },
+    ],
+  })
+})
+
+test("waiting room activation keeps a new slice development setup empty", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "existing:project-1",
+      managedDevelopmentMode: "empty",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, { kind: "empty" })
+})
+
+test("waiting room activation refuses unresolved Current Project slice creation", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "new",
+      managedDevelopmentMode: "current_project",
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices, [])
+  assert.deepEqual(harness.calls.slice(-2), [
+    "warn",
+    "flash:error:Choose an existing Project and primary Workspace before using Current Project in a slice.",
+  ])
+})
+
+test("waiting room activation sends an exact repository subset to a new slice", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "high",
+        sliceCreate: { displayMode: "headless" },
+      },
+    },
+    waitingRoomState: {
+      sliceSelectionId: "new",
+      projectSelectionId: "existing:project-1",
+      managedDevelopmentMode: "current_project",
+      managedRepositorySelection: {
+        projectId: "project-1",
+        primaryWorkspaceId: "/workspace",
+        supportingWorkspaceIds: [],
+      },
+    },
+    remoteState: {
+      workspaceId: "/workspace",
+      worktreeId: "/worktree",
+      projects: [{
+        id: "project-1",
+        owner_user_id: "local",
+        workspace_id: "/workspace",
+        workspace_ids: ["/workspace", "/supporting"],
+        name: "Project",
+        kind: "named",
+        status: "active",
+        created_at_ms: 1,
+        updated_at_ms: 1,
+        session_count: 1,
+        joined_collaborator_count: 0,
+        pending_collaboration_invite_count: 0,
+      }],
+    },
+  })
+
+  await harness.controller.activate()
+  assert.deepEqual(harness.createdSlices[0]?.developmentSetup, {
+    kind: "source_project",
+    projectId: "project-1",
+    repositories: [
+      { role: "primary", workspaceId: "/workspace", worktreeId: "/worktree" },
+    ],
+  })
+})
+
 test("waiting room activation reports explicit created-session live sync mode", async () => {
   const launch: WaitingRoomLaunchConfig = {
     provider: "opencode",
@@ -333,6 +506,242 @@ test("waiting room activation reports activation failures", async () => {
   ])
 })
 
+test("waiting room activation never falls back to a local session for managed launches", async () => {
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: {
+      action: "create",
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "medium",
+        managedEnvironment: {
+          kind: "new",
+          computeClass: "agent-small",
+          region: "hel1",
+          autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+          contextPlan: {
+            sourceTargetId: null,
+            kernelContext: "empty",
+            developmentSetup: { kind: "empty" },
+            providerAccounts: { kind: "none" },
+            gitCredentials: { kind: "none" },
+          },
+        },
+      },
+    },
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.createdLaunches, [])
+  assert.deepEqual(harness.calls.slice(-2), [
+    "warn",
+    "flash:error:managed session launch orchestration is unavailable in this build",
+  ])
+})
+
+test("waiting room activation creates the session on the prepared managed kernel workspace", async () => {
+  const managedLaunch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    managedEnvironment: {
+      kind: "new",
+      computeClass: "agent-small",
+      region: "hel1",
+      autoStopPolicy: { minimumRuntimeSeconds: 0, idleDelaySeconds: 900 },
+      contextPlan: {
+        sourceTargetId: null,
+        kernelContext: "empty",
+        developmentSetup: { kind: "empty" },
+        providerAccounts: { kind: "none" },
+        gitCredentials: { kind: "none" },
+      },
+    },
+  }
+  const preparedLaunch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    ownerMachineRef: "machine-managed",
+    ownerKernelRef: "kernel-managed",
+    projectSelection: { kind: "default" },
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: managedLaunch },
+    prepareManagedSessionLaunch: async () => {
+      harness.setTargets("/managed/context", "/managed/context")
+      return {
+        launch: preparedLaunch,
+        assertActive: () => {
+          harness.calls.push("assertManagedLaunchActive")
+        },
+        commit: async () => {
+          harness.calls.push("commitManagedLaunch")
+        },
+        rollback: async () => {
+          harness.calls.push("rollbackManagedLaunch")
+        },
+      }
+    },
+    prepareSessionOwnerClient: async () => {
+      throw new Error("the target kernel cannot resolve itself")
+    },
+  })
+
+  await harness.controller.activate()
+
+  assert.deepEqual(harness.createdLaunches, [{
+    workspacePath: "/managed/context",
+    worktreePath: "/managed/context",
+    launch: {
+      provider: "opencode",
+      model: "gpt-5.4",
+      effort: "medium",
+      account_profile: "default",
+      execution_mode: "build",
+      permission_level: "yolo",
+      workspaceLiveSyncMode: "off",
+      projectSelection: { kind: "default" },
+    },
+  }])
+  assert.deepEqual(harness.attachedSessions[0]?.launch, preparedLaunch)
+  assert.deepEqual(harness.calls, [
+    "prepareManagedSessionLaunch",
+    "assertManagedLaunchActive",
+    "assertManagedLaunchActive",
+    "createSession",
+    "assertManagedLaunchActive",
+    "attachBinding",
+    "assertManagedLaunchActive",
+    "commitManagedLaunch",
+    "flash:info:created session Review in /worktree · workspace live sync config default",
+  ])
+})
+
+test("waiting room activation removes a managed session cancelled during creation", async () => {
+  let active = true
+  let releaseCreate = () => {}
+  let notifyCreateStarted = () => {}
+  const createGate = new Promise<void>((resolve) => {
+    releaseCreate = resolve
+  })
+  const createStarted = new Promise<void>((resolve) => {
+    notifyCreateStarted = resolve
+  })
+  const managedLaunch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    managedEnvironment: {
+      kind: "existing",
+      environmentId: "environment-1",
+    },
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: managedLaunch },
+    createGate,
+    createStarted: notifyCreateStarted,
+    prepareManagedSessionLaunch: async () => ({
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "medium",
+        ownerMachineRef: "machine-managed",
+        ownerKernelRef: "kernel-managed",
+      },
+      assertActive: () => {
+        if (!active) throw new Error("managed launch cancelled")
+      },
+      commit: async () => {
+        harness.calls.push("commitManagedLaunch")
+      },
+      rollback: async () => {
+        harness.calls.push("rollbackManagedLaunch")
+      },
+    }),
+  })
+
+  const pending = harness.controller.activate()
+  await createStarted
+  active = false
+  releaseCreate()
+  await pending
+
+  assert.deepEqual(harness.deletedSessions, [{
+    sessionId: "created-session",
+    workspacePath: "/workspace",
+  }])
+  assert.equal(harness.attachedSessions.length, 0)
+  assert.deepEqual(harness.calls.slice(-4), [
+    "deleteCreatedSession:created-session",
+    "rollbackManagedLaunch",
+    "warn",
+    "flash:error:managed launch cancelled",
+  ])
+})
+
+test("waiting room activation undoes target attachment before rolling back its client", async () => {
+  let active = true
+  let releaseAttach = () => {}
+  let notifyAttachStarted = () => {}
+  const attachGate = new Promise<void>((resolve) => {
+    releaseAttach = resolve
+  })
+  const attachStarted = new Promise<void>((resolve) => {
+    notifyAttachStarted = resolve
+  })
+  const managedLaunch: WaitingRoomLaunchConfig = {
+    provider: "opencode",
+    model: "gpt-5.4",
+    effort: "medium",
+    managedEnvironment: { kind: "existing", environmentId: "environment-1" },
+  }
+  const harness = createHarness({
+    controlDecision: { action: "none" },
+    activationDecision: { action: "create", launch: managedLaunch },
+    attachGate,
+    attachStarted: notifyAttachStarted,
+    prepareManagedSessionLaunch: async () => ({
+      launch: {
+        provider: "opencode",
+        model: "gpt-5.4",
+        effort: "medium",
+        ownerMachineRef: "machine-managed",
+        ownerKernelRef: "kernel-managed",
+      },
+      assertActive: () => {
+        if (!active) throw new Error("managed launch cancelled")
+      },
+      commit: async () => {
+        harness.calls.push("commitManagedLaunch")
+      },
+      rollback: async () => {
+        harness.calls.push("rollbackManagedLaunch")
+      },
+    }),
+  })
+
+  const pending = harness.controller.activate()
+  await attachStarted
+  active = false
+  releaseAttach()
+  await pending
+
+  assert.deepEqual(harness.attachedSessions, [])
+  assert.deepEqual(harness.calls.slice(-6), [
+    "attachBinding",
+    "rollbackAttachedSession:created-session",
+    "deleteCreatedSession:created-session",
+    "rollbackManagedLaunch",
+    "warn",
+    "flash:error:managed launch cancelled",
+  ])
+})
+
 function createHarness(options: {
   kernelConnected?: boolean
   controlDecision: WaitingRoomControlActivationDecision
@@ -340,12 +749,20 @@ function createHarness(options: {
   createSessionDecision?: WaitingRoomCreateSessionDecision
   accountProfile?: string | null
   createError?: Error
+  createGate?: Promise<void>
+  createStarted?: () => void
+  attachGate?: Promise<void>
+  attachStarted?: () => void
   sessionOverrides?: Partial<RuntimeSession>
   importSession?: RuntimeSession
   loadOlderExternalProviderSessions?: () => Promise<number>
   browseKernelInventory?: (kernelId: string, machineId: string) => Promise<number>
   prepareSessionOwnerClient?: (launch: WaitingRoomLaunchConfig) => Promise<void>
+  prepareManagedSessionLaunch?: (
+    launch: WaitingRoomLaunchConfig,
+  ) => Promise<WaitingRoomPreparedManagedLaunch>
   waitingRoomState?: Partial<WaitingRoomState>
+  remoteState?: WaitingRoomRemoteState
 }) {
   const calls: string[] = []
   const attachedSessions: Array<{
@@ -363,19 +780,23 @@ function createHarness(options: {
     workspaceId: string
     worktreeId: string
     workspaceMount: string
+    developmentSetup?: NonNullable<Parameters<NonNullable<WaitingRoomActivationControllerDeps["createSlice"]>>[0]["developmentSetup"]>
   }> = []
   const warnings: Array<{ message: string; fields: Record<string, unknown> }> = []
+  const deletedSessions: Array<{ sessionId: string; workspacePath: string }> = []
   const importedExternalSessions: string[] = []
   let promptText = ""
+  let workspaceTarget = "/workspace"
+  let worktreeTarget = "/worktree"
   const controller = createWaitingRoomActivationController({
     isKernelConnected: () => options.kernelConnected ?? true,
     connectKernel: async () => {
       calls.push("connectKernel")
     },
     getWaitingRoomState: () => (options.waitingRoomState ?? {}) as WaitingRoomState,
-    getRemoteState: () => ({} as WaitingRoomRemoteState),
-    getWorkspaceTarget: () => "/workspace",
-    getWorktreeTarget: () => "/worktree",
+    getRemoteState: () => options.remoteState ?? ({} as WaitingRoomRemoteState),
+    getWorkspaceTarget: () => workspaceTarget,
+    getWorktreeTarget: () => worktreeTarget,
     getAvailableSessions: () => [],
     getProviderCatalog: () => ({} as ProviderCatalog),
     getCurrentProvider: () => "opencode" as BackendProviderId,
@@ -402,11 +823,17 @@ function createHarness(options: {
     },
     createSession: async (workspacePath, worktreePath, launch) => {
       calls.push("createSession")
+      options.createStarted?.()
+      await options.createGate
       if (options.createError) {
         throw options.createError
       }
       createdLaunches.push({ workspacePath, worktreePath, launch })
       return runtimeSession("created-session", "Review", options.sessionOverrides)
+    },
+    deleteCreatedSession: async (sessionId, workspacePath) => {
+      calls.push(`deleteCreatedSession:${sessionId}`)
+      deletedSessions.push({ sessionId, workspacePath })
     },
     importExternalProviderSession: async (externalSessionId) => {
       calls.push(`importExternalProviderSession:${externalSessionId}`)
@@ -430,6 +857,7 @@ function createHarness(options: {
         workspaceId: slice.workspaceId,
         worktreeId: slice.worktreeId,
         workspaceMount: slice.workspaceMount,
+        ...(slice.developmentSetup ? { developmentSetup: slice.developmentSetup } : {}),
       })
       return sliceRecord("slice-created", slice.displayMode)
     },
@@ -448,9 +876,24 @@ function createHarness(options: {
         },
       }
       : {}),
+    ...(options.prepareManagedSessionLaunch
+      ? {
+        prepareManagedSessionLaunch: async (launch: WaitingRoomLaunchConfig) => {
+          calls.push("prepareManagedSessionLaunch")
+          return await options.prepareManagedSessionLaunch!(launch)
+        },
+      }
+      : {}),
     attachBinding: async (session, createdSession, launch) => {
       calls.push("attachBinding")
       attachedSessions.push({ sessionId: session.id, createdSession, launch })
+      options.attachStarted?.()
+      await options.attachGate
+    },
+    rollbackAttachedSession: async (sessionId) => {
+      calls.push(`rollbackAttachedSession:${sessionId}`)
+      const index = attachedSessions.findIndex((candidate) => candidate.sessionId === sessionId)
+      if (index >= 0) attachedSessions.splice(index, 1)
     },
     flashFooter: (message, tone) => {
       calls.push(`flash:${tone}:${message}`)
@@ -473,8 +916,13 @@ function createHarness(options: {
     createdLaunches,
     createdSlices,
     importedExternalSessions,
+    deletedSessions,
     warnings,
     controller,
+    setTargets: (workspacePath: string, worktreePath: string) => {
+      workspaceTarget = workspacePath
+      worktreeTarget = worktreePath
+    },
   }
 }
 

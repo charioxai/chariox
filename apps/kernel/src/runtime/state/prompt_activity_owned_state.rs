@@ -465,7 +465,14 @@ impl KernelRuntimeOwnedState {
             }
         }
         self.active_turns.clear(provider_run_id);
-        self.prompt_workspace_claims.remove(provider_run_id)
+        let released_claim = self.prompt_workspace_claims.remove(provider_run_id);
+        // Prompt state is mirrored before settlement history is appended. The active turn is
+        // the reporter's barrier across that window, so publish a second change only after the
+        // turn has been cleared by the completed settlement path.
+        if active_turn.is_some() {
+            self.runtime_projection_changes.record_change();
+        }
+        released_claim
     }
 
     pub(super) fn clear_session_prompt_runtime_state(&self, session_id: &str) {

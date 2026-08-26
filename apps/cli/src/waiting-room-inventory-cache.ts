@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto"
 import {
   chmodSync,
   mkdirSync,
@@ -13,7 +14,7 @@ import { join } from "node:path"
 
 import type { WaitingRoomInventory } from "./waiting-room-inventory-api.js"
 
-const cacheSchemaVersion = 1
+const cacheSchemaVersion = 2
 const inventorySchemaVersion = 11
 const cacheRetentionMs = 30 * 24 * 60 * 60 * 1_000
 const maximumCachedKernels = 64
@@ -21,8 +22,16 @@ const activityPersistDebounceMs = 5_000
 
 type CachedWaitingRoomInventory = {
   readonly cacheSchemaVersion: number
+  readonly scopeFingerprint: string
   readonly savedAtMs: number
   readonly inventory: WaitingRoomInventory
+}
+
+export type WaitingRoomInventoryCloudScope = {
+  readonly apiUrl: string
+  readonly accountId: string
+  readonly userId: string
+  readonly realmId: string
 }
 
 export type WaitingRoomInventoryCache = {
@@ -39,12 +48,13 @@ export function createWaitingRoomInventoryCache(
   directory = defaultWaitingRoomInventoryCacheDir(),
   nowMs: () => number = Date.now,
   timers: WaitingRoomInventoryCacheTimers = {},
+  scopeKey: string | (() => string) = waitingRoomInventoryCacheScopeKey(null),
 ): WaitingRoomInventoryCache {
   const scheduleTimeout = timers.setTimeout ?? setTimeout
   const cancelTimeout = timers.clearTimeout ?? clearTimeout
   const versions = new Map<string, string>()
   const structuralVersions = new Map<string, string>()
-  const pendingActivity = new Map<string, WaitingRoomInventory>()
+  const pendingActivity = new Map<string, { inventory: WaitingRoomInventory; scopeFingerprint: string }>()
   const activityTimers = new Map<string, NodeJS.Timeout>()
   const trackedKernelIds = new Set<string>()
 
@@ -70,6 +80,7 @@ export function createWaitingRoomInventoryCache(
 
   function load(): WaitingRoomInventory[] {
     const now = nowMs()
+    const currentScopeFingerprint = resolveScopeFingerprint(scopeKey)
     const files = cacheFileRecords(directory)
     for (const file of files.slice(maximumCachedKernels)) {
       try {
@@ -89,9 +100,13 @@ export function createWaitingRoomInventoryCache(
           unlinkSync(path)
           return []
         }
-        versions.set(cached.inventory.kernelId, versionKey(cached.inventory))
-        structuralVersions.set(cached.inventory.kernelId, cached.inventory.structuralVersion)
-        rememberKernel(cached.inventory.kernelId)
+        if (cached.scopeFingerprint !== currentScopeFingerprint) {
+          return []
+        }
+        const cacheKey = scopedKernelKey(currentScopeFingerprint, cached.inventory.kernelId)
+        versions.set(cacheKey, versionKey(cached.inventory))
+        structuralVersions.set(cacheKey, cached.inventory.structuralVersion)
+        rememberKernel(cacheKey)
         return [cached.inventory]
       } catch {
         return []
@@ -104,51 +119,55 @@ export function createWaitingRoomInventoryCache(
     if (!validInventory(inventory)) {
       return
     }
+    const currentScopeFingerprint = resolveScopeFingerprint(scopeKey)
+    const cacheKey = scopedKernelKey(currentScopeFingerprint, inventory.kernelId)
     const nextVersion = versionKey(inventory)
-    if (versions.get(inventory.kernelId) === nextVersion) {
+    if (versions.get(cacheKey) === nextVersion) {
       return
     }
-    if (structuralVersions.get(inventory.kernelId) === inventory.structuralVersion) {
-      pendingActivity.set(inventory.kernelId, inventory)
-      if (!activityTimers.has(inventory.kernelId)) {
+    if (structuralVersions.get(cacheKey) === inventory.structuralVersion) {
+      pendingActivity.set(cacheKey, { inventory, scopeFingerprint: currentScopeFingerprint })
+      if (!activityTimers.has(cacheKey)) {
         const timer = scheduleTimeout(() => {
-          activityTimers.delete(inventory.kernelId)
-          const pending = pendingActivity.get(inventory.kernelId)
-          pendingActivity.delete(inventory.kernelId)
+          activityTimers.delete(cacheKey)
+          const pending = pendingActivity.get(cacheKey)
+          pendingActivity.delete(cacheKey)
           if (pending) {
-            writeNow(pending)
+            writeNow(pending.inventory, pending.scopeFingerprint)
           }
         }, activityPersistDebounceMs)
         timer.unref()
-        activityTimers.set(inventory.kernelId, timer)
+        activityTimers.set(cacheKey, timer)
       }
       return
     }
-    pendingActivity.delete(inventory.kernelId)
-    const timer = activityTimers.get(inventory.kernelId)
+    pendingActivity.delete(cacheKey)
+    const timer = activityTimers.get(cacheKey)
     if (timer) {
       cancelTimeout(timer)
-      activityTimers.delete(inventory.kernelId)
+      activityTimers.delete(cacheKey)
     }
-    writeNow(inventory)
+    writeNow(inventory, currentScopeFingerprint)
   }
 
-  function writeNow(inventory: WaitingRoomInventory): void {
+  function writeNow(inventory: WaitingRoomInventory, currentScopeFingerprint: string): void {
     try {
       mkdirSync(directory, { recursive: true, mode: 0o700 })
       chmodSync(directory, 0o700)
-      const path = join(directory, `${safeKernelId(inventory.kernelId)}.json`)
+      const path = join(directory, `${currentScopeFingerprint}-${safeKernelId(inventory.kernelId)}.json`)
       const temporaryPath = `${path}.${process.pid}.tmp`
       writeFileSync(temporaryPath, JSON.stringify({
         cacheSchemaVersion,
+        scopeFingerprint: currentScopeFingerprint,
         savedAtMs: nowMs(),
         inventory,
       } satisfies CachedWaitingRoomInventory), { mode: 0o600 })
       chmodSync(temporaryPath, 0o600)
       renameSync(temporaryPath, path)
-      versions.set(inventory.kernelId, versionKey(inventory))
-      structuralVersions.set(inventory.kernelId, inventory.structuralVersion)
-      rememberKernel(inventory.kernelId)
+      const cacheKey = scopedKernelKey(currentScopeFingerprint, inventory.kernelId)
+      versions.set(cacheKey, versionKey(inventory))
+      structuralVersions.set(cacheKey, inventory.structuralVersion)
+      rememberKernel(cacheKey)
       pruneCache(directory)
     } catch {
       // Cache persistence must never prevent the TUI from reaching a kernel.
@@ -156,6 +175,33 @@ export function createWaitingRoomInventoryCache(
   }
 
   return { load, persist }
+}
+
+export function waitingRoomInventoryCacheScopeKey(
+  cloud: WaitingRoomInventoryCloudScope | null | undefined,
+): string {
+  if (!cloud) {
+    return JSON.stringify(["local"])
+  }
+  return JSON.stringify([
+    "cloud",
+    cloud.apiUrl.trim().replace(/\/+$/, ""),
+    cloud.accountId.trim(),
+    cloud.userId.trim(),
+    cloud.realmId.trim(),
+  ])
+}
+
+function scopeFingerprint(scopeKey: string): string {
+  return createHash("sha256").update(scopeKey).digest("hex")
+}
+
+function resolveScopeFingerprint(scopeKey: string | (() => string)): string {
+  return scopeFingerprint(typeof scopeKey === "function" ? scopeKey() : scopeKey)
+}
+
+function scopedKernelKey(scopeFingerprint: string, kernelId: string): string {
+  return `${scopeFingerprint}:${kernelId}`
 }
 
 function validInventory(inventory: WaitingRoomInventory | null | undefined): inventory is WaitingRoomInventory {

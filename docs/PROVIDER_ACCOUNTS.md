@@ -10,6 +10,8 @@ Changing an existing agent's account uses the same bounded context handoff used 
 
 The configured Cloud owner and local TUI share the home kernel's account registry. Collaborators retain separate namespaces and cannot list, use, or receive the host owner's profiles.
 
+New managed Machines default to every authenticated, transferable profile discovered by the selected source kernel. The user may exclude profiles or disable account transfer. Before asking Cloud to create the Machine, the source kernel exports each selected profile into its provider-native portable credential shape. A missing or non-portable credential stops the launch before compute is rented. The managed-context plan still records an explicit canonical profile list; Cloud never receives credential contents.
+
 ## Provider roots
 
 - Codex: every profile has a distinct `CODEX_HOME`. Managed profiles force `cli_auth_credentials_store = "file"`; `auth.json`, app-server processes, catalogs, usage, login, and logout are profile-scoped.
@@ -22,7 +24,7 @@ Existing effective default roots migrate once into the durable registry as `defa
 
 The home kernel remains authoritative. When an agent is assigned to a trusted home-worker or home-managed slice, only its selected profile is materialized through the existing encrypted kernel-to-worker channel. Separate profiles use separate roots. Cloud and the relay receive only opaque encrypted packets and safe materialization status.
 
-Materialization is denied before launch when the existing trust/ownership policy does not authorize credential transfer. A credential replica is refreshed by rematerializing from the home authority; it does not become an independent credential source. Claude's existing macOS Keychain-to-Linux `.credentials.json` conversion remains part of this path.
+Materialization is denied before launch when the existing trust/ownership policy does not authorize credential transfer. A credential replica is refreshed by rematerializing from the home authority; it does not become an independent credential source. On macOS, Claude Code scopes Keychain credentials to `CLAUDE_CONFIG_DIR`. Chariox resolves that exact scoped item and converts it to Linux `.credentials.json` automatically. The legacy unscoped Keychain item is a default-profile fallback only. Empty refresh tokens are not transferable.
 
 Model catalogs are cached by owner, selected profile, and execution location. Remote/slice selections must have a kernel-projected materialization record; clients never infer availability from labels.
 

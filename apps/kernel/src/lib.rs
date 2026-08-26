@@ -23,6 +23,8 @@ pub mod history_archive;
 pub mod io;
 pub mod local;
 pub mod logging;
+pub mod managed_bootstrap;
+pub mod managed_context;
 pub mod mcp;
 pub(crate) mod prompt_assembly;
 pub mod prompt_transcript;

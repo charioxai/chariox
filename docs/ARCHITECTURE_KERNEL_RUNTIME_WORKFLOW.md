@@ -249,7 +249,7 @@ Execution and deployment modes:
   kernel, hidden deployed session, selected triggers, gateway when HTTP is
   selected, snapshot, requirements, scripts, and assets on a runner host
 
-For v1 Cloud deployment, OpenShip-hosted Chariox Cloud remains the control plane
+For v1 Cloud deployment, OpenShip-managed Chariox Cloud remains the control plane
 only. It owns account auth, deployment records, runner registration, deployment
 commands, status/log metadata, and the web UI. Runtime publication traffic MUST
 NOT be proxied through the Chariox Cloud API/web process. A dedicated Chariox

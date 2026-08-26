@@ -104,6 +104,7 @@ mod tests {
             "visible prompt",
             PromptStatus::Running,
         )
+        .with_source_attribution("client-1", "user-1")
         .with_hidden_system_context("private context")
         .with_durable_operation("command-1", "fingerprint-1");
         prompt.set_durable_delivery(
@@ -126,6 +127,8 @@ mod tests {
             serde_json::to_value(DurablePromptStateEventPayload::capture(&session, "agent-1"))
                 .expect("event should encode");
         assert_eq!(encoded["private_states"][0]["delivery_phase"], "delivered");
+        assert_eq!(encoded["private_states"][0]["source_client_id"], "client-1");
+        assert_eq!(encoded["private_states"][0]["source_user_id"], "user-1");
         assert_eq!(
             encoded["private_states"][0]["recovery_operation_id"],
             recovery_operation_id
@@ -151,6 +154,8 @@ mod tests {
             Some("provider-session-1")
         );
         assert_eq!(prompt.hidden_system_context(), "private context");
+        assert_eq!(prompt.source_client_id(), Some("client-1"));
+        assert_eq!(prompt.source_user_id(), Some("user-1"));
         assert_eq!(
             prompt.durable_recovery_operation_id(),
             Some(recovery_operation_id.as_str())

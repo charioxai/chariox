@@ -37,6 +37,58 @@ fn records_terminal_input_and_fans_out_output() {
 }
 
 #[test]
+fn zero_recipient_outputs_and_completions_are_not_retained() {
+    let mut terminal = TerminalStreamService::new();
+
+    for index in 0..1_000 {
+        terminal.fan_out_output(
+            "session-1",
+            "provider-run-1",
+            Some("agent-1"),
+            TerminalOutputKind::ProviderOutput,
+            Some(format!("chunk-{index}")),
+            Vec::new(),
+            b"detached output",
+        );
+    }
+    terminal.fan_out_prompt_output(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        "prompt-1",
+        Some(crate::session::PromptOrigin::Chariox),
+        "attachment-detached",
+        Vec::new(),
+        b"detached prompt",
+    );
+    let batch = terminal.fan_out_outputs(vec![TerminalOutputAppend {
+        session_id: "session-1".to_string(),
+        provider_run_id: "provider-run-1".to_string(),
+        agent_id: Some("agent-1".to_string()),
+        prompt_origin: Some(crate::session::PromptOrigin::Chariox),
+        source_attachment_id: Some("attachment-detached".to_string()),
+        kind: TerminalOutputKind::ProviderTool,
+        merge_key: Some("tool-1".to_string()),
+        recipient_attachment_ids: Arc::from(Vec::<String>::new()),
+        bytes: b"detached tool result".to_vec(),
+    }]);
+    terminal.record_assistant_message_completion(
+        "session-1",
+        "provider-run-1",
+        Some("agent-1"),
+        Vec::new(),
+        "detached-message",
+        42,
+    );
+
+    assert_eq!(batch.records.len(), 1);
+    assert!(batch.changed_keys.is_empty());
+    assert!(terminal.output_records().is_empty());
+    assert_eq!(terminal.health_snapshot().pending_output_records, 0);
+    assert_eq!(terminal.health_snapshot().pending_completion_records, 0);
+}
+
+#[test]
 fn output_polling_is_per_recipient() {
     let mut terminal = TerminalStreamService::new();
     terminal.fan_out_output(

@@ -97,7 +97,7 @@ export function createCliAppProcessRuntimeComposition(
     toggleBlob: deps.toggleBlob,
     toggleAgentPaneBlob: deps.toggleAgentPaneBlob,
     onQueuedPromptAction: deps.onQueuedPromptAction,
-    restoreTerminalAndExit: deps.restoreTerminalAndExit,
+    requestExit: deps.requestExit,
     sleep: deps.sleep,
   })
   automationProcessComposition.start()

@@ -98,6 +98,7 @@ import type {
   SkillImportOutcome as KernelSkillImportOutcome,
   SkillImportSkip as KernelSkillImportSkip,
   WaitingRoomPublicAgentSummary as KernelWaitingRoomPublicAgentSummary,
+  WaitingRoomGitCredentialSummary as KernelWaitingRoomGitCredentialSummary,
   WaitingRoomPublicItemActivitySummary as KernelWaitingRoomPublicItemActivitySummary,
   WaitingRoomPublicSessionSummary as KernelWaitingRoomPublicSessionSummary,
   WaitingRoomPublicSnapshot as KernelWaitingRoomPublicSnapshot,
@@ -221,6 +222,8 @@ export type WaitingRoomRemoteKernelView = KernelRelayKernelPresence
 export type WaitingRoomTerminalView = KernelTerminalRecord
 
 export type WaitingRoomPublicSnapshot = KernelWaitingRoomPublicSnapshot
+
+export type WaitingRoomGitCredentialSummary = KernelWaitingRoomGitCredentialSummary
 
 export type WorkspaceLinkAttachment = KernelWorkspaceLinkAttachment
 

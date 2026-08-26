@@ -159,7 +159,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
         let source_attachment_id =
             leased_native_source_attachment_id(leased_agent_id, attachment_id);
         crate::app::terminal_input::ProviderTerminalInput::new(self.app)
-            .send_remote_provider_input(
+            .send_unattached_provider_input(
                 provider_run.session_id(),
                 provider_run_id,
                 &source_attachment_id,
