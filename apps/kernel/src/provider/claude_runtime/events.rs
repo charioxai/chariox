@@ -257,6 +257,13 @@ fn apply_assistant_message(
             };
             let key = format!("{block_kind}:{index}");
             emit_authoritative_text(provider_run_id, state, batch, &key, block_kind, text);
+            if state
+                .emitted_text_by_block
+                .get(&key)
+                .is_some_and(|emitted| emitted == text)
+            {
+                state.completed_text_blocks.insert(key);
+            }
         }
     }
 }
@@ -326,7 +333,7 @@ fn emit_stream_text_delta(
     block_kind: &str,
     text: &str,
 ) {
-    if text.is_empty() {
+    if text.is_empty() || state.completed_text_blocks.contains(key) {
         return;
     }
     state

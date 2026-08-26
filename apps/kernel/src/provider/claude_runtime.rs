@@ -101,6 +101,7 @@ pub(crate) fn initialize_claude_runtime(
             next_turn_number: 1,
             result_number: 1,
             emitted_text_by_block: BTreeMap::new(),
+            completed_text_blocks: Default::default(),
             exit_reported: false,
         },
         selection: ClaudeRunSelection {
@@ -170,6 +171,7 @@ pub(crate) fn submit_claude_prompt(
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
     state.emitted_text_by_block.clear();
+    state.completed_text_blocks.clear();
     Ok(())
 }
 
@@ -461,6 +463,7 @@ fn restart_claude_runtime(
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
     state.emitted_text_by_block.clear();
+    state.completed_text_blocks.clear();
     state.exit_reported = false;
     Ok(())
 }
@@ -590,6 +593,7 @@ mod tests {
                 next_turn_number: 1,
                 result_number: 1,
                 emitted_text_by_block: Default::default(),
+                completed_text_blocks: Default::default(),
                 exit_reported: false,
             },
             ProviderPromptSignalBatch::default(),
@@ -978,6 +982,43 @@ mod tests {
         let mut duplicate = ProviderPromptSignalBatch::default();
         apply_claude_message("run-1", &mut state, assistant, &mut duplicate);
         assert!(duplicate.chunks.is_empty());
+    }
+
+    #[test]
+    fn ignores_stream_replay_after_authoritative_assistant_snapshot() {
+        let (mut state, mut completed) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [{ "type": "text", "text": "CLAUDE_MANAGED_EMPTY_OK" }]
+                }
+            }),
+            &mut completed,
+        );
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].bytes, b"CLAUDE_MANAGED_EMPTY_OK");
+
+        let mut replay = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "CLAUDE_MANAGED_EMPTY_OK" }
+                }
+            }),
+            &mut replay,
+        );
+
+        assert!(replay.chunks.is_empty());
     }
 
     #[test]

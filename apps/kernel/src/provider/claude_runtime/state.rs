@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin};
 use std::sync::mpsc::Receiver;
@@ -47,6 +47,7 @@ pub struct ClaudeRuntimeState {
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
     pub(super) emitted_text_by_block: BTreeMap<String, String>,
+    pub(super) completed_text_blocks: BTreeSet<String>,
     pub(super) exit_reported: bool,
 }
 
@@ -84,6 +85,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
                     .map(|(key, text)| (key, text.len()))
                     .collect::<BTreeMap<_, _>>(),
             )
+            .field("completed_text_blocks", &self.completed_text_blocks)
             .field("exit_reported", &self.exit_reported)
             .finish()
     }
