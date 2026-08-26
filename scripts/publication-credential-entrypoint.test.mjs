@@ -166,6 +166,33 @@ test("publication entrypoint stages root-only account bindings into the ephemera
   }
 })
 
+test("publication entrypoint rejects hidden state in staged account binding roots", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-staged-account-state-"))
+  const home = join(root, "home")
+  const sources = join(root, "root-only-bindings")
+  const bindings = join(home, ".credential-bindings")
+  await mkdir(join(sources, "000", "home", ".codex"), { recursive: true })
+  await mkdir(bindings, { recursive: true })
+  await writeFile(join(bindings, ".stale"), "must-not-be-ignored")
+  try {
+    await assert.rejects(
+      execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings }),
+          CHARIOX_CREDENTIAL_BINDINGS_SOURCE_ROOT: sources,
+        },
+      }),
+      (error) => {
+        assert.equal(error.code, 70)
+        assert.match(error.stderr, /credential bindings destination must be empty/)
+        return true
+      },
+    )
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("publication entrypoint rejects unsafe credential profile and destination paths", async () => {
   const cases = [
     {

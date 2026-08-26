@@ -371,7 +371,7 @@ materialize_credential_bindings() {
     return 70
   fi
   mkdir -p "$bindings_root"
-  shopt -s nullglob
+  shopt -s dotglob nullglob
   local existing=("$bindings_root"/*)
   if (( ${#existing[@]} > 0 )); then
     echo "publication credential bindings destination must be empty" >&2
@@ -402,7 +402,7 @@ materialize_credential_bindings() {
     fi
     cp -a -- "$source_profile" "$bindings_root/$name"
   done
-  shopt -u nullglob
+  shopt -u dotglob nullglob
   chmod -R go-rwx "$bindings_root"
 }
 
