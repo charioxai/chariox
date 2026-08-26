@@ -78,6 +78,7 @@ pub(crate) const MANAGED_SLICE_RELAY_RUNTIME_ACTIONS: [&str; 5] = [
 pub(crate) const MANAGED_SLICE_RELAY_RECOVERY_ACTIONS: [&str; 3] =
     ["daemon.register", "daemon.heartbeat", "peer.request"];
 pub(crate) const MANAGED_SLICE_RELAY_BOOTSTRAP_TOKEN_TTL_MS: u64 = 30 * 60_000;
+pub(crate) const MANAGED_SLICE_RELAY_DISCOVERY_TOKEN_TTL_MS: u64 = 60_000;
 pub(crate) const MANAGED_SLICE_RELAY_RECOVERY_TOKEN_TTL_MS: u64 = 30 * 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, Default)]
@@ -85,6 +86,7 @@ pub(crate) struct CloudRuntimeTokenRequestOptions {
     pub(crate) ttl_ms: Option<u64>,
     pub(crate) allowed_actions: Option<Vec<String>>,
     pub(crate) allowed_targets: Option<Vec<String>>,
+    pub(crate) allow_unpaired_client_subject: bool,
     pub(crate) client_id: Option<String>,
     pub(crate) machine_id: Option<String>,
     pub(crate) session_id: Option<String>,
@@ -197,6 +199,12 @@ pub(crate) async fn issue_cloud_runtime_token(
         "userId".to_string(),
         serde_json::Value::String(profile.user_id.clone()),
     );
+    if options.allow_unpaired_client_subject {
+        body.insert(
+            "allowUnpairedClientSubject".to_string(),
+            serde_json::Value::Bool(true),
+        );
+    }
     if let Some(allowed_actions) = options.allowed_actions {
         body.insert(
             "allowedActions".to_string(),
@@ -293,6 +301,42 @@ pub(crate) async fn issue_cloud_slice_recovery_token(
         cloud_slice_recovery_token_options(machine_id, owner_kernel_id, worker_public_key),
     )
     .await
+}
+
+pub(crate) async fn issue_cloud_slice_discovery_token(
+    profile: &PersistedCloudRelayProfile,
+    owner_kernel_ref: &str,
+) -> Result<CloudRuntimeTokenResponse, DaemonError> {
+    let machine_id = profile
+        .machine_id
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "issue cloud slice discovery token",
+            message: "hosted slice discovery requires a paired machine identity".to_string(),
+        })?;
+    if profile.machine_credential.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "issue cloud slice discovery token",
+            message: "hosted slice discovery requires a machine credential".to_string(),
+        });
+    }
+    issue_cloud_runtime_token(
+        profile,
+        &format!("slice-discovery:{owner_kernel_ref}"),
+        "client",
+        cloud_slice_discovery_token_options(machine_id),
+    )
+    .await
+}
+
+fn cloud_slice_discovery_token_options(machine_id: String) -> CloudRuntimeTokenRequestOptions {
+    CloudRuntimeTokenRequestOptions {
+        ttl_ms: Some(MANAGED_SLICE_RELAY_DISCOVERY_TOKEN_TTL_MS),
+        allowed_actions: Some(vec!["client.metadata.read".to_string()]),
+        allow_unpaired_client_subject: true,
+        machine_id: Some(machine_id),
+        ..CloudRuntimeTokenRequestOptions::default()
+    }
 }
 
 fn cloud_slice_runtime_token_options(
@@ -399,6 +443,7 @@ mod tests {
             Some(vec!["kernel-owner".to_string()])
         );
         assert_eq!(options.machine_id.as_deref(), Some("machine-owner"));
+        assert!(!options.allow_unpaired_client_subject);
         assert_eq!(
             options.public_key_thumbprint,
             Some(crate::runtime::terminal_pairings::public_key_thumbprint(
@@ -424,6 +469,24 @@ mod tests {
                 "daemon.heartbeat".to_string(),
             ])
         );
+        assert_eq!(options.allowed_targets, None);
+        assert_eq!(options.public_key_thumbprint, None);
+    }
+
+    #[test]
+    fn managed_slice_discovery_token_is_short_lived_and_metadata_only() {
+        let options = cloud_slice_discovery_token_options("machine-owner".to_string());
+
+        assert_eq!(
+            options.ttl_ms,
+            Some(MANAGED_SLICE_RELAY_DISCOVERY_TOKEN_TTL_MS)
+        );
+        assert_eq!(
+            options.allowed_actions,
+            Some(vec!["client.metadata.read".to_string()])
+        );
+        assert_eq!(options.machine_id.as_deref(), Some("machine-owner"));
+        assert!(options.allow_unpaired_client_subject);
         assert_eq!(options.allowed_targets, None);
         assert_eq!(options.public_key_thumbprint, None);
     }
