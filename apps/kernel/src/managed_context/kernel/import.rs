@@ -1619,44 +1619,50 @@ fn ensure_tree_within_limits(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<(), DaemonError> {
-    let mut stack = vec![root.to_path_buf()];
+    let Some(root_entries) = read_materialized_directory(root, false)? else {
+        unreachable!("the scan root cannot be treated as a discovered child")
+    };
+    let mut stack = vec![root_entries];
     let mut bytes = 0_u64;
     let mut entries = 0_u64;
-    while let Some(directory) = stack.pop() {
-        for entry in fs::read_dir(&directory)
-            .map_err(|error| import_io_error("inspect materialized kernel context", error))?
-        {
-            let entry = entry
-                .map_err(|error| import_io_error("inspect materialized kernel context", error))?;
-            let metadata = entry
-                .file_type()
-                .map_err(|error| import_io_error("inspect materialized kernel context", error))?;
-            entries = entries.saturating_add(1);
-            bytes = bytes.saturating_add(4096);
+    while let Some(directory_entries) = stack.pop() {
+        for entry in directory_entries {
+            let Some(entry) = read_materialized_entry(entry)? else {
+                continue;
+            };
+            let Some(metadata) = materialized_entry_file_type(&entry)? else {
+                continue;
+            };
+            let mut entry_bytes = 4096_u64;
             if metadata.is_symlink() {
+                let Some(target) = read_materialized_symlink(&entry.path())? else {
+                    continue;
+                };
                 if !allow_python_venv_symlink
-                    || !is_python_venv_compatibility_symlink(root, &entry.path())?
+                    || !is_python_venv_compatibility_symlink_path(root, &entry.path())?
+                    || target != Path::new("lib")
                 {
                     return Err(import_error(
                         "materialized kernel context contains a symbolic link",
                     ));
                 }
             } else if metadata.is_dir() {
-                stack.push(entry.path());
+                let Some(child_entries) = read_materialized_directory(&entry.path(), true)? else {
+                    continue;
+                };
+                stack.push(child_entries);
             } else if metadata.is_file() {
-                bytes = bytes.saturating_add(
-                    entry
-                        .metadata()
-                        .map_err(|error| {
-                            import_io_error("inspect materialized kernel context", error)
-                        })?
-                        .len(),
-                );
+                let Some(size) = materialized_entry_size(&entry)? else {
+                    continue;
+                };
+                entry_bytes = entry_bytes.saturating_add(size);
             } else {
                 return Err(import_error(
                     "materialized kernel context contains a special file",
                 ));
             }
+            entries = entries.saturating_add(1);
+            bytes = bytes.saturating_add(entry_bytes);
             if entries > maximum_entries || bytes > maximum_bytes {
                 return Err(import_error(
                     "materialized kernel context exceeds its resource limits",
@@ -1667,7 +1673,79 @@ fn ensure_tree_within_limits(
     Ok(())
 }
 
+fn read_materialized_directory(
+    path: &Path,
+    was_discovered: bool,
+) -> Result<Option<fs::ReadDir>, DaemonError> {
+    match fs::read_dir(path) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if was_discovered && error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(import_io_error(
+            "inspect materialized kernel context",
+            error,
+        )),
+    }
+}
+
+fn read_materialized_entry(
+    entry: io::Result<fs::DirEntry>,
+) -> Result<Option<fs::DirEntry>, DaemonError> {
+    match entry {
+        Ok(entry) => Ok(Some(entry)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(import_io_error(
+            "inspect materialized kernel context",
+            error,
+        )),
+    }
+}
+
+fn materialized_entry_file_type(entry: &fs::DirEntry) -> Result<Option<fs::FileType>, DaemonError> {
+    match entry.file_type() {
+        Ok(file_type) => Ok(Some(file_type)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(import_io_error(
+            "inspect materialized kernel context",
+            error,
+        )),
+    }
+}
+
+fn materialized_entry_size(entry: &fs::DirEntry) -> Result<Option<u64>, DaemonError> {
+    match entry.metadata() {
+        Ok(metadata) => Ok(Some(metadata.len())),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(import_io_error(
+            "inspect materialized kernel context",
+            error,
+        )),
+    }
+}
+
+fn read_materialized_symlink(path: &Path) -> Result<Option<PathBuf>, DaemonError> {
+    match fs::read_link(path) {
+        Ok(target) => Ok(Some(target)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(import_io_error(
+            "inspect materialized kernel context",
+            error,
+        )),
+    }
+}
+
 fn is_python_venv_compatibility_symlink(root: &Path, path: &Path) -> Result<bool, DaemonError> {
+    if !is_python_venv_compatibility_symlink_path(root, path)? {
+        return Ok(false);
+    }
+    fs::read_link(path)
+        .map(|target| target == Path::new("lib"))
+        .map_err(|error| import_io_error("inspect Python virtual environment symlink", error))
+}
+
+fn is_python_venv_compatibility_symlink_path(
+    root: &Path,
+    path: &Path,
+) -> Result<bool, DaemonError> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| import_error("materialized kernel context path escaped staging"))?;
@@ -1681,9 +1759,7 @@ fn is_python_venv_compatibility_symlink(root: &Path, path: &Path) -> Result<bool
     {
         return Ok(false);
     }
-    fs::read_link(path)
-        .map(|target| target == Path::new("lib"))
-        .map_err(|error| import_io_error("inspect Python virtual environment symlink", error))
+    Ok(true)
 }
 
 fn remove_python_venv_compatibility_symlink(
@@ -2195,6 +2271,48 @@ mod tests {
         remove_python_venv_compatibility_symlink(&root, &venv)
             .expect("compatibility link should remove");
         ensure_tree_within_budget(&root).expect("final tree should be link-free");
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn budget_scan_tolerates_a_nested_directory_removed_after_discovery() {
+        let root = test_root("budget-scan-vanished-directory");
+        let vanished = root.join("transient");
+        fs::create_dir_all(&vanished).expect("transient directory should create");
+        fs::remove_dir(&vanished).expect("transient directory should disappear");
+
+        assert!(read_materialized_directory(&vanished, true)
+            .expect("a previously discovered nested directory may disappear during scanning")
+            .is_none());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn budget_scan_requires_its_root_to_remain_available() {
+        let root = test_root("budget-scan-missing-root");
+        fs::remove_dir(&root).expect("scan root should disappear");
+
+        let error = ensure_tree_within_budget(&root).expect_err("missing root should fail");
+        assert!(error.to_string().contains("No such file or directory"));
+    }
+
+    #[test]
+    fn budget_scan_tolerates_an_entry_removed_after_directory_read() {
+        let root = test_root("budget-scan-vanished-entry");
+        let transient = root.join("transient");
+        fs::write(&transient, b"temporary").expect("transient file should create");
+        let entry = fs::read_dir(&root)
+            .expect("scan root should read")
+            .next()
+            .expect("transient entry should exist")
+            .expect("transient entry should read");
+        fs::remove_file(&transient).expect("transient entry should disappear");
+
+        assert_eq!(
+            materialized_entry_size(&entry)
+                .expect("a previously discovered entry may disappear during scanning"),
+            None
+        );
         let _ = fs::remove_dir_all(root);
     }
 
