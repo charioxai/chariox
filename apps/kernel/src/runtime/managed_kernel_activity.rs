@@ -18,6 +18,8 @@ const MAX_RETRY_DELAY: Duration = Duration::from_secs(60);
 
 pub(crate) struct ManagedKernelActivityReporter {
     binding: ManagedKernelActivityBinding,
+    #[cfg(test)]
+    confirmation_wait_started: Option<tokio::sync::mpsc::UnboundedSender<Duration>>,
 }
 
 struct ManagedKernelActivityBinding {
@@ -73,7 +75,11 @@ impl ManagedKernelActivityReporter {
             .as_ref()
             .ok_or_else(|| activity_error("confirmed managed kernel has no Cloud relay profile"))?;
         let binding = ManagedKernelActivityBinding::from_runtime(config, registration, profile)?;
-        Ok(Some(Self { binding }))
+        Ok(Some(Self {
+            binding,
+            #[cfg(test)]
+            confirmation_wait_started: None,
+        }))
     }
 
     pub(crate) async fn run(
@@ -124,6 +130,10 @@ impl ManagedKernelActivityReporter {
                                     "confirmation_delay_ms": confirmation_delay.as_millis(),
                                 }),
                             );
+                            #[cfg(test)]
+                            if let Some(wait_started) = &self.confirmation_wait_started {
+                                let _ = wait_started.send(confirmation_delay);
+                            }
                             let sleep = tokio::time::sleep(jittered(confirmation_delay));
                             tokio::pin!(sleep);
                             loop {
@@ -530,6 +540,7 @@ mod tests {
         activity_binding.api_url = format!("http://{address}");
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
+            confirmation_wait_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
@@ -624,6 +635,7 @@ mod tests {
         activity_binding.api_url = format!("http://{address}");
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
+            confirmation_wait_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -690,6 +702,7 @@ mod tests {
         activity_binding.api_url = format!("http://{address}");
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
+            confirmation_wait_started: None,
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_task = tokio::spawn(async move { reporter.run(runtime, shutdown_rx).await });
@@ -719,11 +732,11 @@ mod tests {
     async fn real_activity_transition_wakes_confirmation_backoff() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind activity fixture");
         let address = listener.local_addr().expect("activity fixture address");
-        let (second_ahead_tx, second_ahead_rx) = tokio::sync::oneshot::channel();
+        let (wait_started_tx, mut wait_started_rx) = tokio::sync::mpsc::unbounded_channel();
         let (transition_confirmation_tx, transition_confirmation_rx) =
             tokio::sync::oneshot::channel();
         let fixture = std::thread::spawn(move || {
-            for accepted_sequence in [51, 60] {
+            for accepted_sequence in [51, 60, 70] {
                 let (mut stream, _) = listener.accept().expect("accept activity report");
                 let _request = read_http_request(&mut stream);
                 write_http_response(
@@ -734,16 +747,12 @@ mod tests {
                     }),
                 );
             }
-            second_ahead_tx
-                .send(())
-                .expect("publish second ahead response");
-
             let (mut stream, _) = listener.accept().expect("accept transition confirmation");
             let confirmation = http_request_body(&read_http_request(&mut stream));
             write_http_response(
                 &mut stream,
                 &serde_json::json!({
-                    "acceptedSequence": 61,
+                    "acceptedSequence": 71,
                     "runningAgentCount": 1,
                 }),
             );
@@ -760,17 +769,24 @@ mod tests {
         activity_binding.api_url = format!("http://{address}");
         let reporter = ManagedKernelActivityReporter {
             binding: activity_binding,
+            confirmation_wait_started: Some(wait_started_tx),
         };
         let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
         let reporter_runtime = runtime.clone();
         let reporter_task =
             tokio::spawn(async move { reporter.run(reporter_runtime, shutdown_rx).await });
 
-        tokio::time::timeout(Duration::from_secs(4), second_ahead_rx)
-            .await
-            .expect("second ahead response should arrive")
-            .expect("activity fixture should stay available");
-        tokio::time::sleep(Duration::from_millis(250)).await;
+        for expected_delay in [
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            Duration::from_secs(4),
+        ] {
+            let actual_delay = tokio::time::timeout(Duration::from_secs(6), wait_started_rx.recv())
+                .await
+                .expect("confirmation wait should start")
+                .expect("activity reporter should stay available");
+            assert_eq!(actual_delay, expected_delay);
+        }
         runtime.start_active_turn_with_trace_id(
             "session-1",
             "agent-1",
@@ -784,7 +800,7 @@ mod tests {
             .await
             .expect("real activity transition should wake confirmation backoff")
             .expect("activity fixture should stay available");
-        assert_eq!(confirmation["sequence"], 61);
+        assert_eq!(confirmation["sequence"], 71);
         assert_eq!(confirmation["runningAgentCount"], 1);
 
         shutdown_tx.send(true).expect("stop activity reporter");

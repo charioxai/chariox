@@ -786,9 +786,9 @@ impl ProviderAccountProfileRegistry {
             }
         }
         let mut environment = locator.environment();
-        #[cfg(target_os = "macos")]
-        // Claude Code's macOS default uses its unscoped Keychain service. Injecting the
-        // conventional config directory changes the Keychain service and hides that login.
+        // Preserve Claude's provider-native default credential scope. Injecting the
+        // conventional config directory can select a different credential store, including
+        // a scoped Keychain service on macOS.
         if provider == "claude"
             && origin == ProviderAccountProfileOrigin::Default
             && matches!(
@@ -2752,7 +2752,6 @@ mod tests {
         (root, registry)
     }
 
-    #[cfg(target_os = "macos")]
     fn strip_persisted_claude_scope_for_legacy_fixture(path: &Path) {
         let mut document: serde_json::Value =
             serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
@@ -3468,9 +3467,8 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn ambient_default_claude_profile_does_not_force_a_scoped_keychain() {
+    fn ambient_default_claude_profile_preserves_native_credential_scope() {
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -3498,9 +3496,8 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
-    fn legacy_default_claude_profile_fails_safe_to_scoped_keychain() {
+    fn legacy_default_claude_profile_fails_safe_to_explicit_scope() {
         let _guard = crate::env_lock::lock();
         let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
         std::env::remove_var("CLAUDE_CONFIG_DIR");
@@ -3532,7 +3529,6 @@ mod tests {
         let _ = fs::remove_dir_all(root);
     }
 
-    #[cfg(target_os = "macos")]
     #[test]
     fn explicit_default_claude_config_dir_is_preserved() {
         let _guard = crate::env_lock::lock();

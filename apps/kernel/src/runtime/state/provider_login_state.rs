@@ -26,6 +26,7 @@ pub(in crate::runtime) struct ProviderLoginProcessRecord {
     pub owner_user_id: String,
     pub provider: String,
     pub account_profile: String,
+    pub credential_scope: String,
     pub login_id: String,
     pub state: ProviderLoginProcessState,
     pub backend: ProviderLoginProcessBackend,
@@ -125,14 +126,17 @@ impl ProviderLoginProcessStore {
             }
         }
         if records.values().any(|existing| {
-            existing.owner_user_id == record.owner_user_id
-                && existing.provider == record.provider
+            existing.provider == record.provider
                 && existing.state == ProviderLoginProcessState::Running
-                && (existing.account_profile == record.account_profile
-                    || record.provider == "claude")
+                && if record.provider == "claude" {
+                    existing.credential_scope == record.credential_scope
+                } else {
+                    existing.owner_user_id == record.owner_user_id
+                        && existing.account_profile == record.account_profile
+                }
         }) {
             return Err(login_error(if record.provider == "claude" {
-                "a Claude login is already running; finish or cancel it before authenticating another Claude profile"
+                "Claude authentication is temporarily busy; retry after the running login finishes or expires"
             } else {
                 "a provider login is already running for this account profile"
             }));
@@ -261,6 +265,7 @@ mod tests {
             owner_user_id: owner.to_string(),
             provider: "claude".to_string(),
             account_profile: "work".to_string(),
+            credential_scope: "claude-ambient".to_string(),
             login_id: login_id.to_string(),
             state: ProviderLoginProcessState::Running,
             backend: ProviderLoginProcessBackend::Terminal,
@@ -272,14 +277,16 @@ mod tests {
     }
 
     #[test]
-    fn login_processes_are_owner_scoped_and_single_flight_per_profile() {
+    fn login_process_queries_are_owner_scoped() {
         let store = ProviderLoginProcessStore::default();
         store.insert(record("owner-a", "login-a")).unwrap();
         assert!(store.has_running_for_profile("owner-a", "claude", "work"));
         assert!(!store.has_running_for_profile("owner-b", "claude", "work"));
         assert!(store.insert(record("owner-a", "login-b")).is_err());
         assert!(store.record_for_owner("owner-b", "login-a").is_err());
-        store.insert(record("owner-b", "login-b")).unwrap();
+        let mut owner_b = record("owner-b", "login-b");
+        owner_b.credential_scope = "claude-config:/profiles/owner-b".to_string();
+        store.insert(owner_b).unwrap();
         store
             .set_state(
                 "owner-a",
@@ -292,7 +299,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_logins_are_single_flight_per_owner_across_profiles() {
+    fn ambient_claude_logins_are_single_flight_per_owner_across_profiles() {
         let store = ProviderLoginProcessStore::default();
         store.insert(record("owner-a", "login-work")).unwrap();
 
@@ -300,6 +307,60 @@ mod tests {
         personal.account_profile = "personal".to_string();
 
         assert!(store.insert(personal).is_err());
+    }
+
+    #[test]
+    fn claude_logins_with_distinct_explicit_scopes_can_run_in_parallel() {
+        let store = ProviderLoginProcessStore::default();
+        let mut work = record("owner-a", "login-work");
+        work.credential_scope = "claude-config:/profiles/work".to_string();
+        store.insert(work).unwrap();
+
+        let mut personal = record("owner-a", "login-personal");
+        personal.account_profile = "personal".to_string();
+        personal.credential_scope = "claude-config:/profiles/personal".to_string();
+
+        store.insert(personal).unwrap();
+    }
+
+    #[test]
+    fn claude_logins_sharing_an_explicit_scope_are_single_flight() {
+        let store = ProviderLoginProcessStore::default();
+        let mut work = record("owner-a", "login-work");
+        work.credential_scope = "claude-config:/profiles/shared".to_string();
+        store.insert(work).unwrap();
+
+        let mut alias = record("owner-a", "login-alias");
+        alias.account_profile = "work-alias".to_string();
+        alias.credential_scope = "claude-config:/profiles/shared".to_string();
+
+        assert!(store.insert(alias).is_err());
+    }
+
+    #[test]
+    fn claude_logins_sharing_a_scope_are_single_flight_across_owners() {
+        let store = ProviderLoginProcessStore::default();
+        let mut owner_a = record("owner-a", "login-owner-a");
+        owner_a.credential_scope = "claude-config:/profiles/shared".to_string();
+        store.insert(owner_a).unwrap();
+
+        let mut owner_b = record("owner-b", "login-owner-b");
+        owner_b.credential_scope = "claude-config:/profiles/shared".to_string();
+
+        assert!(store.insert(owner_b).is_err());
+    }
+
+    #[test]
+    fn claude_logins_with_distinct_scopes_remain_independent_across_owners() {
+        let store = ProviderLoginProcessStore::default();
+        let mut owner_a = record("owner-a", "login-owner-a");
+        owner_a.credential_scope = "claude-config:/profiles/owner-a".to_string();
+        store.insert(owner_a).unwrap();
+
+        let mut owner_b = record("owner-b", "login-owner-b");
+        owner_b.credential_scope = "claude-config:/profiles/owner-b".to_string();
+
+        store.insert(owner_b).unwrap();
     }
 
     #[test]

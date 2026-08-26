@@ -781,7 +781,7 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
   const {
     hydrateCurrentAttachedSession, kernelEventSubscriptionController, syncKernelEventSubscription, recoverAttachedSessionAfterKernelRestart,
     transitionToNoSession, detachCurrentAttachment, rollbackAttachedSession, attachBinding, recoverProviderRun,
-    requestExit, requestWaitingRoom, restoreTerminalAndExit,
+    requestExit, requestWaitingRoom,
   } = createCliSessionLifecycleComposition({
     client, options, appLogger, renderer,
     sleep, formatError, supportsKernelEventStream, closingStateController,
