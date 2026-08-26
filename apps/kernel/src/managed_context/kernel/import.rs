@@ -1619,21 +1619,20 @@ fn ensure_tree_within_limits(
     maximum_entries: u64,
     allow_python_venv_symlink: bool,
 ) -> Result<(), DaemonError> {
-    let Some(root_entries) = read_materialized_directory(root, false)? else {
-        unreachable!("the scan root cannot be treated as a discovered child")
-    };
+    let root_entries = fs::read_dir(root)
+        .map_err(|error| import_io_error("inspect materialized kernel context", error))?;
     let mut stack = vec![root_entries];
     let mut bytes = 0_u64;
     let mut entries = 0_u64;
     while let Some(directory_entries) = stack.pop() {
         for entry in directory_entries {
+            account_materialized_entry(&mut bytes, &mut entries, maximum_bytes, maximum_entries)?;
             let Some(entry) = read_materialized_entry(entry)? else {
                 continue;
             };
             let Some(metadata) = materialized_entry_file_type(&entry)? else {
                 continue;
             };
-            let mut entry_bytes = 4096_u64;
             if metadata.is_symlink() {
                 let Some(target) = read_materialized_symlink(&entry.path())? else {
                     continue;
@@ -1647,7 +1646,8 @@ fn ensure_tree_within_limits(
                     ));
                 }
             } else if metadata.is_dir() {
-                let Some(child_entries) = read_materialized_directory(&entry.path(), true)? else {
+                let Some(child_entries) = read_discovered_materialized_directory(&entry.path())?
+                else {
                     continue;
                 };
                 stack.push(child_entries);
@@ -1655,17 +1655,11 @@ fn ensure_tree_within_limits(
                 let Some(size) = materialized_entry_size(&entry)? else {
                     continue;
                 };
-                entry_bytes = entry_bytes.saturating_add(size);
+                bytes = bytes.saturating_add(size);
+                ensure_materialized_tree_limits(bytes, entries, maximum_bytes, maximum_entries)?;
             } else {
                 return Err(import_error(
                     "materialized kernel context contains a special file",
-                ));
-            }
-            entries = entries.saturating_add(1);
-            bytes = bytes.saturating_add(entry_bytes);
-            if entries > maximum_entries || bytes > maximum_bytes {
-                return Err(import_error(
-                    "materialized kernel context exceeds its resource limits",
                 ));
             }
         }
@@ -1673,13 +1667,35 @@ fn ensure_tree_within_limits(
     Ok(())
 }
 
-fn read_materialized_directory(
-    path: &Path,
-    was_discovered: bool,
-) -> Result<Option<fs::ReadDir>, DaemonError> {
+fn account_materialized_entry(
+    bytes: &mut u64,
+    entries: &mut u64,
+    maximum_bytes: u64,
+    maximum_entries: u64,
+) -> Result<(), DaemonError> {
+    *bytes = bytes.saturating_add(4096);
+    *entries = entries.saturating_add(1);
+    ensure_materialized_tree_limits(*bytes, *entries, maximum_bytes, maximum_entries)
+}
+
+fn ensure_materialized_tree_limits(
+    bytes: u64,
+    entries: u64,
+    maximum_bytes: u64,
+    maximum_entries: u64,
+) -> Result<(), DaemonError> {
+    if entries > maximum_entries || bytes > maximum_bytes {
+        return Err(import_error(
+            "materialized kernel context exceeds its resource limits",
+        ));
+    }
+    Ok(())
+}
+
+fn read_discovered_materialized_directory(path: &Path) -> Result<Option<fs::ReadDir>, DaemonError> {
     match fs::read_dir(path) {
         Ok(entries) => Ok(Some(entries)),
-        Err(error) if was_discovered && error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(import_io_error(
             "inspect materialized kernel context",
             error,
@@ -2281,9 +2297,19 @@ mod tests {
         fs::create_dir_all(&vanished).expect("transient directory should create");
         fs::remove_dir(&vanished).expect("transient directory should disappear");
 
-        assert!(read_materialized_directory(&vanished, true)
+        let mut bytes = 0;
+        let mut entries = 0;
+        account_materialized_entry(
+            &mut bytes,
+            &mut entries,
+            MAX_MATERIALIZED_CONTEXT_BYTES,
+            MAX_MATERIALIZED_CONTEXT_ENTRIES,
+        )
+        .expect("discovered directory should count toward the scan budget");
+        assert!(read_discovered_materialized_directory(&vanished)
             .expect("a previously discovered nested directory may disappear during scanning")
             .is_none());
+        assert_eq!((bytes, entries), (4096, 1));
         let _ = fs::remove_dir_all(root);
     }
 
@@ -2293,7 +2319,13 @@ mod tests {
         fs::remove_dir(&root).expect("scan root should disappear");
 
         let error = ensure_tree_within_budget(&root).expect_err("missing root should fail");
-        assert!(error.to_string().contains("No such file or directory"));
+        assert!(matches!(
+            error,
+            DaemonError::ManagedContext {
+                operation: "inspect materialized kernel context",
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -2308,11 +2340,21 @@ mod tests {
             .expect("transient entry should read");
         fs::remove_file(&transient).expect("transient entry should disappear");
 
+        let mut bytes = 0;
+        let mut entries = 0;
+        account_materialized_entry(
+            &mut bytes,
+            &mut entries,
+            MAX_MATERIALIZED_CONTEXT_BYTES,
+            MAX_MATERIALIZED_CONTEXT_ENTRIES,
+        )
+        .expect("discovered entry should count toward the scan budget");
         assert_eq!(
             materialized_entry_size(&entry)
                 .expect("a previously discovered entry may disappear during scanning"),
             None
         );
+        assert_eq!((bytes, entries), (4096, 1));
         let _ = fs::remove_dir_all(root);
     }
 
