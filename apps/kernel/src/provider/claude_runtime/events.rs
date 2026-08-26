@@ -63,6 +63,11 @@ fn apply_stream_event(
         return;
     }
     if event_kind == "message_start" {
+        state.active_stream_message_id = event
+            .get("message")
+            .and_then(|message| message.get("id"))
+            .and_then(Value::as_str)
+            .map(str::to_string);
         if let Some(model) = event
             .get("message")
             .and_then(|message| message.get("model"))
@@ -80,7 +85,7 @@ fn apply_stream_event(
                     provider_run_id,
                     state,
                     batch,
-                    &claude_block_key(event, block_kind),
+                    &claude_stream_block_key(state, event, block_kind),
                     block_kind,
                     text,
                 );
@@ -102,7 +107,7 @@ fn apply_stream_event(
                         provider_run_id,
                         state,
                         batch,
-                        &claude_block_key(event, "text"),
+                        &claude_stream_block_key(state, event, "text"),
                         "text",
                         text,
                     );
@@ -118,7 +123,7 @@ fn apply_stream_event(
                         provider_run_id,
                         state,
                         batch,
-                        &claude_block_key(event, "thinking"),
+                        &claude_stream_block_key(state, event, "thinking"),
                         "thinking",
                         text,
                     );
@@ -255,7 +260,7 @@ fn apply_assistant_message(
             let Some(text) = claude_block_text(block, block_kind) else {
                 continue;
             };
-            let key = format!("{block_kind}:{index}");
+            let key = claude_assistant_block_key(state, message, block_kind, index);
             emit_authoritative_text(provider_run_id, state, batch, &key, block_kind, text);
             if state
                 .emitted_text_by_block
@@ -384,9 +389,44 @@ fn emit_authoritative_text(
     *emitted = text.to_string();
 }
 
-fn claude_block_key(event: &Value, block_kind: &str) -> String {
+fn claude_stream_block_key(
+    state: &ClaudeRuntimeState,
+    event: &Value,
+    block_kind: &str,
+) -> String {
     let index = event.get("index").and_then(Value::as_u64).unwrap_or(0);
-    format!("{block_kind}:{index}")
+    claude_scoped_block_key(state.active_stream_message_id.as_deref(), block_kind, index)
+}
+
+fn claude_assistant_block_key(
+    state: &mut ClaudeRuntimeState,
+    message: &Value,
+    block_kind: &str,
+    index: usize,
+) -> String {
+    let message_id = message.get("id").and_then(Value::as_str);
+    let key = claude_scoped_block_key(message_id, block_kind, index as u64);
+    if message_id.is_some() && !state.emitted_text_by_block.contains_key(&key) {
+        let legacy_key = claude_scoped_block_key(None, block_kind, index as u64);
+        if let Some(emitted) = state.emitted_text_by_block.remove(&legacy_key) {
+            state.emitted_text_by_block.insert(key.clone(), emitted);
+        }
+        if state.completed_text_blocks.remove(&legacy_key) {
+            state.completed_text_blocks.insert(key.clone());
+        }
+    }
+    key
+}
+
+fn claude_scoped_block_key(
+    message_id: Option<&str>,
+    block_kind: &str,
+    index: u64,
+) -> String {
+    match message_id {
+        Some(message_id) => format!("message:{message_id}:{block_kind}:{index}"),
+        None => format!("legacy:{block_kind}:{index}"),
+    }
 }
 
 fn claude_block_text<'a>(block: &'a Value, block_kind: &str) -> Option<&'a str> {

@@ -40,6 +40,7 @@ pub struct ClaudeRuntimeState {
     pub(super) active_execution_mode: AgentExecutionMode,
     pub(super) active_permission_level: AgentPermissionLevel,
     pub(super) session_id: Option<String>,
+    pub(super) active_stream_message_id: Option<String>,
     pub(super) active_turn_id: Option<String>,
     pub(super) active_prompt_message: Option<Value>,
     pub(super) turn_watchdog: ClaudeTurnWatchdog,
@@ -69,6 +70,7 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             .field("active_execution_mode", &self.active_execution_mode)
             .field("active_permission_level", &self.active_permission_level)
             .field("session_id", &self.session_id)
+            .field("active_stream_message_id", &self.active_stream_message_id)
             .field("active_turn_id", &self.active_turn_id)
             .field("turn_watchdog", &self.turn_watchdog)
             .field(

@@ -94,6 +94,7 @@ pub(crate) fn initialize_claude_runtime(
             active_execution_mode: run.execution_mode(),
             active_permission_level: run.permission_level(),
             session_id: Some(session_id),
+            active_stream_message_id: None,
             active_turn_id: None,
             active_prompt_message: None,
             turn_watchdog: Default::default(),
@@ -170,6 +171,7 @@ pub(crate) fn submit_claude_prompt(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
+    state.active_stream_message_id = None;
     state.emitted_text_by_block.clear();
     state.completed_text_blocks.clear();
     Ok(())
@@ -459,6 +461,7 @@ fn restart_claude_runtime(
     state.active_variant = run.variant().map(str::to_string);
     state.active_execution_mode = run.execution_mode();
     state.active_permission_level = run.permission_level();
+    state.active_stream_message_id = None;
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
@@ -586,6 +589,7 @@ mod tests {
                 active_execution_mode: AgentExecutionMode::Build,
                 active_permission_level: AgentPermissionLevel::Yolo,
                 session_id: None,
+                active_stream_message_id: None,
                 active_turn_id: Some("turn-1".to_string()),
                 active_prompt_message: None,
                 turn_watchdog: Default::default(),
@@ -1010,6 +1014,18 @@ mod tests {
             json!({
                 "type": "stream_event",
                 "event": {
+                    "type": "message_start",
+                    "message": { "id": "msg-1" }
+                }
+            }),
+            &mut replay,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
                     "type": "content_block_delta",
                     "index": 0,
                     "delta": { "type": "text_delta", "text": "CLAUDE_MANAGED_EMPTY_OK" }
@@ -1019,6 +1035,68 @@ mod tests {
         );
 
         assert!(replay.chunks.is_empty());
+    }
+
+    #[test]
+    fn reused_block_index_in_later_assistant_message_remains_streamable() {
+        let (mut state, mut first) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-1",
+                    "content": [{ "type": "text", "text": "first message" }]
+                }
+            }),
+            &mut first,
+        );
+        assert_eq!(first.chunks[0].bytes, b"first message");
+
+        let mut second_stream = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "message_start",
+                    "message": { "id": "msg-2" }
+                }
+            }),
+            &mut second_stream,
+        );
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "second" }
+                }
+            }),
+            &mut second_stream,
+        );
+        assert_eq!(second_stream.chunks[0].bytes, b"second");
+
+        let mut second_completed = ProviderPromptSignalBatch::default();
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "assistant",
+                "message": {
+                    "id": "msg-2",
+                    "content": [{ "type": "text", "text": "second message" }]
+                }
+            }),
+            &mut second_completed,
+        );
+        assert_eq!(second_completed.chunks[0].bytes, b" message");
     }
 
     #[test]
