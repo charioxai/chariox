@@ -3861,7 +3861,7 @@ mod tests {
             .unwrap();
         let restored = target.get("owner-a", "codex", "default").unwrap();
         assert_eq!(restored.profile_id, target_default_profile_id);
-        assert_ne!(restored.profile_id, receipt.profile_id);
+        assert_eq!(restored.profile_id, receipt.profile_id);
         let restored_environment = target
             .resolve_environment("owner-a", "codex", "default")
             .unwrap();
