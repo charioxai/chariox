@@ -1,25 +1,17 @@
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
-use std::sync::mpsc;
-use std::thread;
-use std::time::{Duration, Instant};
+use std::path::Path;
+use std::process::{Command, Stdio};
+use std::time::Duration;
 
-use portable_pty::{native_pty_system, CommandBuilder, PtySize};
+use wait_timeout::ChildExt;
 
 use crate::account_profile::ProviderAccountUsageSnapshot;
 use crate::error::DaemonError;
-use crate::provider::claude_runtime::new_claude_session_id;
 
 use super::mcp_config::create_claude_runtime_files_root;
-use super::usage_capture::materialize_claude_usage_capture;
 
-// Claude Code can publish its first authenticated status-line rate-limit
-// snapshot on the second refresh tick, about 15 seconds after a cold start.
 const CLAUDE_USAGE_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
-const CLAUDE_USAGE_PROBE_POLL_INTERVAL: Duration = Duration::from_millis(50);
-const CLAUDE_USAGE_MODAL_SETTLE_TIME: Duration = Duration::from_secs(10);
 const CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES: usize = 4 * 1024;
 
 pub(crate) fn probe_claude_account_usage(
@@ -41,52 +33,27 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    let profile_home_is_supported = linux_profile_home_is_supported();
-    validate_claude_probe_environment(environment, profile_home_is_supported)?;
-    let onboarding_state_path =
-        claude_onboarding_state_path(environment, std::env::var_os("HOME").map(PathBuf::from))
-            .ok_or_else(|| probe_error("Claude home is unavailable".to_string()))?;
-    super::ensure_claude_headless_onboarding_state_at(&onboarding_state_path)?;
+    validate_claude_probe_environment(environment, linux_profile_home_is_supported())?;
     let root = create_claude_runtime_files_root()?;
-    let workspace = materialize_claude_usage_probe_workspace(&onboarding_state_path)?;
-    super::ensure_claude_headless_workspace_state_at(&onboarding_state_path, &workspace)?;
-    let capture = materialize_claude_usage_capture(&root)?;
-    let settings_file = root.path().join("usage-probe-settings.json");
-    fs::write(
-        &settings_file,
-        serde_json::to_vec(&serde_json::json!({
-            "statusLine": {
-                "type": "command",
-                "command": capture.raw_command(),
-            }
-        }))
-        .map_err(|error| probe_error(format!("failed to encode settings: {error}")))?,
-    )
-    .map_err(|error| probe_error(format!("failed to write settings: {error}")))?;
+    let stdout_path = root.path().join("usage-result.json");
+    let stderr_path = root.path().join("usage-stderr.log");
+    let stdout = fs::File::create(&stdout_path)
+        .map_err(|error| probe_error(format!("failed to prepare Claude stdout: {error}")))?;
+    let stderr = fs::File::create(&stderr_path)
+        .map_err(|error| probe_error(format!("failed to prepare Claude stderr: {error}")))?;
 
-    let pty_system = native_pty_system();
-    let pair = pty_system
-        .openpty(PtySize {
-            rows: 24,
-            cols: 80,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|error| probe_error(format!("failed to open PTY: {error}")))?;
-    let mut command = CommandBuilder::new(executable);
-    let session_id = new_claude_session_id();
+    let mut command = Command::new(executable);
     command.args([
-        "--settings",
-        settings_file.to_string_lossy().as_ref(),
-        "--session-id",
-        &session_id,
+        "-p",
+        "/usage",
+        "--output-format",
+        "json",
+        "--no-session-persistence",
         "--no-chrome",
-        // The private PTY has no terminal emulator attached. Screen-reader
-        // mode prevents Claude's full-screen renderer from waiting on
-        // terminal capability replies before starting the status line.
-        "--ax-screen-reader",
+        "--tools",
+        "",
     ]);
-    command.cwd(&workspace);
+    command.current_dir(root.path());
     for (name, value) in environment {
         command.env(name, value);
     }
@@ -99,172 +66,148 @@ fn probe_claude_account_usage_with_timeout(
         command.env_remove(name);
     }
     command.env("DISABLE_AUTOUPDATER", "1");
-    command.env("TERM", "xterm-256color");
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr));
 
-    let mut child = pair
-        .slave
-        .spawn_command(command)
+    let mut child = command
+        .spawn()
         .map_err(|error| probe_error(format!("failed to start Claude: {error}")))?;
-    drop(pair.slave);
-    let mut reader = match pair.master.try_clone_reader() {
-        Ok(reader) => reader,
-        Err(error) => {
+    let status = match child.wait_timeout(timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(probe_error(format!("failed to drain Claude PTY: {error}")));
+            return Err(probe_error(format!(
+                "Claude did not report usage within {} seconds{}",
+                timeout.as_secs(),
+                diagnostic_suffix(&stderr_path)
+            )));
         }
-    };
-    let mut writer = match pair.master.take_writer() {
-        Ok(writer) => writer,
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
             return Err(probe_error(format!(
-                "failed to control Claude PTY: {error}"
+                "failed to wait for Claude usage: {error}"
             )));
         }
     };
-    let (output_tx, output_rx) = mpsc::sync_channel(64);
-    let reader_thread = thread::Builder::new()
-        .name("chariox-claude-usage-probe-reader".to_string())
-        .stack_size(128 * 1024)
-        .spawn(move || {
-            let mut buffer = [0_u8; 4096];
-            while let Ok(size) = reader.read(&mut buffer) {
-                if size == 0 {
-                    break;
-                }
-                let _ = output_tx.try_send(buffer[..size].to_vec());
-            }
-        })
-        .map_err(|error| {
-            let _ = child.kill();
-            let _ = child.wait();
-            probe_error(format!("failed to start Claude PTY drain: {error}"))
-        })?;
-
-    let deadline = Instant::now() + timeout;
-    let mut usage_command_sent_at = None;
-    let mut usage_modal_closed = false;
-    let mut terminal_output = Vec::new();
-    let mut last_status_line_fields = Vec::new();
-    let result = loop {
-        drain_terminal_output(&output_rx, &mut terminal_output);
-        if let Ok(contents) = fs::read_to_string(capture.usage_file()) {
-            if !contents.trim().is_empty() {
-                if let Ok(value) = serde_json::from_str::<serde_json::Value>(&contents) {
-                    if let Some(mut usage) =
-                        crate::provider::claude_status_line_usage_snapshot(&value)
-                    {
-                        usage.profile_id = account_profile.to_string();
-                        break Ok(usage);
-                    }
-                    if let Some(object) = value.as_object() {
-                        last_status_line_fields = object.keys().cloned().collect();
-                    }
-                    if usage_command_sent_at.is_none() {
-                        if let Err(error) =
-                            writer.write_all(b"/usage\r").and_then(|()| writer.flush())
-                        {
-                            break Err(probe_error(format!(
-                                "failed to request Claude usage: {error}"
-                            )));
-                        }
-                        usage_command_sent_at = Some(Instant::now());
-                    }
-                }
-            }
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                break Err(probe_error(format!(
-                    "Claude exited before reporting usage ({status})"
-                )));
-            }
-            Ok(None) => {}
-            Err(error) => {
-                break Err(probe_error(format!(
-                    "failed to inspect Claude usage probe: {error}"
-                )));
-            }
-        }
-        if Instant::now() >= deadline {
-            break Err(probe_error(format!(
-                "Claude did not report usage within {} seconds",
-                timeout.as_secs()
-            )));
-        }
-        if !usage_modal_closed
-            && usage_command_sent_at
-                .is_some_and(|sent_at| sent_at.elapsed() >= CLAUDE_USAGE_MODAL_SETTLE_TIME)
-        {
-            // `/usage` is a provider-native account command and does not send
-            // a model prompt. Closing its modal makes Claude publish the
-            // refreshed values through the documented status-line payload.
-            if let Err(error) = writer.write_all(b"\x1b").and_then(|()| writer.flush()) {
-                break Err(probe_error(format!(
-                    "failed to close Claude usage view: {error}"
-                )));
-            }
-            usage_modal_closed = true;
-        }
-        thread::sleep(CLAUDE_USAGE_PROBE_POLL_INTERVAL);
-    };
-
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(pair.master);
-    let _ = reader_thread.join();
-    drain_terminal_output(&output_rx, &mut terminal_output);
-    let result = match (result, cleanup_probe_session(environment, &session_id)) {
-        (Ok(usage), Ok(())) => Ok(usage),
-        (Ok(_), Err(error)) => Err(error),
-        (Err(error), Ok(())) => Err(error),
-        (Err(error), Err(cleanup_error)) => Err(append_probe_error(
-            error,
-            format!("failed to clean the ephemeral Claude session: {cleanup_error}"),
-        )),
-    };
-    result.map_err(|error| {
-        let terminal = terminal_diagnostic(&terminal_output);
-        let status_line = (!last_status_line_fields.is_empty())
-            .then(|| format!("status-line fields: {}", last_status_line_fields.join(", ")));
-        let diagnostic = match (terminal.is_empty(), status_line) {
-            (true, None) => return error,
-            (true, Some(status_line)) => status_line,
-            (false, None) => format!("Claude terminal: {terminal}"),
-            (false, Some(status_line)) => {
-                format!("{status_line}; Claude terminal: {terminal}")
-            }
-        };
-        append_probe_error(error, diagnostic)
-    })
-}
-
-fn materialize_claude_usage_probe_workspace(state_path: &Path) -> Result<PathBuf, DaemonError> {
-    let parent = state_path
-        .parent()
-        .ok_or_else(|| probe_error("Claude config directory is unavailable".to_string()))?;
-    let workspace = parent.join(".chariox-usage-probe-workspace");
-    match fs::create_dir(&workspace) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(probe_error(format!(
-                "failed to create probe workspace: {error}"
-            )))
-        }
-    }
-    let metadata = fs::symlink_metadata(&workspace)
-        .map_err(|error| probe_error(format!("failed to inspect probe workspace: {error}")))?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+    if !status.success() {
         return Err(probe_error(format!(
-            "Claude usage probe workspace is not a regular directory: {}",
-            workspace.display()
+            "Claude exited before reporting usage ({status}){}",
+            diagnostic_suffix(&stderr_path)
         )));
     }
-    fs::canonicalize(&workspace)
-        .map_err(|error| probe_error(format!("failed to resolve probe workspace: {error}")))
+
+    let output = fs::read(&stdout_path)
+        .map_err(|error| probe_error(format!("failed to read Claude usage: {error}")))?;
+    let result: serde_json::Value = serde_json::from_slice(&output).map_err(|error| {
+        probe_error(format!(
+            "Claude returned invalid usage JSON: {error}{}",
+            diagnostic_suffix(&stderr_path)
+        ))
+    })?;
+    let text = validated_claude_usage_result(&result)?;
+    let mut usage = claude_usage_snapshot_from_text(text).ok_or_else(|| {
+        probe_error("Claude did not return subscription usage windows".to_string())
+    })?;
+    usage.profile_id = account_profile.to_string();
+    usage.source = "claude.native_usage".to_string();
+    for meter in &mut usage.meters {
+        meter.source = "claude.native_usage".to_string();
+    }
+    Ok(usage)
+}
+
+fn validated_claude_usage_result(value: &serde_json::Value) -> Result<&str, DaemonError> {
+    let success = value.get("type").and_then(serde_json::Value::as_str) == Some("result")
+        && value.get("subtype").and_then(serde_json::Value::as_str) == Some("success")
+        && value.get("is_error").and_then(serde_json::Value::as_bool) == Some(false);
+    if !success {
+        return Err(probe_error(
+            "Claude returned an unsuccessful usage result".to_string(),
+        ));
+    }
+    let no_model_activity = value
+        .get("duration_api_ms")
+        .and_then(serde_json::Value::as_u64)
+        == Some(0)
+        && value.get("num_turns").and_then(serde_json::Value::as_u64) == Some(0)
+        && value
+            .get("total_cost_usd")
+            .and_then(serde_json::Value::as_f64)
+            == Some(0.0)
+        && [
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "output_tokens",
+        ]
+        .into_iter()
+        .all(|field| {
+            value
+                .get("usage")
+                .and_then(|usage| usage.get(field))
+                .and_then(serde_json::Value::as_u64)
+                == Some(0)
+        });
+    if !no_model_activity {
+        return Err(probe_error(
+            "Claude /usage unexpectedly performed model activity".to_string(),
+        ));
+    }
+    value
+        .get("result")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| probe_error("Claude usage result text is unavailable".to_string()))
+}
+
+fn claude_usage_snapshot_from_text(text: &str) -> Option<ProviderAccountUsageSnapshot> {
+    let mut rate_limits = serde_json::Map::new();
+    for line in text.lines().map(str::trim) {
+        if let Some(percent) = usage_percent(line, "Current session:") {
+            rate_limits.insert(
+                "five_hour".to_string(),
+                serde_json::json!({ "used_percentage": percent }),
+            );
+        } else if let Some(percent) = usage_percent(line, "Current week (all models):")
+            .or_else(|| usage_percent(line, "Current week:"))
+        {
+            rate_limits.insert(
+                "seven_day".to_string(),
+                serde_json::json!({ "used_percentage": percent }),
+            );
+        }
+    }
+    crate::provider::claude_status_line_usage_snapshot(&serde_json::json!({
+        "rate_limits": rate_limits,
+    }))
+}
+
+fn usage_percent(line: &str, prefix: &str) -> Option<f64> {
+    let percent = line
+        .strip_prefix(prefix)?
+        .trim_start()
+        .split_once('%')?
+        .0
+        .trim()
+        .parse::<f64>()
+        .ok()?;
+    (percent.is_finite() && (0.0..=100.0).contains(&percent)).then_some(percent)
+}
+
+fn diagnostic_suffix(path: &Path) -> String {
+    let Ok(mut bytes) = fs::read(path) else {
+        return String::new();
+    };
+    if bytes.len() > CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES {
+        bytes.drain(..bytes.len() - CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES);
+    }
+    let diagnostic = terminal_diagnostic(&bytes);
+    (!diagnostic.is_empty())
+        .then(|| format!("; Claude stderr: {diagnostic}"))
+        .unwrap_or_default()
 }
 
 fn validate_claude_probe_environment(
@@ -282,129 +225,6 @@ fn validate_claude_probe_environment(
 
 fn linux_profile_home_is_supported() -> bool {
     cfg!(target_os = "linux")
-}
-
-fn cleanup_probe_session(
-    environment: &BTreeMap<String, String>,
-    session_id: &str,
-) -> Result<(), DaemonError> {
-    let config_root = claude_config_root(
-        environment,
-        std::env::var_os("HOME").map(PathBuf::from),
-        linux_profile_home_is_supported(),
-    )
-    .ok_or_else(|| probe_error("cannot locate Claude account storage".to_string()))?;
-    let projects_root = config_root.join("projects");
-    let metadata = match fs::symlink_metadata(&projects_root) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(probe_error(format!(
-                "failed to inspect Claude projects storage: {error}"
-            )))
-        }
-    };
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        return Err(probe_error(format!(
-            "Claude projects storage is not a regular directory: {}",
-            projects_root.display()
-        )));
-    }
-    let transcript_name = format!("{session_id}.jsonl");
-    for entry in fs::read_dir(&projects_root)
-        .map_err(|error| probe_error(format!("failed to inspect Claude projects: {error}")))?
-    {
-        let entry = entry
-            .map_err(|error| probe_error(format!("failed to inspect Claude project: {error}")))?;
-        let project_type = entry.file_type().map_err(|error| {
-            probe_error(format!("failed to inspect Claude project type: {error}"))
-        })?;
-        if project_type.is_symlink() || !project_type.is_dir() {
-            continue;
-        }
-        let transcript = entry.path().join(&transcript_name);
-        let transcript_metadata = match fs::symlink_metadata(&transcript) {
-            Ok(metadata) => metadata,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(probe_error(format!(
-                    "failed to inspect Claude probe transcript {}: {error}",
-                    transcript.display()
-                )))
-            }
-        };
-        if transcript_metadata.file_type().is_symlink() || !transcript_metadata.is_file() {
-            return Err(probe_error(format!(
-                "refusing to remove non-regular Claude probe transcript: {}",
-                transcript.display()
-            )));
-        }
-        fs::remove_file(&transcript).map_err(|error| {
-            probe_error(format!(
-                "failed to remove Claude probe transcript {}: {error}",
-                transcript.display()
-            ))
-        })?;
-    }
-    Ok(())
-}
-
-fn claude_config_root(
-    environment: &BTreeMap<String, String>,
-    inherited_home: Option<PathBuf>,
-    profile_home_is_supported: bool,
-) -> Option<PathBuf> {
-    environment
-        .get("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| {
-            profile_home_is_supported
-                .then(|| {
-                    environment
-                        .get("HOME")
-                        .map(|home| PathBuf::from(home).join(".claude"))
-                })
-                .flatten()
-        })
-        .or_else(|| inherited_home.map(|home| home.join(".claude")))
-}
-
-fn claude_onboarding_state_path(
-    environment: &BTreeMap<String, String>,
-    inherited_home: Option<PathBuf>,
-) -> Option<PathBuf> {
-    environment
-        .get("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| environment.get("HOME").map(PathBuf::from))
-        .or(inherited_home)
-        .map(|root| root.join(".claude.json"))
-}
-
-fn append_probe_error(error: DaemonError, diagnostic: String) -> DaemonError {
-    match error {
-        DaemonError::LocalTransport { operation, message } => DaemonError::LocalTransport {
-            operation,
-            message: format!("{message}; {diagnostic}"),
-        },
-        error => error,
-    }
-}
-
-fn probe_error(message: String) -> DaemonError {
-    DaemonError::LocalTransport {
-        operation: "refresh Claude usage",
-        message,
-    }
-}
-
-fn drain_terminal_output(receiver: &mpsc::Receiver<Vec<u8>>, output: &mut Vec<u8>) {
-    for chunk in receiver.try_iter() {
-        output.extend_from_slice(&chunk);
-        if output.len() > CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES {
-            output.drain(..output.len() - CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES);
-        }
-    }
 }
 
 fn terminal_diagnostic(output: &[u8]) -> String {
@@ -429,6 +249,13 @@ fn terminal_diagnostic(output: &[u8]) -> String {
     cleaned.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+fn probe_error(message: String) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "refresh Claude usage",
+        message,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -439,11 +266,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn probes_both_usage_windows_without_replacing_home() {
-        if std::process::Command::new("node")
-            .arg("--version")
-            .output()
-            .is_err()
-        {
+        if Command::new("node").arg("--version").output().is_err() {
             return;
         }
         let fixture = std::env::temp_dir().join(format!(
@@ -458,50 +281,29 @@ mod tests {
         let mut file = fs::File::create(&executable).expect("fake Claude executable");
         file.write_all(
             br#"#!/usr/bin/env node
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
-import { join } from "node:path"
-import { spawnSync } from "node:child_process"
-const settingsPath = process.argv[process.argv.indexOf("--settings") + 1]
-const sessionId = process.argv[process.argv.indexOf("--session-id") + 1]
-for (const flag of ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]) {
-  if (process.argv.includes(flag)) throw new Error(`Claude usage probe must not use ${flag}`)
+import { writeFileSync } from "node:fs"
+const expected = ["-p", "/usage", "--output-format", "json", "--no-session-persistence", "--no-chrome", "--tools", ""]
+if (JSON.stringify(process.argv.slice(2)) !== JSON.stringify(expected)) {
+  throw new Error(`unexpected Claude usage arguments: ${JSON.stringify(process.argv.slice(2))}`)
 }
-const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
-const onboarding = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8"))
-if (onboarding.hasCompletedOnboarding !== true) throw new Error("Claude onboarding state is missing")
-if (onboarding.projects?.[process.cwd()]?.hasTrustDialogAccepted !== true) {
-  throw new Error(`Claude usage probe workspace is not trusted: ${process.cwd()}`)
-}
-const projectDir = join(process.env.CLAUDE_CONFIG_DIR, "projects", "fixture")
-const transcriptPath = join(projectDir, `${sessionId}.jsonl`)
-mkdirSync(projectDir, { recursive: true })
-writeFileSync(transcriptPath, "")
 writeFileSync(process.env.CHARIOX_PROBE_TEST_ENV_FILE, JSON.stringify({
   home: process.env.HOME,
   claudeConfigDir: process.env.CLAUDE_CONFIG_DIR,
   anthropicApiKey: process.env.ANTHROPIC_API_KEY,
   anthropicAuthToken: process.env.ANTHROPIC_AUTH_TOKEN,
   anthropicBaseUrl: process.env.ANTHROPIC_BASE_URL,
-  anthropicCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS,
-  transcriptPath
+  anthropicCustomHeaders: process.env.ANTHROPIC_CUSTOM_HEADERS
 }))
-const emitStatusLine = (input) => spawnSync("/bin/sh", ["-c", settings.statusLine.command], {
-  input: JSON.stringify(input)
-})
-emitStatusLine({
-  session_id: sessionId,
-  transcript_path: transcriptPath,
-  model: { display_name: "Fixture" }
-})
-process.stdin.setRawMode?.(true)
-process.stdin.on("data", (chunk) => {
-  if (!chunk.toString().includes("/usage")) return
-  emitStatusLine({ session_id: sessionId, transcript_path: transcriptPath, rate_limits: {
-      five_hour: { used_percentage: 17, resets_at: 1800000000 },
-      seven_day: { used_percentage: 41, resets_at: 1800100000 }
-    }})
-})
-process.stdin.resume()
+process.stdout.write(JSON.stringify({
+  type: "result",
+  subtype: "success",
+  is_error: false,
+  duration_api_ms: 0,
+  num_turns: 0,
+  total_cost_usd: 0,
+  result: "Current session: 17% used\nCurrent week (all models): 41% used \\u00b7 resets Sep 2 at 11:59pm (Europe/Helsinki)",
+  usage: { input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0, output_tokens: 0 }
+}))
 "#,
         )
         .expect("fake Claude source");
@@ -545,6 +347,7 @@ process.stdin.resume()
         assert_eq!(usage.meters.len(), 2);
         assert_eq!(usage.meters[0].used_percent, Some(17.0));
         assert_eq!(usage.meters[1].used_percent, Some(41.0));
+        assert_eq!(usage.source, "claude.native_usage");
         let observed: serde_json::Value =
             serde_json::from_slice(&fs::read(&observed_environment).expect("observed environment"))
                 .expect("environment JSON");
@@ -562,109 +365,63 @@ process.stdin.resume()
             assert!(observed.get(key).is_none(), "{key} must be removed");
         }
         assert!(
-            !Path::new(
-                observed["transcriptPath"]
-                    .as_str()
-                    .expect("transcript path")
-            )
-            .exists(),
-            "the probe must clean only its generated Claude transcript"
+            !claude_config_dir.exists(),
+            "the non-interactive probe must not mutate Claude profile state"
         );
         let _ = fs::remove_dir_all(fixture);
     }
 
-    #[cfg(unix)]
     #[test]
-    fn refuses_to_remove_a_symlinked_probe_transcript() {
-        use std::os::unix::fs::symlink;
+    fn rejects_model_activity_in_usage_result() {
+        let value = serde_json::json!({
+            "type": "result",
+            "subtype": "success",
+            "is_error": false,
+            "duration_api_ms": 1,
+            "num_turns": 1,
+            "total_cost_usd": 0.01,
+            "result": "Current session: 17% used",
+            "usage": {
+                "input_tokens": 1,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "output_tokens": 1
+            }
+        });
 
-        let fixture = std::env::temp_dir().join(format!(
-            "chariox-claude-usage-cleanup-test-{}-{:016x}",
-            std::process::id(),
-            rand::random::<u64>()
-        ));
-        let project = fixture.join("projects/fixture");
-        fs::create_dir_all(&project).expect("project directory");
-        let target = fixture.join("preserve.jsonl");
-        fs::write(&target, "preserve").expect("target transcript");
-        let session_id = new_claude_session_id();
-        symlink(&target, project.join(format!("{session_id}.jsonl"))).expect("transcript symlink");
+        let error = validated_claude_usage_result(&value)
+            .expect_err("model activity must fail the usage probe");
 
-        let error = cleanup_probe_session(
-            &BTreeMap::from([(
-                "CLAUDE_CONFIG_DIR".to_string(),
-                fixture.display().to_string(),
-            )]),
-            &session_id,
+        assert!(error.to_string().contains("performed model activity"));
+    }
+
+    #[test]
+    fn parses_official_claude_usage_text() {
+        let usage = claude_usage_snapshot_from_text(
+            "You are currently using your subscription\n\nCurrent session: 12.5% used\nCurrent week (all models): 84% used · resets Sep 2 at 11:59pm (Europe/Helsinki)",
         )
-        .expect_err("symlink must be rejected");
-        assert!(error.to_string().contains("refusing to remove non-regular"));
-        assert_eq!(
-            fs::read_to_string(&target).expect("preserved target"),
-            "preserve"
-        );
-        let _ = fs::remove_dir_all(fixture);
+        .expect("usage snapshot");
+
+        assert_eq!(usage.meters.len(), 2);
+        assert_eq!(usage.meters[0].used_percent, Some(12.5));
+        assert_eq!(usage.meters[1].used_percent, Some(84.0));
+    }
+
+    #[test]
+    fn rejects_account_home_override_when_profile_home_is_unsupported() {
+        let environment = BTreeMap::from([("HOME".to_string(), "/tmp/account".to_string())]);
+
+        let error = validate_claude_probe_environment(&environment, false)
+            .expect_err("unsupported HOME override must fail");
+
+        assert!(error.to_string().contains("supported only on Linux"));
     }
 
     #[test]
     fn terminal_diagnostics_strip_control_sequences_and_collapse_whitespace() {
         assert_eq!(
-            terminal_diagnostic(b"\x1b[31mLogin expired\x1b[0m\r\n  run auth"),
-            "Login expired run auth"
-        );
-    }
-
-    #[test]
-    fn rejects_account_environment_home_override() {
-        let environment = BTreeMap::from([("HOME".to_string(), "/wrong/home".to_string())]);
-
-        let error = validate_claude_probe_environment(&environment, false)
-            .expect_err("profile HOME must be rejected");
-        assert!(error.to_string().contains("supported only on Linux"));
-        assert!(error.to_string().contains("refusing to override HOME"));
-    }
-
-    #[test]
-    fn linux_profile_home_selects_the_matching_cleanup_root() {
-        let environment = BTreeMap::from([("HOME".to_string(), "/profile/home".to_string())]);
-
-        validate_claude_probe_environment(&environment, true)
-            .expect("Linux profile HOME should be supported");
-        assert_eq!(
-            claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
-            Some(PathBuf::from("/profile/home/.claude"))
-        );
-        assert_eq!(
-            claude_onboarding_state_path(&environment, Some(PathBuf::from("/inherited/home")),),
-            Some(PathBuf::from("/profile/home/.claude.json"))
-        );
-    }
-
-    #[test]
-    fn explicit_claude_config_dir_precedes_linux_profile_home() {
-        let environment = BTreeMap::from([
-            ("HOME".to_string(), "/profile/home".to_string()),
-            (
-                "CLAUDE_CONFIG_DIR".to_string(),
-                "/profile/claude".to_string(),
-            ),
-        ]);
-
-        assert_eq!(
-            claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
-            Some(PathBuf::from("/profile/claude"))
-        );
-        assert_eq!(
-            claude_onboarding_state_path(&environment, Some(PathBuf::from("/inherited/home")),),
-            Some(PathBuf::from("/profile/claude/.claude.json"))
-        );
-    }
-
-    #[test]
-    fn inherited_home_selects_the_claude_onboarding_state_file() {
-        assert_eq!(
-            claude_onboarding_state_path(&BTreeMap::new(), Some(PathBuf::from("/inherited/home")),),
-            Some(PathBuf::from("/inherited/home/.claude.json"))
+            terminal_diagnostic(b"\x1b[31mLogin\x1b[0m\r\n  required\t now"),
+            "Login required now"
         );
     }
 }

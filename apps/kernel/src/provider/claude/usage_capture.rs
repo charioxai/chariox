@@ -16,16 +16,8 @@ impl ClaudeUsageCapture {
     }
 
     pub(super) fn command(&self) -> String {
-        self.command_with_environment("CHARIOX_CLAUDE_CAPTURE_ALL=0 ")
-    }
-
-    pub(super) fn raw_command(&self) -> String {
-        self.command_with_environment("CHARIOX_CLAUDE_CAPTURE_ALL=1 ")
-    }
-
-    fn command_with_environment(&self, environment: &str) -> String {
         format!(
-            "{environment}CHARIOX_CLAUDE_USAGE_FILE={} node {}",
+            "CHARIOX_CLAUDE_USAGE_FILE={} node {}",
             shell_quote_path(&self.usage_file),
             shell_quote_path(&self.handler_file),
         )
@@ -67,7 +59,7 @@ if (!raw) process.exit(0)
 
 try {
   const input = JSON.parse(raw)
-  if (!input.rate_limits && process.env.CHARIOX_CLAUDE_CAPTURE_ALL !== "1") process.exit(0)
+  if (!input.rate_limits) process.exit(0)
   const target = process.env.CHARIOX_CLAUDE_USAGE_FILE
   if (!target) process.exit(0)
   const temporary = `${target}.${process.pid}.tmp`
