@@ -336,19 +336,36 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                     ),
                 });
             }
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0000_0400;
+                if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "initialize Claude headless onboarding state",
+                        message: format!(
+                            "Claude onboarding state is not a regular file: {}",
+                            state_path.display()
+                        ),
+                    });
+                }
+            }
             let mut bytes = Vec::with_capacity(metadata.len() as usize);
             file.read_to_end(&mut bytes)
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "initialize Claude headless onboarding state",
                     message: error.to_string(),
                 })?;
-            let mut state =
+            let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
+                serde_json::Value::Object(serde_json::Map::new())
+            } else {
                 serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
                     DaemonError::LocalTransport {
                         operation: "initialize Claude headless onboarding state",
                         message: format!("Claude onboarding state is invalid JSON: {error}"),
                     }
-                })?;
+                })?
+            };
             let object = state
                 .as_object_mut()
                 .ok_or_else(|| DaemonError::LocalTransport {
@@ -447,7 +464,15 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         }
     };
     let _ = fs::remove_file(pending_path);
-    result
+    result?;
+    #[cfg(unix)]
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: error.to_string(),
+        })?;
+    Ok(())
 }
 
 fn claude_provider_env_remove(request: Option<&LaunchProviderRequest>) -> Vec<String> {
@@ -932,6 +957,27 @@ mod tests {
             fs::read(&state_path).expect("invalid state should remain"),
             b"not JSON\n"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn completes_empty_claude_headless_state() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-empty-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&state_path, b" \n").expect("empty state should write");
+
+        ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect("empty state should be completed");
+
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(&state_path).expect("completed state should remain readable"),
+        )
+        .expect("completed state should remain JSON");
+        assert_eq!(state["hasCompletedOnboarding"], true);
         let _ = fs::remove_dir_all(&root);
     }
 
