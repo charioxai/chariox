@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::env;
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use rand::RngCore;
@@ -296,9 +296,6 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
 pub(super) fn ensure_claude_headless_onboarding_state_at(
     state_path: &Path,
 ) -> Result<(), DaemonError> {
-    if state_path.exists() {
-        return Ok(());
-    }
     let parent = state_path
         .parent()
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -309,6 +306,92 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         operation: "initialize Claude headless onboarding state",
         message: error.to_string(),
     })?;
+    let mut state_options = fs::OpenOptions::new();
+    state_options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        state_options.custom_flags(libc::O_NOFOLLOW);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+        state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
+    }
+    let existing_state = match state_options.open(state_path) {
+        Ok(mut file) => {
+            let metadata = file
+                .metadata()
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            if !metadata.is_file() {
+                return Err(DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: format!(
+                        "Claude onboarding state is not a regular file: {}",
+                        state_path.display()
+                    ),
+                });
+            }
+            let mut bytes = Vec::with_capacity(metadata.len() as usize);
+            file.read_to_end(&mut bytes)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            let mut state =
+                serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
+                    DaemonError::LocalTransport {
+                        operation: "initialize Claude headless onboarding state",
+                        message: format!("Claude onboarding state is invalid JSON: {error}"),
+                    }
+                })?;
+            let object = state
+                .as_object_mut()
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: "Claude onboarding state is not a JSON object".to_string(),
+                })?;
+            if object
+                .get("hasCompletedOnboarding")
+                .and_then(serde_json::Value::as_bool)
+                == Some(true)
+            {
+                return Ok(());
+            }
+            object.insert(
+                "hasCompletedOnboarding".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            let mut bytes =
+                serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: error.to_string(),
+                })?;
+            bytes.push(b'\n');
+            Some(bytes)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => {
+            #[cfg(unix)]
+            if error.raw_os_error() == Some(libc::ELOOP) {
+                return Err(DaemonError::LocalTransport {
+                    operation: "initialize Claude headless onboarding state",
+                    message: format!(
+                        "Claude onboarding state is not a regular file: {}",
+                        state_path.display()
+                    ),
+                });
+            }
+            return Err(DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: error.to_string(),
+            });
+        }
+    };
     let mut nonce = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut nonce);
     let pending_path = parent.join(format!(
@@ -330,8 +413,11 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                 operation: "initialize Claude headless onboarding state",
                 message: error.to_string(),
             })?;
+    let contents = existing_state
+        .as_deref()
+        .unwrap_or(b"{\"hasCompletedOnboarding\":true}\n");
     let write_result = pending
-        .write_all(b"{\"hasCompletedOnboarding\":true}\n")
+        .write_all(contents)
         .and_then(|()| pending.sync_all());
     if let Err(error) = write_result {
         drop(pending);
@@ -342,13 +428,23 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         });
     }
     drop(pending);
-    let result = match fs::hard_link(&pending_path, &state_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
-        Err(error) => Err(DaemonError::LocalTransport {
+    let result = if existing_state.is_some() {
+        fs::rename(&pending_path, state_path).map_err(|error| DaemonError::LocalTransport {
             operation: "initialize Claude headless onboarding state",
             message: error.to_string(),
-        }),
+        })
+    } else {
+        match fs::hard_link(&pending_path, state_path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                let _ = fs::remove_file(&pending_path);
+                return ensure_claude_headless_onboarding_state_at(state_path);
+            }
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: error.to_string(),
+            }),
+        }
     };
     let _ = fs::remove_file(pending_path);
     result
@@ -456,8 +552,9 @@ mod tests {
     };
 
     use super::{
-        claude_provider_catalog, ensure_claude_headless_onboarding_state, plan_claude_launch,
-        resolve_claude_executable, CLAUDE_MCP_CONFIG_PLACEHOLDER,
+        claude_provider_catalog, ensure_claude_headless_onboarding_state,
+        ensure_claude_headless_onboarding_state_at, plan_claude_launch, resolve_claude_executable,
+        CLAUDE_MCP_CONFIG_PLACEHOLDER,
     };
 
     fn env_guard() -> crate::env_lock::EnvGuard {
@@ -767,7 +864,7 @@ mod tests {
     }
 
     #[test]
-    fn preserves_existing_claude_headless_state() {
+    fn completes_existing_claude_headless_state_without_dropping_fields() {
         let _guard = env_guard();
         let root = std::env::temp_dir().join(format!(
             "chariox-claude-existing-headless-state-{}",
@@ -787,9 +884,79 @@ mod tests {
         } else {
             std::env::remove_var("CLAUDE_CONFIG_DIR");
         }
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(&state_path).expect("completed state should remain readable"),
+        )
+        .expect("completed state should remain JSON");
+        assert_eq!(state["existing"], true);
+        assert_eq!(state["hasCompletedOnboarding"], true);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn leaves_completed_claude_headless_state_byte_identical() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-completed-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        let existing = b"{\"existing\":true,\"hasCompletedOnboarding\":true}\n";
+        fs::write(&state_path, existing).expect("completed state should write");
+
+        ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect("completed state should be accepted");
+
         assert_eq!(
-            fs::read_to_string(&state_path).expect("existing state should remain"),
-            "{\"existing\":true}\n"
+            fs::read(&state_path).expect("completed state should remain"),
+            existing
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn refuses_to_replace_invalid_claude_headless_state() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-invalid-headless-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&state_path, b"not JSON\n").expect("invalid state should write");
+
+        let error = ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect_err("invalid state must be rejected");
+
+        assert!(error.to_string().contains("invalid JSON"));
+        assert_eq!(
+            fs::read(&state_path).expect("invalid state should remain"),
+            b"not JSON\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn refuses_to_follow_symlinked_claude_headless_state() {
+        use std::os::unix::fs::symlink;
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-symlinked-headless-state-{}",
+            std::process::id()
+        ));
+        let target_path = root.join("target.json");
+        let state_path = root.join(".claude.json");
+        fs::create_dir_all(&root).expect("state directory should exist");
+        fs::write(&target_path, b"{\"existing\":true}\n").expect("target state should write");
+        symlink(&target_path, &state_path).expect("state symlink should write");
+
+        let error = ensure_claude_headless_onboarding_state_at(&state_path)
+            .expect_err("state symlink must be rejected");
+
+        assert!(error.to_string().contains("not a regular file"));
+        assert_eq!(
+            fs::read(&target_path).expect("target state should remain"),
+            b"{\"existing\":true}\n"
         );
         let _ = fs::remove_dir_all(&root);
     }
