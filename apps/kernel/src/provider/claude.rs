@@ -296,6 +296,20 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
 pub(super) fn ensure_claude_headless_onboarding_state_at(
     state_path: &Path,
 ) -> Result<(), DaemonError> {
+    ensure_claude_headless_state_at(state_path, None)
+}
+
+pub(super) fn ensure_claude_headless_workspace_state_at(
+    state_path: &Path,
+    workspace: &Path,
+) -> Result<(), DaemonError> {
+    ensure_claude_headless_state_at(state_path, Some(workspace))
+}
+
+fn ensure_claude_headless_state_at(
+    state_path: &Path,
+    workspace: Option<&Path>,
+) -> Result<(), DaemonError> {
     let parent = state_path
         .parent()
         .ok_or_else(|| DaemonError::LocalTransport {
@@ -319,7 +333,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
         state_options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT);
     }
-    let existing_state = match state_options.open(state_path) {
+    let (state_existed, mut state) = match state_options.open(state_path) {
         Ok(mut file) => {
             let metadata = file
                 .metadata()
@@ -356,7 +370,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                     operation: "initialize Claude headless onboarding state",
                     message: error.to_string(),
                 })?;
-            let mut state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
+            let state = if bytes.iter().all(|byte| byte.is_ascii_whitespace()) {
                 serde_json::Value::Object(serde_json::Map::new())
             } else {
                 serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|error| {
@@ -366,32 +380,11 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                     }
                 })?
             };
-            let object = state
-                .as_object_mut()
-                .ok_or_else(|| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: "Claude onboarding state is not a JSON object".to_string(),
-                })?;
-            if object
-                .get("hasCompletedOnboarding")
-                .and_then(serde_json::Value::as_bool)
-                == Some(true)
-            {
-                return Ok(());
-            }
-            object.insert(
-                "hasCompletedOnboarding".to_string(),
-                serde_json::Value::Bool(true),
-            );
-            let mut bytes =
-                serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
-                    operation: "initialize Claude headless onboarding state",
-                    message: error.to_string(),
-                })?;
-            bytes.push(b'\n');
-            Some(bytes)
+            (true, state)
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            (false, serde_json::Value::Object(serde_json::Map::new()))
+        }
         Err(error) => {
             #[cfg(unix)]
             if error.raw_os_error() == Some(libc::ELOOP) {
@@ -409,6 +402,83 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
             });
         }
     };
+    let object = state
+        .as_object_mut()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "initialize Claude headless onboarding state",
+            message: "Claude onboarding state is not a JSON object".to_string(),
+        })?;
+    let mut changed = false;
+    if object
+        .get("hasCompletedOnboarding")
+        .and_then(serde_json::Value::as_bool)
+        != Some(true)
+    {
+        object.insert(
+            "hasCompletedOnboarding".to_string(),
+            serde_json::Value::Bool(true),
+        );
+        changed = true;
+    }
+    if let Some(workspace) = workspace {
+        let projects = object
+            .entry("projects".to_string())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: "Claude onboarding projects state is not a JSON object".to_string(),
+            })?;
+        let project = projects
+            .entry(workspace.to_string_lossy().into_owned())
+            .or_insert_with(|| serde_json::Value::Object(serde_json::Map::new()))
+            .as_object_mut()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "initialize Claude headless onboarding state",
+                message: "Claude workspace state is not a JSON object".to_string(),
+            })?;
+        if !project
+            .get("allowedTools")
+            .is_some_and(serde_json::Value::is_array)
+        {
+            project.insert(
+                "allowedTools".to_string(),
+                serde_json::Value::Array(Vec::new()),
+            );
+            changed = true;
+        }
+        if project
+            .get("hasTrustDialogAccepted")
+            .and_then(serde_json::Value::as_bool)
+            != Some(true)
+        {
+            project.insert(
+                "hasTrustDialogAccepted".to_string(),
+                serde_json::Value::Bool(true),
+            );
+            changed = true;
+        }
+        if project
+            .get("projectOnboardingSeenCount")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_default()
+            < 1
+        {
+            project.insert(
+                "projectOnboardingSeenCount".to_string(),
+                serde_json::Value::Number(1_u64.into()),
+            );
+            changed = true;
+        }
+    }
+    if state_existed && !changed {
+        return Ok(());
+    }
+    let mut contents = serde_json::to_vec(&state).map_err(|error| DaemonError::LocalTransport {
+        operation: "initialize Claude headless onboarding state",
+        message: error.to_string(),
+    })?;
+    contents.push(b'\n');
     let mut nonce = [0_u8; 8];
     rand::thread_rng().fill_bytes(&mut nonce);
     let pending_path = parent.join(format!(
@@ -430,11 +500,8 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
                 operation: "initialize Claude headless onboarding state",
                 message: error.to_string(),
             })?;
-    let contents = existing_state
-        .as_deref()
-        .unwrap_or(b"{\"hasCompletedOnboarding\":true}\n");
     let write_result = pending
-        .write_all(contents)
+        .write_all(&contents)
         .and_then(|()| pending.sync_all());
     if let Err(error) = write_result {
         drop(pending);
@@ -445,7 +512,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
         });
     }
     drop(pending);
-    let result = if existing_state.is_some() {
+    let result = if state_existed {
         fs::rename(&pending_path, state_path).map_err(|error| DaemonError::LocalTransport {
             operation: "initialize Claude headless onboarding state",
             message: error.to_string(),
@@ -455,7 +522,7 @@ pub(super) fn ensure_claude_headless_onboarding_state_at(
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                 let _ = fs::remove_file(&pending_path);
-                return ensure_claude_headless_onboarding_state_at(state_path);
+                return ensure_claude_headless_state_at(state_path, workspace);
             }
             Err(error) => Err(DaemonError::LocalTransport {
                 operation: "initialize Claude headless onboarding state",
@@ -578,8 +645,8 @@ mod tests {
 
     use super::{
         claude_provider_catalog, ensure_claude_headless_onboarding_state,
-        ensure_claude_headless_onboarding_state_at, plan_claude_launch, resolve_claude_executable,
-        CLAUDE_MCP_CONFIG_PLACEHOLDER,
+        ensure_claude_headless_onboarding_state_at, ensure_claude_headless_workspace_state_at,
+        plan_claude_launch, resolve_claude_executable, CLAUDE_MCP_CONFIG_PLACEHOLDER,
     };
 
     fn env_guard() -> crate::env_lock::EnvGuard {
@@ -935,6 +1002,49 @@ mod tests {
         assert_eq!(
             fs::read(&state_path).expect("completed state should remain"),
             existing
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn trusts_only_the_requested_claude_headless_workspace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-workspace-state-{}",
+            std::process::id()
+        ));
+        let state_path = root.join(".claude.json");
+        let workspace = root.join("probe-workspace");
+        fs::create_dir_all(&workspace).expect("workspace should exist");
+        fs::write(
+            &state_path,
+            br#"{"existing":true,"hasCompletedOnboarding":true,"projects":{"/existing":{"hasTrustDialogAccepted":false}}}"#,
+        )
+        .expect("existing state should write");
+
+        ensure_claude_headless_workspace_state_at(&state_path, &workspace)
+            .expect("probe workspace should be trusted");
+
+        let state: serde_json::Value = serde_json::from_slice(
+            &fs::read(&state_path).expect("workspace state should remain readable"),
+        )
+        .expect("workspace state should remain JSON");
+        assert_eq!(state["existing"], true);
+        assert_eq!(
+            state["projects"]["/existing"]["hasTrustDialogAccepted"],
+            false
+        );
+        let workspace = workspace.to_string_lossy();
+        assert_eq!(
+            state["projects"][workspace.as_ref()]["hasTrustDialogAccepted"],
+            true
+        );
+        assert_eq!(
+            state["projects"][workspace.as_ref()]["projectOnboardingSeenCount"],
+            1
+        );
+        assert_eq!(
+            state["projects"][workspace.as_ref()]["allowedTools"],
+            serde_json::json!([])
         );
         let _ = fs::remove_dir_all(&root);
     }

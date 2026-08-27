@@ -48,6 +48,8 @@ fn probe_claude_account_usage_with_timeout(
             .ok_or_else(|| probe_error("Claude home is unavailable".to_string()))?;
     super::ensure_claude_headless_onboarding_state_at(&onboarding_state_path)?;
     let root = create_claude_runtime_files_root()?;
+    let workspace = materialize_claude_usage_probe_workspace(&onboarding_state_path)?;
+    super::ensure_claude_headless_workspace_state_at(&onboarding_state_path, &workspace)?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
     fs::write(
@@ -79,16 +81,12 @@ fn probe_claude_account_usage_with_timeout(
         "--session-id",
         &session_id,
         "--no-chrome",
-        // This private probe submits no model prompt and only invokes Claude's
-        // provider-native `/usage` command. Skip the interactive workspace
-        // trust gate so the read-only probe can run unattended.
-        "--dangerously-skip-permissions",
-        "--allow-dangerously-skip-permissions",
         // The private PTY has no terminal emulator attached. Screen-reader
         // mode prevents Claude's full-screen renderer from waiting on
         // terminal capability replies before starting the status line.
         "--ax-screen-reader",
     ]);
+    command.cwd(&workspace);
     for (name, value) in environment {
         command.env(name, value);
     }
@@ -241,6 +239,32 @@ fn probe_claude_account_usage_with_timeout(
         };
         append_probe_error(error, diagnostic)
     })
+}
+
+fn materialize_claude_usage_probe_workspace(state_path: &Path) -> Result<PathBuf, DaemonError> {
+    let parent = state_path
+        .parent()
+        .ok_or_else(|| probe_error("Claude config directory is unavailable".to_string()))?;
+    let workspace = parent.join(".chariox-usage-probe-workspace");
+    match fs::create_dir(&workspace) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => {
+            return Err(probe_error(format!(
+                "failed to create probe workspace: {error}"
+            )))
+        }
+    }
+    let metadata = fs::symlink_metadata(&workspace)
+        .map_err(|error| probe_error(format!("failed to inspect probe workspace: {error}")))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(probe_error(format!(
+            "Claude usage probe workspace is not a regular directory: {}",
+            workspace.display()
+        )));
+    }
+    fs::canonicalize(&workspace)
+        .map_err(|error| probe_error(format!("failed to resolve probe workspace: {error}")))
 }
 
 fn validate_claude_probe_environment(
@@ -440,11 +464,14 @@ import { spawnSync } from "node:child_process"
 const settingsPath = process.argv[process.argv.indexOf("--settings") + 1]
 const sessionId = process.argv[process.argv.indexOf("--session-id") + 1]
 for (const flag of ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]) {
-  if (!process.argv.includes(flag)) throw new Error(`Claude usage probe omitted ${flag}`)
+  if (process.argv.includes(flag)) throw new Error(`Claude usage probe must not use ${flag}`)
 }
 const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
 const onboarding = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8"))
 if (onboarding.hasCompletedOnboarding !== true) throw new Error("Claude onboarding state is missing")
+if (onboarding.projects?.[process.cwd()]?.hasTrustDialogAccepted !== true) {
+  throw new Error(`Claude usage probe workspace is not trusted: ${process.cwd()}`)
+}
 const projectDir = join(process.env.CLAUDE_CONFIG_DIR, "projects", "fixture")
 const transcriptPath = join(projectDir, `${sessionId}.jsonl`)
 mkdirSync(projectDir, { recursive: true })
