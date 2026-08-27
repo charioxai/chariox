@@ -41,7 +41,15 @@ fn probe_claude_account_usage_with_timeout(
     environment: &BTreeMap<String, String>,
     timeout: Duration,
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
-    validate_claude_probe_environment(environment, linux_profile_home_is_supported())?;
+    let profile_home_is_supported = linux_profile_home_is_supported();
+    validate_claude_probe_environment(environment, profile_home_is_supported)?;
+    let config_root = claude_config_root(
+        environment,
+        std::env::var_os("HOME").map(PathBuf::from),
+        profile_home_is_supported,
+    )
+    .ok_or_else(|| probe_error("Claude config directory is unavailable".to_string()))?;
+    super::ensure_claude_headless_onboarding_state_at(&config_root.join(".claude.json"))?;
     let root = create_claude_runtime_files_root()?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
@@ -418,6 +426,8 @@ import { spawnSync } from "node:child_process"
 const settingsPath = process.argv[process.argv.indexOf("--settings") + 1]
 const sessionId = process.argv[process.argv.indexOf("--session-id") + 1]
 const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
+const onboarding = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8"))
+if (onboarding.hasCompletedOnboarding !== true) throw new Error("Claude onboarding state is missing")
 const projectDir = join(process.env.CLAUDE_CONFIG_DIR, "projects", "fixture")
 const transcriptPath = join(projectDir, `${sessionId}.jsonl`)
 mkdirSync(projectDir, { recursive: true })

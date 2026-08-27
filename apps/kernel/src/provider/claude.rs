@@ -290,6 +290,12 @@ fn ensure_claude_headless_onboarding_state() -> Result<(), DaemonError> {
         })?;
         PathBuf::from(home).join(CLAUDE_HEADLESS_STATE_FILE)
     };
+    ensure_claude_headless_onboarding_state_at(&state_path)
+}
+
+pub(super) fn ensure_claude_headless_onboarding_state_at(
+    state_path: &Path,
+) -> Result<(), DaemonError> {
     if state_path.exists() {
         return Ok(());
     }
