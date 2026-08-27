@@ -43,13 +43,10 @@ fn probe_claude_account_usage_with_timeout(
 ) -> Result<ProviderAccountUsageSnapshot, DaemonError> {
     let profile_home_is_supported = linux_profile_home_is_supported();
     validate_claude_probe_environment(environment, profile_home_is_supported)?;
-    let config_root = claude_config_root(
-        environment,
-        std::env::var_os("HOME").map(PathBuf::from),
-        profile_home_is_supported,
-    )
-    .ok_or_else(|| probe_error("Claude config directory is unavailable".to_string()))?;
-    super::ensure_claude_headless_onboarding_state_at(&config_root.join(".claude.json"))?;
+    let onboarding_state_path =
+        claude_onboarding_state_path(environment, std::env::var_os("HOME").map(PathBuf::from))
+            .ok_or_else(|| probe_error("Claude home is unavailable".to_string()))?;
+    super::ensure_claude_headless_onboarding_state_at(&onboarding_state_path)?;
     let root = create_claude_runtime_files_root()?;
     let capture = materialize_claude_usage_capture(&root)?;
     let settings_file = root.path().join("usage-probe-settings.json");
@@ -343,6 +340,18 @@ fn claude_config_root(
         .or_else(|| inherited_home.map(|home| home.join(".claude")))
 }
 
+fn claude_onboarding_state_path(
+    environment: &BTreeMap<String, String>,
+    inherited_home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    environment
+        .get("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| environment.get("HOME").map(PathBuf::from))
+        .or(inherited_home)
+        .map(|root| root.join(".claude.json"))
+}
+
 fn append_probe_error(error: DaemonError, diagnostic: String) -> DaemonError {
     match error {
         DaemonError::LocalTransport { operation, message } => DaemonError::LocalTransport {
@@ -590,6 +599,10 @@ process.stdin.resume()
             claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
             Some(PathBuf::from("/profile/home/.claude"))
         );
+        assert_eq!(
+            claude_onboarding_state_path(&environment, Some(PathBuf::from("/inherited/home")),),
+            Some(PathBuf::from("/profile/home/.claude.json"))
+        );
     }
 
     #[test]
@@ -605,6 +618,18 @@ process.stdin.resume()
         assert_eq!(
             claude_config_root(&environment, Some(PathBuf::from("/inherited/home")), true),
             Some(PathBuf::from("/profile/claude"))
+        );
+        assert_eq!(
+            claude_onboarding_state_path(&environment, Some(PathBuf::from("/inherited/home")),),
+            Some(PathBuf::from("/profile/claude/.claude.json"))
+        );
+    }
+
+    #[test]
+    fn inherited_home_selects_the_claude_onboarding_state_file() {
+        assert_eq!(
+            claude_onboarding_state_path(&BTreeMap::new(), Some(PathBuf::from("/inherited/home")),),
+            Some(PathBuf::from("/inherited/home/.claude.json"))
         );
     }
 }
