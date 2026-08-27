@@ -79,6 +79,11 @@ fn probe_claude_account_usage_with_timeout(
         "--session-id",
         &session_id,
         "--no-chrome",
+        // This private probe submits no model prompt and only invokes Claude's
+        // provider-native `/usage` command. Skip the interactive workspace
+        // trust gate so the read-only probe can run unattended.
+        "--dangerously-skip-permissions",
+        "--allow-dangerously-skip-permissions",
         // The private PTY has no terminal emulator attached. Screen-reader
         // mode prevents Claude's full-screen renderer from waiting on
         // terminal capability replies before starting the status line.
@@ -434,6 +439,9 @@ import { join } from "node:path"
 import { spawnSync } from "node:child_process"
 const settingsPath = process.argv[process.argv.indexOf("--settings") + 1]
 const sessionId = process.argv[process.argv.indexOf("--session-id") + 1]
+for (const flag of ["--dangerously-skip-permissions", "--allow-dangerously-skip-permissions"]) {
+  if (!process.argv.includes(flag)) throw new Error(`Claude usage probe omitted ${flag}`)
+}
 const settings = JSON.parse(readFileSync(settingsPath, "utf8"))
 const onboarding = JSON.parse(readFileSync(join(process.env.CLAUDE_CONFIG_DIR, ".claude.json"), "utf8"))
 if (onboarding.hasCompletedOnboarding !== true) throw new Error("Claude onboarding state is missing")
