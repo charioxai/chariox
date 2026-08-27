@@ -330,6 +330,33 @@ pub(crate) async fn issue_cloud_slice_discovery_token(
     .await
 }
 
+pub(crate) async fn issue_cloud_relay_inventory_discovery_token(
+    profile: &PersistedCloudRelayProfile,
+    kernel_ref: &str,
+) -> Result<CloudRuntimeTokenResponse, DaemonError> {
+    let machine_id = profile
+        .machine_id
+        .clone()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "issue cloud relay inventory discovery token",
+            message: "hosted relay inventory discovery requires a paired machine identity"
+                .to_string(),
+        })?;
+    if profile.machine_credential.is_none() {
+        return Err(DaemonError::LocalTransport {
+            operation: "issue cloud relay inventory discovery token",
+            message: "hosted relay inventory discovery requires a machine credential".to_string(),
+        });
+    }
+    issue_cloud_runtime_token(
+        profile,
+        &cloud_relay_inventory_discovery_subject(kernel_ref),
+        "client",
+        cloud_relay_inventory_discovery_token_options(machine_id),
+    )
+    .await
+}
+
 fn cloud_slice_discovery_subject(owner_kernel_ref: &str, worker_kernel_ref: &str) -> String {
     format!("slice-discovery:{owner_kernel_ref}:{worker_kernel_ref}")
 }
@@ -342,6 +369,16 @@ fn cloud_slice_discovery_token_options(machine_id: String) -> CloudRuntimeTokenR
         machine_id: Some(machine_id),
         ..CloudRuntimeTokenRequestOptions::default()
     }
+}
+
+fn cloud_relay_inventory_discovery_subject(kernel_ref: &str) -> String {
+    format!("relay-inventory:{kernel_ref}")
+}
+
+fn cloud_relay_inventory_discovery_token_options(
+    machine_id: String,
+) -> CloudRuntimeTokenRequestOptions {
+    cloud_slice_discovery_token_options(machine_id)
 }
 
 fn cloud_slice_runtime_token_options(
@@ -505,6 +542,28 @@ mod tests {
         assert_ne!(
             cloud_slice_discovery_subject("kernel-owner", "kernel-worker-a"),
             cloud_slice_discovery_subject("kernel-owner", "kernel-worker-b")
+        );
+    }
+
+    #[test]
+    fn hosted_relay_inventory_uses_a_short_lived_metadata_only_client() {
+        let options = cloud_relay_inventory_discovery_token_options("machine-owner".to_string());
+
+        assert_eq!(
+            options.ttl_ms,
+            Some(MANAGED_SLICE_RELAY_DISCOVERY_TOKEN_TTL_MS)
+        );
+        assert_eq!(
+            options.allowed_actions,
+            Some(vec!["client.metadata.read".to_string()])
+        );
+        assert_eq!(options.machine_id.as_deref(), Some("machine-owner"));
+        assert!(options.allow_unpaired_client_subject);
+        assert_eq!(options.allowed_targets, None);
+        assert_eq!(options.public_key_thumbprint, None);
+        assert_eq!(
+            cloud_relay_inventory_discovery_subject("kernel-owner"),
+            "relay-inventory:kernel-owner"
         );
     }
 
