@@ -218,10 +218,6 @@ impl CommandRouter {
                 "slice relay token request does not match the recorded worker",
             ));
         }
-        if slice.worker_kernel_id.is_none() {
-            self.runtime_state
-                .claim_slice_starting_worker_identity(slice_id, worker_kernel_id)?;
-        }
         if !self
             .relay_state
             .write()
@@ -231,6 +227,10 @@ impl CommandRouter {
             return Err(slice_token_error(
                 "slice worker relay key changed during token refresh",
             ));
+        }
+        if slice.worker_kernel_id.is_none() {
+            self.runtime_state
+                .claim_slice_starting_worker_identity(slice_id, worker_kernel_id)?;
         }
         let profile = config
             .cloud_relay

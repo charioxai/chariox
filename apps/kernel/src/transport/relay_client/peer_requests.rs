@@ -236,14 +236,9 @@ pub(super) async fn handle_daemon_peer_request(
                 Some(bound.subject.clone())
             } else {
                 // The narrow bootstrap token is deliberately unkeyed. The router
-                // atomically claims this daemon id and encrypted sender key before
-                // it asks Cloud for the key-bound runtime and recovery tokens.
-                identity
-                    .filter(|identity| {
-                        identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
-                            && identity.public_key_thumbprint.is_none()
-                    })
-                    .map(|identity| identity.subject.clone())
+                // claims this daemon id and encrypted sender key before it asks
+                // Cloud for the key-bound runtime and recovery tokens.
+                scoped_unbound_kernel_subject(identity)
             };
             if let Some(worker_relay_subject) = worker_identity {
                 match router
@@ -1306,6 +1301,17 @@ fn stable_peer_daemon_id(from_daemon_id: &str) -> &str {
         .map_or(from_daemon_id, |(daemon_id, _)| daemon_id)
 }
 
+fn scoped_unbound_kernel_subject(identity: Option<&RelayCallerIdentity>) -> Option<String> {
+    identity
+        .filter(|identity| {
+            identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
+                && identity.public_key_thumbprint.is_none()
+                && identity.token_id.is_some()
+                && identity.expires_at_ms > crate::session::unix_epoch_ms()
+        })
+        .map(|identity| identity.subject.clone())
+}
+
 fn managed_context_request(request: &RelayPeerRequest) -> bool {
     matches!(
         request,
@@ -1384,6 +1390,28 @@ mod tests {
             user_id: Some("user-1".to_string()),
             public_key_thumbprint,
         }
+    }
+
+    #[test]
+    fn slice_bootstrap_requires_a_scoped_live_unbound_kernel_identity() {
+        let live = scoped_kernel_identity(None, u64::MAX);
+        assert_eq!(
+            scoped_unbound_kernel_subject(Some(&live)).as_deref(),
+            Some("source-kernel-1")
+        );
+
+        let mut legacy = live.clone();
+        legacy.expires_at_ms = 0;
+        legacy.token_id = None;
+        assert!(scoped_unbound_kernel_subject(Some(&legacy)).is_none());
+
+        let mut expired = live.clone();
+        expired.expires_at_ms = 1;
+        assert!(scoped_unbound_kernel_subject(Some(&expired)).is_none());
+
+        let mut bound = live;
+        bound.public_key_thumbprint = Some("bound-key".to_string());
+        assert!(scoped_unbound_kernel_subject(Some(&bound)).is_none());
     }
 
     #[tokio::test]
@@ -1702,6 +1730,39 @@ mod tests {
                 .expect("worker public key");
         let mut bootstrap_identity = scoped_kernel_identity(None, u64::MAX);
         bootstrap_identity.subject = slice.worker_kernel_ref.clone();
+
+        let conflicting_worker_id = "kernel-conflicting-worker";
+        state
+            .write()
+            .await
+            .remember_peer_public_key(conflicting_worker_id, "already-bound-key".to_string());
+        let conflicting_private_key = relay_crypto::generate_private_key_base64();
+        let rejected = send_managed_peer_request(
+            &peer_harness,
+            conflicting_worker_id,
+            &bootstrap_identity,
+            &conflicting_private_key,
+            &owner_public_key,
+            RelayPeerRequest::RefreshManagedSliceRelayToken {
+                slice_id: slice.id.clone(),
+                owner_kernel_id: owner_kernel_id.clone(),
+                worker_kernel_id: conflicting_worker_id.to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            rejected,
+            RelayPeerResponse::ManagedSliceRelayTokenFailed { .. }
+        ));
+        assert!(
+            router
+                .runtime_state()
+                .resolve_slice(&slice.id)
+                .expect("slice should remain present")
+                .worker_kernel_id
+                .is_none(),
+            "a rejected key claim must not durably bind the slice worker"
+        );
 
         let response = send_managed_peer_request(
             &peer_harness,
