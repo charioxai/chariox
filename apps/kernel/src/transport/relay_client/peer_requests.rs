@@ -105,7 +105,12 @@ pub(super) async fn handle_daemon_peer_request(
     } else {
         None
     };
-    if !from_daemon_id.trim().is_empty() {
+    if !from_daemon_id.trim().is_empty()
+        && !matches!(
+            &request,
+            RelayPeerRequest::RefreshManagedSliceRelayToken { .. }
+        )
+    {
         state.write().await.remember_peer_public_key(
             stable_peer_daemon_id(from_daemon_id),
             requester_public_key.clone(),
@@ -223,30 +228,31 @@ pub(super) async fn handle_daemon_peer_request(
             owner_kernel_id,
             worker_kernel_id,
         } => {
-            let identity =
-                require_bound_kernel_sender(caller_identity.as_ref(), &encrypted_request);
-            let authorized = identity
-                .as_ref()
-                .is_ok_and(|_| stable_peer_daemon_id(from_daemon_id) == worker_kernel_id);
-            if !authorized {
-                RelayPeerResponse::ManagedSliceRelayTokenFailed {
-                    code: "unauthorized".to_string(),
-                    retryable: false,
-                }
+            let stable_worker_kernel_id = stable_peer_daemon_id(from_daemon_id);
+            let identity = caller_identity.as_ref();
+            let worker_identity = if stable_worker_kernel_id != worker_kernel_id {
+                None
+            } else if let Ok(bound) = require_bound_kernel_sender(identity, &encrypted_request) {
+                Some(bound.subject.clone())
             } else {
-                let identity = identity.expect("authorized slice identity");
-                let key_thumbprint = identity
-                    .public_key_thumbprint
-                    .as_deref()
-                    .expect("bound slice identity")
-                    .to_string();
+                // The narrow bootstrap token is deliberately unkeyed. The router
+                // atomically claims this daemon id and encrypted sender key before
+                // it asks Cloud for the key-bound runtime and recovery tokens.
+                identity
+                    .filter(|identity| {
+                        identity.subject_kind == chariox_relay::auth::RelaySubjectKind::Kernel
+                            && identity.public_key_thumbprint.is_none()
+                    })
+                    .map(|identity| identity.subject.clone())
+            };
+            if let Some(worker_relay_subject) = worker_identity {
                 match router
                     .refresh_managed_slice_relay_token(
                         &slice_id,
                         &owner_kernel_id,
                         &worker_kernel_id,
-                        &identity.subject,
-                        &key_thumbprint,
+                        &worker_relay_subject,
+                        &requester_public_key,
                     )
                     .await
                 {
@@ -269,6 +275,11 @@ pub(super) async fn handle_daemon_peer_request(
                         relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
                     },
                     Err(error) => managed_slice_token_failure_response(&error),
+                }
+            } else {
+                RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                    code: "unauthorized".to_string(),
+                    retryable: false,
                 }
             }
         }
@@ -1567,6 +1578,206 @@ mod tests {
             .read()
             .await
             .managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
+    }
+
+    #[tokio::test]
+    async fn managed_slice_bootstrap_exchange_binds_the_first_worker_key() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind Cloud token fixture");
+        let address = listener.local_addr().expect("Cloud token fixture address");
+        let fixture = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept token request");
+                let mut request = Vec::new();
+                loop {
+                    let mut chunk = [0_u8; 4096];
+                    let read = tokio::io::AsyncReadExt::read(&mut stream, &mut chunk)
+                        .await
+                        .expect("read token request");
+                    assert!(read > 0, "token request ended before its body");
+                    request.extend_from_slice(&chunk[..read]);
+                    let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n")
+                    else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .expect("token request content length");
+                    if request.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                let claims = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(
+                    serde_json::to_vec(&serde_json::json!({
+                        "exp": crate::session::unix_epoch_ms() / 1_000 + 3_600,
+                    }))
+                    .expect("encode fixture token claims"),
+                );
+                let body = format!(
+                    r#"{{"token":"header.{claims}.signature","expiresAt":"2099-01-01T00:00:00Z"}}"#
+                );
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body,
+                );
+                tokio::io::AsyncWriteExt::write_all(&mut stream, response.as_bytes())
+                    .await
+                    .expect("write token response");
+            }
+        });
+
+        let root = std::env::temp_dir().join(format!(
+            "chariox-slice-bootstrap-exchange-{}-{}",
+            std::process::id(),
+            rand::random::<u64>(),
+        ));
+        let mut config = DaemonConfig::for_tests();
+        config.session_history_root = root.join("sessions");
+        config.user_config.history.operational.path =
+            Some(root.join("operational.db").display().to_string());
+        config.user_config.artifacts.operational.root =
+            Some(root.join("artifacts").display().to_string());
+        config.user_config.artifacts.operational.index_path =
+            Some(root.join("artifacts.db").display().to_string());
+        config.user_config.state.path = Some(root.join("kernel/state.db").display().to_string());
+        let owner_kernel_id = config.daemon_id.clone();
+        let owner_public_key = config.relay_public_key.clone();
+        config.cloud_relay = Some(test_cloud_profile(
+            format!("http://{address}"),
+            config.host_machine_id.clone(),
+        ));
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(config).expect("test daemon should bootstrap"),
+        ));
+        let state = app.lock().await.relay_client_state();
+        let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
+        let slice = router
+            .runtime_state()
+            .create_slice(crate::local::CreateSliceRequest {
+                name: "bootstrap-exchange".to_string(),
+                backend: crate::slice::SliceBackendKind::LocalDocker,
+                os: "linux".to_string(),
+                display_mode: crate::slice::SliceDisplayMode::Headless,
+                workspace_id: None,
+                worktree_id: None,
+                workspace_mount: None,
+                development: None,
+                worker_kernel_ref: Some("slice:bootstrap-exchange".to_string()),
+                display_url: None,
+                provider_auth: Vec::new(),
+                from_saved_state: None,
+                base: Some(crate::local::SliceCreateBase::Clean),
+            })
+            .await
+            .expect("slice should create");
+        router
+            .runtime_state()
+            .mark_slice_starting(
+                &slice.id,
+                crate::slice::SliceRelayEndpoint {
+                    url: "wss://relay.example.test".to_string(),
+                    private: false,
+                },
+            )
+            .expect("slice should enter starting state");
+
+        let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
+        let peer_harness = ManagedPeerRequestHarness {
+            router: &router,
+            state: &state,
+            outgoing_tx: &outgoing_tx,
+        };
+        let worker_kernel_id = "kernel-bootstrap-worker";
+        let worker_private_key = relay_crypto::generate_private_key_base64();
+        let worker_public_key =
+            relay_crypto::public_key_from_private_key_base64(&worker_private_key)
+                .expect("worker public key");
+        let mut bootstrap_identity = scoped_kernel_identity(None, u64::MAX);
+        bootstrap_identity.subject = slice.worker_kernel_ref.clone();
+
+        let response = send_managed_peer_request(
+            &peer_harness,
+            worker_kernel_id,
+            &bootstrap_identity,
+            &worker_private_key,
+            &owner_public_key,
+            RelayPeerRequest::RefreshManagedSliceRelayToken {
+                slice_id: slice.id.clone(),
+                owner_kernel_id,
+                worker_kernel_id: worker_kernel_id.to_string(),
+            },
+        )
+        .await;
+
+        assert!(
+            matches!(
+                &response,
+                RelayPeerResponse::ManagedSliceRelayTokenRefreshed {
+                    slice_id,
+                    relay_peer_protocol_version: RELAY_PEER_PROTOCOL_VERSION,
+                    ..
+                } if slice_id == &slice.id
+            ),
+            "unexpected bootstrap exchange response: {response:?}"
+        );
+        let claimed = router
+            .runtime_state()
+            .resolve_slice(&slice.id)
+            .expect("slice should remain present");
+        assert_eq!(claimed.worker_kernel_id.as_deref(), Some(worker_kernel_id));
+        assert_eq!(
+            state
+                .read()
+                .await
+                .peer_public_key(worker_kernel_id)
+                .as_deref(),
+            Some(worker_public_key.as_str())
+        );
+
+        let replacement_private_key = relay_crypto::generate_private_key_base64();
+        let replacement_public_key =
+            relay_crypto::public_key_from_private_key_base64(&replacement_private_key)
+                .expect("replacement public key");
+        let replay = send_managed_peer_request(
+            &peer_harness,
+            worker_kernel_id,
+            &bootstrap_identity,
+            &replacement_private_key,
+            &owner_public_key,
+            RelayPeerRequest::RefreshManagedSliceRelayToken {
+                slice_id: slice.id.clone(),
+                owner_kernel_id: router.relay_daemon_id(),
+                worker_kernel_id: worker_kernel_id.to_string(),
+            },
+        )
+        .await;
+        assert!(matches!(
+            replay,
+            RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                retryable: true,
+                ..
+            }
+        ));
+        assert_ne!(replacement_public_key, worker_public_key);
+        assert_eq!(
+            state
+                .read()
+                .await
+                .peer_public_key(worker_kernel_id)
+                .as_deref(),
+            Some(worker_public_key.as_str())
+        );
+
+        fixture.await.expect("Cloud token fixture should finish");
+        let _ = fs::remove_dir_all(root);
     }
 
     #[tokio::test]

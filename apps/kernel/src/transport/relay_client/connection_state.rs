@@ -108,6 +108,17 @@ impl RelayClientState {
             .insert(target_ref.into(), public_key.into());
     }
 
+    pub(crate) fn claim_peer_public_key(&mut self, target_ref: &str, public_key: &str) -> bool {
+        match self.peer_public_keys.get(target_ref) {
+            Some(existing) => existing == public_key,
+            None => {
+                self.peer_public_keys
+                    .insert(target_ref.to_string(), public_key.to_string());
+                true
+            }
+        }
+    }
+
     pub(crate) fn begin_managed_slice_relay_activation(
         &mut self,
         slice_id: String,
@@ -570,6 +581,18 @@ mod tests {
         set_disconnected(&state).await;
 
         assert!(state.read().await.peer_public_key("worker-1").is_none());
+    }
+
+    #[test]
+    fn peer_key_claim_is_idempotent_but_rejects_rebinding() {
+        let mut state = RelayClientState::default();
+        assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
+        assert!(state.claim_peer_public_key("worker-1", "public-key-1"));
+        assert!(!state.claim_peer_public_key("worker-1", "public-key-2"));
+        assert_eq!(
+            state.peer_public_key("worker-1").as_deref(),
+            Some("public-key-1")
+        );
     }
 
     #[test]

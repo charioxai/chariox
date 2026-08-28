@@ -654,6 +654,46 @@ impl SliceStore {
         Ok(record.clone())
     }
 
+    pub fn claim_starting_worker_identity(
+        &self,
+        slice_ref: &str,
+        worker_kernel_id: &str,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.worker_identity",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        if record.status != SliceStatus::Starting {
+            return Err(DaemonError::LocalTransport {
+                operation: "slice.worker_identity",
+                message: format!("slice `{slice_ref}` is not starting"),
+            });
+        }
+        if let Some(existing) = record.worker_kernel_id.as_deref() {
+            if existing != worker_kernel_id {
+                return Err(DaemonError::LocalTransport {
+                    operation: "slice.worker_identity",
+                    message: format!("slice `{slice_ref}` is already bound to another worker"),
+                });
+            }
+            return Ok(record.clone());
+        }
+        record.worker_kernel_id = Some(worker_kernel_id.to_string());
+        record.worker_machine_id = Some(format!("slice:{}", record.id));
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
     pub fn set_provider_auth(
         &self,
         slice_ref: &str,

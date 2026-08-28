@@ -196,7 +196,7 @@ impl CommandRouter {
         owner_kernel_id: &str,
         worker_kernel_id: &str,
         worker_relay_subject: &str,
-        worker_key_thumbprint: &str,
+        worker_public_key: &str,
     ) -> Result<(String, u64, String, u64), DaemonError> {
         let config = self.config_projection.snapshot();
         if config.daemon_id != owner_kernel_id {
@@ -205,8 +205,12 @@ impl CommandRouter {
             ));
         }
         let slice = self.runtime_state.resolve_slice(slice_id)?;
+        let worker_identity_matches = match slice.worker_kernel_id.as_deref() {
+            Some(recorded) => recorded == worker_kernel_id,
+            None => slice.status == crate::slice::SliceStatus::Starting,
+        };
         if slice.owner_kernel_id != owner_kernel_id
-            || slice.worker_kernel_id.as_deref() != Some(worker_kernel_id)
+            || !worker_identity_matches
             || slice.worker_kernel_ref != worker_relay_subject
             || slice.worker_kernel_ref.trim().is_empty()
         {
@@ -214,28 +218,29 @@ impl CommandRouter {
                 "slice relay token request does not match the recorded worker",
             ));
         }
-        let profile = config
-            .cloud_relay
-            .filter(cloud_relay_profile_has_runtime_credentials)
-            .ok_or_else(|| slice_token_error("slice owner has no Cloud relay profile"))?;
-        let worker_public_key = self
+        if slice.worker_kernel_id.is_none() {
+            self.runtime_state
+                .claim_slice_starting_worker_identity(slice_id, worker_kernel_id)?;
+        }
+        if !self
             .relay_state
-            .read()
+            .write()
             .await
-            .peer_public_key(worker_kernel_id)
-            .ok_or_else(|| slice_token_error("slice worker relay key is not known"))?;
-        let actual_thumbprint =
-            crate::runtime::terminal_pairings::public_key_thumbprint(&worker_public_key);
-        if actual_thumbprint != worker_key_thumbprint {
+            .claim_peer_public_key(worker_kernel_id, worker_public_key)
+        {
             return Err(slice_token_error(
                 "slice worker relay key changed during token refresh",
             ));
         }
+        let profile = config
+            .cloud_relay
+            .filter(cloud_relay_profile_has_runtime_credentials)
+            .ok_or_else(|| slice_token_error("slice owner has no Cloud relay profile"))?;
         let issued = issue_cloud_slice_runtime_token(
             &profile,
             &slice.worker_kernel_ref,
             owner_kernel_id,
-            Some(&worker_public_key),
+            Some(worker_public_key),
         )
         .await?;
         let expires_at_ms = relay_token_expiry_ms(&issued.token)
@@ -244,7 +249,7 @@ impl CommandRouter {
             &profile,
             &slice.worker_kernel_ref,
             owner_kernel_id,
-            &worker_public_key,
+            worker_public_key,
         )
         .await?;
         let recovery_expires_at_ms = relay_token_expiry_ms(&recovery.token).ok_or_else(|| {
