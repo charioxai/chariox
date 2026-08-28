@@ -334,6 +334,15 @@ function validateProvisioner(action, environment, files) {
       validateSharedPath(value, name)
     }
   }
+  const ownerPublicKey = environment.CHARIOX_SLICE_OWNER_PUBLIC_KEY
+  if (ownerPublicKey !== undefined) {
+    const decoded = /^[A-Za-z0-9+/]{87}=$/.test(ownerPublicKey)
+      ? Buffer.from(ownerPublicKey, "base64")
+      : null
+    if (decoded?.length !== 65 || decoded[0] !== 4) {
+      fail("relay owner public key is invalid")
+    }
+  }
   const commonEnvironment = new Set([
     "CHARIOX_SLICE_ID",
     "CHARIOX_SLICE_NAME",

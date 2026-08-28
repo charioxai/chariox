@@ -13,6 +13,7 @@ const broker = join(
   repositoryRoot,
   "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
 )
+const ownerPublicKey = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).toString("base64")
 
 function validate(request, shareRoot) {
   return spawnSync(process.execPath, [broker, "--validate-request"], {
@@ -85,7 +86,7 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
         CHARIOX_SLICE_NAME: "chariox-slice-dev",
         CHARIOX_SLICE_ID: "slice-dev",
         CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
-        CHARIOX_SLICE_OWNER_PUBLIC_KEY: "slice-owner-public-key",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: ownerPublicKey,
         CHARIOX_SLICE_WORKSPACE: workspace,
       },
       files: [],
@@ -93,6 +94,23 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
     share,
   )
   assert.equal(provision.status, 0, provision.stderr)
+
+  const malformedOwnerKey = validate(
+    {
+      kind: "provisioner",
+      action: "provision",
+      environment: {
+        CHARIOX_SLICE_NAME: "chariox-slice-dev",
+        CHARIOX_SLICE_ID: "slice-dev",
+        CHARIOX_SLICE_HOME_VOLUME: "chariox-slice-dev-home",
+        CHARIOX_SLICE_OWNER_PUBLIC_KEY: "not-a-relay-public-key",
+      },
+      files: [],
+    },
+    share,
+  )
+  assert.equal(malformedOwnerKey.status, 1)
+  assert.match(malformedOwnerKey.stderr, /relay owner public key is invalid/)
 
   for (const action of ["stop", "destroy"]) {
     const lifecycle = validate(
