@@ -402,12 +402,16 @@ fn cloud_slice_runtime_token_options(
             ..CloudRuntimeTokenRequestOptions::default()
         }
     } else {
+        // The unkeyed bootstrap token may only register and ask its owner for
+        // the key-bound runtime token that replaces it.
         CloudRuntimeTokenRequestOptions {
             ttl_ms: Some(MANAGED_SLICE_RELAY_BOOTSTRAP_TOKEN_TTL_MS),
             allowed_actions: Some(vec![
                 "daemon.register".to_string(),
                 "daemon.heartbeat".to_string(),
+                "peer.request".to_string(),
             ]),
+            allowed_targets: Some(vec![owner_kernel_id.to_string()]),
             machine_id: Some(machine_id),
             ..CloudRuntimeTokenRequestOptions::default()
         }
@@ -509,9 +513,13 @@ mod tests {
             Some(vec![
                 "daemon.register".to_string(),
                 "daemon.heartbeat".to_string(),
+                "peer.request".to_string(),
             ])
         );
-        assert_eq!(options.allowed_targets, None);
+        assert_eq!(
+            options.allowed_targets,
+            Some(vec!["kernel-owner".to_string()])
+        );
         assert_eq!(options.public_key_thumbprint, None);
     }
 
