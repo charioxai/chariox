@@ -445,6 +445,7 @@ pub(super) async fn execute_start_slice_request(
             Some(relay_state) => {
                 activate_hosted_slice_relay_token(
                     config_projection,
+                    &discovery_config,
                     relay_state,
                     &initial_slice,
                     discovered.as_ref().expect("slice worker was discovered"),
@@ -770,6 +771,7 @@ async fn hosted_cloud_slice_relay_token(
 
 async fn activate_hosted_slice_relay_token(
     config_projection: &DaemonConfigProjectionStore,
+    discovery_config: &crate::config::DaemonConfig,
     relay_state: &Arc<RwLock<RelayClientState>>,
     slice: &crate::slice::SliceRecord,
     worker: &chariox_relay::protocol::RelayKernelPresence,
@@ -848,6 +850,7 @@ async fn activate_hosted_slice_relay_token(
             {
                 wait_for_hosted_slice_relay_activation(
                     config_projection,
+                    discovery_config,
                     relay_state,
                     slice,
                     worker,
@@ -882,6 +885,7 @@ async fn activate_hosted_slice_relay_token(
 
 async fn wait_for_hosted_slice_relay_activation(
     config_projection: &DaemonConfigProjectionStore,
+    discovery_config: &crate::config::DaemonConfig,
     relay_state: &Arc<RwLock<RelayClientState>>,
     slice: &crate::slice::SliceRecord,
     worker: &chariox_relay::protocol::RelayKernelPresence,
@@ -918,9 +922,13 @@ async fn wait_for_hosted_slice_relay_activation(
         }
 
         let config = config_projection.snapshot();
+        let presence_config = hosted_slice_activation_presence_config(&config, discovery_config);
         let observation = timeout(
             remaining.min(HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT),
-            crate::transport::relay_discovery::find_live_kernel_once(&config, &worker.kernel_id),
+            crate::transport::relay_discovery::find_live_kernel_once(
+                presence_config,
+                &worker.kernel_id,
+            ),
         )
         .await;
         let presence = match observation {
@@ -991,6 +999,13 @@ async fn wait_for_hosted_slice_relay_activation(
         )
         .await;
     }
+}
+
+fn hosted_slice_activation_presence_config<'a>(
+    _owner_config: &'a crate::config::DaemonConfig,
+    discovery_config: &'a crate::config::DaemonConfig,
+) -> &'a crate::config::DaemonConfig {
+    discovery_config
 }
 
 fn hosted_slice_activation_presence_ready(
@@ -1138,6 +1153,25 @@ mod tests {
         let mut replacement = worker;
         replacement.public_key = "replacement-key".to_string();
         assert!(hosted_slice_activation_presence_ready(Some(&replacement), "worker-key").is_err());
+    }
+
+    #[test]
+    fn hosted_slice_activation_reuses_the_scoped_discovery_credential() {
+        let mut owner_config = crate::config::DaemonConfig::for_tests();
+        owner_config.relay_token = Some("owner-daemon-token".to_string());
+        let mut discovery_config = owner_config.clone();
+        discovery_config.relay_token = Some("scoped-client-metadata-token".to_string());
+
+        let selected = hosted_slice_activation_presence_config(&owner_config, &discovery_config);
+
+        assert_eq!(
+            selected.relay_token.as_deref(),
+            Some("scoped-client-metadata-token")
+        );
+        assert_eq!(
+            owner_config.relay_token.as_deref(),
+            Some("owner-daemon-token")
+        );
     }
 
     #[test]
