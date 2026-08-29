@@ -233,19 +233,25 @@ pub(super) async fn handle_incoming_envelope(
                 guard.display_stream_sender(&stream_id)
             };
             if let Some(sender) = sender {
-                if let Err(reason) = try_send_display_client_event(
+                match try_send_display_client_event(
                     &sender,
                     RelayDisplayTunnelClientEvent::Chunk(chunk),
                 ) {
-                    state.write().await.remove_display_stream(&stream_id);
-                    crate::logging::warn_with_fields(
-                        "daemon.relay_client",
-                        "closing backpressured display client stream",
-                        serde_json::json!({
-                            "stream_id": stream_id,
-                            "reason": reason,
-                        }),
-                    );
+                    Ok(()) => {}
+                    Err(DisplayClientEventSendError::Full) => {
+                        state.write().await.remove_display_stream(&stream_id);
+                        crate::logging::warn_with_fields(
+                            "daemon.relay_client",
+                            "closing backpressured display client stream",
+                            serde_json::json!({
+                                "stream_id": stream_id,
+                                "reason": "stream_queue_full",
+                            }),
+                        );
+                    }
+                    Err(DisplayClientEventSendError::Closed) => {
+                        state.write().await.remove_display_stream(&stream_id);
+                    }
                 }
             }
         }
@@ -272,13 +278,19 @@ pub(super) async fn handle_incoming_envelope(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplayClientEventSendError {
+    Full,
+    Closed,
+}
+
 fn try_send_display_client_event(
     sender: &mpsc::Sender<RelayDisplayTunnelClientEvent>,
     event: RelayDisplayTunnelClientEvent,
-) -> Result<(), &'static str> {
+) -> Result<(), DisplayClientEventSendError> {
     sender.try_send(event).map_err(|error| match error {
-        mpsc::error::TrySendError::Full(_) => "stream_queue_full",
-        mpsc::error::TrySendError::Closed(_) => "stream_closed",
+        mpsc::error::TrySendError::Full(_) => DisplayClientEventSendError::Full,
+        mpsc::error::TrySendError::Closed(_) => DisplayClientEventSendError::Closed,
     })
 }
 
@@ -323,7 +335,7 @@ mod tests {
 
         assert_eq!(
             try_send_display_client_event(&sender, RelayDisplayTunnelClientEvent::Close),
-            Err("stream_queue_full")
+            Err(DisplayClientEventSendError::Full)
         );
     }
 

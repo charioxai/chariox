@@ -13,7 +13,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 const DISPLAY_PROXY_CHUNK_BYTES: usize = 8 * 1024;
 const DISPLAY_PROXY_MAX_RESPONSE_BYTES: u64 = 16 * 1024 * 1024;
-const DISPLAY_PROXY_EVENT_SEND_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub(super) async fn handle_display_tunnel_open(
     state: Arc<RwLock<RelayClientState>>,
@@ -335,48 +334,11 @@ fn blocking_send_display_chunk(
     data: &[u8],
     message_kind: Option<&str>,
 ) -> Result<(), RelayError> {
-    blocking_send_display_chunk_with_timeout(
+    send_outgoing_envelope(
         outgoing_tx,
-        stream_id,
-        data,
-        message_kind,
-        DISPLAY_PROXY_EVENT_SEND_TIMEOUT,
+        display_chunk_envelope(stream_id, data, message_kind),
     )
-}
-
-fn blocking_send_display_chunk_with_timeout(
-    outgoing_tx: &RelayOutgoingSender,
-    stream_id: &str,
-    data: &[u8],
-    message_kind: Option<&str>,
-    timeout: Duration,
-) -> Result<(), RelayError> {
-    let runtime = tokio::runtime::Handle::try_current().map_err(|error| {
-        relay_error(
-            "display_http_chunk_send_failed",
-            &format!("Tokio runtime is unavailable: {error}"),
-            true,
-        )
-    })?;
-    match runtime.block_on(tokio::time::timeout(
-        timeout,
-        send_outgoing_event_envelope(
-            outgoing_tx,
-            display_chunk_envelope(stream_id, data, message_kind),
-        ),
-    )) {
-        Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(relay_error(
-            "display_http_chunk_send_failed",
-            &error.to_string(),
-            true,
-        )),
-        Err(_) => Err(relay_error(
-            "display_http_chunk_send_timeout",
-            "relay display event queue remained full",
-            true,
-        )),
-    }
+    .map_err(|error| relay_error("display_http_chunk_send_failed", &error.to_string(), true))
 }
 
 fn display_chunk_envelope(
@@ -620,49 +582,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn blocking_http_chunk_waits_for_event_lane_capacity() {
+    async fn blocking_http_chunk_uses_the_ordered_event_lane() {
         let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
-        send_outgoing_envelope(
-            &outgoing_tx,
-            display_chunk_envelope("stream-1", b"first", None),
-        )
-        .expect("first display chunk should fill the event lane");
-
-        let blocking_sender = outgoing_tx.clone();
-        let blocked = tokio::task::spawn_blocking(move || {
-            blocking_send_display_chunk_with_timeout(
-                &blocking_sender,
-                "stream-1",
-                b"second",
-                None,
-                Duration::from_secs(1),
-            )
-        });
-        tokio::pin!(blocked);
-        assert!(
-            tokio::time::timeout(Duration::from_millis(10), &mut blocked)
-                .await
-                .is_err()
-        );
+        blocking_send_display_chunk(&outgoing_tx, "stream-1", b"first", None)
+            .expect("display chunk should enter the event lane");
 
         assert!(matches!(
             event_rx.recv().await,
             Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
                 if BASE64_STANDARD.decode(chunk.data.as_bytes()).expect("first chunk should decode") == b"first"
         ));
-        blocked
-            .await
-            .expect("blocking display sender should join")
-            .expect("second display chunk should enqueue after capacity frees");
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
-                if BASE64_STANDARD.decode(chunk.data.as_bytes()).expect("second chunk should decode") == b"second"
-        ));
     }
 
     #[tokio::test]
-    async fn blocking_http_chunk_fails_when_event_lane_stays_full() {
+    async fn blocking_http_chunk_fails_fast_when_event_lane_is_full() {
         let (outgoing_tx, _priority_rx, _event_rx) = RelayOutgoingSender::channel(1);
         send_outgoing_envelope(
             &outgoing_tx,
@@ -670,21 +603,10 @@ mod tests {
         )
         .expect("first display chunk should fill the event lane");
 
-        let blocking_sender = outgoing_tx.clone();
-        let error = tokio::task::spawn_blocking(move || {
-            blocking_send_display_chunk_with_timeout(
-                &blocking_sender,
-                "stream-1",
-                b"second",
-                None,
-                Duration::from_millis(10),
-            )
-        })
-        .await
-        .expect("blocking display sender should join")
-        .expect_err("full event lane should reach its deadline");
+        let error = blocking_send_display_chunk(&outgoing_tx, "stream-1", b"second", None)
+            .expect_err("full event lane should fail immediately");
 
-        assert_eq!(error.code, "display_http_chunk_send_timeout");
+        assert_eq!(error.code, "display_http_chunk_send_failed");
         assert!(error.retryable);
     }
 
