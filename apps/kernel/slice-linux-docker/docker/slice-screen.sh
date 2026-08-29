@@ -318,19 +318,16 @@ focus_chromium() {
 
 click() {
   require_screen_available
-  focus_chromium
   run_xdotool mousemove "$1" "$2" click 1
 }
 
 double_click() {
   require_screen_available
-  focus_chromium
   run_xdotool mousemove "$1" "$2" click --repeat 2 --delay 80 1
 }
 
 drag() {
   require_screen_available
-  focus_chromium
   run_xdotool mousemove "$1" "$2" mousedown 1 mousemove --sync "$3" "$4" mouseup 1
 }
 
@@ -355,13 +352,11 @@ scroll() {
 
 type_text() {
   require_screen_available
-  focus_chromium
   run_xdotool type --clearmodifiers --delay 5 "$*"
 }
 
 key() {
   require_screen_available
-  focus_chromium
   run_xdotool key --clearmodifiers "$1"
 }
 

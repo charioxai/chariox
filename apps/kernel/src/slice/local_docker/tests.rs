@@ -208,6 +208,40 @@ fn linux_docker_headed_browser_trusts_the_local_terminal_origin() {
 }
 
 #[test]
+fn linux_docker_computer_use_keeps_the_selected_desktop_application_active() {
+    let script = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/slice-screen.sh"),
+    )
+    .expect("slice screen script should be readable");
+
+    for function in ["click", "double_click", "drag", "type_text", "key"] {
+        assert!(
+            !bash_function(&script, function).contains("focus_chromium"),
+            "generic computer-use function {function} must preserve the active desktop application"
+        );
+    }
+    for browser_function in ["paste_stdin", "browser_dialog", "open_url"] {
+        assert!(
+            bash_function(&script, browser_function).contains("focus_chromium"),
+            "browser-specific fallback {browser_function} should still activate Chromium"
+        );
+    }
+}
+
+fn bash_function<'a>(script: &'a str, name: &str) -> &'a str {
+    let marker = format!("\n{name}() {{\n");
+    let start = script
+        .find(&marker)
+        .unwrap_or_else(|| panic!("shell function {name} should exist"))
+        + marker.len();
+    let body = &script[start..];
+    let end = body
+        .find("\n}\n")
+        .unwrap_or_else(|| panic!("shell function {name} should terminate"));
+    &body[..end]
+}
+
+#[test]
 fn linux_docker_slice_auto_build_refreshes_protocol_or_runtime_incompatible_workers() {
     let script = std::fs::read_to_string(
         Path::new(env!("CARGO_MANIFEST_DIR"))

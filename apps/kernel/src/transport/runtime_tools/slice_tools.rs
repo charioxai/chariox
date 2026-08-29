@@ -49,7 +49,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_MOUSE_TOOL.to_string(),
-            description: "Control the Chariox slice virtual mouse. Actions: move, click, double_click, scroll, drag.".to_string(),
+            description: "Control the Chariox slice virtual mouse in the active desktop application. Actions: move, click, double_click, scroll, drag. A click focuses the application under the pointer.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
@@ -69,7 +69,7 @@ pub fn slice_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
         },
         RuntimeToolSpec {
             name: SLICE_KEYBOARD_TOOL.to_string(),
-            description: "Control the Chariox slice virtual keyboard. Use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
+            description: "Control the Chariox slice virtual keyboard in the active desktop application. Click the intended application or field first, then use action=type with text or action=key with an xdotool-compatible key name.".to_string(),
             input_schema: serde_json::json!({
                 "type": "object",
                 "required": ["action"],
