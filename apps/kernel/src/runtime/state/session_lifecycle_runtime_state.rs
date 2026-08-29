@@ -146,7 +146,13 @@ impl KernelRuntimeState {
         if let Some(placement) = worktree_placement {
             agent_request = agent_request.with_worktree_placement(placement);
         }
-        let agent = self.spawn_agent(agent_request).await?;
+        let agent = match self.spawn_agent(agent_request).await {
+            Ok(agent) => agent,
+            Err(error) => {
+                rollback_unpublished_session(&self.owned.session_store, session.id());
+                return Err(error);
+            }
+        };
         self.owned
             .session_store
             .write()
@@ -236,7 +242,13 @@ impl KernelRuntimeState {
         if let Some(placement) = worktree_placement {
             agent_request = agent_request.with_worktree_placement(placement);
         }
-        let agent = self.spawn_agent(agent_request).await?;
+        let agent = match self.spawn_agent(agent_request).await {
+            Ok(agent) => agent,
+            Err(error) => {
+                rollback_unpublished_session(&self.owned.session_store, session.id());
+                return Err(error);
+            }
+        };
         self.owned
             .session_store
             .write()
@@ -842,6 +854,12 @@ impl KernelRuntimeState {
     }
 }
 
+fn rollback_unpublished_session(store: &crate::session::SessionStateStore, session_id: &str) {
+    let _ = store
+        .write()
+        .delete_session_with_project_cleanup(session_id);
+}
+
 fn prepare_local_session_worktree_placement(
     mut request: crate::session::CreateSessionRequest,
 ) -> Result<crate::session::CreateSessionRequest, DaemonError> {
@@ -1069,6 +1087,26 @@ mod tests {
 
         ready.worker_kernel_id = Some("kernel-worker".to_string());
         assert!(!slice_worker_ready(&ready, Some("opencode")));
+    }
+
+    #[test]
+    fn unpublished_remote_session_rollback_removes_session_and_project() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let store =
+            crate::session::SessionStateStore::new(crate::session::SessionService::new(&config));
+        let session = SessionStateOwner::new(store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let project_id = session.project_id().to_string();
+
+        rollback_unpublished_session(&store, &session_id);
+
+        assert!(store.read().get_session(&session_id).is_err());
+        assert!(store.read().get_project(&project_id).is_err());
     }
 
     fn slice(os: &str) -> crate::slice::SliceRecord {

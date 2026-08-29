@@ -6,7 +6,9 @@ use crate::agent::{AgentInstance, CreateAgentRequest, RemoteAgentBinding};
 use crate::app::DaemonApp;
 use crate::config::DaemonConfig;
 use crate::error::DaemonError;
-use crate::transport::relay_client::send_peer_request_via_temporary_connection;
+use crate::transport::relay_client::{
+    send_peer_request_via_connected_relay, send_peer_request_via_temporary_connection,
+};
 use crate::transport::relay_discovery;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
@@ -224,10 +226,12 @@ impl DaemonApp {
         let relay_config = relay_override
             .clone()
             .unwrap_or_else(|| self.config.clone());
+        let discovery_config =
+            self.remote_worker_discovery_config(kernel_ref, relay_config.clone())?;
         let worker_kernel = self.select_remote_kernel_by_ref_with_config(
             kernel_ref,
             &request.provider,
-            &relay_config,
+            &discovery_config,
         )?;
         let worker_worktree_id =
             self.worker_worktree_id_for_kernel_ref(kernel_ref, request.worktree_id.clone());
@@ -279,29 +283,31 @@ impl DaemonApp {
             daemon_alias: None,
         };
         self.remember_remote_worker_public_key(&relay_config, worker_kernel);
-        let (lease, relay_peer_protocol_version) =
-            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &relay_config,
-                target.clone(),
-                RelayPeerRequest::CreateExecutionLease {
-                    home_kernel_id: self.config.daemon_id.clone(),
-                    home_session_id: agent.session_id().to_string(),
-                    home_agent_id: agent.id().to_string(),
-                    home_agent_metaagent: agent.is_metaagent(),
-                    owner_user_id: agent.owner_user_id().to_string(),
-                },
-            ))? {
-                RelayPeerResponse::ExecutionLeaseCreated {
-                    lease,
-                    relay_peer_protocol_version,
-                } => (lease, relay_peer_protocol_version),
-                other => {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "create remote execution lease",
-                        message: format!("unexpected peer response: {other:?}"),
-                    });
-                }
-            };
+        let use_connected_relay =
+            self.hosted_shared_slice_uses_connected_relay(&worker_kernel.kernel_id);
+        let (lease, relay_peer_protocol_version) = match self.send_remote_binding_request(
+            &relay_config,
+            target.clone(),
+            RelayPeerRequest::CreateExecutionLease {
+                home_kernel_id: self.config.daemon_id.clone(),
+                home_session_id: agent.session_id().to_string(),
+                home_agent_id: agent.id().to_string(),
+                home_agent_metaagent: agent.is_metaagent(),
+                owner_user_id: agent.owner_user_id().to_string(),
+            },
+            use_connected_relay,
+        )? {
+            RelayPeerResponse::ExecutionLeaseCreated {
+                lease,
+                relay_peer_protocol_version,
+            } => (lease, relay_peer_protocol_version),
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "create remote execution lease",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+        };
         let cleanup_remote_setup =
             |app: &mut DaemonApp,
              relay_config: &DaemonConfig,
@@ -309,21 +315,23 @@ impl DaemonApp {
              lease_id: &str,
              leased_agent_id: Option<&str>| {
                 if let Some(leased_agent_id) = leased_agent_id {
-                    let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+                    let _ = app.send_remote_binding_request(
                         relay_config,
                         target.clone(),
                         RelayPeerRequest::DestroyLeasedAgent {
                             leased_agent_id: leased_agent_id.to_string(),
                         },
-                    ));
+                        use_connected_relay,
+                    );
                 }
-                let _ = app.block_on_relay_future(send_peer_request_via_temporary_connection(
+                let _ = app.send_remote_binding_request(
                     relay_config,
                     target.clone(),
                     RelayPeerRequest::DestroyExecutionLease {
                         lease_id: lease_id.to_string(),
                     },
-                ));
+                    use_connected_relay,
+                );
             };
         if relay_peer_protocol_version < RELAY_PEER_PROTOCOL_VERSION {
             cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
@@ -340,11 +348,8 @@ impl DaemonApp {
         if crate::provider::canonical_provider_family(agent.provider())
             .is_some_and(|provider| matches!(provider, "codex" | "claude" | "opencode"))
         {
-            let materialization_target_kind = if relay_override.is_some() {
-                crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
-            } else {
-                crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
-            };
+            let materialization_target_kind =
+                self.remote_account_materialization_target_kind(&worker_kernel.kernel_id);
             let materialization_target_ref = worker_kernel.kernel_id.clone();
             let account_owner_user_id =
                 crate::account_profile::provider_account_authority_owner_user_id(
@@ -382,7 +387,7 @@ impl DaemonApp {
             // The worker lease remains scoped to the runtime owner identity, so
             // stamp that identity on the encrypted replica envelope.
             account_materialization.profile.owner_user_id = agent.owner_user_id().to_string();
-            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+            match self.send_remote_binding_request(
                 &relay_config,
                 target.clone(),
                 RelayPeerRequest::EnsureRemoteProviderAccount {
@@ -394,7 +399,8 @@ impl DaemonApp {
                     },
                     materialization: account_materialization,
                 },
-            )) {
+                use_connected_relay,
+            ) {
                 Ok(RelayPeerResponse::RemoteProviderAccountEnsured {
                     provider,
                     account_profile,
@@ -459,37 +465,37 @@ impl DaemonApp {
                 }
             }
         }
-        let leased_agent =
-            match self.block_on_relay_future(send_peer_request_via_temporary_connection(
-                &relay_config,
-                target.clone(),
-                RelayPeerRequest::SpawnLeasedAgent {
-                    lease_id: lease.id.clone(),
-                    provider: agent.provider().to_string(),
-                    account_profile: agent.provider_account_profile().to_string(),
-                    model: agent.model().map(ToOwned::to_owned),
-                    effort: agent.effort().map(ToOwned::to_owned),
-                    execution_mode: Some(effective_config.mode),
-                    permission_level: Some(effective_config.permission_level),
-                    workspace_live_sync_mode: Some(workspace_live_sync_mode),
-                    worktree_id: worker_worktree_id
-                        .or_else(|| agent.worktree_id().map(ToOwned::to_owned)),
-                    worktree_placement,
-                },
-            )) {
-                Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
-                Ok(other) => {
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(DaemonError::LocalTransport {
-                        operation: "spawn remote leased agent",
-                        message: format!("unexpected peer response: {other:?}"),
-                    });
-                }
-                Err(error) => {
-                    cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
-                    return Err(error);
-                }
-            };
+        let leased_agent = match self.send_remote_binding_request(
+            &relay_config,
+            target.clone(),
+            RelayPeerRequest::SpawnLeasedAgent {
+                lease_id: lease.id.clone(),
+                provider: agent.provider().to_string(),
+                account_profile: agent.provider_account_profile().to_string(),
+                model: agent.model().map(ToOwned::to_owned),
+                effort: agent.effort().map(ToOwned::to_owned),
+                execution_mode: Some(effective_config.mode),
+                permission_level: Some(effective_config.permission_level),
+                workspace_live_sync_mode: Some(workspace_live_sync_mode),
+                worktree_id: worker_worktree_id
+                    .or_else(|| agent.worktree_id().map(ToOwned::to_owned)),
+                worktree_placement,
+            },
+            use_connected_relay,
+        ) {
+            Ok(RelayPeerResponse::LeasedAgentSpawned { leased_agent }) => leased_agent,
+            Ok(other) => {
+                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                return Err(DaemonError::LocalTransport {
+                    operation: "spawn remote leased agent",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+            Err(error) => {
+                cleanup_remote_setup(self, &relay_config, &target, &lease.id, None);
+                return Err(error);
+            }
+        };
         let leased_agent_id = leased_agent.id.clone();
         let lease_id = lease.id.clone();
         let bound = match self.agents.bind_remote_execution(
@@ -546,12 +552,16 @@ impl DaemonApp {
             });
         };
         let relay_config = self.relay_config_for_remote_execution(&remote_execution);
+        let discovery_config = self.remote_worker_discovery_config(
+            &remote_execution.worker_kernel_id,
+            relay_config.clone(),
+        )?;
         let uses_remote_execution_relay =
             remote_execution.relay_url.is_some() && remote_execution.relay_token.is_some();
         let worker_kernel = self.select_remote_kernel_for_machine_with_config(
             &remote_execution.worker_machine_id,
             agent.provider(),
-            &relay_config,
+            &discovery_config,
         )?;
         let rebound = self.bind_remote_agent_to_worker(
             &agent,
@@ -645,11 +655,15 @@ impl DaemonApp {
             });
         }
         let relay_override = self.slice_relay_config_for_kernel_ref(machine_ref);
-        let relay_config = relay_override.as_ref().unwrap_or(&self.config);
+        let relay_config = relay_override
+            .clone()
+            .unwrap_or_else(|| self.config.clone());
+        let discovery_config =
+            self.remote_worker_discovery_config(machine_ref, relay_config.clone())?;
         let worker_kernel = self.select_remote_kernel_for_machine_with_config(
             machine_ref,
             agent.provider(),
-            relay_config,
+            &discovery_config,
         )?;
         let worker_worktree_id = self.worker_worktree_id_for_kernel_ref(machine_ref, None);
         self.bind_remote_agent_to_worker(
@@ -698,13 +712,16 @@ impl DaemonApp {
             daemon_id: Some(remote_execution.worker_kernel_id.clone()),
             daemon_alias: None,
         };
-        match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+        let use_connected_relay =
+            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
+        match self.send_remote_binding_request(
             &relay_config,
             target.clone(),
             RelayPeerRequest::DestroyLeasedAgent {
                 leased_agent_id: remote_execution.leased_agent_id.clone(),
             },
-        ))? {
+            use_connected_relay,
+        )? {
             RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
             other => {
                 return Err(DaemonError::LocalTransport {
@@ -713,13 +730,14 @@ impl DaemonApp {
                 });
             }
         }
-        match self.block_on_relay_future(send_peer_request_via_temporary_connection(
+        match self.send_remote_binding_request(
             &relay_config,
             target,
             RelayPeerRequest::DestroyExecutionLease {
                 lease_id: remote_execution.execution_lease_id.clone(),
             },
-        ))? {
+            use_connected_relay,
+        )? {
             RelayPeerResponse::ExecutionLeaseDestroyed { .. } => {}
             other => {
                 return Err(DaemonError::LocalTransport {
@@ -774,7 +792,7 @@ impl DaemonApp {
             return Ok(());
         }
         let relay_config = self.relay_config_for_remote_execution(remote_execution);
-        let response = self.block_on_relay_future(send_peer_request_via_temporary_connection(
+        let response = self.send_remote_binding_request(
             &relay_config,
             ClientTarget {
                 daemon_id: Some(remote_execution.worker_kernel_id.clone()),
@@ -789,7 +807,8 @@ impl DaemonApp {
                 },
                 packages,
             },
-        ))?;
+            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id),
+        )?;
         match response {
             RelayPeerResponse::RemoteSkillPackagesEnsured { .. } => Ok(()),
             other => Err(DaemonError::LocalTransport {
@@ -888,6 +907,83 @@ impl DaemonApp {
         }
         config.cloud_relay = None;
         Some(config)
+    }
+
+    fn hosted_shared_slice_uses_connected_relay(&self, kernel_ref: &str) -> bool {
+        self.slices
+            .resolve_by_worker_kernel_ref(kernel_ref)
+            .and_then(|slice| slice.relay_endpoint)
+            .is_some_and(|endpoint| {
+                !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url)
+            })
+    }
+
+    fn remote_account_materialization_target_kind(
+        &self,
+        kernel_ref: &str,
+    ) -> crate::account_profile::ProviderAccountMaterializationTargetKind {
+        if self
+            .slices
+            .resolve_by_worker_kernel_ref(kernel_ref)
+            .is_some()
+        {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        } else {
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+        }
+    }
+
+    fn remote_worker_discovery_config(
+        &self,
+        kernel_ref: &str,
+        mut config: DaemonConfig,
+    ) -> Result<DaemonConfig, DaemonError> {
+        if !self.hosted_shared_slice_uses_connected_relay(kernel_ref) {
+            return Ok(config);
+        }
+        let profile = config
+            .cloud_relay
+            .clone()
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "discover hosted slice worker",
+                message: "hosted shared slice requires a Cloud relay profile".to_string(),
+            })?;
+        let owner_kernel_ref = self.config.daemon_id.clone();
+        let worker_kernel_ref = kernel_ref.to_string();
+        let token = self.block_on_relay_future(async move {
+            crate::runtime::cloud_api_client::issue_cloud_slice_discovery_token(
+                &profile,
+                &owner_kernel_ref,
+                &worker_kernel_ref,
+            )
+            .await
+        })?;
+        config.relay_token = Some(token.token);
+        Ok(config)
+    }
+
+    fn send_remote_binding_request(
+        &self,
+        relay_config: &DaemonConfig,
+        target: ClientTarget,
+        request: RelayPeerRequest,
+        use_connected_relay: bool,
+    ) -> Result<RelayPeerResponse, DaemonError> {
+        if use_connected_relay {
+            let relay_state = self.relay_client_state();
+            self.block_on_relay_future(send_peer_request_via_connected_relay(
+                relay_config,
+                &relay_state,
+                target,
+                request,
+            ))
+        } else {
+            self.block_on_relay_future(send_peer_request_via_temporary_connection(
+                relay_config,
+                target,
+                request,
+            ))
+        }
     }
 
     fn worker_worktree_id_for_kernel_ref(
@@ -1009,6 +1105,8 @@ fn app_skill_registry_roots(workspace_id: &str) -> Vec<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+
     use crate::agent::RemoteAgentBinding;
     use crate::app::DaemonApp;
     use crate::config::{DaemonConfig, PersistedCloudRelayProfile};
@@ -1063,6 +1161,35 @@ mod tests {
             cloud_session_expires_at_ms: None,
             token_expires_at_ms: Some(42),
         }
+    }
+
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0_u8; 4096];
+            let bytes = stream.read(&mut chunk).expect("read Cloud request");
+            if bytes == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..bytes]);
+            let Some(header_end) = request.windows(4).position(|part| part == b"\r\n\r\n") else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&request[..header_end]);
+            let content_length = headers
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("content-length")
+                        .then(|| value.trim().parse::<usize>().ok())
+                        .flatten()
+                })
+                .unwrap_or(0);
+            if request.len() >= header_end + 4 + content_length {
+                break;
+            }
+        }
+        String::from_utf8(request).expect("Cloud request should be UTF-8")
     }
 
     #[test]
@@ -1409,6 +1536,106 @@ mod tests {
         assert!(app
             .slice_relay_config_for_kernel_ref(&slice.worker_kernel_ref)
             .is_none());
+        assert!(app.hosted_shared_slice_uses_connected_relay(&slice.worker_kernel_ref));
+        assert_eq!(
+            app.remote_account_materialization_target_kind(&slice.worker_kernel_ref),
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Slice
+        );
+    }
+
+    #[test]
+    fn hosted_shared_slice_discovery_uses_scoped_metadata_token() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Cloud fixture should bind");
+        let address = listener.local_addr().expect("Cloud fixture address");
+        let fixture = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept Cloud request");
+            let request = read_http_request(&mut stream);
+            let body = r#"{"token":"slice-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
+            stream
+                .write_all(
+                    format!(
+                        "HTTP/1.1 201 Created\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    )
+                    .as_bytes(),
+                )
+                .expect("write Cloud response");
+            request
+        });
+
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("home-runtime-token".to_string());
+        let mut profile = cloud_relay_profile("wss://relay.example.test");
+        profile.api_url = format!("http://{address}");
+        config.cloud_relay = Some(profile);
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+        let slice = app
+            .slices()
+            .create(
+                &app.config().daemon_id,
+                &app.config().host_machine_id,
+                crate::slice::CreateSliceInput {
+                    name: "hosted-linux-dev".to_string(),
+                    backend: crate::slice::SliceBackendKind::LocalDocker,
+                    os: "linux".to_string(),
+                    display_mode: crate::slice::SliceDisplayMode::Headed,
+                    workspace_id: None,
+                    worktree_id: None,
+                    workspace_mount: Some("/repo".to_string()),
+                    development: None,
+                    worker_kernel_ref: None,
+                    display_url: None,
+                    provider_auth: Vec::new(),
+                    from_saved_state: None,
+                    now_ms: 42,
+                },
+            )
+            .expect("slice should create");
+        app.slices()
+            .set_relay_endpoint(
+                &slice.id,
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: "wss://relay.example.test".to_string(),
+                    private: false,
+                }),
+                43,
+            )
+            .expect("slice relay endpoint should update");
+
+        let discovery = app
+            .remote_worker_discovery_config(&slice.worker_kernel_ref, app.config().clone())
+            .expect("hosted slice discovery config should issue a scoped token");
+        assert_eq!(
+            discovery.relay_token.as_deref(),
+            Some("slice-metadata-token")
+        );
+        let request = fixture.join().expect("Cloud fixture should finish");
+        assert!(request.starts_with("POST /relay/token HTTP/1.1"));
+        assert!(request.contains(&format!(
+            r#""subject":"slice-discovery:{}:{}""#,
+            app.config().daemon_id,
+            slice.worker_kernel_ref
+        )));
+        assert!(request.contains(r#""allowUnpairedClientSubject":true"#));
+        assert!(request.contains(r#""allowedActions":["client.metadata.read"]"#));
+    }
+
+    #[test]
+    fn ordinary_remote_worker_keeps_temporary_relay_and_worker_materialization() {
+        let mut config = DaemonConfig::for_tests();
+        config.relay_url = Some("wss://relay.example.test".to_string());
+        config.relay_token = Some("refreshable-token".to_string());
+        config.cloud_relay = Some(cloud_relay_profile("wss://relay.example.test"));
+        let app = DaemonApp::bootstrap(config).expect("daemon should boot");
+
+        assert!(!app.hosted_shared_slice_uses_connected_relay("kernel-remote"));
+        assert_eq!(
+            app.remote_account_materialization_target_kind("kernel-remote"),
+            crate::account_profile::ProviderAccountMaterializationTargetKind::Worker
+        );
     }
 
     #[test]
