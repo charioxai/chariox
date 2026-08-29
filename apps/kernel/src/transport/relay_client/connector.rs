@@ -105,6 +105,10 @@ fn should_start_leased_projection_pump(task: Option<&JoinHandle<()>>) -> bool {
     task.is_none_or(|task| task.is_finished())
 }
 
+fn should_refresh_remote_inventory(dynamic_relay: bool, managed_slice_worker: bool) -> bool {
+    dynamic_relay && !managed_slice_worker
+}
+
 fn cloud_presence_refresh_interval(daemon_id: &str) -> Duration {
     CLOUD_RELAY_PRESENCE_REFRESH_INTERVAL
         + Duration::from_millis(stable_jitter_ms(
@@ -972,8 +976,11 @@ async fn run_daemon_relay_connector_inner(
                 }
                 let mut cloud_presence_schedule =
                     CloudPresencePublishSchedule::new(Instant::now(), &daemon_id);
-                let mut inventory_refresh_task = static_relay
-                    .is_none()
+                let refresh_remote_inventory = should_refresh_remote_inventory(
+                    static_relay.is_none(),
+                    router.managed_slice_relay_identity().is_some(),
+                );
+                let mut inventory_refresh_task = refresh_remote_inventory
                     .then(|| spawn_remote_inventory_projection_refresh(Arc::clone(&router)));
                 let mut heartbeat_interval = tokio::time::interval(heartbeat);
                 heartbeat_interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
@@ -1213,7 +1220,7 @@ async fn run_daemon_relay_connector_inner(
                                     );
                                 }
                             }
-                            if static_relay.is_none()
+                            if refresh_remote_inventory
                                 && heartbeat_tick.is_multiple_of(RELAY_WAITING_ROOM_INVENTORY_INTERVAL_TICKS)
                                 && inventory_refresh_task
                                     .as_ref()

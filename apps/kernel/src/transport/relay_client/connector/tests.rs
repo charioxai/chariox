@@ -86,6 +86,13 @@ fn missing_relay_config_with_cloud_profile_is_cloud_unavailable() {
     );
 }
 
+#[test]
+fn managed_slice_worker_does_not_request_remote_inventory_with_daemon_token() {
+    assert!(should_refresh_remote_inventory(true, false));
+    assert!(!should_refresh_remote_inventory(true, true));
+    assert!(!should_refresh_remote_inventory(false, false));
+}
+
 #[tokio::test]
 async fn dynamic_relay_token_rotation_returns_one_registration_heartbeat() {
     let relay_url = "wss://relay.example.test";

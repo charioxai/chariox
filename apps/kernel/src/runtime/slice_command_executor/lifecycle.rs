@@ -816,12 +816,14 @@ async fn activate_hosted_slice_relay_token(
             activation_nonce.clone(),
         );
     let result = async {
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+        let response = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay(
             &config,
+            relay_state,
             chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(worker.kernel_id.clone()),
                 daemon_alias: None,
             },
+            &worker.public_key,
             crate::transport::relay_peer::RelayPeerRequest::InstallManagedSliceRelayToken {
                 slice_id: slice.id.clone(),
                 owner_kernel_id: slice.owner_kernel_id.clone(),
@@ -959,12 +961,14 @@ async fn wait_for_hosted_slice_relay_activation(
             if ping_timeout.is_zero() {
                 continue;
             }
-            let ping = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+            let ping = crate::transport::relay_client::send_peer_request_to_known_kernel_via_relay_with_timeout(
                 &config,
+                relay_state,
                 chariox_relay::protocol::ClientTarget {
                     daemon_id: Some(worker.kernel_id.clone()),
                     daemon_alias: None,
                 },
+                &worker.public_key,
                 crate::transport::relay_peer::RelayPeerRequest::Ping {
                     value: ping_value.clone(),
                 },
