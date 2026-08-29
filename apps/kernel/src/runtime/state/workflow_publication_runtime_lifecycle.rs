@@ -695,12 +695,16 @@ async fn start_publication_runtime_claimed(
                 message: "publication package export returned an unexpected response".to_string(),
             });
         };
-        if package_digest != expected {
+        if let Err(message) = validate_bound_publication_package_digest(expected, &package_digest) {
+            let _ = mark_publication_runtime_error(
+                runtime_state,
+                &request.session_id,
+                publication.id(),
+                &message,
+            );
             return Err(publication_runtime_error(
                 "start workflow publication runtime",
-                format!(
-                    "publication package digest changed before deployment bind: expected {expected}, got {package_digest}"
-                ),
+                message,
             ));
         }
     }
@@ -1289,6 +1293,15 @@ fn publication_runtime_package_kernel_url(
         .then(|| kernel_url.to_string())
 }
 
+fn validate_bound_publication_package_digest(expected: &str, actual: &str) -> Result<(), String> {
+    if actual == expected {
+        return Ok(());
+    }
+    Err(format!(
+        "publication package digest no longer matches the bound deployment: expected {expected}, got {actual}; rebind the deployment before restarting"
+    ))
+}
+
 fn resolve_chariox_cli_bin() -> Result<PathBuf, DaemonError> {
     if let Some(value) = std::env::var_os("CHARIOX_CLI_BIN") {
         return Ok(PathBuf::from(value));
@@ -1462,9 +1475,10 @@ mod tests {
         publication_local_url, publication_runtime_launch_context,
         publication_runtime_metadata_preserving_binding, publication_runtime_port,
         publication_runtime_recovery_binding, stopped_publication_runtime_metadata,
-        validate_publication_runtime_bind_address, validated_deployment_binding,
-        write_publication_caller_claims_config, PublicationRuntimeLaunchContext,
-        WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
+        validate_bound_publication_package_digest, validate_publication_runtime_bind_address,
+        validated_deployment_binding, write_publication_caller_claims_config,
+        PublicationRuntimeLaunchContext, WorkflowPublicationRuntimeProcessStore,
+        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -1595,6 +1609,15 @@ mod tests {
             super::publication_runtime_package_kernel_url("ws://127.0.0.1:43118", None),
             Some("ws://127.0.0.1:43118".to_string()),
         );
+    }
+
+    #[test]
+    fn bound_runtime_restart_requires_the_deployed_package_digest() {
+        assert!(validate_bound_publication_package_digest("sha256:exact", "sha256:exact").is_ok());
+        let error = validate_bound_publication_package_digest("sha256:exact", "sha256:changed")
+            .expect_err("changed source must require a fresh deployment binding");
+        assert!(error.contains("no longer matches the bound deployment"));
+        assert!(error.contains("rebind the deployment before restarting"));
     }
 
     #[test]
