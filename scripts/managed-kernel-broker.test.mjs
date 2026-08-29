@@ -189,7 +189,16 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   const canonicalRuntimeLogScript = localDockerSource.match(
     /fn local_docker_runtime_log_entry[\s\S]*?let script = r#"([\s\S]*?)"#;/,
   )?.[1]
+  const brokerSource = await readFile(broker, "utf8")
+  const brokerRuntimeLogScriptLiteral = brokerSource.match(
+    /const SLICE_RUNTIME_LOG_SCRIPT = `([\s\S]*?)`/,
+  )?.[1]
+  const canonicalTemplateLiteral = sliceRuntimeLogScript
+    .replaceAll("\\", "\\\\")
+    .replaceAll("`", "\\`")
+    .replaceAll("${", "\\${")
   assert.equal(canonicalRuntimeLogScript, sliceRuntimeLogScript)
+  assert.equal(brokerRuntimeLogScriptLiteral, canonicalTemplateLiteral)
   assert.equal(validate({ kind: "docker", args: runtimeLogs }, share).status, 0)
   const injectedRuntimeLogs = validate({
     kind: "docker",
