@@ -455,15 +455,18 @@ async fn inspect_publication_runtime(
             publication.id(),
             "running",
             Some(local_url.clone()),
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "running",
-                "host": process.host,
-                "port": process.port,
-                "local_url": process.local_url,
-                "process_id": process.process_id,
-                "package_root": serde_json::Value::Null,
-            })),
+            Some(publication_runtime_metadata_preserving_binding(
+                &publication,
+                serde_json::json!({
+                    "kind": "local_runtime",
+                    "status": "running",
+                    "host": process.host,
+                    "port": process.port,
+                    "local_url": process.local_url,
+                    "process_id": process.process_id,
+                    "package_root": serde_json::Value::Null,
+                }),
+            )),
         )?
     } else if publication.status() == Some("error") {
         publication
@@ -474,10 +477,13 @@ async fn inspect_publication_runtime(
             publication.id(),
             "stopped",
             Some(None),
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "stopped",
-            })),
+            Some(publication_runtime_metadata_preserving_binding(
+                &publication,
+                serde_json::json!({
+                    "kind": "local_runtime",
+                    "status": "stopped",
+                }),
+            )),
         )?
     };
     if let Some(snapshot) = runtime_snapshot {
@@ -638,15 +644,18 @@ async fn start_publication_runtime_claimed(
             publication.id(),
             "running",
             None,
-            Some(serde_json::json!({
-                "kind": "local_runtime",
-                "status": "running",
-                "host": existing.host,
-                "port": existing.port,
-                "local_url": existing.local_url,
-                "process_id": existing.process_id,
-                "package_root": serde_json::Value::Null,
-            })),
+            Some(publication_runtime_metadata_preserving_binding(
+                &publication,
+                serde_json::json!({
+                    "kind": "local_runtime",
+                    "status": "running",
+                    "host": existing.host,
+                    "port": existing.port,
+                    "local_url": existing.local_url,
+                    "process_id": existing.process_id,
+                    "package_root": serde_json::Value::Null,
+                }),
+            )),
         )?;
         let open_url = refreshed.open_url().map(str::to_string);
         let viewer_url = refreshed.viewer_url().map(str::to_string);
@@ -1174,6 +1183,23 @@ fn mark_publication_runtime_status(
         )
 }
 
+fn publication_runtime_metadata_preserving_binding(
+    publication: &WorkflowPublicationDefinition,
+    mut metadata: serde_json::Value,
+) -> serde_json::Value {
+    let Some(binding) = publication
+        .deployment()
+        .and_then(|deployment| deployment.get("binding"))
+        .cloned()
+    else {
+        return metadata;
+    };
+    if let Some(object) = metadata.as_object_mut() {
+        object.insert("binding".to_string(), binding);
+    }
+    metadata
+}
+
 fn mark_publication_runtime_error(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
@@ -1384,7 +1410,8 @@ impl WorkflowPublicationRuntimeProcessStore {
 mod tests {
     use super::{
         launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_port, validate_publication_runtime_bind_address,
+        publication_local_url, publication_runtime_metadata_preserving_binding,
+        publication_runtime_port, validate_publication_runtime_bind_address,
         validated_deployment_binding, write_publication_caller_claims_config,
         WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
@@ -1517,6 +1544,58 @@ mod tests {
             super::publication_runtime_package_kernel_url("ws://127.0.0.1:43118", None),
             Some("ws://127.0.0.1:43118".to_string()),
         );
+    }
+
+    #[test]
+    fn runtime_status_metadata_preserves_the_durable_cloud_binding() {
+        let publication = crate::session::WorkflowPublicationDefinition::new(
+            "publication-1",
+            "session-1",
+            "workflow-1",
+            "endpoint-1",
+            None,
+            Some("published".to_string()),
+            "ingress",
+            Some("/".to_string()),
+            vec!["GET".to_string()],
+            None,
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "owner-1",
+        );
+        let mut publication = publication;
+        publication.mark_served(
+            "running",
+            "https://relay.example.test/display/publication-1/",
+            serde_json::json!({
+                "kind": "tunnel",
+                "expires_at_ms": 123,
+                "binding": {
+                    "deployment_id": "deployment-1",
+                    "package_digest": format!("sha256:{}", "a".repeat(64)),
+                },
+            }),
+        );
+
+        let metadata = publication_runtime_metadata_preserving_binding(
+            &publication,
+            serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped",
+            }),
+        );
+
+        assert_eq!(metadata["kind"], "local_runtime");
+        assert_eq!(metadata["status"], "stopped");
+        assert_eq!(
+            metadata.pointer("/binding/deployment_id"),
+            Some(&serde_json::json!("deployment-1")),
+        );
+        assert!(metadata.get("expires_at_ms").is_none());
     }
 
     #[tokio::test]
