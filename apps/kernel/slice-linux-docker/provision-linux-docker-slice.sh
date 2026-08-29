@@ -608,16 +608,17 @@ ensure_auth_target_container() {
 exec_slice_with_timeout() {
   local seconds="$1"
   shift
-  local relay_env_args=()
-  local workspace_root_env_args=()
+  # Bash 3.2 treats an empty array expansion as unbound under `set -u`.
+  # Keep optional workspace variables in the list that always receives the relay token.
+  local runtime_env_args=()
   if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
-    workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
+    runtime_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
     local mount_index mount_variable development_mount
     for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
       mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
       development_mount="${!mount_variable:-}"
       [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
-      workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
+      runtime_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
     done
   fi
   local relay_token_path="/tmp/chariox-slice-state/relay-token"
@@ -644,11 +645,11 @@ exec_slice_with_timeout() {
     else
       run_with_timeout 30 docker exec -i -u slice "$SLICE_NAME" bash -lc "set -euo pipefail; umask 077; mkdir -p /tmp/chariox-slice-state; cat > '$cloud_relay_config_path'" <<<"$SLICE_CLOUD_RELAY_CONFIG_JSON"
     fi
-    relay_env_args+=(-e CHARIOX_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
+    runtime_env_args+=(-e CHARIOX_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
   fi
-  relay_env_args+=(-e CHARIOX_SLICE_RELAY_TOKEN_FILE="$relay_token_path")
+  runtime_env_args+=(-e CHARIOX_SLICE_RELAY_TOKEN_FILE="$relay_token_path")
   if [[ -n "$SLICE_RELAY_URL" ]]; then
-    relay_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
+    runtime_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
   run_with_timeout "$seconds" docker exec \
     -e CHARIOX_SLICE_CODEX_PORT="$SLICE_CODEX_PORT" \
@@ -660,8 +661,7 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_MCP_PORT="$SLICE_MCP_PORT" \
     -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
-    "${relay_env_args[@]}" \
-    "${workspace_root_env_args[@]}" \
+    "${runtime_env_args[@]}" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \

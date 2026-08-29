@@ -434,8 +434,9 @@ fn local_docker_slice_mounts_only_development_repositories() {
     assert!(
         script.contains("-e \"CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount\"")
     );
-    assert!(script.contains("local workspace_root_env_args=()"));
-    assert!(script.contains("\"${workspace_root_env_args[@]}\""));
+    assert!(script.contains("local runtime_env_args=()"));
+    assert!(script.contains("\"${runtime_env_args[@]}\""));
+    assert!(!script.contains("workspace_root_env_args"));
     assert!(!script.contains("$SLICE_DEVELOPMENT_ROOT:$SLICE_DEVELOPMENT_ROOT"));
 }
 
