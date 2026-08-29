@@ -1495,6 +1495,8 @@ mod tests {
         guard.track_agent(agent);
         let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
             .expect("durable database should open for failure injection");
+        // Bind this regression to the real durable-event schema and writer path. A schema change
+        // fails trigger installation, while a trigger that stops matching fails expect_err below.
         connection
             .execute_batch(
                 "CREATE TRIGGER fail_unpublished_session_create
