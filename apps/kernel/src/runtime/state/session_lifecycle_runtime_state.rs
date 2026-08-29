@@ -1441,6 +1441,67 @@ mod tests {
             .all(|event| event.kind != "session.deleted" && event.kind != "project.deleted"));
     }
 
+    #[tokio::test]
+    async fn unpublished_session_rollback_compensates_published_project_only() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let session = SessionStateOwner::new(runtime.owned.session_store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let project = runtime
+            .owned
+            .session_store
+            .get_project(session.project_id())
+            .expect("project should exist");
+        runtime
+            .owned
+            .durable_state_store
+            .append_event(
+                "project.created",
+                Some(project.id().to_string()),
+                serde_json::json!({ "project": &project }),
+            )
+            .expect("project creation should publish");
+        let agent = runtime
+            .owned
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                    .with_owner_user_id(session.owner_user_id().to_string()),
+            )
+            .expect("agent should spawn");
+        let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
+        guard.track_agent(&agent);
+
+        runtime
+            .rollback_unpublished_session(
+                &mut guard,
+                UnpublishedSessionPublicationProgress {
+                    project_created: true,
+                },
+            )
+            .await;
+
+        let project_deletions = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("project.deleted")
+            .expect("project deletion events should read");
+        assert_eq!(project_deletions.len(), 1);
+        assert_eq!(
+            project_deletions[0].subject_id.as_deref(),
+            Some(project.id())
+        );
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.deleted")
+            .expect("session deletion events should read")
+            .is_empty());
+    }
+
     fn slice(os: &str) -> crate::slice::SliceRecord {
         crate::slice::SliceRecord {
             id: "slice-1".to_string(),
