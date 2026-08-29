@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { selectBrowserPageTarget } from "./browser-cdp-targets.mjs"
+import { withCdpSocket } from "./browser-cdp-session.mjs"
 
 const command = process.argv[2];
 const args = process.argv.slice(3);
@@ -67,41 +68,10 @@ async function targetIsVisible(target) {
 
 async function withSocket(callback) {
   const page = await getPage();
-  const socket = new WebSocket(page.webSocketDebuggerUrl);
-  let nextId = 1;
-  const pending = new Map();
-
-  socket.addEventListener("message", (event) => {
-    const message = JSON.parse(event.data);
-    const resolver = pending.get(message.id);
-    if (resolver) {
-      pending.delete(message.id);
-      resolver(message);
-    }
-  });
-
-  await new Promise((resolve, reject) => {
-    socket.addEventListener("open", resolve, { once: true });
-    socket.addEventListener("error", reject, { once: true });
-  });
-
-  const send = async (method, params = {}) => {
-    const id = nextId++;
-    socket.send(JSON.stringify({ id, method, params }));
-    const response = await new Promise((resolve) => pending.set(id, resolve));
-    if (response.error) {
-      throw new Error(`${method}: ${response.error.message}`);
-    }
-    return response.result;
-  };
-
-  try {
-    const result = await callback(send);
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    return result;
-  } finally {
-    socket.close();
-  }
+  return await withCdpSocket({
+    url: page.webSocketDebuggerUrl,
+    callback,
+  })
 }
 
 async function closeBrowser() {
