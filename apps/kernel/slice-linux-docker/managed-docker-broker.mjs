@@ -194,6 +194,20 @@ function validateSliceContainer(value, label) {
   if (!value.startsWith("chariox-slice-")) fail(`${label} is not a managed slice resource`)
 }
 
+const SLICE_RUNTIME_LOG_SCRIPT = `
+set -eu
+found=0
+for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+  [ -f "$file" ] || continue
+  found=1
+  printf '\\n=== %s ===\\n' "$file"
+  tail -n "$1" "$file"
+done
+if [ "$found" -eq 0 ]; then
+  printf '<no slice runtime logs>\\n'
+fi
+`
+
 function validateDockerExec(args) {
   if (args[1] !== "-u" || !["slice", "root"].includes(args[2])) fail("Docker exec user is invalid")
   validateSliceContainer(args[3], "Docker exec container")
@@ -228,7 +242,7 @@ function validateDockerExec(args) {
     command.length === 5 &&
     command[0] === "sh" &&
     command[1] === "-c" &&
-    command[2].includes("/opt/chariox-slice/logs/*.log") &&
+    command[2] === SLICE_RUNTIME_LOG_SCRIPT &&
     command[3] === "slice-runtime-logs" &&
     /^[0-9]{1,4}$/.test(command[4])
   ) return

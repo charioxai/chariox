@@ -494,8 +494,13 @@ function findProviderAccountByAlias(
   alias: string,
 ) {
   const normalizedAlias = alias.trim()
-  return providerAccountsForProvider(profiles, provider)
-    .find((candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0)
+  const candidates = providerAccountsForProvider(profiles, provider)
+  const exactMatch = candidates.find((candidate) => candidate.label === normalizedAlias)
+  if (exactMatch) return exactMatch
+  const foldedMatches = candidates.filter(
+    (candidate) => candidate.label.localeCompare(normalizedAlias, undefined, { sensitivity: "accent" }) === 0,
+  )
+  return foldedMatches.length === 1 ? foldedMatches[0] : undefined
 }
 
 async function resolveProviderAccountReference(
