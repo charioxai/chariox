@@ -112,10 +112,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 &publication_id,
                 "stopped",
                 Some(None),
-                Some(serde_json::json!({
-                    "kind": "local_runtime",
-                    "status": "stopped",
-                })),
+                Some(stopped_publication_runtime_metadata(&publication)),
             )?;
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
@@ -477,13 +474,7 @@ async fn inspect_publication_runtime(
             publication.id(),
             "stopped",
             Some(None),
-            Some(publication_runtime_metadata_preserving_binding(
-                &publication,
-                serde_json::json!({
-                    "kind": "local_runtime",
-                    "status": "stopped",
-                }),
-            )),
+            Some(stopped_publication_runtime_metadata(&publication)),
         )?
     };
     if let Some(snapshot) = runtime_snapshot {
@@ -1200,6 +1191,18 @@ fn publication_runtime_metadata_preserving_binding(
     metadata
 }
 
+fn stopped_publication_runtime_metadata(
+    publication: &WorkflowPublicationDefinition,
+) -> serde_json::Value {
+    publication_runtime_metadata_preserving_binding(
+        publication,
+        serde_json::json!({
+            "kind": "local_runtime",
+            "status": "stopped",
+        }),
+    )
+}
+
 fn mark_publication_runtime_error(
     runtime_state: &KernelRuntimeState,
     session_id: &str,
@@ -1410,10 +1413,10 @@ impl WorkflowPublicationRuntimeProcessStore {
 mod tests {
     use super::{
         launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_metadata_preserving_binding,
-        publication_runtime_port, validate_publication_runtime_bind_address,
-        validated_deployment_binding, write_publication_caller_claims_config,
-        WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
+        publication_local_url, publication_runtime_port, stopped_publication_runtime_metadata,
+        validate_publication_runtime_bind_address, validated_deployment_binding,
+        write_publication_caller_claims_config, WorkflowPublicationRuntimeProcessStore,
+        DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -1581,13 +1584,7 @@ mod tests {
             }),
         );
 
-        let metadata = publication_runtime_metadata_preserving_binding(
-            &publication,
-            serde_json::json!({
-                "kind": "local_runtime",
-                "status": "stopped",
-            }),
-        );
+        let metadata = stopped_publication_runtime_metadata(&publication);
 
         assert_eq!(metadata["kind"], "local_runtime");
         assert_eq!(metadata["status"], "stopped");
@@ -1596,6 +1593,33 @@ mod tests {
             Some(&serde_json::json!("deployment-1")),
         );
         assert!(metadata.get("expires_at_ms").is_none());
+
+        let unbound_publication = crate::session::WorkflowPublicationDefinition::new(
+            "publication-2",
+            "session-1",
+            "workflow-1",
+            "endpoint-1",
+            None,
+            Some("published".to_string()),
+            "ingress",
+            Some("/".to_string()),
+            vec!["GET".to_string()],
+            None,
+            None,
+            None,
+            None,
+            Some("async".to_string()),
+            None,
+            None,
+            "owner-1",
+        );
+        assert_eq!(
+            stopped_publication_runtime_metadata(&unbound_publication),
+            serde_json::json!({
+                "kind": "local_runtime",
+                "status": "stopped",
+            }),
+        );
     }
 
     #[tokio::test]
