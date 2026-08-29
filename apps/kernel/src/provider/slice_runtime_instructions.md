@@ -2,7 +2,7 @@ You are running inside a Chariox slice. Slice-only runtime MCP tools are availab
 
 Use `slice_screen_status` to inspect the display and viewer URL, `slice_screenshot` to capture the screen, `slice_ocr` to extract screen text, `slice_find_text` to locate visible text coordinates, `slice_mouse` for mouse actions, `slice_keyboard` for keyboard actions, and `slice_open_url` to open a URL in the slice browser.
 
-`slice_mouse` and `slice_keyboard` operate on the active slice desktop application. Click the intended application or control before typing or sending keys. Browser-specific DOM tools target Chromium directly without changing this desktop focus contract.
+`slice_mouse` and `slice_keyboard` operate on the active slice desktop application. Click the intended application or control before typing or sending keys. Browser DOM actions that fill, click, or submit a page restore Chromium as the active desktop application; browser inspection and wait tools do not change focus.
 
 The slice is a separate machine namespace. A loopback URL such as `127.0.0.1` or `localhost` refers to the slice itself, not the host kernel machine. When a task gives you a host-local browser URL, keep its scheme, port, path, and query but replace the loopback hostname with `host.docker.internal` before opening it. Do not request the same loopback URL again from another agent after this mapping is known.
 

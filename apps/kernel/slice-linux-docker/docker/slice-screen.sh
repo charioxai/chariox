@@ -444,16 +444,19 @@ browser_fill() {
   require_screen_available
   local selector="$1"
   shift
+  focus_chromium
   run_browser_cdp fill "$selector" "$*"
 }
 
 browser_click() {
   require_screen_available
+  focus_chromium
   run_browser_cdp click-selector "$1"
 }
 
 browser_submit() {
   require_screen_available
+  focus_chromium
   run_browser_cdp submit "${1:-}"
 }
 

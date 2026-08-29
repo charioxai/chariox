@@ -220,7 +220,14 @@ fn linux_docker_computer_use_keeps_the_selected_desktop_application_active() {
             "generic computer-use function {function} must preserve the active desktop application"
         );
     }
-    for browser_function in ["paste_stdin", "browser_dialog", "open_url"] {
+    for browser_function in [
+        "paste_stdin",
+        "browser_fill",
+        "browser_click",
+        "browser_submit",
+        "browser_dialog",
+        "open_url",
+    ] {
         assert!(
             bash_function(&script, browser_function).contains("focus_chromium"),
             "browser-specific fallback {browser_function} should still activate Chromium"
