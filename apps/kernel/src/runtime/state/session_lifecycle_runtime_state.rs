@@ -71,6 +71,7 @@ impl KernelRuntimeState {
         } else {
             (self.owned.create_session_response(request)?, None)
         };
+        let mut publication_progress = UnpublishedSessionPublicationProgress::default();
         let publication = async {
             if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
                 let project = if session.is_hidden() {
@@ -87,6 +88,7 @@ impl KernelRuntimeState {
                         Some(project.id().to_string()),
                         serde_json::json!({ "project": project }),
                     )?;
+                    publication_progress.project_created = true;
                 }
                 if let Some(slice_ref) = slice_ref {
                     let session_id = session.id().to_string();
@@ -125,7 +127,8 @@ impl KernelRuntimeState {
         .await;
         if let Err(error) = publication {
             if let Some(guard) = unpublished_session.as_mut() {
-                self.rollback_unpublished_session(guard).await;
+                self.rollback_unpublished_session(guard, publication_progress)
+                    .await;
             }
             return Err(error);
         }
@@ -176,8 +179,11 @@ impl KernelRuntimeState {
         session = match initialized {
             Ok(session) => session,
             Err(error) => {
-                self.rollback_unpublished_session(&mut unpublished_session)
-                    .await;
+                self.rollback_unpublished_session(
+                    &mut unpublished_session,
+                    UnpublishedSessionPublicationProgress::default(),
+                )
+                .await;
                 return Err(error);
             }
         };
@@ -281,8 +287,11 @@ impl KernelRuntimeState {
         session = match initialized {
             Ok(session) => session,
             Err(error) => {
-                self.rollback_unpublished_session(&mut unpublished_session)
-                    .await;
+                self.rollback_unpublished_session(
+                    &mut unpublished_session,
+                    UnpublishedSessionPublicationProgress::default(),
+                )
+                .await;
                 return Err(error);
             }
         };
@@ -301,7 +310,11 @@ impl KernelRuntimeState {
         ))
     }
 
-    async fn rollback_unpublished_session(&self, guard: &mut UnpublishedSessionGuard) {
+    async fn rollback_unpublished_session(
+        &self,
+        guard: &mut UnpublishedSessionGuard,
+        publication: UnpublishedSessionPublicationProgress,
+    ) {
         if let Some((agent_id, owner_user_id)) = guard.take_agent() {
             if let Err(error) = self.destroy_agent(&agent_id, &owner_user_id).await {
                 crate::logging::warn_with_fields(
@@ -315,18 +328,48 @@ impl KernelRuntimeState {
                 );
             }
         }
-        if let Err(error) = self.delete_session_ref(guard.session_id(), None).await {
-            crate::logging::warn_with_fields(
-                "daemon.kernel_session",
-                "failed to delete unpublished session through runtime cleanup",
-                serde_json::json!({
-                    "session_id": guard.session_id(),
-                    "error": error.to_string(),
-                }),
-            );
+        if let Ok(session) = guard.store.get_session(guard.session_id()) {
+            if let Err(error) = self.detach_session_slices(&session).await {
+                crate::logging::warn_with_fields(
+                    "daemon.kernel_session",
+                    "failed to detach slices while rolling back unpublished session",
+                    serde_json::json!({
+                        "session_id": guard.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
-        if !guard.store.has_session(guard.session_id()) {
-            guard.resolve();
+        match guard.rollback_store() {
+            Ok((_, removed_project)) => {
+                if publication.project_created {
+                    if let Some(project) = removed_project {
+                        if let Err(error) =
+                            self.append_project_durable_event("project.deleted", &project)
+                        {
+                            crate::logging::warn_with_fields(
+                                "daemon.kernel_session",
+                                "failed to compensate unpublished project creation",
+                                serde_json::json!({
+                                    "session_id": guard.session_id(),
+                                    "project_id": project.id(),
+                                    "error": error.to_string(),
+                                }),
+                            );
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                crate::logging::warn_with_fields(
+                    "daemon.kernel_session",
+                    "failed to delete unpublished session from runtime state",
+                    serde_json::json!({
+                        "session_id": guard.session_id(),
+                        "error": error.to_string(),
+                    }),
+                );
+            }
         }
     }
 
@@ -918,6 +961,11 @@ impl KernelRuntimeState {
     }
 }
 
+#[derive(Default)]
+struct UnpublishedSessionPublicationProgress {
+    project_created: bool,
+}
+
 struct UnpublishedSessionGuard {
     store: crate::session::SessionStateStore,
     session_id: String,
@@ -951,6 +999,23 @@ impl UnpublishedSessionGuard {
         self.resolve();
     }
 
+    fn rollback_store(
+        &mut self,
+    ) -> Result<
+        (
+            crate::session::RuntimeSession,
+            Option<crate::session::RuntimeProject>,
+        ),
+        DaemonError,
+    > {
+        let deleted = self
+            .store
+            .write()
+            .delete_session_with_project_cleanup(&self.session_id)?;
+        self.resolve();
+        Ok(deleted)
+    }
+
     fn resolve(&mut self) {
         self.resolved = true;
     }
@@ -961,11 +1026,7 @@ impl Drop for UnpublishedSessionGuard {
         if self.resolved {
             return;
         }
-        if let Err(error) = self
-            .store
-            .write()
-            .delete_session_with_project_cleanup(&self.session_id)
-        {
+        if let Err(error) = self.rollback_store() {
             crate::logging::warn_with_fields(
                 "daemon.kernel_session",
                 "failed to roll back unpublished session",
@@ -1077,6 +1138,81 @@ fn slice_worker_ready(slice: &crate::slice::SliceRecord, provider: Option<&str>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn runtime_state_for_rollback_test() -> KernelRuntimeState {
+        let app = Arc::new(Mutex::new(
+            DaemonApp::bootstrap(crate::DaemonConfig::for_tests()).expect("daemon should boot"),
+        ));
+        let (
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        ) = {
+            let app = app.lock().await;
+            (
+                app.config_projection_store(),
+                app.session_state_store(),
+                app.agents().clone(),
+                app.attachments().clone(),
+                app.providers().clone(),
+                app.provider_process_tracking_store(),
+                app.slices(),
+                app.session_state_projection_store(),
+                app.provider_run_projection_store(),
+                app.operational_history_store(),
+                app.durable_state_store(),
+                app.prompt_state_owner(),
+                app.active_turn_store(),
+                app.prompt_activity_store(),
+                app.prompt_workspace_claim_store(),
+                app.structured_output_record_store(),
+                app.terminal_stream_store(),
+                app.workflow_design_event_store(),
+                app.metaagent_event_store(),
+                app.workspace_coordinator(),
+            )
+        };
+        KernelRuntimeState::new_with_owned_state(
+            app,
+            config_projection,
+            session_store,
+            agent_store,
+            attachment_store,
+            provider_store,
+            provider_process_tracking,
+            slice_store,
+            session_projection,
+            provider_run_projection,
+            operational_history_store,
+            durable_state_store,
+            prompt_state_owner,
+            active_turns,
+            prompt_activity,
+            prompt_workspace_claims,
+            structured_output_records,
+            terminal_stream,
+            workflow_design_events,
+            metaagent_events,
+            workspace_coordinator,
+        )
+    }
 
     #[test]
     fn local_session_worktree_placement_creates_git_worktree_before_storing_session() {
@@ -1254,6 +1390,55 @@ mod tests {
 
         assert!(store.read().get_session(&session_id).is_ok());
         assert!(store.read().get_project(&project_id).is_ok());
+    }
+
+    #[tokio::test]
+    async fn unpublished_session_rollback_destroys_spawned_agent_without_delete_event() {
+        let runtime = runtime_state_for_rollback_test().await;
+        let session = SessionStateOwner::new(runtime.owned.session_store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let project_id = session.project_id().to_string();
+        let agent = runtime
+            .owned
+            .spawn_agent(
+                crate::agent::CreateAgentRequest::new(session.id(), "codex")
+                    .with_owner_user_id(session.owner_user_id().to_string()),
+            )
+            .expect("agent should spawn");
+        let agent_id = agent.id().to_string();
+        let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
+        guard.track_agent(&agent);
+
+        runtime
+            .rollback_unpublished_session(
+                &mut guard,
+                UnpublishedSessionPublicationProgress::default(),
+            )
+            .await;
+
+        assert!(runtime.owned.agent_store.get_agent(&agent_id).is_err());
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .is_err());
+        assert!(runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .is_err());
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_after(0)
+            .expect("durable events should read")
+            .iter()
+            .all(|event| event.kind != "session.deleted" && event.kind != "project.deleted"));
     }
 
     fn slice(os: &str) -> crate::slice::SliceRecord {
