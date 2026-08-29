@@ -1682,10 +1682,9 @@ mod tests {
             format!("http://{address}"),
             config.host_machine_id.clone(),
         ));
-        let app = Arc::new(Mutex::new(
-            DaemonApp::bootstrap(config).expect("test daemon should bootstrap"),
-        ));
-        let state = app.lock().await.relay_client_state();
+        let app = DaemonApp::bootstrap(config).expect("test daemon should bootstrap");
+        let state = app.relay_client_state();
+        let app = Arc::new(Mutex::new(app));
         let router = Arc::new(CommandRouter::with_interactive_capacity(app, 1));
         let slice = router
             .runtime_state()
