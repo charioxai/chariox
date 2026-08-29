@@ -126,37 +126,6 @@ export function waitingRoomFocusTargets(
     { focus: "new" as const, sessionIndex: 0 },
     { focus: "launch-machine" as const, sessionIndex: 0 },
     { focus: "launch-kernel" as const, sessionIndex: 0 },
-    ...(managedConfiguration
-      ? [
-          { focus: "managed-compute" as const, sessionIndex: 0 },
-          { focus: "managed-region" as const, sessionIndex: 0 },
-          { focus: "managed-kernel-context" as const, sessionIndex: 0 },
-          { focus: "managed-development" as const, sessionIndex: 0 },
-          ...managedRepositoryOptions.map((_, managedRepositoryIndex) => ({
-            focus: "managed-repositories" as const,
-            sessionIndex: 0,
-            managedRepositoryIndex,
-          })),
-          { focus: "managed-provider-accounts" as const, sessionIndex: 0 },
-          ...(remote.providerAccounts ?? []).flatMap((profile, managedProviderAccountIndex) => (
-            managedProviderAccountIsTransferable(profile)
-              ? [{
-                  focus: "managed-provider-account" as const,
-                  sessionIndex: 0,
-                  managedProviderAccountIndex,
-                }]
-              : []
-          )),
-          { focus: "managed-git-credentials" as const, sessionIndex: 0 },
-          { focus: "managed-auto-stop" as const, sessionIndex: 0 },
-          ...(state?.managedAutoStopPreset === "custom"
-            ? [
-                { focus: "managed-custom-minimum" as const, sessionIndex: 0 },
-                { focus: "managed-custom-idle" as const, sessionIndex: 0 },
-              ]
-            : []),
-        ]
-      : []),
     ...(remote.projects !== undefined ? [{ focus: "project" as const, sessionIndex: 0 }] : []),
     { focus: "provider" as const, sessionIndex: 0 },
     { focus: "account" as const, sessionIndex: 0 },
@@ -228,6 +197,81 @@ export function waitingRoomFocusTargets(
     managedProviderAccountIndex: 0,
     ...target,
   }))
+}
+
+export function waitingRoomManagedMachineFocusTargets(
+  state: Pick<WaitingRoomState,
+    | "managedAutoStopPreset"
+    | "managedDevelopmentMode"
+    | "projectSelectionId"
+  >,
+  remote: WaitingRoomRemoteState = {},
+): WaitingRoomFocusTarget[] {
+  const managedRepositoryOptions = state.managedDevelopmentMode === "current_project"
+    ? waitingRoomProjectRepositoryOptions(state, remote).slice(1)
+    : []
+  return [
+    { focus: "managed-compute" as const },
+    { focus: "managed-region" as const },
+    { focus: "managed-kernel-context" as const },
+    { focus: "managed-development" as const },
+    ...managedRepositoryOptions.map((_, managedRepositoryIndex) => ({
+      focus: "managed-repositories" as const,
+      managedRepositoryIndex,
+    })),
+    { focus: "managed-provider-accounts" as const },
+    ...(remote.providerAccounts ?? []).flatMap((profile, managedProviderAccountIndex) => (
+      managedProviderAccountIsTransferable(profile)
+        ? [{ focus: "managed-provider-account" as const, managedProviderAccountIndex }]
+        : []
+    )),
+    { focus: "managed-git-credentials" as const },
+    { focus: "managed-auto-stop" as const },
+    ...(state.managedAutoStopPreset === "custom"
+      ? [
+          { focus: "managed-custom-minimum" as const },
+          { focus: "managed-custom-idle" as const },
+        ]
+      : []),
+  ].map((target) => ({
+    sessionIndex: 0,
+    machineIndex: 0,
+    remoteKernelIndex: 0,
+    sliceIndex: 0,
+    terminalIndex: 0,
+    externalSessionIndex: 0,
+    projectIndex: 0,
+    managedRepositoryIndex: 0,
+    managedProviderAccountIndex: 0,
+    ...target,
+  }))
+}
+
+export function moveWaitingRoomManagedMachineFocus(
+  state: WaitingRoomState,
+  delta: number,
+  remote: WaitingRoomRemoteState = {},
+): WaitingRoomState {
+  const targets = waitingRoomManagedMachineFocusTargets(state, remote)
+  const currentIndex = Math.max(0, targets.findIndex((target) => (
+    target.focus === state.focus
+    && (target.focus !== "managed-repositories"
+      || target.managedRepositoryIndex === (state.managedRepositoryIndex ?? 0))
+    && (target.focus !== "managed-provider-account"
+      || target.managedProviderAccountIndex === (state.managedProviderAccountIndex ?? 0))
+  )))
+  const next = targets[modulo(currentIndex + delta, targets.length)]
+  if (!next) return state
+  return {
+    ...state,
+    focus: next.focus,
+    ...(next.focus === "managed-repositories"
+      ? { managedRepositoryIndex: next.managedRepositoryIndex }
+      : {}),
+    ...(next.focus === "managed-provider-account"
+      ? { managedProviderAccountIndex: next.managedProviderAccountIndex }
+      : {}),
+  }
 }
 
 function modulo(value: number, size: number) {

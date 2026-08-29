@@ -136,6 +136,7 @@ export function createCliAppState(options: {
   const [terminalPairingState, setTerminalPairingState] = createSignal<TerminalPairingLinkView | null>(null)
   const [terminalPairingQrLines, setTerminalPairingQrLines] = createSignal<string[]>([])
   const [sessionBrowserOpen, setSessionBrowserOpen] = createSignal(false)
+  const [managedMachineDialogOpen, setManagedMachineDialogOpen] = createSignal(false)
   const agentLocationLabel = (agent: AgentInstance | null | undefined): string | null =>
     formatAgentLocationLabel(agent, slicesState())
   const [sessionBrowserIndex, setSessionBrowserIndex] = createSignal(0)
@@ -285,6 +286,8 @@ export function createCliAppState(options: {
     setTerminalPairingQrLines,
     sessionBrowserOpen,
     setSessionBrowserOpen,
+    managedMachineDialogOpen,
+    setManagedMachineDialogOpen,
     agentLocationLabel,
     sessionBrowserIndex,
     setSessionBrowserIndex,

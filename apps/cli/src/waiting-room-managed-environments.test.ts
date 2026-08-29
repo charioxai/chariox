@@ -3,7 +3,10 @@ import test from "node:test"
 
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { deriveWaitingRoomActivationDecision } from "./waiting-room-controller.js"
-import { waitingRoomFocusTargets } from "./waiting-room-focus-targets.js"
+import {
+  waitingRoomFocusTargets,
+  waitingRoomManagedMachineFocusTargets,
+} from "./waiting-room-focus-targets.js"
 import {
   cycleManagedCustomIdle,
   managedEnvironmentAutoStopPolicy,
@@ -13,6 +16,7 @@ import {
   NEW_MANAGED_MACHINE_REF,
 } from "./waiting-room-managed-environments.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
+import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
 import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-room-state.js"
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
@@ -40,7 +44,7 @@ test("managed environments share the Machine selector without duplicating runtim
   assert.equal(managed.selectedKernelRef, "kernel-managed")
 })
 
-test("new managed Machine selection reveals every conditional configuration row", () => {
+test("new managed Machine selection keeps managed configuration out of the session form", () => {
   const state = normalizeWaitingRoomState({
     ...baseState(),
     selectedMachineRef: NEW_MANAGED_MACHINE_REF,
@@ -48,7 +52,22 @@ test("new managed Machine selection reveals every conditional configuration row"
   }, [], catalog(), undefined, remote())
   const rows = waitingRoomRows(state, [], catalog(), remote())
   assert.equal(rows.find((row) => row.id === "new")?.title, "Create machine and start session")
-  assert.deepEqual(rows.filter((row) => row.id.startsWith("managed-")).map((row) => row.id), [
+  assert.deepEqual(rows.filter((row) => row.id.startsWith("managed-")).map((row) => row.id), [])
+  assert.deepEqual(
+    waitingRoomFocusTargets([], remote(), state)
+      .filter((target) => target.focus.startsWith("managed-")),
+    [],
+  )
+})
+
+test("new managed Machine dialog owns every conditional configuration row", () => {
+  const state = normalizeWaitingRoomState({
+    ...baseState(),
+    selectedMachineRef: NEW_MANAGED_MACHINE_REF,
+    selectedKernelRef: "",
+  }, [], catalog(), undefined, remote())
+  const rows = waitingRoomManagedMachineDialogRows(state, remote())
+  assert.deepEqual(rows.map((row) => row.id), [
     "managed-compute",
     "managed-region",
     "managed-kernel-context",
@@ -62,16 +81,14 @@ test("new managed Machine selection reveals every conditional configuration row"
     "managed-auto-stop",
   ])
   assert.deepEqual(
-    waitingRoomFocusTargets([], remote(), state)
-      .filter((target) => target.focus.startsWith("managed-"))
-      .map((target) => {
-        if (target.focus !== "managed-provider-account") return target.focus
-        const profile = remote().providerAccounts?.[target.managedProviderAccountIndex]
-        return profile
-          ? `managed-provider-account:${profile.provider}:${profile.profile_id}`
-          : target.focus
-      }),
-    rows.filter((row) => row.id.startsWith("managed-") && row.selectable).map((row) => row.id),
+    waitingRoomManagedMachineFocusTargets(state, remote()).map((target) => {
+      if (target.focus !== "managed-provider-account") return target.focus
+      const profile = remote().providerAccounts?.[target.managedProviderAccountIndex]
+      return profile
+        ? `managed-provider-account:${profile.provider}:${profile.profile_id}`
+        : target.focus
+    }),
+    rows.filter((row) => row.selectable).map((row) => row.id),
   )
 })
 
@@ -160,7 +177,7 @@ test("managed repository rows remove and restore individual Project defaults", (
     supportingWorkspaceIds: ["workspace-supporting", "workspace-docs"],
   })
   assert.deepEqual(
-    waitingRoomFocusTargets([], selectionRemote, state)
+    waitingRoomManagedMachineFocusTargets(state, selectionRemote)
       .filter((target) => target.focus === "managed-repositories")
       .map((target) => target.managedRepositoryIndex),
     [0, 1],
@@ -176,7 +193,7 @@ test("managed repository rows remove and restore individual Project defaults", (
       { role: "supporting", workspaceId: "workspace-docs", worktreeId: null },
     ],
   })
-  const rows = waitingRoomRows(state, [], catalog(), selectionRemote)
+  const rows = waitingRoomManagedMachineDialogRows(state, selectionRemote)
   assert.equal(rows.find((row) => row.id === "managed-repositories")?.value, "2 of 3 included")
   assert.equal(rows.find((row) => row.id === "managed-repository:workspace-primary")?.value, "Primary (included)")
   assert.equal(rows.find((row) => row.id === "managed-repository:workspace-supporting")?.value, "Excluded")
@@ -338,12 +355,12 @@ test("managed Machine setup selects accounts across provider families", () => {
     ],
   })
   assert.deepEqual(
-    waitingRoomFocusTargets([], selectionRemote, state)
+    waitingRoomManagedMachineFocusTargets(state, selectionRemote)
       .filter((target) => target.focus === "managed-provider-account")
       .map((target) => target.managedProviderAccountIndex),
     [0, 1, 2, 3],
   )
-  const rows = waitingRoomRows(state, [], catalog(), selectionRemote)
+  const rows = waitingRoomManagedMachineDialogRows(state, selectionRemote)
   assert.equal(rows.find((row) => row.id === "managed-provider-accounts")?.value, "3 selected")
   assert.equal(
     rows.find((row) => row.id === "managed-provider-account:opencode:opencode-work")?.value,
@@ -405,12 +422,12 @@ test("managed Machine setup disables unauthenticated provider accounts", () => {
     accounts: [{ provider: "claude", accountProfile: "claude-work" }],
   })
   assert.deepEqual(
-    waitingRoomFocusTargets([], unavailableRemote, state)
+    waitingRoomManagedMachineFocusTargets(state, unavailableRemote)
       .filter((target) => target.focus === "managed-provider-account")
       .map((target) => target.managedProviderAccountIndex),
     [2],
   )
-  const rows = waitingRoomRows(state, [], catalog(), unavailableRemote)
+  const rows = waitingRoomManagedMachineDialogRows(state, unavailableRemote)
   assert.deepEqual(
     rows.filter((row) => row.id.startsWith("managed-provider-account:")).map((row) => ({
       id: row.id,

@@ -9,6 +9,7 @@ import {
   type WaitingRoomSessionLifecycleAction,
 } from "./waiting-room-controller.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
+import { waitingRoomConfiguresNewManagedMachine } from "./waiting-room-managed-environments.js"
 
 export type WaitingRoomKeyControllerEvent = {
   name: string
@@ -37,6 +38,7 @@ export type WaitingRoomKeyControllerDeps = {
   beginProjectRename?: (projectId: string, currentName: string) => void
   restoreProject?: (projectId: string) => void
   activateWaitingRoom: () => void
+  openManagedMachineDialog?: () => boolean
 }
 
 export type WaitingRoomKeyController = {
@@ -73,7 +75,16 @@ export function createWaitingRoomKeyController(
           : keyNavigationOptions,
       )
       if (keyNavigation.action === "navigate") {
+        const openedManagedMachine = (
+          keyNavigation.key === "left" || keyNavigation.key === "right"
+        )
+          && keyNavigation.nextState.focus === "launch-machine"
+          && !waitingRoomConfiguresNewManagedMachine(keyNavigationOptions.state.selectedMachineRef)
+          && waitingRoomConfiguresNewManagedMachine(keyNavigation.nextState.selectedMachineRef)
         deps.reconcileWaitingRoom(keyNavigation.nextState)
+        if (openedManagedMachine) {
+          deps.openManagedMachineDialog?.()
+        }
         return true
       }
       if (keyNavigation.action === "release") {
@@ -104,6 +115,14 @@ export function createWaitingRoomKeyController(
         }
       }
       if (event.eventType !== "release" && (event.name === "return" || event.name === "enter")) {
+        const state = deps.getWaitingRoomState()
+        if (
+          state.focus === "launch-machine"
+          && waitingRoomConfiguresNewManagedMachine(state.selectedMachineRef)
+          && deps.openManagedMachineDialog?.()
+        ) {
+          return true
+        }
         deps.activateWaitingRoom()
       }
       return true

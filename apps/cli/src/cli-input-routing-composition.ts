@@ -191,6 +191,8 @@ export type CliInputRoutingCompositionDeps = {
   activateWaitingRoom: AnyFn
   startSessionFromWaitingRoomDefaults: AnyFn
   handleSessionBrowserKey: AnyFn
+  handleManagedMachineDialogKey: AnyFn
+  openManagedMachineDialog: AnyFn
   toggleWorkspaceScreen: AnyFn
   workflowScreenActive: AnyFn
   cycleWorkflowCanvasNode: AnyFn
@@ -588,6 +590,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     activateWaitingRoom: () => {
       void deps.activateWaitingRoom()
     },
+    openManagedMachineDialog: deps.openManagedMachineDialog,
   })
 
   const handleWorkflowDetailPaneKey = (event: { eventType?: string; name?: string; ctrl?: boolean; meta?: boolean; alt?: boolean }) => {
@@ -647,6 +650,7 @@ export function createCliInputRoutingComposition(deps: CliInputRoutingCompositio
     parseKeypress: (chunk, options) => parseKeypress(chunk, options),
     dialogOverlayOpen: deps.dialogOverlayOpen,
     closeActiveDialogOverlay: deps.closeActiveDialogOverlay,
+    handleManagedMachineDialogKey: deps.handleManagedMachineDialogKey,
     handleSessionBrowserKey: deps.handleSessionBrowserKey,
     requestExit: () => {
       void deps.requestExit()

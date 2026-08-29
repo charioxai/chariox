@@ -136,9 +136,11 @@ restart.
 ## 8. Client behavior
 
 The TUI and web Waiting Room use the ordinary Machine field. Selecting
-`+ New Chariox-managed machine...` reveals compute class, region, kernel-context
-source, development setup, repository selection, provider accounts, Git
-credentials, and auto-stop policy. Ordinary machines retain their existing rows.
+`+ New Chariox-managed machine...` opens a dedicated managed-machine dialog for
+compute class, region, kernel-context source, development setup, repository
+selection, provider accounts, Git credentials, and auto-stop policy. Those fields
+never appear in the ordinary session form. Ordinary machines retain their
+existing rows.
 
 The client persists one launch attempt identity through retries, waits for Cloud
 provisioning and relay readiness, performs any direct source transfer, switches to

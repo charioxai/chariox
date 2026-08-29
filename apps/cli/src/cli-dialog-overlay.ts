@@ -17,10 +17,12 @@ import type { SessionListEntry } from "./sessions.js"
 import { sessionBrowserCardLines } from "./session-browser-card.js"
 import { theme } from "./theme.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
+import type { WaitingRoomRow } from "./waiting-room-types.js"
+import { formatWaitingRoomMenuRow } from "./waiting-room-menu-row.js"
 
 const HOTKEY_DIALOG_WIDTH = 72
 
-export type CliDialogOverlayMode = "closed" | "session-browser" | "terminal-pairing" | "hotkeys"
+export type CliDialogOverlayMode = "closed" | "managed-machine" | "session-browser" | "terminal-pairing" | "hotkeys"
 
 type CliDialogOverlayOptions = {
   overlayBox: BoxRenderable | undefined
@@ -34,6 +36,7 @@ type CliDialogOverlayOptions = {
   terminalPairing: TerminalPairingLinkView | null
   terminalPairingQrLines: string[]
   hotkeySections: HotkeySection[]
+  managedMachineRows?: WaitingRoomRow[]
 }
 
 export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
@@ -62,7 +65,9 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   })
   scrim.onMouseUp = options.onDismiss
 
-  if (options.mode === "session-browser") {
+  if (options.mode === "managed-machine") {
+    scrim.add(renderManagedMachinePanel(options))
+  } else if (options.mode === "session-browser") {
     scrim.add(renderSessionBrowserPanel(options))
   } else if (options.mode === "terminal-pairing") {
     scrim.add(renderTerminalPairingPanel(options))
@@ -71,6 +76,46 @@ export function renderCliDialogOverlay(options: CliDialogOverlayOptions): void {
   }
   overlayBox.add(scrim)
   overlayBox.requestRender()
+}
+
+function renderManagedMachinePanel(options: CliDialogOverlayOptions): BoxRenderable {
+  const { renderer, dimensions } = options
+  const rows = options.managedMachineRows ?? []
+  const width = Math.min(108, Math.max(76, Math.floor(dimensions.width * 0.82)))
+  const panel = dialogPanel(renderer, width, dimensions.width)
+  panel.add(dialogHeader(
+    renderer,
+    "New Chariox-managed machine",
+    "↑/↓ fields • ←/→ values • Enter/Esc done",
+  ))
+  if (rows.length === 0) {
+    panel.add(new TextRenderable(renderer, {
+      content: "Managed-machine options are unavailable.",
+      fg: theme.textMuted,
+    }))
+    return panel
+  }
+  const selectedIndex = Math.max(0, rows.findIndex((row) => row.focused))
+  const maxRows = Math.max(1, Math.min(rows.length, dimensions.height - 9))
+  const start = Math.min(
+    Math.max(0, selectedIndex - maxRows + 1),
+    Math.max(0, rows.length - maxRows),
+  )
+  for (const row of rows.slice(start, start + maxRows)) {
+    panel.add(new TextRenderable(renderer, {
+      content: formatWaitingRoomMenuRow(row, width - 4),
+      fg: row.focused ? theme.primary : row.selectable ? theme.text : theme.textMuted,
+      attributes: row.focused ? TextAttributes.BOLD : TextAttributes.NONE,
+      wrapMode: "none",
+    }))
+  }
+  if (rows.length > maxRows) {
+    panel.add(new TextRenderable(renderer, {
+      content: `${start + 1}-${Math.min(rows.length, start + maxRows)} of ${rows.length}`,
+      fg: theme.textMuted,
+    }))
+  }
+  return panel
 }
 
 function renderSessionBrowserPanel(options: CliDialogOverlayOptions): BoxRenderable {

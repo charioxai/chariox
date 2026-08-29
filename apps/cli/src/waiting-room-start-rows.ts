@@ -100,116 +100,7 @@ export function waitingRoomStartRows(
   const configuresSliceDevelopment = !configuresManaged
     && Boolean(state.sliceSelectionId && state.sliceSelectionId !== "none")
   const selectedEnvironment = selectedManagedEnvironment(state, remote)
-  const managedRepositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
-  const selectedSupportingRepositories = new Set(
-    state.managedRepositorySelection?.supportingWorkspaceIds ?? managedRepositoryOptions
-      .slice(1)
-      .map((option) => option.workspaceId),
-  )
-  const selectedManagedRepositoryCount = managedRepositoryOptions.filter((option) => (
-    option.primary || selectedSupportingRepositories.has(option.workspaceId)
-  )).length
-  const managedProviderAccountSelectionsList = managedProviderAccountSelections(state, remote)
-  const managedRepositoryRows: WaitingRoomRow[] = state.managedDevelopmentMode === "current_project"
-    ? [
-        {
-          id: "managed-repositories",
-          title: "Selected repositories",
-          value: `${selectedManagedRepositoryCount} of ${managedRepositoryOptions.length} included`,
-          titleWidth: options.titleWidth,
-          indent: 1,
-          focused: false,
-          selectable: false,
-          scrollbar: "",
-        },
-        ...managedRepositoryOptions.map((option, index): WaitingRoomRow => ({
-          id: `managed-repository:${option.workspaceId}`,
-          title: option.workspaceId,
-          value: option.primary
-            ? "Primary (included)"
-            : selectedSupportingRepositories.has(option.workspaceId) ? "Included" : "Excluded",
-          titleWidth: options.titleWidth,
-          indent: 2,
-          focused: !option.primary
-            && state.focus === "managed-repositories"
-            && (state.managedRepositoryIndex ?? 0) === index - 1,
-          selectable: !option.primary,
-          scrollbar: "",
-        })),
-      ]
-    : [{
-        id: "managed-repositories",
-        title: "Selected repositories",
-        value: "None",
-        titleWidth: options.titleWidth,
-        indent: 1,
-        focused: false,
-        selectable: false,
-        scrollbar: "",
-      }]
-  const managedRows: WaitingRoomRow[] = configuresManaged
-    ? [
-        startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, options.titleWidth),
-        startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, options.titleWidth),
-        startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state as WaitingRoomState, remote), state, options.titleWidth),
-        startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
-        ...managedRepositoryRows,
-        startRow(
-          "managed-provider-accounts",
-          "Provider accounts source",
-          state.managedProviderAccountSource === "none"
-            ? "None"
-            : `${managedProviderAccountSelectionsList.length} selected`,
-          state,
-          options.titleWidth,
-        ),
-        ...(remote.providerAccounts ?? []).map((profile, managedProviderAccountIndex): WaitingRoomRow => {
-          const transferable = managedProviderAccountIsTransferable(profile)
-          const included = managedProviderAccountSelectionsList.some((selection) => (
-            selection.provider === profile.provider && selection.accountProfile === profile.profile_id
-          ))
-          return {
-            id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
-            title: profile.label,
-            value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
-              ? transferable ? "Included" : `Included, ${profile.auth_state}`
-              : transferable ? "Excluded" : `Unavailable, ${profile.auth_state}`}`,
-            titleWidth: options.titleWidth,
-            indent: 2,
-            focused: state.focus === "managed-provider-account"
-              && (state.managedProviderAccountIndex ?? 0) === managedProviderAccountIndex,
-            selectable: transferable,
-            scrollbar: "",
-          }
-        }),
-        startRow(
-          "managed-git-credentials",
-          "Git credentials source",
-          state.managedGitCredentialSource === "none" ? "None" : "GitHub",
-          state,
-          options.titleWidth,
-        ),
-        startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state as WaitingRoomState), state, options.titleWidth),
-        ...(state.managedAutoStopPreset === "custom"
-          ? [
-              startRow(
-                "managed-custom-minimum",
-                "Minimum runtime",
-                managedDurationLabel(state.managedCustomMinimumRuntimeSeconds),
-                state,
-                options.titleWidth,
-              ),
-              startRow(
-                "managed-custom-idle",
-                "Idle delay",
-                managedDurationLabel(state.managedCustomIdleDelaySeconds),
-                state,
-                options.titleWidth,
-              ),
-            ]
-          : []),
-      ]
-    : []
+  const managedRepositoryRows = waitingRoomManagedRepositoryRows(state, remote, options.titleWidth)
   const sliceDevelopmentRows: WaitingRoomRow[] = configuresSliceDevelopment
     ? [
         startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, options.titleWidth),
@@ -251,7 +142,6 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
-    ...managedRows,
     ...((state.projectSelectionId !== undefined || remote.projects !== undefined)
       ? [{
           id: "project",
@@ -380,6 +270,134 @@ export function waitingRoomStartRows(
       selectable: true,
       scrollbar: "",
     },
+  ]
+}
+
+function waitingRoomManagedRepositoryRows(
+  state: Pick<WaitingRoomState,
+    | "focus"
+    | "projectSelectionId"
+    | "managedDevelopmentMode"
+    | "managedRepositorySelection"
+    | "managedRepositoryIndex"
+  >,
+  remote: WaitingRoomRemoteState,
+  titleWidth: number,
+): WaitingRoomRow[] {
+  const repositoryOptions = waitingRoomProjectRepositoryOptions(state, remote)
+  const selectedSupportingRepositories = new Set(
+    state.managedRepositorySelection?.supportingWorkspaceIds ?? repositoryOptions
+      .slice(1)
+      .map((option) => option.workspaceId),
+  )
+  const selectedRepositoryCount = repositoryOptions.filter((option) => (
+    option.primary || selectedSupportingRepositories.has(option.workspaceId)
+  )).length
+  if (state.managedDevelopmentMode !== "current_project") {
+    return [{
+      id: "managed-repositories",
+      title: "Selected repositories",
+      value: "None",
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    }]
+  }
+  return [
+    {
+      id: "managed-repositories",
+      title: "Selected repositories",
+      value: `${selectedRepositoryCount} of ${repositoryOptions.length} included`,
+      titleWidth,
+      indent: 1,
+      focused: false,
+      selectable: false,
+      scrollbar: "",
+    },
+    ...repositoryOptions.map((option, index): WaitingRoomRow => ({
+      id: `managed-repository:${option.workspaceId}`,
+      title: option.workspaceId,
+      value: option.primary
+        ? "Primary (included)"
+        : selectedSupportingRepositories.has(option.workspaceId) ? "Included" : "Excluded",
+      titleWidth,
+      indent: 2,
+      focused: !option.primary
+        && state.focus === "managed-repositories"
+        && (state.managedRepositoryIndex ?? 0) === index - 1,
+      selectable: !option.primary,
+      scrollbar: "",
+    })),
+  ]
+}
+
+export function waitingRoomManagedMachineDialogRows(
+  state: WaitingRoomState,
+  remote: WaitingRoomRemoteState = {},
+  titleWidth = 28,
+): WaitingRoomRow[] {
+  const repositoryRows = waitingRoomManagedRepositoryRows(state, remote, titleWidth)
+  const accountSelections = managedProviderAccountSelections(state, remote)
+  return [
+    startRow("managed-compute", "Compute class", state.managedComputeClass ?? "Unavailable", state, titleWidth),
+    startRow("managed-region", "Region", state.managedRegion ?? "Unavailable", state, titleWidth),
+    startRow("managed-kernel-context", "Kernel context from", managedKernelContextLabel(state, remote), state, titleWidth),
+    startRow("managed-development", "Development setup", state.managedDevelopmentMode === "current_project" ? "Current Project" : "Empty", state, titleWidth),
+    ...repositoryRows,
+    startRow(
+      "managed-provider-accounts",
+      "Provider accounts source",
+      state.managedProviderAccountSource === "none" ? "None" : `${accountSelections.length} selected`,
+      state,
+      titleWidth,
+    ),
+    ...(remote.providerAccounts ?? []).map((profile, managedProviderAccountIndex): WaitingRoomRow => {
+      const transferable = managedProviderAccountIsTransferable(profile)
+      const included = accountSelections.some((selection) => (
+        selection.provider === profile.provider && selection.accountProfile === profile.profile_id
+      ))
+      return {
+        id: `managed-provider-account:${profile.provider}:${profile.profile_id}`,
+        title: profile.label,
+        value: `${formatManagedProviderAccountFamily(profile.provider)} · ${included
+          ? transferable ? "Included" : `Included, ${profile.auth_state}`
+          : transferable ? "Excluded" : `Unavailable, ${profile.auth_state}`}`,
+        titleWidth,
+        indent: 2,
+        focused: state.focus === "managed-provider-account"
+          && (state.managedProviderAccountIndex ?? 0) === managedProviderAccountIndex,
+        selectable: transferable,
+        scrollbar: "",
+      }
+    }),
+    startRow(
+      "managed-git-credentials",
+      "Git credentials source",
+      state.managedGitCredentialSource === "none" ? "None" : "GitHub",
+      state,
+      titleWidth,
+    ),
+    startRow("managed-auto-stop", "Auto-stop policy", managedAutoStopLabel(state), state, titleWidth),
+    ...(state.managedAutoStopPreset === "custom"
+      ? [
+          startRow(
+            "managed-custom-minimum",
+            "Minimum runtime",
+            managedDurationLabel(state.managedCustomMinimumRuntimeSeconds),
+            state,
+            titleWidth,
+          ),
+          startRow(
+            "managed-custom-idle",
+            "Idle delay",
+            managedDurationLabel(state.managedCustomIdleDelaySeconds),
+            state,
+            titleWidth,
+          ),
+        ]
+      : []),
   ]
 }
 
