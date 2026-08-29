@@ -31,6 +31,7 @@ import { createCliRuntimeProjectionComposition } from "./cli-runtime-projection-
 import { createCliSessionLifecycleComposition } from "./cli-session-lifecycle-composition.js"
 import { createCliTranscriptRuntimeComposition } from "./cli-transcript-runtime-composition.js"
 import { createCliWaitingRoomComposition } from "./cli-waiting-room-composition.js"
+import { waitingRoomManagedCatalogRemoteState } from "./waiting-room-managed-environments.js"
 import { createCliClosingStateController } from "./cli-closing-state-controller.js"
 import {
   COMMAND_CENTER_OVERLAY_FOOTPRINT,
@@ -532,16 +533,20 @@ export function CharioxCliApp(props: { bootstrap: BootstrapState }) {
     terminalPairingState, setTerminalPairingState, terminalPairingQrLines, setTerminalPairingQrLines,
     sessionBrowserOpen, setSessionBrowserOpen, managedMachineDialogOpen, setManagedMachineDialogOpen,
     waitingRoomState, reconcileWaitingRoom, providerCatalogState, themeRegistryState,
-    waitingRoomRemoteState: () => ({
-      ...waitingRoomTargets(),
-      relay: relayStatusState(),
-      machines: remoteMachinesState(),
-      kernels: remoteKernelsState(),
-      providerAccounts: providerAccountsState(),
-      terminals: terminalsState(),
-      slices: slicesState(),
-      projects: waitingRoomProjects(),
-    }),
+    waitingRoomRemoteState: () => {
+      const targets = waitingRoomTargets()
+      return {
+        ...targets,
+        ...waitingRoomManagedCatalogRemoteState(targets.managedEnvironmentCatalog),
+        relay: relayStatusState(),
+        machines: remoteMachinesState(),
+        kernels: remoteKernelsState(),
+        providerAccounts: providerAccountsState(),
+        terminals: terminalsState(),
+        slices: slicesState(),
+        projects: waitingRoomProjects(),
+      }
+    },
     options,
     flashFooter: (message, tone) => flashFooter(message, tone),
     attachBinding: (session, createNew, launch) => attachBinding(session, createNew, launch),

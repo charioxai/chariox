@@ -1,5 +1,6 @@
 import type {
   ManagedEnvironmentAutoStopPolicy,
+  ManagedEnvironmentCatalog,
   ManagedEnvironmentContextPlanInput,
   ManagedEnvironmentContextSourceOption,
   ManagedEnvironmentSummary,
@@ -23,6 +24,18 @@ import {
 
 const customMinimumOptions = [0, 900, 1800, 3600, 10800, 21600] as const
 const customIdleOptions: readonly (number | null)[] = [0, 300, 900, 1800, 3600, null]
+
+export function waitingRoomManagedCatalogRemoteState(
+  catalog: ManagedEnvironmentCatalog | undefined,
+): WaitingRoomRemoteState {
+  return catalog
+    ? {
+        managedComputeClasses: catalog.computeClasses,
+        managedContextSources: catalog.contextSources,
+        managedEnvironments: catalog.environments,
+      }
+    : {}
+}
 
 export function waitingRoomUsesManagedMachine(machineRef: string | null | undefined): boolean {
   return machineRef === NEW_MANAGED_MACHINE_REF || managedEnvironmentIdFromMachineRef(machineRef) !== null

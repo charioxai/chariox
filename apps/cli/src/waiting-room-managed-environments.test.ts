@@ -1,6 +1,7 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
+import type { ManagedEnvironmentCatalog } from "@chariox/kernel-client/ipc-managed-environment-requests"
 import { fallbackProviderCatalog } from "./provider-catalog.js"
 import { deriveWaitingRoomActivationDecision } from "./waiting-room-controller.js"
 import {
@@ -14,6 +15,7 @@ import {
   managedEnvironmentDraftBlockReason,
   managedEnvironmentMachineRef,
   NEW_MANAGED_MACHINE_REF,
+  waitingRoomManagedCatalogRemoteState,
 } from "./waiting-room-managed-environments.js"
 import { waitingRoomRows } from "./waiting-room-rows.js"
 import { waitingRoomManagedMachineDialogRows } from "./waiting-room-start-rows.js"
@@ -21,6 +23,22 @@ import { createWaitingRoomState, normalizeWaitingRoomState } from "./waiting-roo
 import type { WaitingRoomRemoteState, WaitingRoomState } from "./waiting-room-types.js"
 import { cycleWaitingRoomValue } from "./waiting-room-value-cycling.js"
 import { __setWaitingRoomWorktreeInventoryForTest } from "./waiting-room-worktrees.js"
+
+test("managed catalog projects the remote fields used by the deployment dialog", () => {
+  const expected = remote()
+  const catalog: ManagedEnvironmentCatalog = {
+    computeClasses: expected.managedComputeClasses ?? [],
+    contextSources: expected.managedContextSources ?? [],
+    environments: expected.managedEnvironments ?? [],
+  }
+
+  assert.deepEqual(waitingRoomManagedCatalogRemoteState(catalog), {
+    managedComputeClasses: catalog.computeClasses,
+    managedContextSources: catalog.contextSources,
+    managedEnvironments: catalog.environments,
+  })
+  assert.deepEqual(waitingRoomManagedCatalogRemoteState(undefined), {})
+})
 
 test("managed environments share the Machine selector without duplicating runtime Machines", () => {
   const normalized = normalizeWaitingRoomState({
