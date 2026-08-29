@@ -60,6 +60,18 @@ pub(super) async fn send_outgoing_event_envelope(
         })
 }
 
+pub(super) fn blocking_send_outgoing_event_envelope(
+    outgoing_tx: &RelayOutgoingSender,
+    envelope: RelayEnvelope,
+) -> Result<(), DaemonError> {
+    outgoing_tx
+        .blocking_send_event(envelope)
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "send relay event envelope",
+            message: "relay connection writer is closed".to_string(),
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,6 +180,53 @@ mod tests {
         assert!(matches!(
             event_rx.recv().await,
             Some(RelayEnvelope::DaemonEvent { event_id: 8, .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn display_chunk_send_waits_for_event_lane_capacity() {
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
+        send_outgoing_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonDisplayTunnelChunk {
+                chunk: RelayDisplayTunnelStreamChunk {
+                    stream_id: "stream-1".to_string(),
+                    data: "Zmlyc3Q=".to_string(),
+                    message_kind: Some("binary".to_string()),
+                },
+            },
+        )
+        .expect("first display chunk should fill the event lane");
+
+        let second_send = send_outgoing_event_envelope(
+            &outgoing_tx,
+            RelayEnvelope::DaemonDisplayTunnelChunk {
+                chunk: RelayDisplayTunnelStreamChunk {
+                    stream_id: "stream-1".to_string(),
+                    data: "c2Vjb25k".to_string(),
+                    message_kind: Some("binary".to_string()),
+                },
+            },
+        );
+        tokio::pin!(second_send);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut second_send)
+                .await
+                .is_err()
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
+                if chunk.data == "Zmlyc3Q="
+        ));
+        second_send
+            .await
+            .expect("second display chunk should enqueue after capacity frees");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
+                if chunk.data == "c2Vjb25k"
         ));
     }
 

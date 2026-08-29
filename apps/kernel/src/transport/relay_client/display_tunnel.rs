@@ -36,7 +36,8 @@ pub(super) async fn handle_display_tunnel_open(
                     "display tunnel is not registered or has expired",
                     false,
                 ),
-            );
+            )
+            .await;
         }
         return;
     }
@@ -58,32 +59,34 @@ pub(super) async fn handle_display_tunnel_open(
     };
     match result {
         Ok(()) => {
-            let _ = send_outgoing_envelope(
+            let _ = send_outgoing_event_envelope(
                 &outgoing_tx,
                 RelayEnvelope::DaemonDisplayTunnelClose {
                     stream_id,
                     error: None,
                 },
-            );
+            )
+            .await;
         }
         Err(error) => {
-            close_display_tunnel_stream(&outgoing_tx, stream_id, error);
+            close_display_tunnel_stream(&outgoing_tx, stream_id, error).await;
         }
     }
 }
 
-fn close_display_tunnel_stream(
+async fn close_display_tunnel_stream(
     outgoing_tx: &RelayOutgoingSender,
     stream_id: String,
     error: RelayError,
 ) {
-    let _ = send_outgoing_envelope(
+    let _ = send_outgoing_event_envelope(
         outgoing_tx,
         RelayEnvelope::DaemonDisplayTunnelClose {
             stream_id,
             error: Some(error),
         },
-    );
+    )
+    .await;
 }
 
 async fn handle_display_tunnel_websocket(
@@ -102,22 +105,24 @@ async fn handle_display_tunnel_websocket(
     state.write().await.remove_display_stream(&stream_id);
     match result {
         Ok(()) => {
-            let _ = send_outgoing_envelope(
+            let _ = send_outgoing_event_envelope(
                 &outgoing_tx,
                 RelayEnvelope::DaemonDisplayTunnelClose {
                     stream_id,
                     error: None,
                 },
-            );
+            )
+            .await;
         }
         Err(error) => {
-            let _ = send_outgoing_envelope(
+            let _ = send_outgoing_event_envelope(
                 &outgoing_tx,
                 RelayEnvelope::DaemonDisplayTunnelClose {
                     stream_id,
                     error: Some(error),
                 },
-            );
+            )
+            .await;
         }
     }
 }
@@ -194,7 +199,7 @@ fn send_package_probe_response_to_proxy(
         },
     )
     .map_err(|error| relay_error("display_proxy_start_send_failed", &error.to_string(), true))?;
-    send_display_chunk(outgoing_tx, &request.stream_id, b"{}", None)
+    blocking_send_display_chunk(outgoing_tx, &request.stream_id, b"{}", None)
 }
 
 fn method_uses_empty_body(method: &str) -> bool {
@@ -261,10 +266,10 @@ async fn proxy_display_websocket(
             local_message = local_read.next() => {
                 match local_message {
                     Some(Ok(Message::Binary(data))) => {
-                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_ref(), Some("binary"))?;
+                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_ref(), Some("binary")).await?;
                     }
                     Some(Ok(Message::Text(data))) => {
-                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_str().as_bytes(), Some("text"))?;
+                        send_display_chunk(outgoing_tx, &request.stream_id, data.as_str().as_bytes(), Some("text")).await?;
                     }
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Ok(Message::Ping(data))) => {
@@ -303,22 +308,17 @@ async fn proxy_display_websocket(
     Ok(())
 }
 
-fn send_display_chunk(
+async fn send_display_chunk(
     outgoing_tx: &RelayOutgoingSender,
     stream_id: &str,
     data: &[u8],
     message_kind: Option<&str>,
 ) -> Result<(), RelayError> {
-    send_outgoing_envelope(
+    send_outgoing_event_envelope(
         outgoing_tx,
-        RelayEnvelope::DaemonDisplayTunnelChunk {
-            chunk: RelayDisplayTunnelStreamChunk {
-                stream_id: stream_id.to_string(),
-                data: BASE64_STANDARD.encode(data),
-                message_kind: message_kind.map(|value| value.to_string()),
-            },
-        },
+        display_chunk_envelope(stream_id, data, message_kind),
     )
+    .await
     .map_err(|error| {
         relay_error(
             "display_websocket_chunk_send_failed",
@@ -326,6 +326,33 @@ fn send_display_chunk(
             true,
         )
     })
+}
+
+fn blocking_send_display_chunk(
+    outgoing_tx: &RelayOutgoingSender,
+    stream_id: &str,
+    data: &[u8],
+    message_kind: Option<&str>,
+) -> Result<(), RelayError> {
+    blocking_send_outgoing_event_envelope(
+        outgoing_tx,
+        display_chunk_envelope(stream_id, data, message_kind),
+    )
+    .map_err(|error| relay_error("display_http_chunk_send_failed", &error.to_string(), true))
+}
+
+fn display_chunk_envelope(
+    stream_id: &str,
+    data: &[u8],
+    message_kind: Option<&str>,
+) -> RelayEnvelope {
+    RelayEnvelope::DaemonDisplayTunnelChunk {
+        chunk: RelayDisplayTunnelStreamChunk {
+            stream_id: stream_id.to_string(),
+            data: BASE64_STANDARD.encode(data),
+            message_kind: message_kind.map(|value| value.to_string()),
+        },
+    }
 }
 
 fn local_display_url(
@@ -455,7 +482,7 @@ fn stream_response_to_proxy(
                 false,
             ));
         }
-        send_display_chunk(outgoing_tx, &request.stream_id, &buffer[..size], None)?;
+        blocking_send_display_chunk(outgoing_tx, &request.stream_id, &buffer[..size], None)?;
     }
     Ok(())
 }
@@ -552,6 +579,42 @@ mod tests {
         };
 
         assert!(display_request_is_websocket(&request));
+    }
+
+    #[tokio::test]
+    async fn blocking_http_chunk_waits_for_event_lane_capacity() {
+        let (outgoing_tx, _priority_rx, mut event_rx) = RelayOutgoingSender::channel(1);
+        send_outgoing_envelope(
+            &outgoing_tx,
+            display_chunk_envelope("stream-1", b"first", None),
+        )
+        .expect("first display chunk should fill the event lane");
+
+        let blocking_sender = outgoing_tx.clone();
+        let blocked = tokio::task::spawn_blocking(move || {
+            blocking_send_display_chunk(&blocking_sender, "stream-1", b"second", None)
+        });
+        tokio::pin!(blocked);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), &mut blocked)
+                .await
+                .is_err()
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
+                if BASE64_STANDARD.decode(chunk.data.as_bytes()).expect("first chunk should decode") == b"first"
+        ));
+        blocked
+            .await
+            .expect("blocking display sender should join")
+            .expect("second display chunk should enqueue after capacity frees");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RelayEnvelope::DaemonDisplayTunnelChunk { chunk })
+                if BASE64_STANDARD.decode(chunk.data.as_bytes()).expect("second chunk should decode") == b"second"
+        ));
     }
 
     #[tokio::test]

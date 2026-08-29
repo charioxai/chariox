@@ -56,8 +56,8 @@ use connection_state::{
 use daemon_requests::handle_daemon_request;
 use display_tunnel::handle_display_tunnel_open;
 use envelope_io::{
-    encrypt_json_response, encrypt_peer_payload, send_outgoing_envelope,
-    send_outgoing_event_envelope,
+    blocking_send_outgoing_event_envelope, encrypt_json_response, encrypt_peer_payload,
+    send_outgoing_envelope, send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
 use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
@@ -170,6 +170,14 @@ impl RelayOutgoingSender {
     ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
         debug_assert!(relay_envelope_uses_event_lane(&envelope));
         self.event_tx.send(envelope).await
+    }
+
+    fn blocking_send_event(
+        &self,
+        envelope: RelayEnvelope,
+    ) -> Result<(), mpsc::error::SendError<RelayEnvelope>> {
+        debug_assert!(relay_envelope_uses_event_lane(&envelope));
+        self.event_tx.blocking_send(envelope)
     }
 }
 

@@ -227,12 +227,19 @@ pub(super) async fn handle_incoming_envelope(
                 .resolve_display_tunnel_registration(&tunnel_id, error);
         }
         RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
+            let stream_id = chunk.stream_id.clone();
             let sender = {
                 let guard = state.read().await;
-                guard.display_stream_sender(&chunk.stream_id)
+                guard.display_stream_sender(&stream_id)
             };
             if let Some(sender) = sender {
-                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Chunk(chunk));
+                if sender
+                    .send(RelayDisplayTunnelClientEvent::Chunk(chunk))
+                    .await
+                    .is_err()
+                {
+                    state.write().await.remove_display_stream(&stream_id);
+                }
             }
         }
         RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, .. } => {
@@ -241,8 +248,9 @@ pub(super) async fn handle_incoming_envelope(
                 guard.display_stream_sender(&stream_id)
             };
             if let Some(sender) = sender {
-                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Close);
+                let _ = sender.send(RelayDisplayTunnelClientEvent::Close).await;
             }
+            state.write().await.remove_display_stream(&stream_id);
         }
         RelayEnvelope::ClientMetadataResponse { .. } => {}
         RelayEnvelope::Close { reason } => {

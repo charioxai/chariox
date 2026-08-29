@@ -256,19 +256,20 @@ async fn forward_display_websocket_stream(
             browser_message = browser_read.next() => {
                 match browser_message {
                     Some(Ok(Message::Binary(data))) => {
-                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary"))?;
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_ref(), Some("binary")).await?;
                     }
                     Some(Ok(Message::Text(data))) => {
-                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text"))?;
+                        send_display_client_chunk(&daemon_sender, &stream_id, data.as_str().as_bytes(), Some("text")).await?;
                     }
                     Some(Ok(Message::Close(_))) | None => {
-                        let _ = send_envelope(
+                        let _ = send_envelope_wait(
                             &daemon_sender,
                             &RelayEnvelope::DaemonDisplayTunnelClientClose {
                                 stream_id: stream_id.clone(),
                                 error: None,
                             },
-                        );
+                        )
+                        .await;
                         break;
                     }
                     Some(Ok(Message::Ping(data))) => {
@@ -277,13 +278,14 @@ async fn forward_display_websocket_stream(
                     Some(Ok(Message::Pong(_))) => {}
                     Some(Ok(Message::Frame(_))) => {}
                     Some(Err(error)) => {
-                        let _ = send_envelope(
+                        let _ = send_envelope_wait(
                             &daemon_sender,
                             &RelayEnvelope::DaemonDisplayTunnelClientClose {
                                 stream_id: stream_id.clone(),
                                 error: Some(relay_error("display_browser_websocket_failed", &error.to_string(), true)),
                             },
-                        );
+                        )
+                        .await;
                         break;
                     }
                 }
@@ -336,13 +338,13 @@ mod websocket_idle_policy_tests {
     }
 }
 
-fn send_display_client_chunk(
+async fn send_display_client_chunk(
     sender: &RelaySender,
     stream_id: &str,
     data: &[u8],
     message_kind: Option<&str>,
 ) -> Result<(), std::io::Error> {
-    send_envelope(
+    send_envelope_wait(
         sender,
         &RelayEnvelope::DaemonDisplayTunnelClientChunk {
             chunk: crate::protocol::RelayDisplayTunnelStreamChunk {
@@ -352,6 +354,7 @@ fn send_display_client_chunk(
             },
         },
     )
+    .await
 }
 
 fn send_envelope(sender: &RelaySender, envelope: &RelayEnvelope) -> Result<(), std::io::Error> {
@@ -359,6 +362,18 @@ fn send_envelope(sender: &RelaySender, envelope: &RelayEnvelope) -> Result<(), s
         .map_err(|error| std::io::Error::other(error.to_string()))?;
     sender
         .try_send(Message::Text(payload.into()))
+        .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
+}
+
+async fn send_envelope_wait(
+    sender: &RelaySender,
+    envelope: &RelayEnvelope,
+) -> Result<(), std::io::Error> {
+    let payload = serde_json::to_string(envelope)
+        .map_err(|error| std::io::Error::other(error.to_string()))?;
+    sender
+        .send(Message::Text(payload.into()))
+        .await
         .map_err(|error| std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string()))
 }
 
@@ -633,5 +648,42 @@ mod tests {
         .expect_err("full daemon queue should reject display envelope");
 
         assert_eq!(error.kind(), std::io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test]
+    async fn display_client_chunk_waits_for_daemon_queue_capacity() {
+        let (sender, mut receiver) = mpsc::channel(1);
+        sender
+            .try_send(Message::Text("occupied".to_string().into()))
+            .expect("test queue should accept first message");
+
+        let send = send_display_client_chunk(&sender, "stream-1", b"from-browser", Some("binary"));
+        tokio::pin!(send);
+        assert!(tokio::time::timeout(Duration::from_millis(10), &mut send)
+            .await
+            .is_err());
+
+        assert!(matches!(receiver.recv().await, Some(Message::Text(_))));
+        send.await
+            .expect("display chunk should enqueue after daemon capacity frees");
+        let payload = match receiver.recv().await {
+            Some(Message::Text(payload)) => payload,
+            other => panic!("unexpected display chunk frame: {other:?}"),
+        };
+        match serde_json::from_str::<RelayEnvelope>(&payload)
+            .expect("display chunk frame should decode")
+        {
+            RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
+                assert_eq!(chunk.stream_id, "stream-1");
+                assert_eq!(chunk.message_kind.as_deref(), Some("binary"));
+                assert_eq!(
+                    BASE64_STANDARD
+                        .decode(chunk.data)
+                        .expect("display chunk should decode"),
+                    b"from-browser"
+                );
+            }
+            other => panic!("unexpected display chunk envelope: {other:?}"),
+        }
     }
 }
