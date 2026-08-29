@@ -577,6 +577,7 @@ async fn start_publication_runtime(
     process_key: String,
     launch_context: PublicationRuntimeLaunchContext,
 ) -> Result<LocalDaemonResponse, DaemonError> {
+    let launch_context = publication_runtime_launch_context(&publication, launch_context);
     if !runtime_state
         .owned
         .workflow_publication_runtimes
@@ -981,6 +982,26 @@ fn publication_runtime_recovery_binding(
         return None;
     }
     publication_deployment_binding(publication)
+}
+
+fn publication_runtime_launch_context(
+    publication: &WorkflowPublicationDefinition,
+    mut launch_context: PublicationRuntimeLaunchContext,
+) -> PublicationRuntimeLaunchContext {
+    if launch_context.binding.is_some() {
+        return launch_context;
+    }
+    let Some(binding) = publication_deployment_binding(publication) else {
+        return launch_context;
+    };
+    if launch_context.cloud_deployment_id.is_none() {
+        launch_context.cloud_deployment_id = Some(binding.deployment_id.clone());
+    }
+    if launch_context.expected_package_digest.is_none() {
+        launch_context.expected_package_digest = Some(binding.package_digest.clone());
+    }
+    launch_context.binding = Some(binding);
+    launch_context
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1438,10 +1459,11 @@ impl WorkflowPublicationRuntimeProcessStore {
 mod tests {
     use super::{
         launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_metadata_preserving_binding,
-        publication_runtime_port, publication_runtime_recovery_binding,
-        stopped_publication_runtime_metadata, validate_publication_runtime_bind_address,
-        validated_deployment_binding, write_publication_caller_claims_config,
+        publication_local_url, publication_runtime_launch_context,
+        publication_runtime_metadata_preserving_binding, publication_runtime_port,
+        publication_runtime_recovery_binding, stopped_publication_runtime_metadata,
+        validate_publication_runtime_bind_address, validated_deployment_binding,
+        write_publication_caller_claims_config, PublicationRuntimeLaunchContext,
         WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
@@ -1648,6 +1670,26 @@ mod tests {
         );
         assert!(restarted_metadata.get("desired_state").is_none());
         assert!(restarted_metadata.get("binding").is_some());
+        let launch_context = publication_runtime_launch_context(
+            &publication,
+            PublicationRuntimeLaunchContext::default(),
+        );
+        assert_eq!(
+            launch_context.cloud_deployment_id.as_deref(),
+            Some("deployment-1"),
+        );
+        let expected_package_digest = format!("sha256:{}", "a".repeat(64));
+        assert_eq!(
+            launch_context.expected_package_digest.as_deref(),
+            Some(expected_package_digest.as_str()),
+        );
+        assert_eq!(
+            launch_context
+                .binding
+                .as_ref()
+                .map(|binding| binding.setup_id.as_str()),
+            Some("setup-1"),
+        );
 
         let unbound_publication = crate::session::WorkflowPublicationDefinition::new(
             "publication-2",
