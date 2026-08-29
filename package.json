@@ -11,7 +11,7 @@
     "build:cli": "pnpm --filter @chariox/cli run build",
     "lint": "pnpm -r --workspace-concurrency=1 run lint",
     "start:cli": "node scripts/start-cli.mjs",
-    "test": "node --test scripts/*.test.mjs && pnpm -r --workspace-concurrency=1 run test",
+    "test": "node --test scripts/*.test.mjs apps/kernel/slice-linux-docker/docker/*.test.mjs && pnpm -r --workspace-concurrency=1 run test",
     "test:daemon": "RUST_MIN_STACK=16777216 RUST_TEST_THREADS=1 cargo test --manifest-path apps/kernel/Cargo.toml",
     "perf:drills": "node scripts/performance-drills.mjs",
     "validation:suite": "node apps/cli/scripts/drill-validation-suite.mjs",
