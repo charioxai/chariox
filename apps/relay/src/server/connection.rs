@@ -13,8 +13,8 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use crate::auth::{RelayAction, RelayAuthVerifier};
 use crate::protocol::{RelayConnectionRole, RelayEnvelope, RelayMetadataQuery};
 use crate::registry::{
-    ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, PeerHandle,
-    PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry,
+    ActiveEventRoute, ActiveSubscription, DaemonKey, DisplayStreamEvent, DisplayStreamSender,
+    PeerHandle, PendingDaemonPeerRequest, PendingRequestKind, RelayRegistry,
 };
 
 mod support;
@@ -831,14 +831,16 @@ pub(crate) async fn handle_connection(
                                     &current_daemon_key,
                                 )
                             };
-                            if let Some(sender) = sender {
-                                let _ = sender
-                                    .send(DisplayStreamEvent::ResponseStart {
-                                        status: response.status,
-                                        headers: response.headers,
-                                    })
-                                    .await;
-                            }
+                            forward_display_stream_event(
+                                &registry,
+                                &response.stream_id,
+                                sender,
+                                DisplayStreamEvent::ResponseStart {
+                                    status: response.status,
+                                    headers: response.headers,
+                                },
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonDisplayTunnelChunk { chunk } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
@@ -855,14 +857,16 @@ pub(crate) async fn handle_connection(
                                     &current_daemon_key,
                                 )
                             };
-                            if let Some(sender) = sender {
-                                let _ = sender
-                                    .send(DisplayStreamEvent::Chunk {
-                                        data: chunk.data,
-                                        message_kind: chunk.message_kind,
-                                    })
-                                    .await;
-                            }
+                            forward_display_stream_event(
+                                &registry,
+                                &chunk.stream_id,
+                                sender,
+                                DisplayStreamEvent::Chunk {
+                                    data: chunk.data,
+                                    message_kind: chunk.message_kind,
+                                },
+                            )
+                            .await;
                         }
                         RelayEnvelope::DaemonDisplayTunnelClose { stream_id, error } => {
                             let Some(current_daemon_key) = registered_daemon_key.clone() else {
@@ -883,7 +887,7 @@ pub(crate) async fn handle_connection(
                                 sender
                             };
                             if let Some(sender) = sender {
-                                let _ = sender.send(DisplayStreamEvent::Close { error }).await;
+                                let _ = sender.try_send(DisplayStreamEvent::Close { error });
                             }
                         }
                         RelayEnvelope::DaemonEvent {
@@ -1039,15 +1043,13 @@ pub(crate) async fn handle_connection(
         let _ = sender.try_send(Message::Close(None));
     }
     for sender in disconnect_display_stream_senders {
-        let _ = sender
-            .send(DisplayStreamEvent::Close {
-                error: Some(relay_error(
-                    "target_disconnected",
-                    "target daemon disconnected from relay",
-                    true,
-                )),
-            })
-            .await;
+        let _ = sender.try_send(DisplayStreamEvent::Close {
+            error: Some(relay_error(
+                "target_disconnected",
+                "target daemon disconnected from relay",
+                true,
+            )),
+        });
     }
     drop(outgoing_tx);
     if let Some(mut writer_task) = writer_task {
@@ -1060,6 +1062,40 @@ pub(crate) async fn handle_connection(
         }
     }
     connection_result
+}
+
+async fn forward_display_stream_event(
+    registry: &Arc<RwLock<RelayRegistry>>,
+    stream_id: &str,
+    sender: Option<DisplayStreamSender>,
+    event: DisplayStreamEvent,
+) {
+    let Some(sender) = sender else {
+        return;
+    };
+    match sender.try_send(event) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            registry
+                .write()
+                .await
+                .remove_pending_display_stream(stream_id);
+            relay_log(
+                "warn",
+                "relay_display_stream_backpressure",
+                json!({
+                    "stream_id": stream_id,
+                    "action": "close_stream",
+                }),
+            );
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            registry
+                .write()
+                .await
+                .remove_pending_display_stream(stream_id);
+        }
+    }
 }
 
 fn relay_outgoing_queue_capacity() -> usize {

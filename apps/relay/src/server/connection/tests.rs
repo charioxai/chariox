@@ -26,6 +26,47 @@ fn outgoing_queue_capacity_override_is_positive_and_defaults_safely() {
     );
 }
 
+#[tokio::test]
+async fn full_display_stream_queue_is_removed_without_blocking_the_connection() {
+    let registry = Arc::new(RwLock::new(RelayRegistry::default()));
+    let daemon_key = DaemonKey {
+        realm_id: DEFAULT_RELAY_REALM_ID.to_string(),
+        daemon_id: "daemon-1".to_string(),
+    };
+    let (sender, _receiver) = mpsc::channel(1);
+    sender
+        .try_send(DisplayStreamEvent::ResponseStart {
+            status: 200,
+            headers: Vec::new(),
+        })
+        .expect("first display event should fill the queue");
+    registry.write().await.insert_pending_display_stream(
+        "stream-1".to_string(),
+        daemon_key.clone(),
+        sender.clone(),
+    );
+
+    forward_display_stream_event(
+        &registry,
+        "stream-1",
+        Some(sender),
+        DisplayStreamEvent::Chunk {
+            data: "Y2h1bms=".to_string(),
+            message_kind: Some("binary".to_string()),
+        },
+    )
+    .await;
+
+    assert!(
+        registry
+            .read()
+            .await
+            .display_stream_sender_for_daemon("stream-1", &daemon_key)
+            .is_none(),
+        "a saturated browser stream must be removed instead of stalling the daemon reader"
+    );
+}
+
 fn peer_addr(port: u16) -> SocketAddr {
     SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), port)
 }
