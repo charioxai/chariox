@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { selectBrowserPageTarget } from "./browser-cdp-targets.mjs"
+
 const command = process.argv[2];
 const args = process.argv.slice(3);
 
@@ -12,18 +14,55 @@ async function readStdin() {
 }
 
 async function getPage() {
-  const response = await fetch("http://127.0.0.1:9222/json/list");
+  const response = await fetch("http://127.0.0.1:9222/json/list", {
+    signal: AbortSignal.timeout(3_000),
+  });
+  if (!response.ok) {
+    throw new Error(`Chromium target list failed with HTTP ${response.status}`)
+  }
   const targets = await response.json();
-  const pages = targets.filter((target) => target.type === "page" && target.webSocketDebuggerUrl);
-  const page =
-    pages.find((target) => target.url?.includes("chariox-slice-screen-test")) ??
-    pages.find((target) => target.url?.startsWith("file:///workspace/")) ??
-    pages.find((target) => target.url && target.url !== "about:blank") ??
-    pages.at(-1);
+  const page = await selectBrowserPageTarget(targets, targetIsVisible)
   if (!page) {
     throw new Error("No Chromium page target found");
   }
   return page;
+}
+
+async function targetIsVisible(target) {
+  return await new Promise((resolve) => {
+    const socket = new WebSocket(target.webSocketDebuggerUrl)
+    let settled = false
+    const finish = (visible) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      socket.close()
+      resolve(visible)
+    }
+    const timer = setTimeout(() => finish(false), 750)
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify({
+        id: 1,
+        method: "Runtime.evaluate",
+        params: {
+          expression: "document.visibilityState",
+          returnByValue: true,
+        },
+      }))
+    }, { once: true })
+    socket.addEventListener("message", (event) => {
+      try {
+        const message = JSON.parse(event.data)
+        if (message.id === 1) {
+          finish(message.result?.result?.value === "visible")
+        }
+      } catch {
+        finish(false)
+      }
+    })
+    socket.addEventListener("error", () => finish(false), { once: true })
+    socket.addEventListener("close", () => finish(false), { once: true })
+  })
 }
 
 async function withSocket(callback) {

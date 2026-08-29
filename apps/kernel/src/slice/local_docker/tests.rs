@@ -176,12 +176,17 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
             .join("slice-linux-docker/provision-linux-docker-slice.sh"),
     )
     .expect("slice provisioner should be readable");
+    let dockerfile = std::fs::read_to_string(
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker/Dockerfile"),
+    )
+    .expect("slice Dockerfile should be readable");
 
     for support_file in [
         "start-runtime.sh",
         "start-providers.sh",
         "slice-screen.sh",
         "browser-cdp.mjs",
+        "browser-cdp-targets.mjs",
         "managed-provider-isolation-probe.mjs",
         "managed-provider-isolation-probe-wrapper.sh",
         "provider-port-bridge.mjs",
@@ -190,6 +195,10 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         assert!(
             script.contains(&format!("docker/{support_file}")),
             "slice support refresh must copy {support_file}"
+        );
+        assert!(
+            dockerfile.contains(&format!("docker/{support_file}")),
+            "slice image must include {support_file}"
         );
     }
 }
