@@ -60,18 +60,6 @@ pub(super) async fn send_outgoing_event_envelope(
         })
 }
 
-pub(super) fn blocking_send_outgoing_event_envelope(
-    outgoing_tx: &RelayOutgoingSender,
-    envelope: RelayEnvelope,
-) -> Result<(), DaemonError> {
-    outgoing_tx
-        .blocking_send_event(envelope)
-        .map_err(|_| DaemonError::LocalTransport {
-            operation: "send relay event envelope",
-            message: "relay connection writer is closed".to_string(),
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

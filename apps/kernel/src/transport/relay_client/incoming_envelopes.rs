@@ -233,12 +233,19 @@ pub(super) async fn handle_incoming_envelope(
                 guard.display_stream_sender(&stream_id)
             };
             if let Some(sender) = sender {
-                if sender
-                    .send(RelayDisplayTunnelClientEvent::Chunk(chunk))
-                    .await
-                    .is_err()
-                {
+                if let Err(reason) = try_send_display_client_event(
+                    &sender,
+                    RelayDisplayTunnelClientEvent::Chunk(chunk),
+                ) {
                     state.write().await.remove_display_stream(&stream_id);
+                    crate::logging::warn_with_fields(
+                        "daemon.relay_client",
+                        "closing backpressured display client stream",
+                        serde_json::json!({
+                            "stream_id": stream_id,
+                            "reason": reason,
+                        }),
+                    );
                 }
             }
         }
@@ -248,7 +255,8 @@ pub(super) async fn handle_incoming_envelope(
                 guard.display_stream_sender(&stream_id)
             };
             if let Some(sender) = sender {
-                let _ = sender.send(RelayDisplayTunnelClientEvent::Close).await;
+                let _ =
+                    try_send_display_client_event(&sender, RelayDisplayTunnelClientEvent::Close);
             }
             state.write().await.remove_display_stream(&stream_id);
         }
@@ -262,6 +270,16 @@ pub(super) async fn handle_incoming_envelope(
         _ => {}
     }
     Ok(())
+}
+
+fn try_send_display_client_event(
+    sender: &mpsc::Sender<RelayDisplayTunnelClientEvent>,
+    event: RelayDisplayTunnelClientEvent,
+) -> Result<(), &'static str> {
+    sender.try_send(event).map_err(|error| match error {
+        mpsc::error::TrySendError::Full(_) => "stream_queue_full",
+        mpsc::error::TrySendError::Closed(_) => "stream_closed",
+    })
 }
 
 fn enqueue_dynamic_relay_reconnect_if_changed(
@@ -296,6 +314,18 @@ fn enqueue_dynamic_relay_reconnect_if_changed(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_display_client_stream_fails_without_waiting() {
+        let (sender, _receiver) = mpsc::channel(1);
+        try_send_display_client_event(&sender, RelayDisplayTunnelClientEvent::Close)
+            .expect("first event should fill the stream queue");
+
+        assert_eq!(
+            try_send_display_client_event(&sender, RelayDisplayTunnelClientEvent::Close),
+            Err("stream_queue_full")
+        );
+    }
 
     #[test]
     fn peer_response_precedes_dynamic_relay_reconnect() {
