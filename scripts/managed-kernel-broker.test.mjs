@@ -1,5 +1,5 @@
 import assert from "node:assert/strict"
-import { access, chmod, mkdtemp, mkdir, rename, rm, symlink, writeFile } from "node:fs/promises"
+import { access, chmod, mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -14,6 +14,19 @@ const broker = join(
   "apps/kernel/slice-linux-docker/managed-docker-broker.mjs",
 )
 const ownerPublicKey = Buffer.concat([Buffer.from([4]), Buffer.alloc(64, 1)]).toString("base64")
+const sliceRuntimeLogScript = `
+set -eu
+found=0
+for file in /opt/chariox-slice/logs/*.log /home/slice/.local/state/chariox/logs/*.ndjson; do
+  [ -f "$file" ] || continue
+  found=1
+  printf '\\n=== %s ===\\n' "$file"
+  tail -n "$1" "$file"
+done
+if [ "$found" -eq 0 ]; then
+  printf '<no slice runtime logs>\\n'
+fi
+`
 
 function validate(request, shareRoot) {
   return spawnSync(process.execPath, [broker, "--validate-request"], {
@@ -157,6 +170,35 @@ test("managed slice broker accepts only Chariox resources and shared host paths"
   }, share)
   assert.equal(arbitraryExec.status, 1)
   assert.match(arbitraryExec.stderr, /Docker exec command shape is not allowed/)
+
+  const runtimeLogs = [
+    "exec",
+    "-u",
+    "slice",
+    "chariox-slice-dev",
+    "sh",
+    "-c",
+    sliceRuntimeLogScript,
+    "slice-runtime-logs",
+    "200",
+  ]
+  const localDockerSource = await readFile(
+    join(repositoryRoot, "apps/kernel/src/slice/local_docker.rs"),
+    "utf8",
+  )
+  const canonicalRuntimeLogScript = localDockerSource.match(
+    /fn local_docker_runtime_log_entry[\s\S]*?let script = r#"([\s\S]*?)"#;/,
+  )?.[1]
+  assert.equal(canonicalRuntimeLogScript, sliceRuntimeLogScript)
+  assert.equal(validate({ kind: "docker", args: runtimeLogs }, share).status, 0)
+  const injectedRuntimeLogs = validate({
+    kind: "docker",
+    args: runtimeLogs.map((argument, index) => (
+      index === 6 ? `${argument}\nprintf owned >/tmp/broker-bypass` : argument
+    )),
+  }, share)
+  assert.equal(injectedRuntimeLogs.status, 1)
+  assert.match(injectedRuntimeLogs.stderr, /Docker exec command shape is not allowed/)
 
   for (const path of [
     "/home/slice/.chariox/daemon/provider-accounts/owner-1/codex/codex-1/codex/auth.json",
