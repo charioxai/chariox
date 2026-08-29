@@ -482,7 +482,7 @@ fn read_provider_credential_no_symlinks(source: &Path) -> Result<Option<Vec<u8>>
         let fd = unsafe { libc::openat(directory.as_raw_fd(), component.as_ptr(), flags) };
         if fd < 0 {
             let error = std::io::Error::last_os_error();
-            if last && error.kind() == std::io::ErrorKind::NotFound {
+            if error.kind() == std::io::ErrorKind::NotFound {
                 return Ok(None);
             }
             return Err(local_docker_error(format!(

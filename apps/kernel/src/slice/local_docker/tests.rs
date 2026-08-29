@@ -30,6 +30,36 @@ fn selected_broker_credential_replaces_default_and_missing_selection_clears_it()
 
 #[cfg(unix)]
 #[test]
+fn optional_provider_credential_path_ignores_missing_parents_but_rejects_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_root("missing-provider-credential-parent");
+    std::fs::create_dir_all(&root).expect("fixture root should create");
+    let root = std::fs::canonicalize(root).expect("fixture root should canonicalize");
+    let missing = root.join(".local/share/opencode/auth.json");
+
+    assert_eq!(
+        read_provider_credential_no_symlinks(&missing)
+            .expect("an absent optional credential should not fail the import"),
+        None
+    );
+
+    let credential_root = root.join("managed-opencode");
+    std::fs::create_dir_all(&credential_root).expect("credential root should create");
+    std::fs::write(credential_root.join("auth.json"), b"secret")
+        .expect("credential fixture should write");
+    symlink(&credential_root, root.join("opencode-link"))
+        .expect("credential symlink should create");
+    assert!(
+        read_provider_credential_no_symlinks(&root.join("opencode-link/auth.json")).is_err(),
+        "a symlinked credential parent must remain fatal"
+    );
+
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[cfg(unix)]
+#[test]
 fn github_token_probe_is_bounded_and_reaps_a_stalled_helper() {
     use std::os::unix::fs::PermissionsExt;
 
