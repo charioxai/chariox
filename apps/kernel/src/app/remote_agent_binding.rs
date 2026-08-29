@@ -761,6 +761,49 @@ impl DaemonApp {
         Ok(moved)
     }
 
+    pub(crate) fn destroy_remote_execution_binding(
+        &self,
+        remote_execution: &RemoteAgentBinding,
+    ) -> Result<(), DaemonError> {
+        let relay_config = self.relay_config_for_remote_execution(remote_execution);
+        let target = ClientTarget {
+            daemon_id: Some(remote_execution.worker_kernel_id.clone()),
+            daemon_alias: None,
+        };
+        let use_connected_relay =
+            self.hosted_shared_slice_uses_connected_relay(&remote_execution.worker_kernel_id);
+        match self.send_remote_binding_request(
+            &relay_config,
+            target.clone(),
+            RelayPeerRequest::DestroyLeasedAgent {
+                leased_agent_id: remote_execution.leased_agent_id.clone(),
+            },
+            use_connected_relay,
+        )? {
+            RelayPeerResponse::LeasedAgentDestroyed { .. } => {}
+            other => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "destroy remote leased agent",
+                    message: format!("unexpected peer response: {other:?}"),
+                });
+            }
+        }
+        match self.send_remote_binding_request(
+            &relay_config,
+            target,
+            RelayPeerRequest::DestroyExecutionLease {
+                lease_id: remote_execution.execution_lease_id.clone(),
+            },
+            use_connected_relay,
+        )? {
+            RelayPeerResponse::ExecutionLeaseDestroyed { .. } => Ok(()),
+            other => Err(DaemonError::LocalTransport {
+                operation: "destroy remote execution lease",
+                message: format!("unexpected peer response: {other:?}"),
+            }),
+        }
+    }
+
     fn ensure_remote_agent_skill_packages(
         &mut self,
         agent: &AgentInstance,

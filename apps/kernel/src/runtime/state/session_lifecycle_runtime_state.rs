@@ -57,63 +57,80 @@ impl KernelRuntimeState {
             self.wait_for_slice_worker_ready(slice_ref, session_request_provider(&request))
                 .await?;
         }
-        let response = if let Some(slice_ref) = slice_ref.as_deref() {
+        let (response, mut unpublished_session) = if let Some(slice_ref) = slice_ref.as_deref() {
             let worker_kernel_ref = self.resolve_slice_worker_kernel_ref(slice_ref).await?;
-            self.create_sliced_session_response(request, worker_kernel_ref)
-                .await?
+            let (response, guard) = self
+                .create_sliced_session_response(request, worker_kernel_ref)
+                .await?;
+            (response, Some(guard))
         } else if let Some(kernel_ref) = kernel_ref {
-            self.create_remote_session_response(request, kernel_ref)
-                .await?
+            let (response, guard) = self
+                .create_remote_session_response(request, kernel_ref)
+                .await?;
+            (response, Some(guard))
         } else {
-            self.owned.create_session_response(request)?
+            (self.owned.create_session_response(request)?, None)
         };
-        if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
-            let project = if session.is_hidden() {
-                None
-            } else {
-                Some(self.owned.session_store.get_project(session.project_id())?)
-            };
-            if let Some(project) = project
-                .as_ref()
-                .filter(|project| !existing_project_ids.contains(project.id()))
-            {
+        let publication = async {
+            if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+                let project = if session.is_hidden() {
+                    None
+                } else {
+                    Some(self.owned.session_store.get_project(session.project_id())?)
+                };
+                if let Some(project) = project
+                    .as_ref()
+                    .filter(|project| !existing_project_ids.contains(project.id()))
+                {
+                    self.owned.durable_state_store.append_event(
+                        "project.created",
+                        Some(project.id().to_string()),
+                        serde_json::json!({ "project": project }),
+                    )?;
+                }
+                if let Some(slice_ref) = slice_ref {
+                    let session_id = session.id().to_string();
+                    let agent_id = agent.id().to_string();
+                    let slice = self
+                        .with_app_side_effect(move |app| {
+                            app.slices().attach_agent(
+                                &slice_ref,
+                                &session_id,
+                                &agent_id,
+                                crate::session::unix_epoch_ms(),
+                            )
+                        })
+                        .await?;
+                    self.owned.durable_state_store.append_event(
+                        "slice.updated",
+                        Some(slice.id.clone()),
+                        serde_json::json!({ "slice": &slice }),
+                    )?;
+                }
+                let mut payload = serde_json::json!({
+                    "session": session,
+                    "default_agent": agent,
+                });
+                if let Some(project) = project {
+                    payload["project"] = serde_json::json!(project);
+                }
                 self.owned.durable_state_store.append_event(
-                    "project.created",
-                    Some(project.id().to_string()),
-                    serde_json::json!({ "project": project }),
+                    "session.created",
+                    Some(session.id().to_string()),
+                    payload,
                 )?;
             }
-            if let Some(slice_ref) = slice_ref {
-                let session_id = session.id().to_string();
-                let agent_id = agent.id().to_string();
-                let slice = self
-                    .with_app_side_effect(move |app| {
-                        app.slices().attach_agent(
-                            &slice_ref,
-                            &session_id,
-                            &agent_id,
-                            crate::session::unix_epoch_ms(),
-                        )
-                    })
-                    .await?;
-                self.owned.durable_state_store.append_event(
-                    "slice.updated",
-                    Some(slice.id.clone()),
-                    serde_json::json!({ "slice": &slice }),
-                )?;
+            Ok::<(), DaemonError>(())
+        }
+        .await;
+        if let Err(error) = publication {
+            if let Some(guard) = unpublished_session.as_mut() {
+                self.rollback_unpublished_session(guard).await;
             }
-            let mut payload = serde_json::json!({
-                "session": session,
-                "default_agent": agent,
-            });
-            if let Some(project) = project {
-                payload["project"] = serde_json::json!(project);
-            }
-            self.owned.durable_state_store.append_event(
-                "session.created",
-                Some(session.id().to_string()),
-                payload,
-            )?;
+            return Err(error);
+        }
+        if let Some(guard) = unpublished_session.as_mut() {
+            guard.publish();
         }
         Ok(response)
     }
@@ -122,7 +139,7 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
         worker_kernel_ref: String,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> Result<(LocalDaemonResponse, UnpublishedSessionGuard), DaemonError> {
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create remote session started",
@@ -149,12 +166,21 @@ impl KernelRuntimeState {
             agent_request = agent_request.with_worktree_placement(placement);
         }
         let agent = self.spawn_agent(agent_request).await?;
-        self.owned
+        unpublished_session.track_agent(&agent);
+        let focused = self
+            .owned
             .session_store
             .write()
-            .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
-        session = self.owned.session_snapshot(session.id())?;
-        unpublished_session.publish();
+            .set_focused_agent(session.id(), Some(agent.id().to_string()));
+        let initialized = focused.and_then(|_| self.owned.session_snapshot(session.id()));
+        session = match initialized {
+            Ok(session) => session,
+            Err(error) => {
+                self.rollback_unpublished_session(&mut unpublished_session)
+                    .await;
+                return Err(error);
+            }
+        };
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create remote session completed",
@@ -164,7 +190,10 @@ impl KernelRuntimeState {
                 "agent_count": session.agents().len(),
             }),
         );
-        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+        Ok((
+            LocalDaemonResponse::SessionCreated { session, agent },
+            unpublished_session,
+        ))
     }
 
     async fn wait_for_slice_worker_ready(
@@ -213,7 +242,7 @@ impl KernelRuntimeState {
         &self,
         mut request: crate::session::CreateSessionRequest,
         worker_kernel_ref: String,
-    ) -> Result<LocalDaemonResponse, DaemonError> {
+    ) -> Result<(LocalDaemonResponse, UnpublishedSessionGuard), DaemonError> {
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create sliced session started",
@@ -242,12 +271,21 @@ impl KernelRuntimeState {
             agent_request = agent_request.with_worktree_placement(placement);
         }
         let agent = self.spawn_agent(agent_request).await?;
-        self.owned
+        unpublished_session.track_agent(&agent);
+        let focused = self
+            .owned
             .session_store
             .write()
-            .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
-        session = self.owned.session_snapshot(session.id())?;
-        unpublished_session.publish();
+            .set_focused_agent(session.id(), Some(agent.id().to_string()));
+        let initialized = focused.and_then(|_| self.owned.session_snapshot(session.id()));
+        session = match initialized {
+            Ok(session) => session,
+            Err(error) => {
+                self.rollback_unpublished_session(&mut unpublished_session)
+                    .await;
+                return Err(error);
+            }
+        };
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create sliced session completed",
@@ -257,7 +295,39 @@ impl KernelRuntimeState {
                 "agent_count": session.agents().len(),
             }),
         );
-        Ok(LocalDaemonResponse::SessionCreated { session, agent })
+        Ok((
+            LocalDaemonResponse::SessionCreated { session, agent },
+            unpublished_session,
+        ))
+    }
+
+    async fn rollback_unpublished_session(&self, guard: &mut UnpublishedSessionGuard) {
+        if let Some((agent_id, owner_user_id)) = guard.take_agent() {
+            if let Err(error) = self.destroy_agent(&agent_id, &owner_user_id).await {
+                crate::logging::warn_with_fields(
+                    "daemon.kernel_session",
+                    "failed to destroy agent while rolling back unpublished session",
+                    serde_json::json!({
+                        "session_id": guard.session_id(),
+                        "agent_id": agent_id,
+                        "error": error.to_string(),
+                    }),
+                );
+            }
+        }
+        if let Err(error) = self.delete_session_ref(guard.session_id(), None).await {
+            crate::logging::warn_with_fields(
+                "daemon.kernel_session",
+                "failed to delete unpublished session through runtime cleanup",
+                serde_json::json!({
+                    "session_id": guard.session_id(),
+                    "error": error.to_string(),
+                }),
+            );
+        }
+        if !guard.store.has_session(guard.session_id()) {
+            guard.resolve();
+        }
     }
 
     pub(crate) async fn attach(
@@ -851,7 +921,8 @@ impl KernelRuntimeState {
 struct UnpublishedSessionGuard {
     store: crate::session::SessionStateStore,
     session_id: String,
-    published: bool,
+    spawned_agent: Option<(String, String)>,
+    resolved: bool,
 }
 
 impl UnpublishedSessionGuard {
@@ -859,18 +930,35 @@ impl UnpublishedSessionGuard {
         Self {
             store: store.clone(),
             session_id: session_id.to_string(),
-            published: false,
+            spawned_agent: None,
+            resolved: false,
         }
     }
 
+    fn session_id(&self) -> &str {
+        &self.session_id
+    }
+
+    fn track_agent(&mut self, agent: &crate::agent::AgentInstance) {
+        self.spawned_agent = Some((agent.id().to_string(), agent.owner_user_id().to_string()));
+    }
+
+    fn take_agent(&mut self) -> Option<(String, String)> {
+        self.spawned_agent.take()
+    }
+
     fn publish(&mut self) {
-        self.published = true;
+        self.resolve();
+    }
+
+    fn resolve(&mut self) {
+        self.resolved = true;
     }
 }
 
 impl Drop for UnpublishedSessionGuard {
     fn drop(&mut self) {
-        if self.published {
+        if self.resolved {
             return;
         }
         if let Err(error) = self
@@ -1144,6 +1232,28 @@ mod tests {
         assert!(result.is_err());
         assert!(store.read().get_session(&session_id).is_err());
         assert!(store.read().get_project(&project_id).is_err());
+    }
+
+    #[test]
+    fn unpublished_remote_session_guard_disarms_only_after_publication() {
+        let config = crate::config::DaemonConfig::for_tests();
+        let store =
+            crate::session::SessionStateStore::new(crate::session::SessionService::new(&config));
+        let session = SessionStateOwner::new(store.clone())
+            .create_session(crate::session::CreateSessionRequest::new(
+                "workspace",
+                "worktree",
+            ))
+            .expect("session should create");
+        let session_id = session.id().to_string();
+        let project_id = session.project_id().to_string();
+
+        let mut guard = UnpublishedSessionGuard::new(&store, &session_id);
+        guard.publish();
+        drop(guard);
+
+        assert!(store.read().get_session(&session_id).is_ok());
+        assert!(store.read().get_project(&project_id).is_ok());
     }
 
     fn slice(os: &str) -> crate::slice::SliceRecord {

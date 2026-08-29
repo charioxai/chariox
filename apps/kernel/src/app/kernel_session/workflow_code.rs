@@ -650,28 +650,7 @@ impl<'a> KernelSessionService<'a> {
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         let agent = self.app.agents.get_agent(agent_id)?;
         if let Some(remote) = agent.remote_execution().cloned() {
-            let target = chariox_relay::protocol::ClientTarget {
-                daemon_id: Some(remote.worker_kernel_id.clone()),
-                daemon_alias: None,
-            };
-            self.app.block_on_relay_future(
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
-                    target.clone(),
-                    crate::transport::relay_peer::RelayPeerRequest::DestroyLeasedAgent {
-                        leased_agent_id: remote.leased_agent_id.clone(),
-                    },
-                ),
-            )?;
-            self.app.block_on_relay_future(
-                crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
-                    target,
-                    crate::transport::relay_peer::RelayPeerRequest::DestroyExecutionLease {
-                        lease_id: remote.execution_lease_id.clone(),
-                    },
-                ),
-            )?;
+            self.app.destroy_remote_execution_binding(&remote)?;
         }
         let session_id = agent.session_id().to_string();
         let session_store = self.app.session_state_store();
