@@ -83,26 +83,29 @@ export async function assertBinary(binaryPath, manifestPath, binName) {
   }
 }
 
-export async function resolveBuiltBinary(binaryPath, manifestPath, binName) {
-  const resolved = newestBuiltBinary(binaryPath, manifestPath, binName)
+export async function resolveBuiltBinary(binaryPath, manifestPath, binName, environment = process.env) {
+  const resolved = newestBuiltBinary(binaryPath, manifestPath, binName, environment)
   if (resolved) return resolved
   await access(binaryPath)
   return binaryPath
 }
 
-export function resolveBuiltBinarySync(binaryPath, manifestPath, binName) {
-  return newestBuiltBinary(binaryPath, manifestPath, binName) ?? binaryPath
+export function resolveBuiltBinarySync(binaryPath, manifestPath, binName, environment = process.env) {
+  return newestBuiltBinary(binaryPath, manifestPath, binName, environment) ?? binaryPath
 }
 
-function newestBuiltBinary(binaryPath, manifestPath, binName) {
+function newestBuiltBinary(binaryPath, manifestPath, binName, environment) {
   const workspaceBinaryPath = path.join(
     path.dirname(path.dirname(path.dirname(manifestPath))),
     "target",
     "debug",
     binName,
   )
+  const configuredBinaryPath = environment.CARGO_TARGET_DIR
+    ? path.join(path.resolve(environment.CARGO_TARGET_DIR), "debug", binName)
+    : null
   let newest = null
-  for (const candidate of new Set([binaryPath, workspaceBinaryPath])) {
+  for (const candidate of new Set([binaryPath, workspaceBinaryPath, configuredBinaryPath].filter(Boolean))) {
     try {
       const modifiedAtMs = statSync(candidate).mtimeMs
       if (!newest || modifiedAtMs > newest.modifiedAtMs) {

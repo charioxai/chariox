@@ -128,20 +128,29 @@ test("built binary resolution chooses the newest Cargo target candidate", async 
   const manifestPath = path.join(root, "apps", "kernel", "Cargo.toml")
   const crateBinary = path.join(root, "apps", "kernel", "target", "debug", "chariox-kernel")
   const workspaceBinary = path.join(root, "target", "debug", "chariox-kernel")
+  const configuredTarget = path.join(root, "task-target")
+  const configuredBinary = path.join(configuredTarget, "debug", "chariox-kernel")
   try {
     await mkdir(path.dirname(crateBinary), { recursive: true })
     await mkdir(path.dirname(workspaceBinary), { recursive: true })
+    await mkdir(path.dirname(configuredBinary), { recursive: true })
     await writeFile(crateBinary, "stale")
     await writeFile(workspaceBinary, "current")
+    await writeFile(configuredBinary, "task current")
     await utimes(crateBinary, new Date(1_000), new Date(1_000))
     await utimes(workspaceBinary, new Date(2_000), new Date(2_000))
+    await utimes(configuredBinary, new Date(3_000), new Date(3_000))
 
-    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
-    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), workspaceBinary)
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", {}), workspaceBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", {}), workspaceBinary)
 
-    await utimes(crateBinary, new Date(3_000), new Date(3_000))
-    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
-    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel"), crateBinary)
+    const environment = { CARGO_TARGET_DIR: configuredTarget }
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", environment), configuredBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", environment), configuredBinary)
+
+    await utimes(crateBinary, new Date(4_000), new Date(4_000))
+    assert.equal(resolveBuiltBinarySync(crateBinary, manifestPath, "chariox-kernel", environment), crateBinary)
+    assert.equal(await resolveBuiltBinary(crateBinary, manifestPath, "chariox-kernel", environment), crateBinary)
   } finally {
     await rm(root, { recursive: true, force: true })
   }
