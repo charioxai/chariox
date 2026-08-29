@@ -139,6 +139,8 @@ impl KernelRuntimeState {
         request.worktree_placement = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
+        let mut unpublished_session =
+            UnpublishedSessionGuard::new(&self.owned.session_store, session.id());
         let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
                 .with_worktree(session.worktree_id())
@@ -146,18 +148,13 @@ impl KernelRuntimeState {
         if let Some(placement) = worktree_placement {
             agent_request = agent_request.with_worktree_placement(placement);
         }
-        let agent = match self.spawn_agent(agent_request).await {
-            Ok(agent) => agent,
-            Err(error) => {
-                rollback_unpublished_session(&self.owned.session_store, session.id());
-                return Err(error);
-            }
-        };
+        let agent = self.spawn_agent(agent_request).await?;
         self.owned
             .session_store
             .write()
             .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
         session = self.owned.session_snapshot(session.id())?;
+        unpublished_session.publish();
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create remote session completed",
@@ -235,6 +232,8 @@ impl KernelRuntimeState {
         request.worktree_placement = None;
         let mut session =
             SessionStateOwner::new(self.owned.session_store.clone()).create_session(request)?;
+        let mut unpublished_session =
+            UnpublishedSessionGuard::new(&self.owned.session_store, session.id());
         let mut agent_request =
             session::agent_request_from_session_defaults(&session, Some(session.owner_user_id()))
                 .with_worktree(session.worktree_id())
@@ -242,18 +241,13 @@ impl KernelRuntimeState {
         if let Some(placement) = worktree_placement {
             agent_request = agent_request.with_worktree_placement(placement);
         }
-        let agent = match self.spawn_agent(agent_request).await {
-            Ok(agent) => agent,
-            Err(error) => {
-                rollback_unpublished_session(&self.owned.session_store, session.id());
-                return Err(error);
-            }
-        };
+        let agent = self.spawn_agent(agent_request).await?;
         self.owned
             .session_store
             .write()
             .set_focused_agent(session.id(), Some(agent.id().to_string()))?;
         session = self.owned.session_snapshot(session.id())?;
+        unpublished_session.publish();
         crate::logging::info_with_fields(
             "daemon.kernel_session",
             "create sliced session completed",
@@ -854,10 +848,46 @@ impl KernelRuntimeState {
     }
 }
 
-fn rollback_unpublished_session(store: &crate::session::SessionStateStore, session_id: &str) {
-    let _ = store
-        .write()
-        .delete_session_with_project_cleanup(session_id);
+struct UnpublishedSessionGuard {
+    store: crate::session::SessionStateStore,
+    session_id: String,
+    published: bool,
+}
+
+impl UnpublishedSessionGuard {
+    fn new(store: &crate::session::SessionStateStore, session_id: &str) -> Self {
+        Self {
+            store: store.clone(),
+            session_id: session_id.to_string(),
+            published: false,
+        }
+    }
+
+    fn publish(&mut self) {
+        self.published = true;
+    }
+}
+
+impl Drop for UnpublishedSessionGuard {
+    fn drop(&mut self) {
+        if self.published {
+            return;
+        }
+        if let Err(error) = self
+            .store
+            .write()
+            .delete_session_with_project_cleanup(&self.session_id)
+        {
+            crate::logging::warn_with_fields(
+                "daemon.kernel_session",
+                "failed to roll back unpublished session",
+                serde_json::json!({
+                    "session_id": self.session_id,
+                    "error": error.to_string(),
+                }),
+            );
+        }
+    }
 }
 
 fn prepare_local_session_worktree_placement(
@@ -1090,7 +1120,7 @@ mod tests {
     }
 
     #[test]
-    fn unpublished_remote_session_rollback_removes_session_and_project() {
+    fn unpublished_remote_session_guard_rolls_back_later_initialization_errors() {
         let config = crate::config::DaemonConfig::for_tests();
         let store =
             crate::session::SessionStateStore::new(crate::session::SessionService::new(&config));
@@ -1103,8 +1133,15 @@ mod tests {
         let session_id = session.id().to_string();
         let project_id = session.project_id().to_string();
 
-        rollback_unpublished_session(&store, &session_id);
+        let result = {
+            let _guard = UnpublishedSessionGuard::new(&store, &session_id);
+            Err::<(), DaemonError>(DaemonError::LocalTransport {
+                operation: "session.create",
+                message: "post-spawn initialization failed".to_string(),
+            })
+        };
 
+        assert!(result.is_err());
         assert!(store.read().get_session(&session_id).is_err());
         assert!(store.read().get_project(&project_id).is_err());
     }

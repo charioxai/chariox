@@ -1163,6 +1163,29 @@ mod tests {
         }
     }
 
+    fn accept_cloud_request(
+        listener: &std::net::TcpListener,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<(std::net::TcpStream, std::net::SocketAddr)> {
+        listener.set_nonblocking(true)?;
+        let deadline = std::time::Instant::now() + timeout;
+        loop {
+            match listener.accept() {
+                Ok(connection) => return Ok(connection),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    if std::time::Instant::now() >= deadline {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "timed out waiting for Cloud fixture request",
+                        ));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+
     fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         let mut request = Vec::new();
         loop {
@@ -1190,6 +1213,17 @@ mod tests {
             }
         }
         String::from_utf8(request).expect("Cloud request should be UTF-8")
+    }
+
+    #[test]
+    fn cloud_request_fixture_accept_is_bounded() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("Cloud fixture should bind");
+
+        let error = accept_cloud_request(&listener, std::time::Duration::from_millis(20))
+            .expect_err("fixture accept should time out without a request");
+
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
     }
 
     #[test]
@@ -1549,7 +1583,9 @@ mod tests {
             std::net::TcpListener::bind("127.0.0.1:0").expect("Cloud fixture should bind");
         let address = listener.local_addr().expect("Cloud fixture address");
         let fixture = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("accept Cloud request");
+            let (mut stream, _) =
+                accept_cloud_request(&listener, std::time::Duration::from_secs(2))
+                    .expect("accept Cloud request");
             let request = read_http_request(&mut stream);
             let body = r#"{"token":"slice-metadata-token","expiresAt":"2099-01-01T00:00:00Z"}"#;
             stream
