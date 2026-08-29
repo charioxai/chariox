@@ -331,6 +331,43 @@ test("provider account alias resolution trims whitespace and ignores case withou
   assert.deepEqual(footers, [])
 })
 
+test("provider account alias resolution rejects ambiguous folded labels", async () => {
+  const footers: string[] = []
+  const profiles = [
+    {
+      owner_user_id: "owner-a",
+      provider: "codex",
+      profile_id: "uppercase-id",
+      label: "Validation",
+      origin: "chariox_created" as const,
+      is_default: false,
+      auth_state: "authenticated" as const,
+      usage: { profile_id: "uppercase-id", provider: "codex", availability: "unavailable" as const, source: "test" },
+    },
+    {
+      owner_user_id: "owner-a",
+      provider: "codex",
+      profile_id: "lowercase-id",
+      label: "validation",
+      origin: "chariox_created" as const,
+      is_default: false,
+      auth_state: "authenticated" as const,
+      usage: { profile_id: "lowercase-id", provider: "codex", availability: "unavailable" as const, source: "test" },
+    },
+  ]
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: (message) => footers.push(message),
+    appendNotice: () => {},
+    listProviderAccountProfiles: async () => profiles,
+  }
+
+  assert.equal(await resolveProviderAccountAlias(deps, "codex", "Validation"), "uppercase-id")
+  assert.equal(await resolveProviderAccountAlias(deps, "codex", "validation"), "lowercase-id")
+  assert.equal(await resolveProviderAccountAlias(deps, "codex", "VALIDATION"), null)
+  assert.deepEqual(footers, ["provider account alias VALIDATION was not found for codex"])
+})
+
 test("provider account actions reject unknown aliases with public-label errors and no mutation", async () => {
   const footers: Array<{ message: string; tone: "info" | "error" }> = []
   const mutations: string[] = []
