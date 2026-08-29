@@ -139,9 +139,8 @@ fn claude_headless_prompt_matches(expected: &str, observed: &str) -> bool {
 }
 
 fn claude_native_prompt_is_internal_control(prompt: &str) -> bool {
-    let prompt = prompt.trim();
-    prompt == "[Request interrupted by user]"
-        || (prompt.starts_with("<task-notification>") && prompt.ends_with("</task-notification>"))
+    crate::provider::ExternalProviderObservationPolicy::for_provider("claude")
+        .user_prompt_is_internal_control(prompt)
 }
 
 fn claude_headless_dispatch_matches_prompt(

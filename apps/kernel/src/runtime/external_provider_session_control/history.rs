@@ -126,6 +126,9 @@ pub(super) fn append_observed_external_turns_for_attached_target(
             active_prompt.as_ref(),
             &queued_prompts,
         ),
+        active_prompt
+            .as_ref()
+            .is_some_and(PromptQueueItem::is_chariox_owned),
     );
     for turn in &candidate_turns {
         let observed = import_state.record_turn(turn, &provider, &provider_session_id);
@@ -255,6 +258,7 @@ struct ObservedExternalTurnImportState {
     chariox_owned_provider_turn_ids: BTreeSet<String>,
     candidate_user_turn_ids: BTreeSet<String>,
     chariox_owned_prompt_text_counts: BTreeMap<String, usize>,
+    active_prompt_is_chariox_owned: bool,
 }
 
 struct ObservedExternalTurnImportDecision {
@@ -269,6 +273,7 @@ impl ObservedExternalTurnImportState {
         cursor: ExternalProviderObservedCursor,
         candidate_turns: &[ObservedExternalProviderTurn],
         chariox_owned_prompt_text_counts: BTreeMap<String, usize>,
+        active_prompt_is_chariox_owned: bool,
     ) -> Self {
         let candidate_user_turn_ids = candidate_turns
             .iter()
@@ -282,6 +287,7 @@ impl ObservedExternalTurnImportState {
             current_observed_turn_is_chariox_owned: false,
             candidate_user_turn_ids,
             chariox_owned_prompt_text_counts,
+            active_prompt_is_chariox_owned,
         }
     }
 
@@ -298,6 +304,9 @@ impl ObservedExternalTurnImportState {
             self.current_observed_turn_is_chariox_owned = self
                 .chariox_owned_provider_turn_ids
                 .contains(&merge_turn_id)
+                || (self.active_prompt_is_chariox_owned
+                    && ExternalProviderObservationPolicy::for_provider(provider)
+                        .user_prompt_is_internal_control(&turn.text))
                 || consume_chariox_owned_prompt_text_match(
                     &mut self.chariox_owned_prompt_text_counts,
                     &turn.text,

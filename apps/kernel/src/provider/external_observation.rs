@@ -245,6 +245,15 @@ impl<'a> ExternalProviderObservationPolicy<'a> {
             .is_some_and(|spec| spec.requires_explicit_completion)
     }
 
+    pub(crate) fn user_prompt_is_internal_control(self, text: &str) -> bool {
+        if !self.provider.trim().eq_ignore_ascii_case("claude") {
+            return false;
+        }
+        let text = text.trim();
+        text == "[Request interrupted by user]"
+            || (text.starts_with("<task-notification>") && text.ends_with("</task-notification>"))
+    }
+
     pub(crate) fn status_settles(self, text: &str) -> bool {
         self.spec().is_some_and(|spec| {
             spec.settling_status_prefixes
