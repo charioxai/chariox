@@ -112,7 +112,7 @@ pub(crate) async fn execute_control_workflow_publication_runtime_request(
                 &publication_id,
                 "stopped",
                 Some(None),
-                Some(stopped_publication_runtime_metadata(&publication)),
+                Some(stopped_publication_runtime_metadata(&publication, true)),
             )?;
             Ok(LocalDaemonResponse::WorkflowPublicationRuntimeControlled {
                 publication,
@@ -293,9 +293,8 @@ pub(crate) async fn reconcile_bound_workflow_publication_runtimes(
             session
                 .workflow_publications()
                 .iter()
-                .filter(|publication| publication.enabled())
                 .filter_map(|publication| {
-                    publication_deployment_binding(publication)
+                    publication_runtime_recovery_binding(publication)
                         .map(|binding| (publication.clone(), binding))
                 })
                 .collect::<Vec<_>>()
@@ -474,7 +473,7 @@ async fn inspect_publication_runtime(
             publication.id(),
             "stopped",
             Some(None),
-            Some(stopped_publication_runtime_metadata(&publication)),
+            Some(stopped_publication_runtime_metadata(&publication, false)),
         )?
     };
     if let Some(snapshot) = runtime_snapshot {
@@ -969,6 +968,21 @@ fn publication_deployment_binding(
     })
 }
 
+fn publication_runtime_recovery_binding(
+    publication: &WorkflowPublicationDefinition,
+) -> Option<WorkflowPublicationDeploymentBinding> {
+    if !publication.enabled()
+        || publication
+            .deployment()
+            .and_then(|deployment| deployment.get("desired_state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("stopped")
+    {
+        return None;
+    }
+    publication_deployment_binding(publication)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn publication_runtime_deployment_metadata(
     status: &str,
@@ -1193,14 +1207,25 @@ fn publication_runtime_metadata_preserving_binding(
 
 fn stopped_publication_runtime_metadata(
     publication: &WorkflowPublicationDefinition,
+    explicitly_stopped: bool,
 ) -> serde_json::Value {
-    publication_runtime_metadata_preserving_binding(
+    let preserve_stopped_intent = explicitly_stopped
+        || publication
+            .deployment()
+            .and_then(|deployment| deployment.get("desired_state"))
+            .and_then(serde_json::Value::as_str)
+            == Some("stopped");
+    let mut metadata = publication_runtime_metadata_preserving_binding(
         publication,
         serde_json::json!({
             "kind": "local_runtime",
             "status": "stopped",
         }),
-    )
+    );
+    if preserve_stopped_intent {
+        metadata["desired_state"] = serde_json::json!("stopped");
+    }
+    metadata
 }
 
 fn mark_publication_runtime_error(
@@ -1413,10 +1438,11 @@ impl WorkflowPublicationRuntimeProcessStore {
 mod tests {
     use super::{
         launched_publication_runtime_message, launched_publication_runtime_status,
-        publication_local_url, publication_runtime_port, stopped_publication_runtime_metadata,
-        validate_publication_runtime_bind_address, validated_deployment_binding,
-        write_publication_caller_claims_config, WorkflowPublicationRuntimeProcessStore,
-        DEFAULT_PUBLICATION_RUNTIME_PORT,
+        publication_local_url, publication_runtime_metadata_preserving_binding,
+        publication_runtime_port, publication_runtime_recovery_binding,
+        stopped_publication_runtime_metadata, validate_publication_runtime_bind_address,
+        validated_deployment_binding, write_publication_caller_claims_config,
+        WorkflowPublicationRuntimeProcessStore, DEFAULT_PUBLICATION_RUNTIME_PORT,
     };
     use crate::local::BindWorkflowPublicationDeploymentRequest;
     use std::fs;
@@ -1578,13 +1604,19 @@ mod tests {
                 "kind": "tunnel",
                 "expires_at_ms": 123,
                 "binding": {
+                    "setup_id": "setup-1",
+                    "operation_key": "deployment-setup:setup-1:runtime",
                     "deployment_id": "deployment-1",
+                    "environment_id": "environment-1",
+                    "release_id": "release-1",
                     "package_digest": format!("sha256:{}", "a".repeat(64)),
+                    "desired_revision": 7,
+                    "caller_claims_public_key_pem": "public-key",
                 },
             }),
         );
 
-        let metadata = stopped_publication_runtime_metadata(&publication);
+        let metadata = stopped_publication_runtime_metadata(&publication, false);
 
         assert_eq!(metadata["kind"], "local_runtime");
         assert_eq!(metadata["status"], "stopped");
@@ -1593,6 +1625,29 @@ mod tests {
             Some(&serde_json::json!("deployment-1")),
         );
         assert!(metadata.get("expires_at_ms").is_none());
+        assert!(metadata.get("desired_state").is_none());
+        assert!(publication_runtime_recovery_binding(&publication).is_some());
+
+        let explicit_stop_metadata = stopped_publication_runtime_metadata(&publication, true);
+        assert_eq!(
+            explicit_stop_metadata.get("desired_state"),
+            Some(&serde_json::json!("stopped")),
+        );
+        publication.mark_served("stopped", "", explicit_stop_metadata);
+        assert!(publication_runtime_recovery_binding(&publication).is_none());
+        assert_eq!(
+            stopped_publication_runtime_metadata(&publication, false).get("desired_state"),
+            Some(&serde_json::json!("stopped")),
+        );
+        let restarted_metadata = publication_runtime_metadata_preserving_binding(
+            &publication,
+            serde_json::json!({
+                "kind": "local_runtime",
+                "status": "running",
+            }),
+        );
+        assert!(restarted_metadata.get("desired_state").is_none());
+        assert!(restarted_metadata.get("binding").is_some());
 
         let unbound_publication = crate::session::WorkflowPublicationDefinition::new(
             "publication-2",
@@ -1614,7 +1669,7 @@ mod tests {
             "owner-1",
         );
         assert_eq!(
-            stopped_publication_runtime_metadata(&unbound_publication),
+            stopped_publication_runtime_metadata(&unbound_publication, false),
             serde_json::json!({
                 "kind": "local_runtime",
                 "status": "stopped",
