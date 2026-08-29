@@ -71,9 +71,29 @@ impl KernelRuntimeState {
         } else {
             (self.owned.create_session_response(request)?, None)
         };
+        self.publish_created_session_response(
+            &response,
+            slice_ref,
+            &existing_project_ids,
+            unpublished_session.as_mut(),
+        )
+        .await?;
+        if let Some(guard) = unpublished_session.as_mut() {
+            guard.publish();
+        }
+        Ok(response)
+    }
+
+    async fn publish_created_session_response(
+        &self,
+        response: &LocalDaemonResponse,
+        slice_ref: Option<String>,
+        existing_project_ids: &std::collections::BTreeSet<String>,
+        mut unpublished_session: Option<&mut UnpublishedSessionGuard>,
+    ) -> Result<(), DaemonError> {
         let mut publication_progress = UnpublishedSessionPublicationProgress::default();
         let publication = async {
-            if let LocalDaemonResponse::SessionCreated { session, agent } = &response {
+            if let LocalDaemonResponse::SessionCreated { session, agent } = response {
                 let project = if session.is_hidden() {
                     None
                 } else {
@@ -132,10 +152,7 @@ impl KernelRuntimeState {
             }
             return Err(error);
         }
-        if let Some(guard) = unpublished_session.as_mut() {
-            guard.publish();
-        }
-        Ok(response)
+        Ok(())
     }
 
     async fn create_remote_session_response(
@@ -1442,29 +1459,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unpublished_session_rollback_compensates_published_project_only() {
+    async fn session_publication_failure_compensates_published_project_only() {
         let runtime = runtime_state_for_rollback_test().await;
-        let session = SessionStateOwner::new(runtime.owned.session_store.clone())
+        let mut session = SessionStateOwner::new(runtime.owned.session_store.clone())
             .create_session(crate::session::CreateSessionRequest::new(
                 "workspace",
                 "worktree",
             ))
             .expect("session should create");
         let session_id = session.id().to_string();
-        let project = runtime
-            .owned
-            .session_store
-            .get_project(session.project_id())
-            .expect("project should exist");
-        runtime
-            .owned
-            .durable_state_store
-            .append_event(
-                "project.created",
-                Some(project.id().to_string()),
-                serde_json::json!({ "project": &project }),
-            )
-            .expect("project creation should publish");
+        let project_id = session.project_id().to_string();
         let agent = runtime
             .owned
             .spawn_agent(
@@ -1472,17 +1476,74 @@ mod tests {
                     .with_owner_user_id(session.owner_user_id().to_string()),
             )
             .expect("agent should spawn");
-        let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
-        guard.track_agent(&agent);
-
+        let agent_id = agent.id().to_string();
         runtime
-            .rollback_unpublished_session(
-                &mut guard,
-                UnpublishedSessionPublicationProgress {
-                    project_created: true,
-                },
+            .owned
+            .session_store
+            .write()
+            .set_focused_agent(&session_id, Some(agent_id.clone()))
+            .expect("focused agent should update");
+        session = runtime
+            .owned
+            .session_snapshot(&session_id)
+            .expect("session snapshot should refresh");
+        let response = LocalDaemonResponse::SessionCreated { session, agent };
+        let mut guard = UnpublishedSessionGuard::new(&runtime.owned.session_store, &session_id);
+        let LocalDaemonResponse::SessionCreated { agent, .. } = &response else {
+            unreachable!("test response is session.created");
+        };
+        guard.track_agent(agent);
+        let connection = rusqlite::Connection::open(runtime.owned.durable_state_store.path())
+            .expect("durable database should open for failure injection");
+        connection
+            .execute_batch(
+                "CREATE TRIGGER fail_unpublished_session_create
+                 BEFORE INSERT ON durable_state_events
+                 WHEN NEW.kind = 'session.created'
+                 BEGIN
+                   SELECT RAISE(FAIL, 'injected session.created failure');
+                 END;",
             )
-            .await;
+            .expect("session creation failure trigger should install");
+        let mut unpublished_session = Some(guard);
+
+        let error = runtime
+            .publish_created_session_response(
+                &response,
+                None,
+                &std::collections::BTreeSet::new(),
+                unpublished_session.as_mut(),
+            )
+            .await
+            .expect_err("durable session publication should fail");
+
+        connection
+            .execute_batch("DROP TRIGGER fail_unpublished_session_create;")
+            .expect("session creation failure trigger should be removed");
+        assert!(error
+            .to_string()
+            .contains("injected session.created failure"));
+        assert!(runtime.owned.agent_store.get_agent(&agent_id).is_err());
+        assert!(runtime
+            .owned
+            .session_store
+            .get_session(&session_id)
+            .is_err());
+        assert!(runtime
+            .owned
+            .session_store
+            .get_project(&project_id)
+            .is_err());
+        let project_creations = runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("project.created")
+            .expect("project creation events should read");
+        assert_eq!(project_creations.len(), 1);
+        assert_eq!(
+            project_creations[0].subject_id.as_deref(),
+            Some(&*project_id)
+        );
 
         let project_deletions = runtime
             .owned
@@ -1492,8 +1553,14 @@ mod tests {
         assert_eq!(project_deletions.len(), 1);
         assert_eq!(
             project_deletions[0].subject_id.as_deref(),
-            Some(project.id())
+            Some(&*project_id)
         );
+        assert!(runtime
+            .owned
+            .durable_state_store
+            .load_events_by_kind("session.created")
+            .expect("session creation events should read")
+            .is_empty());
         assert!(runtime
             .owned
             .durable_state_store
