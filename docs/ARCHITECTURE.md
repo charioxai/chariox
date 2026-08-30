@@ -233,7 +233,7 @@ Current architectural interpretation:
 
 - the relay should forward transport, not own discovery/rendezvous
 - local and remote connections should ideally share one daemon-owned application protocol even if they arrive through different physical paths
-- the relay must not become the workspace or workflow authority
+- the relay must not become the Room or workflow authority
 - the relay should be implemented as an independent Rust app
 - daemon connections should be outbound from daemon to relay so the model works cleanly through NAT/firewall boundaries
 - one daemon should use one active relay connection at a time in v1, even if multiple relay endpoints can be configured
