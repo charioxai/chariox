@@ -5,6 +5,7 @@ use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
 mod controller_browser;
+mod controller_browser_compatibility;
 mod controller_browser_projection;
 mod slice_browser;
 use slice_browser::*;
@@ -221,6 +222,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_open_url",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_open_url_compatibility_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            &args.url,
+                        )
+                        .await;
+                }
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
             }
             crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
@@ -415,6 +426,17 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_selector",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_wait_for_selector_compatibility_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args.selector,
+                            args.timeout_ms,
+                        )
+                        .await;
+                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-selector".to_string(),
                     args.selector,
@@ -431,6 +453,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_idle",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_wait_for_idle_compatibility_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args.timeout_ms,
+                        )
+                        .await;
+                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-idle".to_string(),
                     browser_timeout_arg(args.timeout_ms),

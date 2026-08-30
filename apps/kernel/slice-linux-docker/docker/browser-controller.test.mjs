@@ -41,6 +41,14 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "action", request });
       return { action_kind: request.action.kind };
     },
+    navigate: async (request) => {
+      calls.push({ method: "navigate", request });
+      return { url: request.url };
+    },
+    wait: async (request) => {
+      calls.push({ method: "wait", request });
+      return { kind: request.kind, ok: true };
+    },
     handleDialog: async (request) => {
       calls.push({ method: "dialog", request });
       return { action: request.action };
@@ -108,6 +116,31 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const navigation = await handleBrowserControllerRequest(
+    {
+      id: 10,
+      method: "browser.navigate",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        url: "https://example.test/settings",
+      },
+    },
+    { browser },
+  );
+  const wait = await handleBrowserControllerRequest(
+    {
+      id: 11,
+      method: "browser.wait",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-b",
+        kind: "idle",
+        timeout_ms: 500,
+      },
+    },
+    { browser },
+  );
   const downloads = await handleBrowserControllerRequest(
     {
       id: 5,
@@ -163,6 +196,8 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   });
   assert.deepEqual(action.result, { action_kind: "click" });
   assert.deepEqual(dialog.result, { action: "dismiss" });
+  assert.deepEqual(navigation.result, { url: "https://example.test/settings" });
+  assert.deepEqual(wait.result, { kind: "idle", ok: true });
   assert.deepEqual(downloads.result, { enabled: true });
   assert.deepEqual(upload.result, { file_count: 1 });
   assert.deepEqual(permission.result, { permission: "geolocation", setting: "denied" });
@@ -189,6 +224,23 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         target_id: "target-a",
         document_id: "loader-a",
         action: "dismiss",
+      },
+    },
+    {
+      method: "navigate",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        url: "https://example.test/settings",
+      },
+    },
+    {
+      method: "wait",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-b",
+        kind: "idle",
+        timeout_ms: 500,
       },
     },
     {

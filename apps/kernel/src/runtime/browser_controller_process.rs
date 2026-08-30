@@ -13,6 +13,10 @@ use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
     BrowserDialogAction, BrowserLocatorAction,
 };
+use super::browser_controller_compatibility::{
+    normalize_browser_navigation_url, BrowserCompatibilityWait,
+    BrowserControllerCompatibilityWaitResult, BrowserControllerNavigationResult,
+};
 use super::browser_controller_event::{BrowserControllerEventBatch, MAX_BROWSER_EVENT_POLL_LIMIT};
 use super::browser_controller_file_transfer::{
     BrowserControllerDownloadsResult, BrowserControllerUploadResult, BrowserUploadFiles,
@@ -112,6 +116,23 @@ pub(crate) trait BrowserControllerProcessBackend {
         _timeout_ms: u64,
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
+    }
+    fn navigate_browser(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _url: &str,
+    ) -> Result<BrowserControllerNavigationResult, String> {
+        Err("browser controller backend does not support navigation".to_string())
+    }
+    fn wait_for_browser(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _wait: &BrowserCompatibilityWait,
+        _timeout_ms: u64,
+    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
+        Err("browser controller backend does not support compatibility waits".to_string())
     }
     fn handle_browser_dialog(
         &mut self,
@@ -488,6 +509,51 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         Ok(result)
     }
 
+    fn navigate_browser(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        url: &str,
+    ) -> Result<BrowserControllerNavigationResult, String> {
+        let url = normalize_browser_navigation_url(url)?;
+        let response = self.request(
+            "browser.navigate",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "url": url,
+            }),
+        )?;
+        let result =
+            response.into_result::<BrowserControllerNavigationResult>("browser.navigate")?;
+        result.validate(target_id, &url)?;
+        Ok(result)
+    }
+
+    fn wait_for_browser(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        wait: &BrowserCompatibilityWait,
+        timeout_ms: u64,
+    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
+        wait.validate(timeout_ms)?;
+        let response = self.request(
+            "browser.wait",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "kind": wait.kind(),
+                "selector": wait.selector(),
+                "timeout_ms": timeout_ms,
+            }),
+        )?;
+        let result =
+            response.into_result::<BrowserControllerCompatibilityWaitResult>("browser.wait")?;
+        result.validate(target_id, document_id, wait)?;
+        Ok(result)
+    }
+
     fn handle_browser_dialog(
         &mut self,
         target_id: &str,
@@ -791,6 +857,31 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
+    pub(crate) fn navigate_browser(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        url: &str,
+    ) -> Result<BrowserControllerNavigationResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .navigate_browser(target_id, document_id, url)
+    }
+
+    pub(crate) fn wait_for_browser(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        wait: &BrowserCompatibilityWait,
+        timeout_ms: u64,
+    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .wait_for_browser(target_id, document_id, wait, timeout_ms)
+    }
+
     pub(crate) fn handle_browser_dialog(
         &mut self,
         session_id: &str,
@@ -1007,6 +1098,43 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn navigate_browser(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        url: &str,
+    ) -> Result<Option<BrowserControllerNavigationResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .navigate_browser(session_id, target_id, document_id, url)
+            .map(Some)
+    }
+
+    pub(crate) fn wait_for_browser(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        wait: &BrowserCompatibilityWait,
+        timeout_ms: u64,
+    ) -> Result<Option<BrowserControllerCompatibilityWaitResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .wait_for_browser(session_id, target_id, document_id, wait, timeout_ms)
+            .map(Some)
+    }
+
     pub(crate) fn handle_browser_dialog(
         &self,
         session_id: &str,
@@ -1197,6 +1325,28 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started()?;
         self.backend
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
+    }
+
+    fn navigate_browser(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        url: &str,
+    ) -> Result<BrowserControllerNavigationResult, String> {
+        self.ensure_started()?;
+        self.backend.navigate_browser(target_id, document_id, url)
+    }
+
+    fn wait_for_browser(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        wait: &BrowserCompatibilityWait,
+        timeout_ms: u64,
+    ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
+        self.ensure_started()?;
+        self.backend
+            .wait_for_browser(target_id, document_id, wait, timeout_ms)
     }
 
     fn handle_browser_dialog(

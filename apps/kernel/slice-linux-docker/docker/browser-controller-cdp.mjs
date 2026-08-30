@@ -19,6 +19,11 @@ import {
   BrowserEventError,
   BrowserEventJournal,
 } from "./browser-controller-events.mjs";
+import {
+  BrowserCompatibilityError,
+  navigateBrowser,
+  waitForBrowserState,
+} from "./browser-controller-compatibility.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -282,6 +287,51 @@ export class BrowserCdpClient {
       return {
         browser_generation: this.browserGeneration,
         ...result,
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async navigate(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    try {
+      const result = await navigateBrowser({
+        connection,
+        sessionId,
+        targetId,
+        documentId,
+        url: rawRequest?.url,
+      });
+      this.documentIdsByTarget.set(targetId, result.document_id);
+      this.snapshotStateByTarget.delete(targetId);
+      return {
+        browser_generation: this.browserGeneration,
+        ...result,
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async wait(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    try {
+      return {
+        browser_generation: this.browserGeneration,
+        ...(await waitForBrowserState({
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          kind: rawRequest?.kind,
+          selector: rawRequest?.selector,
+          timeoutMs: rawRequest?.timeout_ms,
+        })),
       };
     } catch (error) {
       throw normalizeControllerError(error);
@@ -873,6 +923,9 @@ function normalizeControllerError(error) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserEventError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserCompatibilityError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

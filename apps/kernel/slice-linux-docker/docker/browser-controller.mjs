@@ -41,6 +41,18 @@ export async function handleBrowserControllerRequest(
         await browser.performAction(request.params),
       );
     }
+    if (request.method === "browser.navigate") {
+      return successResponse(
+        request.id,
+        await browser.navigate(request.params),
+      );
+    }
+    if (request.method === "browser.wait") {
+      return successResponse(
+        request.id,
+        await browser.wait(request.params),
+      );
+    }
     if (request.method === "browser.dialog") {
       return successResponse(
         request.id,

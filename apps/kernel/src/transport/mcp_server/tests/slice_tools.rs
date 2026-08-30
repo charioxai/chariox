@@ -155,7 +155,7 @@ async fn mcp_tools_list_exposes_slice_tools_only_for_slice_provider_tokens() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
+async fn mcp_tools_call_dispatches_slice_screen_fallbacks_inside_slice_kernel() {
     use std::os::unix::fs::PermissionsExt;
 
     let _guard = crate::env_lock::lock();
@@ -170,7 +170,7 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
     let tool = root.join("slice-screen.sh");
     std::fs::write(
         &tool,
-        "#!/usr/bin/env bash\nset -euo pipefail\nif [[ \"${1:-}\" == status ]]; then printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n'; exit 0; fi\nexit 2\n",
+        "#!/usr/bin/env bash\nset -euo pipefail\ncase \"${1:-}\" in\n  status) printf 'display=:99\\nscreen=1280x800\\nviewer=http://127.0.0.1:6080/vnc.html\\n' ;;\n  open-url) printf '{\"action_kind\":\"navigate\"}' ;;\n  browser-wait-selector) printf '{\"action_kind\":\"selector\",\"ok\":true}' ;;\n  browser-wait-idle) printf '{\"action_kind\":\"idle\",\"ok\":true}' ;;\n  *) exit 2 ;;\nesac\n",
     )
     .expect("fake screen tool should be written");
     let mut permissions = std::fs::metadata(&tool)
@@ -236,7 +236,7 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
     let app = Arc::new(Mutex::new(app));
     let router = Arc::new(CommandRouter::with_interactive_capacity(app, 8));
     let response = handle_json_rpc_value(
-        router,
+        router.clone(),
         &auth_token,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -250,8 +250,6 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
     )
     .await
     .expect("slice status call should succeed");
-    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
-    let _ = std::fs::remove_dir_all(root);
     assert_eq!(response.status(), StatusCode::OK);
     let body = response
         .into_body()
@@ -267,6 +265,54 @@ async fn mcp_tools_call_dispatches_slice_screen_status_inside_slice_kernel() {
     );
     assert_eq!(value["result"]["structuredContent"]["display"], ":99");
     assert_eq!(value["result"]["structuredContent"]["screen"], "1280x800");
+
+    for (id, name, arguments) in [
+        (
+            2,
+            "slice_open_url",
+            serde_json::json!({"url": "https://example.test/legacy"}),
+        ),
+        (
+            3,
+            "slice_browser_wait_for_selector",
+            serde_json::json!({"selector": "#legacy", "timeout_ms": 500}),
+        ),
+        (
+            4,
+            "slice_browser_wait_for_idle",
+            serde_json::json!({"timeout_ms": 500}),
+        ),
+    ] {
+        let fallback_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("legacy fallback call should return an MCP response");
+        let fallback_body = fallback_response
+            .into_body()
+            .collect()
+            .await
+            .expect("legacy fallback body should collect")
+            .to_bytes();
+        let fallback_value: Value =
+            serde_json::from_slice(&fallback_body).expect("legacy fallback body json");
+        assert_eq!(
+            fallback_value["result"]["isError"], false,
+            "{fallback_value:#}"
+        );
+        assert!(fallback_value["result"]["structuredContent"]["stdout"]
+            .as_str()
+            .is_some_and(|stdout| stdout.contains("action_kind")));
+    }
+    std::env::remove_var("CHARIOX_SLICE_SCREEN_TOOL");
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[cfg(unix)]
@@ -291,6 +337,8 @@ async fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_c
     let controller_script = format!(
         r#"#!/bin/sh
 set -eu
+document=loader-a
+url=https://example.test/dashboard
 while IFS= read -r request; do
   id=${{request#*:}}
   id=${{id%%,*}}
@@ -300,7 +348,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.reconcile"'*)
       printf 'reconcile\n' >> '{}'
-      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"event_cursor":1,"tabs":[{{"target_id":"target-a","document_id":"loader-a","url":"https://example.test/dashboard","title":"Dashboard"}}],"focused_target_id":"target-a","viewport":{{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}}}}\n' "$id"
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"event_cursor":1,"tabs":[{{"target_id":"target-a","document_id":"%s","url":"%s","title":"Dashboard"}}],"focused_target_id":"target-a","viewport":{{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}}}}\n' "$id" "$document" "$url"
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '{}'
@@ -318,6 +366,17 @@ while IFS= read -r request; do
       printf 'dialog-%s\n' "$action" >> '{}'
       printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action":"%s"}}}}\n' "$id" "$action"
       ;;
+    *'"method":"browser.navigate"'*)
+      printf 'navigate\n' >> '{}'
+      document=loader-b
+      url=https://example.test/settings
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-b","url":"https://example.test/settings"}}}}\n' "$id"
+      ;;
+    *'"method":"browser.wait"'*)
+      if printf '%s' "$request" | grep -q '"kind":"selector"'; then kind=selector; else kind=idle; fi
+      printf 'wait-%s\n' "$kind" >> '{}'
+      printf '{{"id":%s,"ok":true,"result":{{"browser_generation":1,"target_id":"target-a","document_id":"loader-b","kind":"%s","ok":true,"elapsed_ms":7}}}}\n' "$id" "$kind"
+      ;;
     *'"method":"shutdown"'*)
       printf '{{"id":%s,"ok":true,"result":{{"state":"stopped","process_id":null,"diagnostic_code":null}}}}\n' "$id"
       exit 0
@@ -325,6 +384,8 @@ while IFS= read -r request; do
   esac
 done
 "#,
+        controller_log.display(),
+        controller_log.display(),
         controller_log.display(),
         controller_log.display(),
         controller_log.display(),
@@ -676,7 +737,7 @@ done
         "secret material must not escape through MCP"
     );
     let dialog_response = handle_json_rpc_value(
-        router,
+        router.clone(),
         &auth_token,
         serde_json::json!({
             "jsonrpc": "2.0",
@@ -703,9 +764,62 @@ done
         dialog_value["result"]["structuredContent"]["browser"]["action"],
         "dismiss"
     );
+    for (id, name, arguments, expected_kind) in [
+        (
+            10,
+            "slice_open_url",
+            serde_json::json!({"url": "https://example.test/settings"}),
+            "navigate",
+        ),
+        (
+            11,
+            "slice_browser_wait_for_selector",
+            serde_json::json!({"selector": "#settings", "timeout_ms": 500}),
+            "selector",
+        ),
+        (
+            12,
+            "slice_browser_wait_for_idle",
+            serde_json::json!({"timeout_ms": 500}),
+            "idle",
+        ),
+    ] {
+        let compatibility_response = handle_json_rpc_value(
+            router.clone(),
+            &auth_token,
+            serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {"name": name, "arguments": arguments}
+            }),
+        )
+        .await
+        .expect("legacy browser call should return an MCP response");
+        let body = compatibility_response
+            .into_body()
+            .collect()
+            .await
+            .expect("legacy browser response body should collect")
+            .to_bytes();
+        let compatibility_value: Value =
+            serde_json::from_slice(&body).expect("legacy browser response body json");
+        assert_eq!(
+            compatibility_value["result"]["isError"], false,
+            "{compatibility_value:#}"
+        );
+        assert_eq!(
+            compatibility_value["result"]["structuredContent"]["source"],
+            "browser_controller"
+        );
+        assert_eq!(
+            compatibility_value["result"]["structuredContent"]["browser"]["action_kind"],
+            expected_kind
+        );
+    }
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

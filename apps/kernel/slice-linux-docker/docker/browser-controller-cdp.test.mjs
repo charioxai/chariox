@@ -145,6 +145,42 @@ test("a detached target session is discarded before the next reconcile", async (
   );
 });
 
+test("legacy navigation and waits reuse the reconciled target session", async () => {
+  const connection = new CompatibilityConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+
+  const navigation = await browser.navigate({
+    target_id: "target-a",
+    document_id: "loader-a",
+    url: "https://example.test/settings",
+  });
+  const selector = await browser.wait({
+    target_id: "target-a",
+    document_id: "loader-next",
+    kind: "selector",
+    selector: "#settings",
+    timeout_ms: 500,
+  });
+  const idle = await browser.wait({
+    target_id: "target-a",
+    document_id: "loader-next",
+    kind: "idle",
+    timeout_ms: 500,
+  });
+
+  assert.equal(navigation.document_id, "loader-next");
+  assert.equal(selector.kind, "selector");
+  assert.equal(idle.kind, "idle");
+  assert.equal(
+    connection.calls.filter(
+      (call) => call.method === "Target.attachToTarget" && call.params.targetId === "target-a",
+    ).length,
+    1,
+    "compatibility calls must retain the controller-owned target session",
+  );
+});
+
 test("structured snapshots bind compact accessibility and DOM nodes to one document", async () => {
   const connection = new SnapshotConnection();
   const browser = new BrowserCdpClient({
@@ -654,6 +690,33 @@ class SnapshotConnection extends FakeConnection {
           },
         ],
       };
+    }
+    return super.send(method, params, sessionId);
+  }
+}
+
+class CompatibilityConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.loaderId = "loader-a";
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Page.getFrameTree" && sessionId === "session-a") {
+      this.calls.push({ method, params, sessionId });
+      return { frameTree: { frame: { id: "frame-a", loaderId: this.loaderId } } };
+    }
+    if (method === "Page.navigate") {
+      this.calls.push({ method, params, sessionId });
+      this.loaderId = "loader-next";
+      return { loaderId: this.loaderId };
+    }
+    if (
+      method === "Runtime.evaluate" &&
+      (params.expression.includes("querySelector") || params.expression.includes("readyState"))
+    ) {
+      this.calls.push({ method, params, sessionId });
+      return { result: { value: true } };
     }
     return super.send(method, params, sessionId);
   }
