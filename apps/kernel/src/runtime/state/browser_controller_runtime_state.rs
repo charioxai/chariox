@@ -274,6 +274,118 @@ impl KernelRuntimeState {
         ))
     }
 
+    pub(crate) async fn configure_browser_environment_downloads(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<
+        crate::runtime::browser_controller_file_transfer::RoomBrowserDownloadsResult,
+        DaemonError,
+    > {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.downloads", error))?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.downloads", error))?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let target_id = binding.runtime_target_id.clone();
+        let document_id = binding.document_id.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            processes.configure_browser_downloads(&owned_session_id, &target_id, &document_id)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.downloads",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.downloads",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.downloads",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        Ok(result.into_room_result(
+            session_id.to_string(),
+            environment.environment_id,
+            environment.runtime_generation,
+            tab_id.to_string(),
+            binding.document_revision,
+        ))
+    }
+
+    pub(crate) async fn upload_browser_environment_files(
+        &self,
+        session_id: &str,
+        element_ref: &str,
+        paths: Vec<std::path::PathBuf>,
+    ) -> Result<
+        crate::runtime::browser_controller_file_transfer::RoomBrowserUploadResult,
+        DaemonError,
+    > {
+        let files =
+            crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(paths)
+                .map_err(|message| DaemonError::LocalTransport {
+                    operation: "browser_controller.upload",
+                    message,
+                })?;
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.upload", error))?;
+        let element = self
+            .resolve_room_environment_element_reference(session_id, element_ref)
+            .map_err(|error| environment_runtime_error("browser_controller.upload", error))?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, &element.tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.upload", error))?;
+        if element.runtime_generation != environment.runtime_generation
+            || element.document_revision != binding.document_revision
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.upload",
+                message: "browser element reference became stale before upload".to_string(),
+            });
+        }
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let target_id = binding.runtime_target_id.clone();
+        let document_id = binding.document_id.clone();
+        let controller_node_ref = element.controller_node_ref.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            processes.upload_browser_files(
+                &owned_session_id,
+                &target_id,
+                &document_id,
+                &controller_node_ref,
+                &files,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.upload",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.upload",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.upload",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        Ok(result.into_room_result(
+            session_id.to_string(),
+            environment.environment_id,
+            environment.runtime_generation,
+            element.tab_id,
+            element.document_revision,
+            element_ref.to_string(),
+        ))
+    }
+
     pub(crate) async fn stop_browser_controller_process(
         &self,
         session_id: &str,

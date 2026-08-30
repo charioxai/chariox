@@ -13,6 +13,9 @@ use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
     BrowserDialogAction, BrowserLocatorAction,
 };
+use super::browser_controller_file_transfer::{
+    BrowserControllerDownloadsResult, BrowserControllerUploadResult, BrowserUploadFiles,
+};
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use crate::session::CanonicalViewport;
 
@@ -111,6 +114,22 @@ pub(crate) trait BrowserControllerProcessBackend {
         _action: &BrowserDialogAction,
     ) -> Result<BrowserControllerDialogResult, String> {
         Err("browser controller backend does not support dialogs".to_string())
+    }
+    fn configure_browser_downloads(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+    ) -> Result<BrowserControllerDownloadsResult, String> {
+        Err("browser controller backend does not support downloads".to_string())
+    }
+    fn upload_browser_files(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _node_ref: &str,
+        _files: &BrowserUploadFiles,
+    ) -> Result<BrowserControllerUploadResult, String> {
+        Err("browser controller backend does not support uploads".to_string())
     }
 }
 
@@ -470,6 +489,46 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(target_id, document_id, action)?;
         Ok(result)
     }
+
+    fn configure_browser_downloads(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerDownloadsResult, String> {
+        let response = self.request(
+            "browser.downloads.configure",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+            }),
+        )?;
+        let result = response
+            .into_result::<BrowserControllerDownloadsResult>("browser.downloads.configure")?;
+        result.validate(target_id, document_id)?;
+        Ok(result)
+    }
+
+    fn upload_browser_files(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        node_ref: &str,
+        files: &BrowserUploadFiles,
+    ) -> Result<BrowserControllerUploadResult, String> {
+        let controller_paths = files.controller_paths();
+        let response = self.request(
+            "browser.upload",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "node_ref": node_ref,
+                "file_paths": controller_paths,
+            }),
+        )?;
+        let result = response.into_result::<BrowserControllerUploadResult>("browser.upload")?;
+        result.validate(target_id, document_id, controller_paths.len())?;
+        Ok(result)
+    }
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -680,6 +739,39 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .handle_browser_dialog(target_id, document_id, action)
     }
 
+    pub(crate) fn configure_browser_downloads(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerDownloadsResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .configure_browser_downloads(target_id, document_id)
+    }
+
+    pub(crate) fn upload_browser_files(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        node_ref: &str,
+        files: &BrowserUploadFiles,
+    ) -> Result<BrowserControllerUploadResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .upload_browser_files(target_id, document_id, node_ref, files)
+    }
+
+    fn require_lease(&self, session_id: &str) -> Result<(), String> {
+        if !self.owner_session_ids.contains(session_id) {
+            return Err(format!(
+                "browser controller is not leased by Room {session_id}"
+            ));
+        }
+        Ok(())
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
         self.owner_session_ids.clear();
         self.supervisor.stop().cloned()
@@ -840,6 +932,42 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn configure_browser_downloads(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<Option<BrowserControllerDownloadsResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .configure_browser_downloads(session_id, target_id, document_id)
+            .map(Some)
+    }
+
+    pub(crate) fn upload_browser_files(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        node_ref: &str,
+        files: &BrowserUploadFiles,
+    ) -> Result<Option<BrowserControllerUploadResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .upload_browser_files(session_id, target_id, document_id, node_ref, files)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -950,6 +1078,28 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started()?;
         self.backend
             .handle_browser_dialog(target_id, document_id, action)
+    }
+
+    fn configure_browser_downloads(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerDownloadsResult, String> {
+        self.ensure_started()?;
+        self.backend
+            .configure_browser_downloads(target_id, document_id)
+    }
+
+    fn upload_browser_files(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        node_ref: &str,
+        files: &BrowserUploadFiles,
+    ) -> Result<BrowserControllerUploadResult, String> {
+        self.ensure_started()?;
+        self.backend
+            .upload_browser_files(target_id, document_id, node_ref, files)
     }
 
     fn start(&mut self) -> Result<(), String> {

@@ -45,6 +45,14 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "dialog", request });
       return { action: request.action };
     },
+    configureDownloads: async (request) => {
+      calls.push({ method: "downloads", request });
+      return { enabled: true };
+    },
+    uploadFiles: async (request) => {
+      calls.push({ method: "upload", request });
+      return { file_count: request.file_paths.length };
+    },
     close: async () => calls.push({ method: "close" }),
   };
   const viewport = {
@@ -92,8 +100,29 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const downloads = await handleBrowserControllerRequest(
+    {
+      id: 5,
+      method: "browser.downloads.configure",
+      params: { target_id: "target-a", document_id: "loader-a" },
+    },
+    { browser },
+  );
+  const upload = await handleBrowserControllerRequest(
+    {
+      id: 6,
+      method: "browser.upload",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        node_ref: "backend:103",
+        file_paths: ["/safe/report.txt"],
+      },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 5, method: "shutdown" },
+    { id: 7, method: "shutdown" },
     { browser },
   );
 
@@ -105,6 +134,8 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   });
   assert.deepEqual(action.result, { action_kind: "click" });
   assert.deepEqual(dialog.result, { action: "dismiss" });
+  assert.deepEqual(downloads.result, { enabled: true });
+  assert.deepEqual(upload.result, { file_count: 1 });
   assert.equal(shutdown.ok, true);
   assert.deepEqual(calls, [
     { method: "reconcile", viewport },
@@ -127,6 +158,19 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         target_id: "target-a",
         document_id: "loader-a",
         action: "dismiss",
+      },
+    },
+    {
+      method: "downloads",
+      request: { target_id: "target-a", document_id: "loader-a" },
+    },
+    {
+      method: "upload",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        node_ref: "backend:103",
+        file_paths: ["/safe/report.txt"],
       },
     },
     { method: "close" },

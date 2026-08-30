@@ -6,6 +6,11 @@ import {
   BrowserActionError,
   performBrowserAction,
 } from "./browser-controller-actions.mjs";
+import {
+  BrowserFileTransferError,
+  configureBrowserDownloads,
+  uploadBrowserFiles,
+} from "./browser-controller-files.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -25,12 +30,18 @@ export class BrowserCdpClient {
     fetchImpl = globalThis.fetch,
     webSocketFactory = (url) => new WebSocket(url),
     connectionFactory,
+    downloadDirectory,
+    uploadRoots = [],
+    fileSystem,
   } = {}) {
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
     this.fetchImpl = fetchImpl;
     this.webSocketFactory = webSocketFactory;
     this.connectionFactory = connectionFactory;
+    this.downloadDirectory = downloadDirectory;
+    this.uploadRoots = uploadRoots;
+    this.fileSystem = fileSystem;
     this.connection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
@@ -273,6 +284,68 @@ export class BrowserCdpClient {
       target_id: targetId,
       document_id: documentId,
       action,
+    };
+  }
+
+  async configureDownloads(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    try {
+      return {
+        browser_generation: this.browserGeneration,
+        ...await configureBrowserDownloads({
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          downloadDirectory: this.downloadDirectory,
+          fileSystem: this.fileSystem,
+        }),
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async uploadFiles(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId } = await this.resolvePageTarget(targetId);
+    try {
+      return {
+        browser_generation: this.browserGeneration,
+        ...await uploadBrowserFiles({
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          nodeRef: rawRequest?.node_ref,
+          filePaths: rawRequest?.file_paths,
+          uploadRoots: this.uploadRoots,
+          fileSystem: this.fileSystem,
+        }),
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async resolvePageTarget(targetId) {
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const target = targetInfos.find(
+      (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
+    );
+    if (!target) {
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(targetId)} is not available`,
+      );
+    }
+    return {
+      connection,
+      sessionId: await this.ensureTargetSession(connection, targetId),
     };
   }
 
@@ -616,6 +689,9 @@ function normalizeControllerError(error) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserActionError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserFileTransferError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

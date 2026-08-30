@@ -99,6 +99,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "browser-cdp.mjs",
         "browser-controller-actions.mjs",
         "browser-controller-cdp.mjs",
+        "browser-controller-files.mjs",
         "browser-controller-snapshot.mjs",
         "browser-controller.mjs",
         "provider-port-bridge.mjs",
@@ -122,6 +123,8 @@ fn linux_docker_browser_controller_is_private_and_kernel_owned() {
         .expect("browser controller should be readable");
 
     assert!(runtime.contains("CHARIOX_BROWSER_CONTROLLER_SCRIPT=\"$ROOT/browser-controller.mjs\""));
+    assert!(runtime.contains("CHARIOX_BROWSER_DOWNLOAD_DIR=\"$BROWSER_DOWNLOAD_DIR\""));
+    assert!(runtime.contains("CHARIOX_BROWSER_UPLOAD_ROOTS=\"$BROWSER_UPLOAD_ROOTS\""));
     assert!(!screen.contains("browser-controller-start"));
     assert!(!screen.contains("browser-controller-status"));
     assert!(controller.contains("BrowserControllerStdioServer"));

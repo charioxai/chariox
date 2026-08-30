@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { realpathSync } from "node:fs";
+import path from "node:path";
 import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -44,6 +45,18 @@ export async function handleBrowserControllerRequest(
       return successResponse(
         request.id,
         await browser.handleDialog(request.params),
+      );
+    }
+    if (request.method === "browser.downloads.configure") {
+      return successResponse(
+        request.id,
+        await browser.configureDownloads(request.params),
+      );
+    }
+    if (request.method === "browser.upload") {
+      return successResponse(
+        request.id,
+        await browser.uploadFiles(request.params),
       );
     }
     if (request.method === "shutdown") {
@@ -143,9 +156,14 @@ async function runCli() {
     throw new Error("usage: browser-controller.mjs stdio");
   }
   const debuggerEndpoint = process.env.CHARIOX_BROWSER_DEBUGGER_ENDPOINT;
-  const browser = debuggerEndpoint
-    ? new BrowserCdpClient({ debuggerEndpoint })
-    : new BrowserCdpClient();
+  const uploadRoots = (process.env.CHARIOX_BROWSER_UPLOAD_ROOTS ?? "")
+    .split(path.delimiter)
+    .filter(Boolean);
+  const browser = new BrowserCdpClient({
+    ...(debuggerEndpoint ? { debuggerEndpoint } : {}),
+    downloadDirectory: process.env.CHARIOX_BROWSER_DOWNLOAD_DIR,
+    uploadRoots,
+  });
   await new BrowserControllerStdioServer({ browser }).run();
 }
 

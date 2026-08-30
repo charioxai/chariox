@@ -263,6 +263,64 @@ test("dialog handling is document-bound and validates prompt input", async () =>
   );
 });
 
+test("download and upload requests stay target-bound and return no file paths", async () => {
+  const connection = new FakeConnection();
+  const entries = new Map([
+    ["/safe/downloads", { type: "directory", size: 0 }],
+    ["/safe/uploads", { type: "directory", size: 0 }],
+    ["/safe/uploads/report.txt", { type: "file", size: 12 }],
+  ]);
+  const fileSystem = {
+    mkdir: async () => {},
+    realpath: async (candidate) => {
+      if (!entries.has(candidate)) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return candidate;
+    },
+    stat: async (candidate) => {
+      const entry = entries.get(candidate);
+      if (!entry) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+      return {
+        size: entry.size,
+        isDirectory: () => entry.type === "directory",
+        isFile: () => entry.type === "file",
+      };
+    },
+  };
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+    downloadDirectory: "/safe/downloads",
+    uploadRoots: ["/safe/uploads"],
+    fileSystem,
+  });
+  await browser.reconcile(viewport);
+
+  const downloads = await browser.configureDownloads({
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
+  const upload = await browser.uploadFiles({
+    target_id: "target-a",
+    document_id: "loader-a",
+    node_ref: "backend:103",
+    file_paths: ["/safe/uploads/report.txt"],
+  });
+
+  assert.deepEqual(downloads, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    enabled: true,
+  });
+  assert.deepEqual(upload, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    file_count: 1,
+    total_bytes: 12,
+  });
+  assert.equal(JSON.stringify({ downloads, upload }).includes("/safe"), false);
+});
+
 test("debugger discovery cannot redirect the controller away from loopback", () => {
   assert.equal(
     assertPrivateDebuggerUrl(
