@@ -65,6 +65,7 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
     assert!(environment.actors.iter().any(|actor| {
         actor.actor_id == expected_actor_id
             && actor.kind == crate::session::EnvironmentActorKind::Human
+            && actor.display_label == "Local user"
     }));
 
     let error = harness

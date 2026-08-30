@@ -225,13 +225,6 @@ impl RoomEnvironment {
         expected_revision: u64,
         replacement: CanonicalViewport,
     ) -> Result<(), EnvironmentError> {
-        if let Some(existing) = self.actors.get(&actor.actor_id) {
-            if existing.kind != actor.kind {
-                return Err(EnvironmentError::ActorKindConflict {
-                    actor_id: actor.actor_id,
-                });
-            }
-        }
         self.validate_viewport_update(&actor.actor_id, expected_revision)?;
         let actor_id = actor.actor_id.clone();
         self.register_actor(actor)?;
