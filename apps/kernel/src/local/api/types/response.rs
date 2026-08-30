@@ -43,6 +43,7 @@ pub enum LocalDaemonResponse {
     RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentTakeoverUpdated { outcome: crate::session::TakeoverOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentInputReleased { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentActionCancellationUpdated { outcome: crate::session::ActionCancellationOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     MetaagentTaskUpdated {
         session: RuntimeSession,
         #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::action::{
-    ActionAdmission, EnvironmentAction, EnvironmentActionRequest, EnvironmentActionState,
-    EnvironmentActionTerminal, InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentAction, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
 };
 use super::model::{
     EnvironmentActor, EnvironmentActorKind, EnvironmentError, EnvironmentLifecycle,
@@ -22,6 +22,12 @@ pub(crate) struct ActionTakeoverEffect {
     pub(crate) cancelled_action_ids: Vec<String>,
     pub(crate) started_action_ids: Vec<String>,
     pub(crate) cancellation_requested_action_ids: Vec<String>,
+}
+
+pub(crate) struct ActionCancellationEffect {
+    pub(crate) outcome: ActionCancellationOutcome,
+    pub(crate) action_changed: bool,
+    pub(crate) started_action_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -268,6 +274,77 @@ impl EnvironmentActionLedger {
             state,
             ownership_changed,
             started_action_ids,
+        })
+    }
+
+    pub(crate) fn cancel_as_actor(
+        &mut self,
+        actor_id: &str,
+        action_id: &str,
+        actors: &BTreeMap<String, EnvironmentActor>,
+    ) -> Result<ActionCancellationEffect, EnvironmentError> {
+        let actor = actors
+            .get(actor_id)
+            .ok_or_else(|| EnvironmentError::UnknownActor {
+                actor_id: actor_id.to_string(),
+            })?;
+        let action =
+            self.actions
+                .get(action_id)
+                .ok_or_else(|| EnvironmentError::UnknownAction {
+                    action_id: action_id.to_string(),
+                })?;
+        let authorized = action.actor_id == actor_id
+            || (actor.kind == EnvironmentActorKind::Human
+                && action.targets.iter().any(|target| {
+                    self.input_owners.get(target).map(String::as_str) == Some(actor_id)
+                        || self.pending_takeovers.get(target).map(String::as_str) == Some(actor_id)
+                }));
+        if !authorized {
+            return Err(EnvironmentError::ActionCancellationForbidden {
+                actor_id: actor_id.to_string(),
+                action_id: action_id.to_string(),
+            });
+        }
+        if matches!(
+            action.state,
+            EnvironmentActionState::Completed
+                | EnvironmentActionState::Failed
+                | EnvironmentActionState::Cancelled
+        ) {
+            return Ok(ActionCancellationEffect {
+                outcome: ActionCancellationOutcome::AlreadyTerminal {
+                    action_state: action.state,
+                },
+                action_changed: false,
+                started_action_ids: Vec::new(),
+            });
+        }
+
+        if action.state == EnvironmentActionState::Queued {
+            self.actions
+                .get_mut(action_id)
+                .expect("queued action should remain in the ledger")
+                .state = EnvironmentActionState::Cancelled;
+            let started_action_ids = self.promote_queued_actions();
+            self.compact_terminal_actions();
+            return Ok(ActionCancellationEffect {
+                outcome: ActionCancellationOutcome::Cancelled,
+                action_changed: true,
+                started_action_ids,
+            });
+        }
+
+        let action = self
+            .actions
+            .get_mut(action_id)
+            .expect("running action should remain in the ledger");
+        let action_changed = !action.cancellation_requested;
+        action.cancellation_requested = true;
+        Ok(ActionCancellationEffect {
+            outcome: ActionCancellationOutcome::CancellationRequested,
+            action_changed,
+            started_action_ids: Vec::new(),
         })
     }
 

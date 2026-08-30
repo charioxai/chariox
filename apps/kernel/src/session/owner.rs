@@ -299,6 +299,16 @@ impl SessionStateStore {
             .release_room_environment_input(session_id, actor_id, target)
     }
 
+    pub(crate) fn cancel_room_environment_action_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        action_id: &str,
+    ) -> Result<(super::ActionCancellationOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.write()
+            .cancel_room_environment_action_as_actor(session_id, actor, action_id)
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,

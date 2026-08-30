@@ -1,10 +1,12 @@
 use std::collections::BTreeMap;
 
 use super::action::{
-    ActionAdmission, EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal,
-    InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionRequest, EnvironmentActionState,
+    EnvironmentActionTerminal, InputTarget,
 };
-use super::action_ledger::{ActionTakeoverEffect, EnvironmentActionLedger};
+use super::action_ledger::{
+    ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
+};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
@@ -353,6 +355,80 @@ impl RoomEnvironment {
             self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
         }
         Ok(())
+    }
+
+    pub fn cancel_action(
+        &mut self,
+        actor_id: &str,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = self
+            .action_ledger
+            .cancel_as_actor(actor_id, action_id, &self.actors)?;
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        Ok(outcome)
+    }
+
+    pub fn cancel_action_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+        let mut action_ledger = self.action_ledger.clone();
+        let ActionCancellationEffect {
+            outcome,
+            action_changed,
+            started_action_ids,
+        } = action_ledger.cancel_as_actor(&actor.actor_id, action_id, &actors)?;
+        let actors_changed = actors != self.actors;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        if action_changed {
+            let state = match outcome {
+                ActionCancellationOutcome::Cancelled => EnvironmentActionState::Cancelled,
+                ActionCancellationOutcome::CancellationRequested => EnvironmentActionState::Running,
+                ActionCancellationOutcome::AlreadyTerminal { action_state } => action_state,
+            };
+            self.emit_action_changed(action_id, state);
+        }
+        for started_action_id in started_action_ids {
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
+        }
+        Ok(outcome)
     }
 
     pub fn request_takeover(

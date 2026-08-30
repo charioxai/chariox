@@ -54,3 +54,9 @@ pub struct ReleaseRoomEnvironmentInputRequest {
     pub session_id: String,
     pub target: crate::session::InputTarget,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CancelRoomEnvironmentActionRequest {
+    pub session_id: String,
+    pub action_id: String,
+}

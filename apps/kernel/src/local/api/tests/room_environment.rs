@@ -77,6 +77,61 @@ fn room_environment_takeover_and_release_use_authenticated_actor_and_room_lane()
 }
 
 #[test]
+fn room_environment_action_cancel_uses_authenticated_actor_and_stable_errors() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-cancel",
+                "worktree-environment-cancel",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            }),
+        )
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("Room Environment should become ready");
+    });
+
+    let error = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: session.id().to_string(),
+                action_id: "action-missing".to_string(),
+            }),
+        )
+        .expect_err("an unknown Action should not be cancelled");
+    assert!(matches!(
+        error,
+        DaemonError::LocalTransport {
+            operation: "environment.action.cancel",
+            message,
+        } if message.starts_with("environment_unknown_action:")
+    ));
+}
+
+#[test]
 fn room_environment_reconciles_human_and_agent_presence() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
@@ -210,6 +265,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
 
     harness
         .dispatch(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            session_id: session.id().to_string(),
             agent_id: spawned.id().to_string(),
         }))
         .expect("agent should be destroyed");
@@ -801,6 +857,10 @@ fn room_environment_lifecycle_requires_room_membership() {
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
             session_id: session.id().to_string(),
             target: crate::session::InputTarget::Desktop,
+        }),
+        LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+            session_id: session.id().to_string(),
+            action_id: "action-1".to_string(),
         }),
     ] {
         let error = harness

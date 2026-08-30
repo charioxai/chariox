@@ -429,6 +429,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
         LocalDaemonRequest::GetMetaagentTurnOverview(_) => "metaagent.turn.overview",
         LocalDaemonRequest::GetMetaagentTurnBlob(_) => "metaagent.turn.blob",

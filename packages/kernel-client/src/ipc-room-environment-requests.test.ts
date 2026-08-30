@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentEventsRequest,
   getRoomEnvironmentStateRequest,
   requestRoomEnvironmentInputTakeoverRequest,
@@ -12,14 +13,15 @@ import {
   retryRoomEnvironmentRequest,
 } from "./ipc-room-environment-requests.js"
 import type {
+  RoomEnvironmentActionCancellationOutcome,
   RoomEnvironmentEventsResponse,
   RoomEnvironmentStateResponse,
   RoomEnvironmentUpdatedResponse,
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 276", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 276)
+test("Room Environment state request matches protocol 277", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 277)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -110,8 +112,8 @@ test("Room Environment state request matches protocol 276", () => {
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
 })
 
-test("Room Environment event replay request matches protocol 276", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 276)
+test("Room Environment event replay request matches protocol 277", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 277)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -271,4 +273,18 @@ test("Room Environment input release request cannot forge Actor identity", () =>
       },
     },
   )
+})
+
+test("Room Environment Action cancellation request cannot forge Actor identity", () => {
+  assert.deepEqual(cancelRoomEnvironmentActionRequest("session-1", "action-7"), {
+    CancelRoomEnvironmentAction: {
+      session_id: "session-1",
+      action_id: "action-7",
+    },
+  })
+
+  const outcome: RoomEnvironmentActionCancellationOutcome = {
+    state: "cancellation_requested",
+  }
+  assert.equal(outcome.state, "cancellation_requested")
 })

@@ -222,6 +222,11 @@ impl SessionRuntimeCommandExecutor {
                     .release_room_environment_input(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::CancelRoomEnvironmentAction(request) => {
+                self.store
+                    .cancel_room_environment_action(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
                 self.store.create_agent_prompt_schedule(request).await
             }

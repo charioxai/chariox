@@ -227,6 +227,10 @@ pub enum EnvironmentError {
         action_id: String,
         state: EnvironmentActionState,
     },
+    ActionCancellationForbidden {
+        actor_id: String,
+        action_id: String,
+    },
     ActorKindConflict {
         actor_id: String,
     },
@@ -254,6 +258,7 @@ impl EnvironmentError {
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
             Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",
             Self::ActionNotRunning { .. } => "environment_action_not_running",
+            Self::ActionCancellationForbidden { .. } => "environment_action_cancellation_forbidden",
             Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
         }
     }

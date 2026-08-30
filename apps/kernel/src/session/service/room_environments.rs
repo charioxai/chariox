@@ -1,4 +1,7 @@
 use super::*;
+use crate::session::{
+    ActionCancellationOutcome, EnvironmentActor, EnvironmentLifecycle, InputTarget, TakeoverOutcome,
+};
 
 impl SessionService {
     pub(crate) fn create_room_environment(
@@ -149,5 +152,20 @@ impl SessionService {
         }
         self.room_environments
             .release_input(session_id, actor_id, target)
+    }
+
+    pub(crate) fn cancel_room_environment_action_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<(ActionCancellationOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .cancel_action_as_actor(session_id, actor, action_id)
     }
 }

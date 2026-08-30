@@ -1,9 +1,10 @@
 use crate::error::DaemonError;
 use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
-    AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
-    DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
-    LocalDaemonResponse, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
+    AttachToSessionRequest, CancelRoomEnvironmentActionRequest, CycleAgentFocusRequest,
+    DeleteProjectRequest, DeleteSessionRequest, DetachFromSessionRequest, EndSessionRequest,
+    FocusAgentRequest, ListProjectsRequest, LocalDaemonResponse,
+    ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
     RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
     UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
@@ -190,6 +191,32 @@ impl SessionRuntimeStore {
             .release_room_environment_input(&request.session_id, &actor_id, &request.target)
             .map(|environment| LocalDaemonResponse::RoomEnvironmentInputReleased { environment })
             .map_err(|error| room_environment_control_error("environment.input.release", error));
+        (result, None)
+    }
+
+    pub(super) async fn cancel_room_environment_action(
+        &self,
+        request: CancelRoomEnvironmentActionRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .cancel_room_environment_action_as_actor(&request.session_id, actor, &request.action_id)
+            .map(|(outcome, environment)| {
+                LocalDaemonResponse::RoomEnvironmentActionCancellationUpdated {
+                    outcome,
+                    environment,
+                }
+            })
+            .map_err(|error| room_environment_control_error("environment.action.cancel", error));
         (result, None)
     }
 

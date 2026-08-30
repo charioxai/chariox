@@ -177,3 +177,13 @@ pub enum ActionAdmission {
         human_actor_id: String,
     },
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
+pub enum ActionCancellationOutcome {
+    Cancelled,
+    CancellationRequested,
+    AlreadyTerminal {
+        action_state: EnvironmentActionState,
+    },
+}

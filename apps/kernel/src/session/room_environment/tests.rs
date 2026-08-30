@@ -424,6 +424,118 @@ fn mutation_queue_rejects_new_work_at_its_bound() {
 }
 
 #[test]
+fn cancelling_queued_work_promotes_the_next_eligible_action() {
+    let mut environment = ready_environment_with_agent();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "tab-click",
+                &tab_id,
+                1,
+            ))
+            .unwrap(),
+    );
+    let queued_computer_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "pointer-click",
+                Some(&tab_id),
+            ))
+            .unwrap(),
+    );
+    let queued_desktop_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "key-press",
+                None,
+            ))
+            .unwrap(),
+    );
+
+    assert_eq!(
+        environment
+            .cancel_action("agent-1", &queued_computer_action_id)
+            .unwrap(),
+        ActionCancellationOutcome::Cancelled
+    );
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_computer_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Cancelled
+    );
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_desktop_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+    assert_eq!(
+        environment
+            .cancel_action("agent-1", &queued_computer_action_id)
+            .unwrap(),
+        ActionCancellationOutcome::AlreadyTerminal {
+            action_state: EnvironmentActionState::Cancelled,
+        }
+    );
+}
+
+#[test]
+fn human_cancellation_requires_control_of_an_action_target() {
+    let mut environment = ready_environment_with_agent();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
+    let action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "pointer-click",
+                None,
+            ))
+            .unwrap(),
+    );
+
+    assert_eq!(
+        environment.cancel_action("user-1", &action_id),
+        Err(EnvironmentError::ActionCancellationForbidden {
+            actor_id: "user-1".to_string(),
+            action_id: action_id.clone(),
+        })
+    );
+    assert!(
+        !environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .unwrap()
+            .cancellation_requested
+    );
+}
+
+#[test]
 fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
     let mut environment = ready_environment_with_agent();
     environment
@@ -443,7 +555,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
             ))
             .unwrap(),
     );
-    let queued_action_id = queued_action_id(
+    let queued_browser_action_id = queued_action_id(
         environment
             .submit_action(EnvironmentActionRequest::computer_mutation(
                 "agent-1",
@@ -495,12 +607,18 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
                 } if changed_action_id == &action_id
             ))
     ));
+    let cancellation_cursor = environment.snapshot().event_cursor;
+    assert_eq!(
+        environment.cancel_action("user-1", &action_id).unwrap(),
+        ActionCancellationOutcome::CancellationRequested
+    );
+    assert_eq!(environment.snapshot().event_cursor, cancellation_cursor);
     assert_eq!(
         environment
             .snapshot()
             .actions
             .iter()
-            .find(|action| action.action_id == queued_action_id)
+            .find(|action| action.action_id == queued_browser_action_id)
             .unwrap()
             .state,
         EnvironmentActionState::Cancelled
@@ -560,7 +678,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
             .snapshot()
             .actions
             .iter()
-            .find(|action| action.action_id == queued_action_id)
+            .find(|action| action.action_id == queued_browser_action_id)
             .unwrap()
             .state,
         EnvironmentActionState::Cancelled

@@ -71,6 +71,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(_) => "environment.input.release",
+        LocalDaemonRequest::CancelRoomEnvironmentAction(_) => "environment.action.cancel",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
@@ -111,10 +112,11 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 mod tests {
     use super::*;
     use crate::local::{
-        GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest,
-        ReleaseRoomEnvironmentInputRequest, RequestRoomEnvironmentInputTakeoverRequest,
-        RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest,
-        StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
+        CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
+        GetRoomEnvironmentStateRequest, ReleaseRoomEnvironmentInputRequest,
+        RequestRoomEnvironmentInputTakeoverRequest, RetryRoomEnvironmentRequest,
+        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+        UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -223,5 +225,16 @@ mod tests {
             });
 
         assert_eq!(relay_request_kind(&request), "environment.input.release");
+    }
+
+    #[test]
+    fn room_environment_action_cancel_uses_the_shared_relay_request_path() {
+        let request =
+            LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {
+                session_id: "session-1".to_string(),
+                action_id: "action-1".to_string(),
+            });
+
+        assert_eq!(relay_request_kind(&request), "environment.action.cancel");
     }
 }

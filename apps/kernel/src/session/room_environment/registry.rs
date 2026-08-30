@@ -192,6 +192,22 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn cancel_action_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        action_id: &str,
+    ) -> Result<(super::ActionCancellationOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let outcome = environment.cancel_action_as_actor(actor, action_id)?;
+        Ok((outcome, environment.snapshot()))
+    }
+
     pub(crate) fn snapshot(
         &self,
         session_id: &str,

@@ -75,6 +75,11 @@ export type RoomEnvironmentTakeoverOutcome =
   | { state: "granted" }
   | { state: "cancellation_required"; action_ids: string[] }
 
+export type RoomEnvironmentActionCancellationOutcome =
+  | { state: "cancelled" }
+  | { state: "cancellation_requested" }
+  | { state: "already_terminal"; action_state: RoomEnvironmentAction["state"] }
+
 export type RoomEnvironmentSnapshot = {
   session_id: string
   environment_id: string
@@ -145,6 +150,13 @@ export type RoomEnvironmentTakeoverUpdatedResponse = {
 
 export type RoomEnvironmentInputReleasedResponse = {
   RoomEnvironmentInputReleased: {
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentActionCancellationUpdatedResponse = {
+  RoomEnvironmentActionCancellationUpdated: {
+    outcome: RoomEnvironmentActionCancellationOutcome
     environment: RoomEnvironmentSnapshot
   }
 }

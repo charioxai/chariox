@@ -33,6 +33,7 @@ pub enum LocalDaemonRequest {
     UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest),
     RequestRoomEnvironmentInputTakeover(RequestRoomEnvironmentInputTakeoverRequest),
     ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest),
+    CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest),
     UpdateMetaagentTask(UpdateMetaagentTaskRequest),
     PauseMetaagentTask(PauseMetaagentTaskRequest),
     ResumeMetaagentTask(ResumeMetaagentTaskRequest),

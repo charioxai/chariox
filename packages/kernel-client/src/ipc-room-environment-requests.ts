@@ -88,3 +88,12 @@ export function releaseRoomEnvironmentInputRequest(
     },
   }
 }
+
+export function cancelRoomEnvironmentActionRequest(sessionId: string, actionId: string) {
+  return {
+    CancelRoomEnvironmentAction: {
+      session_id: sessionId,
+      action_id: actionId,
+    },
+  }
+}
