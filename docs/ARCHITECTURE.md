@@ -23,15 +23,22 @@ Target architectural terms:
 - `chariox-kernel`
   - the process that hosts the kernel on one machine/user context
 - `workspace`
-  - the persistent collaboration domain
+  - the project files and source-control context bonded to a Room or agent
+- `Room`
+  - the durable collaboration runtime that owns users, agents, workflows, history, and the default shared Environment
+- `Environment`
+  - the Room-owned browser and graphical computer shared by users and agents
 - `workflow`
-  - a directed execution graph inside one workspace
+  - a directed execution graph inside one Room
 
 Current implementation note:
 
 - the current Rust code still uses `daemon` and `session` heavily
-- the docs now use `kernel` and `workspace` as the target conceptual model
-- unless stated otherwise, “workspace” in the docs maps to the current code’s `session`
+- the product term `Room` maps to the current code's `session` and `session_id`
+- `docs/spec-v1.md` and older planning documents retain the legacy use of `workspace` for this runtime domain
+- older sections of this document use `workspace` for that runtime domain; read those legacy uses as `Room`
+- `workspace` now means project files and source-control state, matching the product distinction between a Room and its bonded Workspace
+- the canonical glossary is [CONTEXT.md](../CONTEXT.md)
 
 ## 2. System Topology
 
@@ -67,10 +74,10 @@ Current implementation mapping:
 ## 2.1 Architectural Rules
 
 - CLI is one client implementation, not the owner of business logic.
-- The kernel owns workspace state, routing, workflow state, and coordination.
+- The kernel owns Room state, routing, workflow state, and coordination.
 - Transport and discovery are separate concerns.
 - Relay forwards traffic; it does not own rendezvous/discovery.
-- Directory provides identity/discovery/reachability metadata; it does not own workspace state.
+- Directory provides identity/discovery/reachability metadata; it does not own Room state.
 - Managed identity/discovery service, if introduced later, should remain outside this repository and consume the same relay/directory boundaries rather than becoming a dependency of core runtime code.
 - New features should land in kernel/protocol layers first, not UI-specific code.
 - Runtime and control-plane persistence store instants in UTC, and transport serializes them as
@@ -83,7 +90,7 @@ Current implementation mapping:
 
 Chariox should model a kernel-hosted runtime domain that may contain both local and remote members.
 
-Members of the same workspace may include:
+Members of the same Room may include:
 
 - local terminals
 - remote terminals attached through relay
@@ -94,17 +101,17 @@ Normative rules:
 
 - locality is a transport property, not an authority property
 - local and remote members attached to the same kernel belong to the same runtime domain
-- the kernel remains the authority for workspaces, attachments, prompt queues, provider runs, workflow routing, and coordination regardless of member locality
-- relay must not become the workspace or workflow authority
+- the kernel remains the authority for Rooms, attachments, prompt queues, provider runs, workflow routing, and coordination regardless of member locality
+- relay must not become the Room or workflow authority
 
 ## 2.3 Workflow Rule
 
-The purpose of a multi-agent workspace is to host workflows.
+The purpose of a multi-agent Room is to host workflows.
 
 Normative rules:
 
-- a workspace may contain multiple workflow definitions
-- a workflow is a directed graph inside one workspace
+- a Room may contain multiple workflow definitions
+- a workflow is a directed graph inside one Room
 - graph nodes are top-level Chariox-managed agents
 - graph edges define allowed message flow
 - each workflow definition may expose multiple endpoints
@@ -118,11 +125,11 @@ Normative rules:
 
 Responsibilities:
 
-- render workspace state, transcript/output, and focused-agent state
+- render Room state, transcript/output, and focused-agent state
 - capture terminal input or structured actions and route them to the kernel
 - render slash-command completion, help, warnings, and command results
 - upload or reference artifacts
-- remain attached or return to a no-workspace state without becoming a runtime authority
+- remain attached or return to a no-Room state without becoming a runtime authority
 
 Current implementation note:
 
@@ -138,7 +145,7 @@ A machine hosts one kernel process per OS user context.
 Responsibilities:
 
 - provide execution environment for kernel, providers, artifacts, and worktrees
-- host workspace runtime files
+- host Room runtime files and bonded Workspace files
 - later participate in registration and reachability metadata
 
 Remote-machine note:
@@ -151,12 +158,12 @@ Remote-machine note:
 
 ### 3.3 Chariox Kernel
 
-The Chariox Kernel is the runtime authority for live workspace state on one machine/user context.
+The Chariox Kernel is the runtime authority for live Room state on one machine/user context.
 
 Responsibilities:
 
-- workspace lifecycle and attachment lifecycle
-- workspace routing between all attached local and remote members
+- Room lifecycle and attachment lifecycle
+- Room routing between all attached local and remote members
 - workflow scheduling and workflow-run state ownership
 - inter-agent message routing and structured handoff processing
 - worktree allocation and isolation enforcement
@@ -446,6 +453,104 @@ Current local baseline:
   - `/session create [alias]`
   - `/session attach <ref>`
   - `/session delete [ref]`
+
+### 4.2.4 Shared Room environment authority
+
+Each Room owns at most one default shared Environment. The Environment belongs to the Room, not to an agent, provider run, client attachment, slice, display streamer, or browser process. Attaching another user, agent, Web client, TUI, or provider-native TUI must not create another Environment.
+
+The kernel owns:
+
+- Environment identity, lifecycle, runtime generation, and health
+- the shared browser profile and tab registry
+- the canonical viewport and resize policy
+- actor presence and input ownership
+- Action admission, ordering, cancellation, outcome, and history
+- save, restore, reset, reconnect, and recovery reconciliation
+- Browser mode and Computer mode projections
+
+The worker that hosts a slice owns its local browser, Browser Controller, streamer, desktop, and input processes. This is execution ownership only. The home kernel remains the Room and Environment authority and reconciles worker state through the existing leased-agent path.
+
+Cloud may authenticate the user, provision a machine, issue scoped relay credentials, and render the Environment projection. It must not proxy runtime display or input traffic, assign tab identity, order Actions, or store browser and desktop history. The relay transports encrypted runtime and display packets without inspecting them.
+
+#### Identity and lifecycle
+
+`environment_id` identifies the logical Environment for its lifetime. Stop, start, save, restore, controller restart, browser restart, and streamer restart preserve that identity. Reset preserves the Room binding but increments `runtime_generation` and invalidates runtime-only references. Replacing or deleting the Environment ends the identity.
+
+`runtime_generation` changes whenever the kernel can no longer prove that runtime handles still name the same browser, desktop, or controller state. An element reference therefore includes its Environment, Tab, runtime generation, and document revision. A stale generation or revision must fail with an actionable rediscovery error.
+
+The Environment lifecycle is separate from slice lifecycle. The initial states are:
+
+| State | Meaning |
+| --- | --- |
+| `stopped` | No usable Environment runtime is present. |
+| `starting` | The worker is creating or reconciling browser, controller, streamer, and desktop processes. |
+| `ready` | Browser and Computer actions may be admitted according to permissions and input ownership. |
+| `degraded` | Part of the Environment is unavailable, but unaffected work may continue. |
+| `saving` | New mutations are closed while the kernel captures a consistent generation. |
+| `restoring` | The kernel is recreating runtime state from a saved generation. |
+| `stopping` | New actions are closed and managed processes are shutting down. |
+| `failed` | Automatic recovery ended without a usable runtime and requires an explicit retry, reset, or repair. |
+
+Lifecycle transitions must have bounded deadlines. Failure cannot leave the Environment reported as ready or leave an input target owned by a dead Actor.
+
+#### One browser and stable tabs
+
+The Browser Controller owns browser-process integration below the kernel. The kernel owns the Room-visible tab registry and assigns stable `tab_id` values. Controller or browser target identifiers remain implementation details.
+
+Tab rules:
+
+- a recoverable controller reconnect must not duplicate a Tab
+- navigation preserves `tab_id` and increments `document_revision`
+- closing a Tab retires its identity and invalidates its element references
+- restore may retain `tab_id` only when the saved tab can be matched without ambiguity
+- reconciliation creates a new `tab_id` when identity cannot be proved
+- an old target ID, URL, title, or tab index is never sufficient authority to mutate a Tab
+
+Browser mode exposes structured tab, accessibility, document, lifecycle, console, and network observations. Computer mode exposes the same Environment through its graphical display and desktop input. Switching modes does not create a browser, move state, or change authority.
+
+#### Canonical viewport
+
+One canonical viewport defines browser layout, desktop resolution, display encoding, screenshot pixels, OCR coordinates, pointer coordinates, and every viewer's aspect ratio. Clients scale presentation locally but must not resize the browser, desktop, or streamer directly.
+
+The kernel accepts or rejects viewport requests. While a user owns desktop input, that user owns viewport changes. Without a user input owner, the Environment keeps its configured viewport unless kernel policy accepts another Actor's request. Every accepted change increments `viewport_revision` and reaches the browser, desktop, streamer, screenshots, coordinates, and viewers as one reconciled transition.
+
+#### Actors, Actions, and input ordering
+
+Every Browser or Computer Action records:
+
+- Action, Actor, Room, and Environment identity
+- Tab identity when the Action targets a Tab
+- input target, Action kind, and bounded deadline
+- queued, started, completed, failed, or cancelled lifecycle
+- pointer coordinates when applicable
+- outcome and failure classification without secret payloads
+
+Observations may run concurrently. Mutating Browser Actions serialize per Tab. Mutations on different Tabs may run concurrently. Computer mutations serialize on the desktop input target. A Computer Action that can affect the focused browser Tab reserves both the desktop and that Tab for its duration. A Browser Action that opens, closes, or focuses Tabs also reserves the desktop and every affected Tab. These rules prevent graphical input and tab lifecycle changes from racing a structured mutation on the visible page.
+
+Reservation ordering is always desktop before Tab, then Tab IDs in lexical order when an operation needs more than one Tab. Acquisition has a deadline and cancellation releases every reservation. No caller may hold a reservation while waiting for a permission response or network reconnect.
+
+#### Human takeover
+
+Takeover is a kernel-owned transition, not browser focus or client hover. A user requests ownership of an input target. The kernel then:
+
+1. closes admission for new agent mutations on that target
+2. cancels or pauses the active agent Action and waits for a terminal Action state
+3. records the ownership change and reason
+4. grants the user input only after the prior Action cannot continue
+
+The user retains ownership until explicit release, disconnect-policy expiry, or Environment stop. Reconnect must not silently restore ownership to an agent. Every client sees the same ownership and cancellation state.
+
+#### History, reconnect, and recovery
+
+The kernel keeps an append-only Action ledger with bounded observations and redacted outcomes. It records enough information to answer who acted, on which target, in what order, and whether the Action completed. It must not store vault values, authentication headers, unredacted clipboard secrets, or provider-private payloads.
+
+Clients reconnect by event cursor. A retained cursor replays missing Environment events in order. A replay gap requires a fresh Environment snapshot plus the next event cursor. Clients discard optimistic state after a gap and never infer completion from a reappearing browser or display.
+
+Controller, browser, streamer, worker, kernel, and relay recovery must reconcile Environment identity, generation, tabs, viewport, input ownership, in-flight Actions, and saved-state generation before reporting ready. Completed Actions are never repeated. An Action without durable completion evidence fails or resumes under an explicit idempotency rule.
+
+#### Client obligations
+
+Web, local TUI, remote TUI, iOS, and planned Android clients render kernel projections. A TUI may open the graphical viewer rather than embed it, but it must show the same Environment health, current Tab, viewport, Actor, ownership, Action, and recovery state. Provider-native TUIs remain clients of the normal Room path and do not gain another browser or input authority.
 
 ### 4.3 Workflow Ownership
 
