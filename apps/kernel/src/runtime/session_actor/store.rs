@@ -68,18 +68,28 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         }
         .map_err(|error| room_environment_control_error("environment.start", error));
-        let result = viewport.and_then(|viewport| {
-            self.state
+        let result = match viewport {
+            Ok(viewport) => self
+                .state
                 .start_room_environment(&request.session_id, viewport)
+                .map_err(|error| room_environment_control_error("environment.start", error)),
+            Err(error) => Err(error),
+        };
+        let result = match result {
+            Ok(_) => self
+                .finish_room_environment_controller_start(&request.session_id, "environment.start")
+                .await
                 .and_then(|_| {
-                    self.state.reconcile_room_environment_actors(
-                        &request.session_id,
-                        Some(&caller_user_id),
-                    )
+                    self.state
+                        .reconcile_room_environment_actors(
+                            &request.session_id,
+                            Some(&caller_user_id),
+                        )
+                        .map_err(|error| room_environment_control_error("environment.start", error))
                 })
-                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
-                .map_err(|error| room_environment_control_error("environment.start", error))
-        });
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
         (result, None)
     }
 
@@ -90,11 +100,16 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .stop_room_environment(&request.session_id)
-            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
-            .map_err(|error| room_environment_control_error("environment.stop", error));
+        let result = if self.state.browser_controller_process_enabled() {
+            self.state
+                .stop_managed_room_environment_runtime(&request.session_id)
+                .await
+        } else {
+            self.state
+                .stop_room_environment(&request.session_id)
+                .map_err(|error| room_environment_control_error("environment.stop", error))
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
         (result, None)
     }
 
@@ -108,9 +123,61 @@ impl SessionRuntimeStore {
         let result = self
             .state
             .retry_room_environment(&request.session_id)
-            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
             .map_err(|error| room_environment_control_error("environment.retry", error));
+        let result = match result {
+            Ok(_) => self
+                .finish_room_environment_controller_start(&request.session_id, "environment.retry")
+                .await
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
         (result, None)
+    }
+
+    async fn finish_room_environment_controller_start(
+        &self,
+        session_id: &str,
+        operation: &'static str,
+    ) -> Result<crate::session::RoomEnvironmentSnapshot, DaemonError> {
+        if !self.state.browser_controller_process_enabled() {
+            return self
+                .state
+                .room_environment_snapshot(session_id)
+                .map_err(|error| room_environment_control_error(operation, error));
+        }
+        self.state
+            .update_room_environment_component_health(
+                session_id,
+                crate::session::EnvironmentComponent::BrowserController,
+                crate::session::EnvironmentComponentHealthState::Starting,
+                None,
+            )
+            .map_err(|error| room_environment_control_error(operation, error))?;
+        if let Err(error) = self
+            .state
+            .ensure_browser_controller_process_started(session_id)
+            .await
+        {
+            let _ = self.state.update_room_environment_component_health(
+                session_id,
+                crate::session::EnvironmentComponent::BrowserController,
+                crate::session::EnvironmentComponentHealthState::Unavailable,
+                Some("controller_start_failed"),
+            );
+            let _ = self.state.transition_room_environment(
+                session_id,
+                crate::session::EnvironmentLifecycle::Failed,
+            );
+            return Err(error);
+        }
+        self.state
+            .update_room_environment_component_health(
+                session_id,
+                crate::session::EnvironmentComponent::BrowserController,
+                crate::session::EnvironmentComponentHealthState::Ready,
+                None,
+            )
+            .map_err(|error| room_environment_control_error(operation, error))
     }
 
     pub(super) async fn update_room_environment_viewport(

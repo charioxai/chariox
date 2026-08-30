@@ -1,5 +1,184 @@
 use super::*;
 
+struct TestBrowserControllerTool {
+    root: std::path::PathBuf,
+    path: std::path::PathBuf,
+    log: std::path::PathBuf,
+}
+
+impl TestBrowserControllerTool {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "chariox-room-controller-tool-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create controller tool root");
+        let path = root.join("controller-tool.sh");
+        let log = root.join("commands.log");
+        let script = format!(
+            "#!/bin/sh\nset -eu\nprintf 'start\\n' >> '{}'\nwhile IFS= read -r request; do\n  id=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n  case \"$request\" in\n    *'\"method\":\"health\"'*)\n      printf 'health\\n' >> '{}'\n      printf '{{\"id\":%s,\"ok\":true,\"result\":{{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}}}\\n' \"$id\" \"$$\"\n      ;;\n    *'\"method\":\"shutdown\"'*)\n      printf 'shutdown\\n' >> '{}'\n      printf '{{\"id\":%s,\"ok\":true,\"result\":{{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}}}\\n' \"$id\"\n      exit 0\n      ;;\n  esac\ndone\n",
+            log.display(), log.display(), log.display(),
+        );
+        std::fs::write(&path, script).expect("write controller tool");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("controller tool metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("make controller tool executable");
+        Self { root, path, log }
+    }
+}
+
+impl Drop for TestBrowserControllerTool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[tokio::test]
+async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new(
+                "browser-workspace",
+                "browser-worktree",
+            ))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let tool = TestBrowserControllerTool::new();
+    let mut state = owned_runtime_state(&app).await;
+    state.set_browser_controller_process_store_for_test(
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+            &tool.path,
+            Vec::new(),
+            Duration::from_secs(1),
+        ),
+    );
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        state,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let start_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    let start_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-start",
+                None,
+                None,
+                &start_request,
+            ),
+            start_request,
+        )
+        .await
+        .expect("managed Environment should start");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = start_response else {
+        panic!("unexpected start response");
+    };
+    assert_eq!(
+        environment.lifecycle,
+        crate::session::EnvironmentLifecycle::Starting
+    );
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::BrowserController
+            && health.state == crate::session::EnvironmentComponentHealthState::Ready
+    }));
+
+    let stop_request =
+        LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+        });
+    let stop_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request("managed-controller-stop", None, None, &stop_request),
+            stop_request,
+        )
+        .await
+        .expect("managed Environment should stop");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = stop_response else {
+        panic!("unexpected stop response");
+    };
+    assert_eq!(
+        environment.lifecycle,
+        crate::session::EnvironmentLifecycle::Stopped
+    );
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::BrowserController
+            && health.state == crate::session::EnvironmentComponentHealthState::Unavailable
+    }));
+
+    let restart_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-restart",
+                None,
+                None,
+                &restart_request,
+            ),
+            restart_request,
+        )
+        .await
+        .expect("managed Environment should restart");
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-session-end",
+                None,
+                None,
+                &end_request,
+            ),
+            end_request,
+        )
+        .await
+        .expect("ending the Room should stop its controller lease");
+    assert!(matches!(
+        end_response,
+        LocalDaemonResponse::SessionEnded { .. }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&tool.log).expect("read controller commands"),
+        "start\nhealth\nshutdown\nstart\nhealth\nshutdown\n"
+    );
+}
+
 #[tokio::test]
 async fn create_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(

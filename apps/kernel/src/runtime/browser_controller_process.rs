@@ -1,0 +1,972 @@
+use std::collections::BTreeSet;
+use std::io::{BufRead, BufReader, Write};
+use std::path::PathBuf;
+use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde::Deserialize;
+use wait_timeout::ChildExt;
+
+const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
+const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
+const CONTROLLER_NODE_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_NODE";
+const CONTROLLER_COMMAND_TIMEOUT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_COMMAND_TIMEOUT_MS";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BrowserControllerProcessState {
+    Stopped,
+    Starting,
+    Ready,
+    Unhealthy,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserControllerProcessHealth {
+    pub(crate) state: BrowserControllerProcessState,
+    pub(crate) process_id: Option<u32>,
+    pub(crate) diagnostic_code: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserControllerProcessSnapshot {
+    pub(crate) state: BrowserControllerProcessState,
+    pub(crate) process_id: Option<u32>,
+    pub(crate) diagnostic_code: Option<String>,
+    pub(crate) runtime_generation: u64,
+    pub(crate) restart_count: u64,
+}
+
+pub(crate) trait BrowserControllerProcessBackend {
+    fn health(&mut self) -> Result<BrowserControllerProcessHealth, String>;
+    fn start(&mut self) -> Result<BrowserControllerProcessHealth, String>;
+    fn stop(&mut self) -> Result<(), String>;
+}
+
+pub(crate) struct BrowserControllerProcessStdioBackend {
+    command: PathBuf,
+    args: Vec<String>,
+    timeout: Duration,
+    process: Option<BrowserControllerChild>,
+    next_request_id: u64,
+}
+
+impl BrowserControllerProcessStdioBackend {
+    pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
+        Self {
+            command: command.into(),
+            args,
+            timeout,
+            process: None,
+            next_request_id: 1,
+        }
+    }
+
+    fn from_script(script_path: impl Into<PathBuf>, timeout: Duration) -> Self {
+        let command = std::env::var_os(CONTROLLER_NODE_ENV)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "node".into());
+        Self::new(
+            PathBuf::from(command),
+            vec![
+                script_path.into().display().to_string(),
+                "stdio".to_string(),
+            ],
+            timeout,
+        )
+    }
+
+    fn spawn(&mut self) -> Result<(), String> {
+        let mut command = Command::new(&self.command);
+        command
+            .args(&self.args)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            command.process_group(0);
+        }
+        let mut child = command.spawn().map_err(|error| {
+            format!(
+                "failed to spawn browser controller `{}`: {error}",
+                self.command.display()
+            )
+        })?;
+        let stdin = child.stdin.take().ok_or_else(|| {
+            kill_child(&mut child);
+            "browser controller did not expose stdin".to_string()
+        })?;
+        let stdout = child.stdout.take().ok_or_else(|| {
+            kill_child(&mut child);
+            "browser controller did not expose stdout".to_string()
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            kill_child(&mut child);
+            "browser controller did not expose stderr".to_string()
+        })?;
+        let (responses_tx, responses) = mpsc::channel();
+        if let Err(error) = std::thread::Builder::new()
+            .name("chariox-browser-controller-reader".to_string())
+            .spawn(move || read_controller_responses(stdout, responses_tx))
+        {
+            kill_child(&mut child);
+            return Err(format!(
+                "failed to start browser controller response reader: {error}"
+            ));
+        }
+        let _ = std::thread::Builder::new()
+            .name("chariox-browser-controller-stderr".to_string())
+            .spawn(move || {
+                for line in BufReader::new(stderr).lines() {
+                    if line.is_err() {
+                        break;
+                    }
+                }
+            });
+        self.process = Some(BrowserControllerChild {
+            child,
+            stdin,
+            responses,
+        });
+        Ok(())
+    }
+
+    fn request(&mut self, method: &str) -> Result<BrowserControllerRpcResponse, String> {
+        let request_id = self.next_request_id;
+        self.next_request_id = self.next_request_id.saturating_add(1);
+        let process = self
+            .process
+            .as_mut()
+            .ok_or_else(|| "browser controller is not running".to_string())?;
+        serde_json::to_writer(
+            &mut process.stdin,
+            &serde_json::json!({ "id": request_id, "method": method }),
+        )
+        .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
+        process
+            .stdin
+            .write_all(b"\n")
+            .and_then(|()| process.stdin.flush())
+            .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
+        let started = Instant::now();
+        loop {
+            let remaining = self.timeout.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "browser controller `{method}` timed out after {}ms",
+                    self.timeout.as_millis()
+                ));
+            }
+            let response =
+                process
+                    .responses
+                    .recv_timeout(remaining)
+                    .map_err(|error| match error {
+                        mpsc::RecvTimeoutError::Timeout => format!(
+                            "browser controller `{method}` timed out after {}ms",
+                            self.timeout.as_millis()
+                        ),
+                        mpsc::RecvTimeoutError::Disconnected => {
+                            format!("browser controller exited during `{method}`")
+                        }
+                    })??;
+            if response.id == Some(request_id) {
+                return Ok(response);
+            }
+            return Err(format!(
+                "browser controller response id {:?} did not match request {request_id}",
+                response.id
+            ));
+        }
+    }
+
+    fn health_request(&mut self) -> Result<BrowserControllerProcessHealth, String> {
+        let process_id = self
+            .process
+            .as_ref()
+            .map(|process| process.child.id())
+            .ok_or_else(|| "browser controller is not running".to_string())?;
+        let response = self.request("health")?;
+        let health = response.into_health("health")?;
+        if health.process_id != Some(process_id) {
+            return Err(format!(
+                "browser controller health reported process {:?}, expected {process_id}",
+                health.process_id
+            ));
+        }
+        Ok(health)
+    }
+
+    fn take_exited_process(&mut self) -> Result<Option<u32>, String> {
+        let Some(process) = self.process.as_mut() else {
+            return Ok(None);
+        };
+        let process_id = process.child.id();
+        let status = process
+            .child
+            .try_wait()
+            .map_err(|error| format!("failed to inspect browser controller: {error}"))?;
+        if status.is_some() {
+            self.process.take();
+            return Ok(Some(process_id));
+        }
+        Ok(None)
+    }
+}
+
+impl BrowserControllerRpcResponse {
+    fn into_health(self, method: &str) -> Result<BrowserControllerProcessHealth, String> {
+        if !self.ok {
+            let error = self.error.unwrap_or(BrowserControllerRpcError {
+                code: "controller_error".to_string(),
+                message: "browser controller returned an unspecified error".to_string(),
+            });
+            return Err(format!(
+                "browser controller `{method}` failed with {}: {}",
+                error.code, error.message
+            ));
+        }
+        let response = self
+            .result
+            .ok_or_else(|| format!("browser controller `{method}` omitted its result"))?;
+        let state = match response.state.as_str() {
+            "stopped" => BrowserControllerProcessState::Stopped,
+            "starting" => BrowserControllerProcessState::Starting,
+            "ready" => BrowserControllerProcessState::Ready,
+            "unhealthy" => BrowserControllerProcessState::Unhealthy,
+            "failed" => BrowserControllerProcessState::Failed,
+            state => {
+                return Err(format!(
+                    "browser controller `{method}` returned unknown state `{state}`"
+                ));
+            }
+        };
+        Ok(BrowserControllerProcessHealth {
+            state,
+            process_id: response.process_id,
+            diagnostic_code: response.diagnostic_code,
+        })
+    }
+}
+
+impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
+    fn health(&mut self) -> Result<BrowserControllerProcessHealth, String> {
+        if let Some(process_id) = self.take_exited_process()? {
+            return Ok(BrowserControllerProcessHealth {
+                state: BrowserControllerProcessState::Unhealthy,
+                process_id: Some(process_id),
+                diagnostic_code: Some("process_exited".to_string()),
+            });
+        }
+        if self.process.is_none() {
+            return Ok(BrowserControllerProcessHealth {
+                state: BrowserControllerProcessState::Stopped,
+                process_id: None,
+                diagnostic_code: None,
+            });
+        }
+        self.health_request()
+    }
+
+    fn start(&mut self) -> Result<BrowserControllerProcessHealth, String> {
+        if self.process.is_some() {
+            self.stop()?;
+        }
+        self.spawn()?;
+        match self.health_request() {
+            Ok(health) => Ok(health),
+            Err(error) => {
+                if let Some(mut process) = self.process.take() {
+                    kill_child(&mut process.child);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    fn stop(&mut self) -> Result<(), String> {
+        if self.process.is_none() {
+            return Ok(());
+        }
+        let shutdown_requested = self.request("shutdown").is_ok();
+        if let Some(mut process) = self.process.take() {
+            if shutdown_requested {
+                terminate_child(&mut process.child, self.timeout);
+            } else {
+                kill_child(&mut process.child);
+            }
+        }
+        Ok(())
+    }
+}
+
+impl Drop for BrowserControllerProcessStdioBackend {
+    fn drop(&mut self) {
+        let _ = self.stop();
+    }
+}
+
+struct BrowserControllerChild {
+    child: Child,
+    stdin: ChildStdin,
+    responses: mpsc::Receiver<Result<BrowserControllerRpcResponse, String>>,
+}
+
+#[derive(Deserialize)]
+struct BrowserControllerCommandHealth {
+    state: String,
+    process_id: Option<u32>,
+    diagnostic_code: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BrowserControllerRpcResponse {
+    id: Option<u64>,
+    ok: bool,
+    result: Option<BrowserControllerCommandHealth>,
+    error: Option<BrowserControllerRpcError>,
+}
+
+#[derive(Deserialize)]
+struct BrowserControllerRpcError {
+    code: String,
+    message: String,
+}
+
+fn read_controller_responses(
+    stdout: ChildStdout,
+    responses: mpsc::Sender<Result<BrowserControllerRpcResponse, String>>,
+) {
+    for line in BufReader::new(stdout).lines() {
+        let response = line
+            .map_err(|error| format!("failed to read browser controller response: {error}"))
+            .and_then(|line| {
+                serde_json::from_str::<BrowserControllerRpcResponse>(&line)
+                    .map_err(|error| format!("browser controller returned invalid JSON: {error}"))
+            });
+        if responses.send(response).is_err() {
+            return;
+        }
+    }
+}
+
+fn terminate_child(child: &mut Child, timeout: Duration) {
+    if child.wait_timeout(timeout).ok().flatten().is_some() {
+        return;
+    }
+    kill_child(child);
+}
+
+fn kill_child(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        if let Ok(pid) = i32::try_from(child.id()) {
+            let _ = unsafe { libc::kill(-pid, libc::SIGKILL) };
+        }
+    }
+    let _ = child.kill();
+    let _ = child.wait();
+}
+
+pub(crate) struct BrowserControllerProcessSupervisor<B> {
+    backend: B,
+    snapshot: BrowserControllerProcessSnapshot,
+}
+
+type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
+
+pub(crate) struct BrowserControllerProcessOwnership<B> {
+    supervisor: BrowserControllerProcessSupervisor<B>,
+    owner_session_ids: BTreeSet<String>,
+}
+
+impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
+    pub(crate) fn new(backend: B) -> Self {
+        Self {
+            supervisor: BrowserControllerProcessSupervisor::new(backend),
+            owner_session_ids: BTreeSet::new(),
+        }
+    }
+
+    pub(crate) fn acquire(
+        &mut self,
+        session_id: &str,
+    ) -> Result<BrowserControllerProcessSnapshot, String> {
+        let snapshot = self.supervisor.ensure_started()?.clone();
+        self.owner_session_ids.insert(session_id.to_string());
+        Ok(snapshot)
+    }
+
+    pub(crate) fn release(
+        &mut self,
+        session_id: &str,
+    ) -> Result<BrowserControllerProcessSnapshot, String> {
+        self.owner_session_ids.remove(session_id);
+        if self.owner_session_ids.is_empty() {
+            self.supervisor.stop()?;
+        }
+        Ok(self.supervisor.snapshot().clone())
+    }
+
+    pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
+        self.owner_session_ids.clear();
+        self.supervisor.stop().cloned()
+    }
+
+    #[cfg(test)]
+    fn owners(&self) -> &BTreeSet<String> {
+        &self.owner_session_ids
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct BrowserControllerProcessStore {
+    ownership: Option<Arc<Mutex<StdioOwnership>>>,
+}
+
+impl BrowserControllerProcessStore {
+    pub(crate) fn new(command: impl Into<PathBuf>, args: Vec<String>, timeout: Duration) -> Self {
+        Self {
+            ownership: Some(Arc::new(Mutex::new(
+                BrowserControllerProcessOwnership::new(BrowserControllerProcessStdioBackend::new(
+                    command, args, timeout,
+                )),
+            ))),
+        }
+    }
+
+    pub(crate) fn from_script(script_path: impl Into<PathBuf>, timeout: Duration) -> Self {
+        Self {
+            ownership: Some(Arc::new(Mutex::new(
+                BrowserControllerProcessOwnership::new(
+                    BrowserControllerProcessStdioBackend::from_script(script_path, timeout),
+                ),
+            ))),
+        }
+    }
+
+    pub(crate) fn from_environment() -> Self {
+        let Some(script_path) =
+            std::env::var_os(CONTROLLER_SCRIPT_ENV).filter(|path| !path.is_empty())
+        else {
+            return Self::default();
+        };
+        let timeout_ms = std::env::var(CONTROLLER_COMMAND_TIMEOUT_ENV)
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .filter(|value| *value > 0)
+            .unwrap_or(DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS);
+        Self::from_script(
+            PathBuf::from(script_path),
+            Duration::from_millis(timeout_ms),
+        )
+    }
+
+    pub(crate) fn is_enabled(&self) -> bool {
+        self.ownership.is_some()
+    }
+
+    pub(crate) fn acquire(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.acquire(session_id).map(Some)
+    }
+
+    pub(crate) fn release(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.release(session_id).map(Some)
+    }
+
+    pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.shutdown().map(Some)
+    }
+}
+
+impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
+    pub(crate) fn new(backend: B) -> Self {
+        Self {
+            backend,
+            snapshot: BrowserControllerProcessSnapshot {
+                state: BrowserControllerProcessState::Stopped,
+                process_id: None,
+                diagnostic_code: None,
+                runtime_generation: 1,
+                restart_count: 0,
+            },
+        }
+    }
+
+    pub(crate) fn snapshot(&self) -> &BrowserControllerProcessSnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn ensure_started(&mut self) -> Result<&BrowserControllerProcessSnapshot, String> {
+        let health = self.backend.health();
+        match health {
+            Ok(health) if health.state == BrowserControllerProcessState::Ready => {
+                self.apply_health(health);
+                return Ok(&self.snapshot);
+            }
+            Ok(health)
+                if matches!(
+                    health.state,
+                    BrowserControllerProcessState::Unhealthy
+                        | BrowserControllerProcessState::Failed
+                ) =>
+            {
+                self.apply_health(health);
+                self.restart()?;
+                return Ok(&self.snapshot);
+            }
+            Err(_) => {
+                self.restart()?;
+                return Ok(&self.snapshot);
+            }
+            Ok(health) => self.apply_health(health),
+        }
+
+        self.start()?;
+        Ok(&self.snapshot)
+    }
+
+    pub(crate) fn stop(&mut self) -> Result<&BrowserControllerProcessSnapshot, String> {
+        if self.snapshot.state == BrowserControllerProcessState::Stopped {
+            return Ok(&self.snapshot);
+        }
+        self.backend.stop()?;
+        self.snapshot.state = BrowserControllerProcessState::Stopped;
+        self.snapshot.process_id = None;
+        self.snapshot.diagnostic_code = None;
+        Ok(&self.snapshot)
+    }
+
+    fn start(&mut self) -> Result<(), String> {
+        self.snapshot.state = BrowserControllerProcessState::Starting;
+        match self.backend.start() {
+            Ok(health) if health.state == BrowserControllerProcessState::Ready => {
+                self.apply_health(health);
+                Ok(())
+            }
+            Ok(health) => {
+                let state = health.state;
+                self.apply_health(health);
+                self.snapshot.state = BrowserControllerProcessState::Failed;
+                Err(format!(
+                    "browser controller startup ended in {state:?} instead of Ready"
+                ))
+            }
+            Err(error) => {
+                self.snapshot.state = BrowserControllerProcessState::Failed;
+                self.snapshot.process_id = None;
+                self.snapshot.diagnostic_code = Some("start_failed".to_string());
+                Err(error)
+            }
+        }
+    }
+
+    fn restart(&mut self) -> Result<(), String> {
+        self.backend.stop()?;
+        self.snapshot.runtime_generation = self.snapshot.runtime_generation.saturating_add(1);
+        self.snapshot.restart_count = self.snapshot.restart_count.saturating_add(1);
+        self.snapshot.process_id = None;
+        self.start()
+    }
+
+    fn apply_health(&mut self, health: BrowserControllerProcessHealth) {
+        self.snapshot.state = health.state;
+        self.snapshot.process_id = health.process_id;
+        self.snapshot.diagnostic_code = health.diagnostic_code;
+    }
+
+    #[cfg(test)]
+    fn backend(&self) -> &B {
+        &self.backend
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+    use std::fs;
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use super::{
+        BrowserControllerProcessBackend, BrowserControllerProcessHealth,
+        BrowserControllerProcessOwnership, BrowserControllerProcessState,
+        BrowserControllerProcessStdioBackend, BrowserControllerProcessSupervisor,
+    };
+
+    #[derive(Default)]
+    struct FakeBackend {
+        health: VecDeque<Result<BrowserControllerProcessHealth, String>>,
+        starts: VecDeque<Result<BrowserControllerProcessHealth, String>>,
+        start_count: usize,
+        stop_count: usize,
+    }
+
+    impl BrowserControllerProcessBackend for FakeBackend {
+        fn health(&mut self) -> Result<BrowserControllerProcessHealth, String> {
+            self.health
+                .pop_front()
+                .expect("test must provide a health result")
+        }
+
+        fn start(&mut self) -> Result<BrowserControllerProcessHealth, String> {
+            self.start_count += 1;
+            self.starts
+                .pop_front()
+                .expect("test must provide a start result")
+        }
+
+        fn stop(&mut self) -> Result<(), String> {
+            self.stop_count += 1;
+            Ok(())
+        }
+    }
+
+    fn health(
+        state: BrowserControllerProcessState,
+        process_id: Option<u32>,
+    ) -> BrowserControllerProcessHealth {
+        BrowserControllerProcessHealth {
+            state,
+            process_id,
+            diagnostic_code: None,
+        }
+    }
+
+    #[test]
+    fn ensure_started_launches_a_stopped_controller() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(41))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+
+        let snapshot = supervisor.ensure_started().expect("controller starts");
+
+        assert_eq!(snapshot.state, BrowserControllerProcessState::Ready);
+        assert_eq!(snapshot.process_id, Some(41));
+        assert_eq!(snapshot.runtime_generation, 1);
+        assert_eq!(snapshot.restart_count, 0);
+        assert_eq!(supervisor.backend().start_count, 1);
+        assert_eq!(supervisor.backend().stop_count, 0);
+    }
+
+    #[test]
+    fn ensure_started_reuses_a_healthy_controller() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(42))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+
+        let snapshot = supervisor.ensure_started().expect("controller is reused");
+
+        assert_eq!(snapshot.process_id, Some(42));
+        assert_eq!(snapshot.runtime_generation, 1);
+        assert_eq!(supervisor.backend().start_count, 0);
+        assert_eq!(supervisor.backend().stop_count, 0);
+    }
+
+    #[test]
+    fn ensure_started_restarts_an_unhealthy_controller() {
+        let mut backend = FakeBackend::default();
+        backend.health.push_back(Ok(BrowserControllerProcessHealth {
+            state: BrowserControllerProcessState::Unhealthy,
+            process_id: Some(43),
+            diagnostic_code: Some("health_timeout".to_string()),
+        }));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(44))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+
+        let snapshot = supervisor.ensure_started().expect("controller restarts");
+
+        assert_eq!(snapshot.process_id, Some(44));
+        assert_eq!(snapshot.runtime_generation, 2);
+        assert_eq!(snapshot.restart_count, 1);
+        assert_eq!(supervisor.backend().start_count, 1);
+        assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn failed_start_is_reported_without_claiming_ready() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Err("controller did not become healthy".to_string()));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+
+        let error = supervisor.ensure_started().expect_err("startup must fail");
+
+        assert_eq!(error, "controller did not become healthy");
+        assert_eq!(
+            supervisor.snapshot().state,
+            BrowserControllerProcessState::Failed
+        );
+        assert_eq!(supervisor.snapshot().runtime_generation, 1);
+    }
+
+    #[test]
+    fn stop_is_idempotent_and_does_not_advance_generation() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(45))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+        supervisor.ensure_started().expect("controller is running");
+
+        supervisor.stop().expect("first stop succeeds");
+        supervisor.stop().expect("second stop succeeds");
+
+        assert_eq!(
+            supervisor.snapshot().state,
+            BrowserControllerProcessState::Stopped
+        );
+        assert_eq!(supervisor.snapshot().runtime_generation, 1);
+        assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn room_leases_stop_the_controller_only_after_the_last_release() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(46))));
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(46))));
+        let mut ownership = BrowserControllerProcessOwnership::new(backend);
+
+        ownership.acquire("room-1").expect("first Room acquires");
+        ownership.acquire("room-2").expect("second Room acquires");
+        let still_running = ownership.release("room-1").expect("first Room releases");
+
+        assert_eq!(still_running.state, BrowserControllerProcessState::Ready);
+        assert_eq!(ownership.supervisor.backend().stop_count, 0);
+        assert_eq!(
+            ownership.owners(),
+            &std::collections::BTreeSet::from(["room-2".to_string()])
+        );
+
+        let stopped = ownership.release("room-2").expect("last Room releases");
+
+        assert_eq!(stopped.state, BrowserControllerProcessState::Stopped);
+        assert_eq!(ownership.supervisor.backend().stop_count, 1);
+        assert!(ownership.owners().is_empty());
+    }
+
+    struct TestTool {
+        root: PathBuf,
+        path: PathBuf,
+    }
+
+    impl TestTool {
+        fn new(script: &str) -> Self {
+            static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos();
+            let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!(
+                "chariox-browser-controller-process-{}-{nonce}-{sequence}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&root).expect("create test tool root");
+            let path = root.join("controller-tool.sh");
+            fs::write(&path, script).expect("write test tool");
+            let mut permissions = fs::metadata(&path).expect("tool metadata").permissions();
+            permissions.set_mode(0o700);
+            fs::set_permissions(&path, permissions).expect("make test tool executable");
+            Self { root, path }
+        }
+
+        fn path(&self) -> &Path {
+            &self.path
+        }
+    }
+
+    impl Drop for TestTool {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn responsive_controller_script() -> &'static str {
+        "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n"
+    }
+
+    #[test]
+    fn stdio_backend_starts_reports_health_and_stops() {
+        let tool = TestTool::new(responsive_controller_script());
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(1),
+        );
+
+        assert_eq!(
+            backend.health().expect("stopped health").state,
+            BrowserControllerProcessState::Stopped
+        );
+        let started = backend.start().expect("controller starts");
+        let health = backend.health().expect("health response parses");
+
+        assert_eq!(started.state, BrowserControllerProcessState::Ready);
+        assert_eq!(health.state, BrowserControllerProcessState::Ready);
+        assert_eq!(health.process_id, started.process_id);
+        assert_eq!(health.diagnostic_code, None);
+        backend.stop().expect("controller stops");
+        assert_eq!(
+            backend.health().expect("stopped health").state,
+            BrowserControllerProcessState::Stopped
+        );
+    }
+
+    #[test]
+    fn stdio_supervisor_restarts_a_crashed_controller_with_a_new_process() {
+        let tool = TestTool::new(responsive_controller_script());
+        let backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(1),
+        );
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+        let first = supervisor
+            .ensure_started()
+            .expect("first controller starts")
+            .clone();
+        let first_process_id = first.process_id.expect("first process id");
+
+        let kill_result = unsafe { libc::kill(first_process_id as i32, libc::SIGKILL) };
+        assert_eq!(kill_result, 0, "test controller should be killable");
+        let restarted = supervisor
+            .ensure_started()
+            .expect("crashed controller restarts")
+            .clone();
+
+        assert_eq!(restarted.state, BrowserControllerProcessState::Ready);
+        assert_ne!(restarted.process_id, Some(first_process_id));
+        assert_eq!(restarted.runtime_generation, 2);
+        assert_eq!(restarted.restart_count, 1);
+        supervisor.stop().expect("restarted controller stops");
+    }
+
+    #[test]
+    fn stdio_backend_reports_early_exit_without_claiming_ready() {
+        let tool = TestTool::new("#!/bin/sh\nexit 9\n");
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(1),
+        );
+
+        let error = backend.start().expect_err("early exit must fail");
+
+        assert!(error.contains("exited during `health`"));
+    }
+
+    #[test]
+    fn stdio_backend_rejects_a_process_identity_mismatch_and_reaps_the_child() {
+        let tool = TestTool::new(
+            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":1,\"diagnostic_code\":null}}\\n' \"$id\"\nexec sleep 30\n",
+        );
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_secs(1),
+        );
+
+        let error = backend.start().expect_err("foreign process id must fail");
+
+        assert!(error.contains("expected"));
+        assert_eq!(
+            backend
+                .health()
+                .expect("mismatched controller was reaped")
+                .state,
+            BrowserControllerProcessState::Stopped
+        );
+    }
+
+    #[test]
+    fn stdio_backend_kills_a_controller_that_does_not_answer_health() {
+        let tool = TestTool::new("#!/bin/sh\nexec sleep 30\n");
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_millis(25),
+        );
+
+        let started = std::time::Instant::now();
+        let error = backend.start().expect_err("health request must time out");
+
+        assert!(error.contains("timed out"));
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            backend
+                .health()
+                .expect("timed out process was reaped")
+                .state,
+            BrowserControllerProcessState::Stopped
+        );
+    }
+
+    #[test]
+    fn stdio_backend_bounds_shutdown_and_kills_the_process_group() {
+        let tool = TestTool::new(
+            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\"\nIFS= read -r request\nsleep 30 &\nwait\n",
+        );
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            Duration::from_millis(500),
+        );
+        backend.start().expect("controller starts");
+
+        let started = std::time::Instant::now();
+        backend.stop().expect("bounded forced stop succeeds");
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            backend.health().expect("forced process was reaped").state,
+            BrowserControllerProcessState::Stopped
+        );
+    }
+}

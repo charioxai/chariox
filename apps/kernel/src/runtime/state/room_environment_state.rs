@@ -3,7 +3,8 @@ use std::collections::BTreeSet;
 use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionCancellationOutcome, CanonicalViewport, EnvironmentActionHistoryPage, EnvironmentActor,
-    EnvironmentActorKind, EnvironmentError, EnvironmentReplay, RoomEnvironmentSnapshot,
+    EnvironmentActorKind, EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentLifecycle, EnvironmentReplay, RoomEnvironmentSnapshot,
 };
 
 use super::KernelRuntimeState;
@@ -56,11 +57,51 @@ impl KernelRuntimeState {
         self.owned.session_store.stop_room_environment(session_id)
     }
 
+    pub(crate) fn begin_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .begin_stop_room_environment(session_id)
+    }
+
+    pub(crate) fn complete_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .complete_stop_room_environment(session_id)
+    }
+
     pub(crate) fn retry_room_environment(
         &self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.owned.session_store.retry_room_environment(session_id)
+    }
+
+    pub(crate) fn transition_room_environment(
+        &self,
+        session_id: &str,
+        lifecycle: EnvironmentLifecycle,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .transition_room_environment(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_component_health(
+        &self,
+        session_id: &str,
+        component: EnvironmentComponent,
+        state: EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .update_room_environment_component_health(session_id, component, state, diagnostic_code)
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(

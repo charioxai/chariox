@@ -247,6 +247,20 @@ impl SessionStateStore {
         self.write().stop_room_environment(session_id)
     }
 
+    pub(crate) fn begin_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().begin_stop_room_environment(session_id)
+    }
+
+    pub(crate) fn complete_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().complete_stop_room_environment(session_id)
+    }
+
     pub(crate) fn retry_room_environment(
         &self,
         session_id: &str,
@@ -254,8 +268,6 @@ impl SessionStateStore {
         self.write().retry_room_environment(session_id)
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition_room_environment(
         &self,
         session_id: &str,
@@ -263,6 +275,21 @@ impl SessionStateStore {
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.write()
             .transition_room_environment(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_component_health(
+        &self,
+        session_id: &str,
+        component: super::EnvironmentComponent,
+        state: super::EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().update_room_environment_component_health(
+            session_id,
+            component,
+            state,
+            diagnostic_code,
+        )
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(

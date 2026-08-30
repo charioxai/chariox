@@ -497,6 +497,8 @@ Lifecycle transitions must have bounded deadlines. Failure cannot leave the Envi
 
 The Browser Controller owns browser-process integration below the kernel. The kernel owns the Room-visible tab registry and assigns stable `tab_id` values. Controller or browser target identifiers remain implementation details.
 
+On Linux slices, the Browser Controller is a long-lived child process owned directly by the worker kernel. The kernel is its only caller and communicates through a private, request-correlated stdin/stdout channel with bounded health and shutdown deadlines. The controller exposes no agent-addressable socket or command surface. Process ownership is lease-based by Room: acquiring the first Room lease starts the controller, releasing the last lease stops it, and kernel shutdown clears every lease and terminates the complete controller process group. Controller readiness updates only the Browser Controller component health. It does not by itself make the Environment ready before the browser, desktop, and streamer have also reconciled.
+
 Tab rules:
 
 - a recoverable controller reconnect must not duplicate a Tab

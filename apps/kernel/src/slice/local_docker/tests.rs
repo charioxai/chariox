@@ -97,6 +97,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "start-providers.sh",
         "slice-screen.sh",
         "browser-cdp.mjs",
+        "browser-controller.mjs",
         "provider-port-bridge.mjs",
         "validate-screen.sh",
     ] {
@@ -105,6 +106,23 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
             "slice support refresh must copy {support_file}"
         );
     }
+}
+
+#[test]
+fn linux_docker_browser_controller_is_private_and_kernel_owned() {
+    let docker_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("slice-linux-docker/docker");
+    let runtime = std::fs::read_to_string(docker_root.join("start-runtime.sh"))
+        .expect("slice runtime script should be readable");
+    let screen = std::fs::read_to_string(docker_root.join("slice-screen.sh"))
+        .expect("slice screen script should be readable");
+    let controller = std::fs::read_to_string(docker_root.join("browser-controller.mjs"))
+        .expect("browser controller should be readable");
+
+    assert!(runtime.contains("CHARIOX_BROWSER_CONTROLLER_SCRIPT=\"$ROOT/browser-controller.mjs\""));
+    assert!(!screen.contains("browser-controller-start"));
+    assert!(!screen.contains("browser-controller-status"));
+    assert!(controller.contains("BrowserControllerStdioServer"));
+    assert!(!controller.contains(".listen("));
 }
 
 #[test]

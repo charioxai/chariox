@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, EnvironmentReplay,
-    RoomEnvironment, RoomEnvironmentSnapshot,
+    CanonicalViewport, EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState,
+    EnvironmentError, EnvironmentLifecycle, EnvironmentReplay, RoomEnvironment,
+    RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,6 +65,33 @@ impl RoomEnvironmentRegistry {
         &mut self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.begin_stop(session_id)?;
+        self.complete_stop(session_id)
+    }
+
+    pub(crate) fn begin_stop(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        match environment.snapshot().lifecycle {
+            EnvironmentLifecycle::Stopped
+            | EnvironmentLifecycle::Stopping
+            | EnvironmentLifecycle::Failed => {}
+            _ => environment.transition_to(EnvironmentLifecycle::Stopping)?,
+        }
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn complete_stop(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         let environment = self
             .environments_by_session
             .get_mut(session_id)
@@ -72,15 +100,14 @@ impl RoomEnvironmentRegistry {
             })?;
         match environment.snapshot().lifecycle {
             EnvironmentLifecycle::Stopped => {}
-            EnvironmentLifecycle::Stopping => {
+            EnvironmentLifecycle::Stopping | EnvironmentLifecycle::Failed => {
                 environment.transition_to(EnvironmentLifecycle::Stopped)?;
             }
-            EnvironmentLifecycle::Failed => {
-                environment.transition_to(EnvironmentLifecycle::Stopped)?;
-            }
-            _ => {
-                environment.transition_to(EnvironmentLifecycle::Stopping)?;
-                environment.transition_to(EnvironmentLifecycle::Stopped)?;
+            from => {
+                return Err(EnvironmentError::InvalidLifecycleTransition {
+                    from,
+                    to: EnvironmentLifecycle::Stopped,
+                });
             }
         }
         Ok(environment.snapshot())
@@ -111,8 +138,6 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition(
         &mut self,
         session_id: &str,
@@ -125,6 +150,23 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.transition_to(lifecycle)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn update_component_health(
+        &mut self,
+        session_id: &str,
+        component: EnvironmentComponent,
+        state: EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.update_component_health(component, state, diagnostic_code);
         Ok(environment.snapshot())
     }
 

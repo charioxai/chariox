@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::{
-    ActionCancellationOutcome, EnvironmentActor, EnvironmentLifecycle, InputTarget, TakeoverOutcome,
+    ActionCancellationOutcome, EnvironmentActor, EnvironmentComponent,
+    EnvironmentComponentHealthState, EnvironmentLifecycle, InputTarget, TakeoverOutcome,
 };
 
 impl SessionService {
@@ -79,6 +80,30 @@ impl SessionService {
         self.room_environments.stop(session_id)
     }
 
+    pub(crate) fn begin_stop_room_environment(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.begin_stop(session_id)
+    }
+
+    pub(crate) fn complete_stop_room_environment(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.complete_stop(session_id)
+    }
+
     pub(crate) fn retry_room_environment(
         &mut self,
         session_id: &str,
@@ -91,8 +116,6 @@ impl SessionService {
         self.room_environments.retry(session_id)
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition_room_environment(
         &mut self,
         session_id: &str,
@@ -104,6 +127,26 @@ impl SessionService {
             });
         }
         self.room_environments.transition(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_component_health(
+        &mut self,
+        session_id: &str,
+        component: EnvironmentComponent,
+        state: EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.update_component_health(
+            session_id,
+            component,
+            state,
+            diagnostic_code,
+        )
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(
