@@ -11,6 +11,10 @@ import {
   configureBrowserDownloads,
   uploadBrowserFiles,
 } from "./browser-controller-files.mjs";
+import {
+  BrowserPermissionError,
+  setBrowserPermission,
+} from "./browser-controller-permissions.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -331,6 +335,28 @@ export class BrowserCdpClient {
     }
   }
 
+  async setPermission(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const { connection, sessionId, target } = await this.resolvePageTarget(targetId);
+    try {
+      return {
+        browser_generation: this.browserGeneration,
+        ...await setBrowserPermission({
+          connection,
+          sessionId,
+          targetId,
+          documentId,
+          targetUrl: target.url,
+          permission: rawRequest?.permission,
+          setting: rawRequest?.setting,
+        }),
+      };
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -345,6 +371,7 @@ export class BrowserCdpClient {
     }
     return {
       connection,
+      target,
       sessionId: await this.ensureTargetSession(connection, targetId),
     };
   }
@@ -692,6 +719,9 @@ function normalizeControllerError(error) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserFileTransferError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserPermissionError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

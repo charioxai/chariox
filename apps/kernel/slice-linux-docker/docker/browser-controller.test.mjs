@@ -53,6 +53,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "upload", request });
       return { file_count: request.file_paths.length };
     },
+    setPermission: async (request) => {
+      calls.push({ method: "permission", request });
+      return { permission: request.permission, setting: request.setting };
+    },
     close: async () => calls.push({ method: "close" }),
   };
   const viewport = {
@@ -121,8 +125,21 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const permission = await handleBrowserControllerRequest(
+    {
+      id: 7,
+      method: "browser.permission",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        permission: "geolocation",
+        setting: "denied",
+      },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 7, method: "shutdown" },
+    { id: 8, method: "shutdown" },
     { browser },
   );
 
@@ -136,6 +153,7 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   assert.deepEqual(dialog.result, { action: "dismiss" });
   assert.deepEqual(downloads.result, { enabled: true });
   assert.deepEqual(upload.result, { file_count: 1 });
+  assert.deepEqual(permission.result, { permission: "geolocation", setting: "denied" });
   assert.equal(shutdown.ok, true);
   assert.deepEqual(calls, [
     { method: "reconcile", viewport },
@@ -171,6 +189,15 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         document_id: "loader-a",
         node_ref: "backend:103",
         file_paths: ["/safe/report.txt"],
+      },
+    },
+    {
+      method: "permission",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        permission: "geolocation",
+        setting: "denied",
       },
     },
     { method: "close" },

@@ -55,6 +55,10 @@ while IFS= read -r request; do
       printf 'upload\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","file_count":1,"total_bytes":12}}\n' "$id"
       ;;
+    *'"method":"browser.permission"'*)
+      printf 'permission\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","permission":"geolocation","setting":"denied"}}\n' "$id"
+      ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"
@@ -260,6 +264,18 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     assert_eq!(upload.file_count, 1);
     assert_eq!(upload.total_bytes, 12);
     assert_eq!(upload.element_ref, first_snapshot.dom_nodes[0].element_ref);
+    let permission = validation_state
+        .set_browser_environment_permission(
+            &session_id,
+            "tab-1",
+            crate::runtime::browser_controller_permission::BrowserPermissionName::Geolocation,
+            crate::runtime::browser_controller_permission::BrowserPermissionSetting::Denied,
+        )
+        .await
+        .expect("permission decision should cross the controller boundary");
+    assert_eq!(permission.permission, "geolocation");
+    assert_eq!(permission.setting, "denied");
+    assert_eq!(permission.tab_id, "tab-1");
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -328,7 +344,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 

@@ -59,6 +59,12 @@ export async function handleBrowserControllerRequest(
         await browser.uploadFiles(request.params),
       );
     }
+    if (request.method === "browser.permission") {
+      return successResponse(
+        request.id,
+        await browser.setPermission(request.params),
+      );
+    }
     if (request.method === "shutdown") {
       await browser.close();
       return successResponse(request.id, {

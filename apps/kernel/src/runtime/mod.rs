@@ -6,6 +6,7 @@ pub(crate) mod agent_utility_executor;
 pub(crate) mod app_lock;
 pub(crate) mod browser_controller_action;
 pub(crate) mod browser_controller_file_transfer;
+pub(crate) mod browser_controller_permission;
 pub(crate) mod browser_controller_process;
 pub(crate) mod browser_controller_snapshot;
 pub mod capability_executor;

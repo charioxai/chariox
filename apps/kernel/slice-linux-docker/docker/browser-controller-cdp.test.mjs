@@ -321,6 +321,35 @@ test("download and upload requests stay target-bound and return no file paths", 
   assert.equal(JSON.stringify({ downloads, upload }).includes("/safe"), false);
 });
 
+test("permission decisions derive the current target origin", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+
+  const result = await browser.setPermission({
+    target_id: "target-a",
+    document_id: "loader-a",
+    permission: "geolocation",
+    setting: "prompt",
+  });
+
+  assert.deepEqual(result, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    permission: "geolocation",
+    setting: "prompt",
+  });
+  assert.deepEqual(
+    connection.calls.find((call) => call.method === "Browser.setPermission").params,
+    {
+      permission: { name: "geolocation" },
+      setting: "prompt",
+      origin: "https://a.test",
+    },
+  );
+});
+
 test("debugger discovery cannot redirect the controller away from loopback", () => {
   assert.equal(
     assertPrivateDebuggerUrl(

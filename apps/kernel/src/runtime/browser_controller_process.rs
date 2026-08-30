@@ -16,6 +16,9 @@ use super::browser_controller_action::{
 use super::browser_controller_file_transfer::{
     BrowserControllerDownloadsResult, BrowserControllerUploadResult, BrowserUploadFiles,
 };
+use super::browser_controller_permission::{
+    BrowserControllerPermissionResult, BrowserPermissionName, BrowserPermissionSetting,
+};
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use crate::session::CanonicalViewport;
 
@@ -130,6 +133,15 @@ pub(crate) trait BrowserControllerProcessBackend {
         _files: &BrowserUploadFiles,
     ) -> Result<BrowserControllerUploadResult, String> {
         Err("browser controller backend does not support uploads".to_string())
+    }
+    fn set_browser_permission(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _permission: BrowserPermissionName,
+        _setting: BrowserPermissionSetting,
+    ) -> Result<BrowserControllerPermissionResult, String> {
+        Err("browser controller backend does not support permissions".to_string())
     }
 }
 
@@ -529,6 +541,28 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(target_id, document_id, controller_paths.len())?;
         Ok(result)
     }
+
+    fn set_browser_permission(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        permission: BrowserPermissionName,
+        setting: BrowserPermissionSetting,
+    ) -> Result<BrowserControllerPermissionResult, String> {
+        let response = self.request(
+            "browser.permission",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "permission": permission.as_str(),
+                "setting": setting.as_str(),
+            }),
+        )?;
+        let result =
+            response.into_result::<BrowserControllerPermissionResult>("browser.permission")?;
+        result.validate(target_id, document_id, permission, setting)?;
+        Ok(result)
+    }
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -763,6 +797,19 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .upload_browser_files(target_id, document_id, node_ref, files)
     }
 
+    pub(crate) fn set_browser_permission(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        permission: BrowserPermissionName,
+        setting: BrowserPermissionSetting,
+    ) -> Result<BrowserControllerPermissionResult, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
     fn require_lease(&self, session_id: &str) -> Result<(), String> {
         if !self.owner_session_ids.contains(session_id) {
             return Err(format!(
@@ -968,6 +1015,25 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn set_browser_permission(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        permission: BrowserPermissionName,
+        setting: BrowserPermissionSetting,
+    ) -> Result<Option<BrowserControllerPermissionResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .set_browser_permission(session_id, target_id, document_id, permission, setting)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -1100,6 +1166,18 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started()?;
         self.backend
             .upload_browser_files(target_id, document_id, node_ref, files)
+    }
+
+    fn set_browser_permission(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        permission: BrowserPermissionName,
+        setting: BrowserPermissionSetting,
+    ) -> Result<BrowserControllerPermissionResult, String> {
+        self.ensure_started()?;
+        self.backend
+            .set_browser_permission(target_id, document_id, permission, setting)
     }
 
     fn start(&mut self) -> Result<(), String> {
