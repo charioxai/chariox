@@ -12,7 +12,7 @@ COPY docker/publication-egress/gateway.mjs ./gateway.mjs
 COPY docker/publication-egress/policy.mjs ./policy.mjs
 COPY docker/publication-egress/tls-client-hello.mjs ./tls-client-hello.mjs
 RUN chown -R root:root /opt/chariox-egress \
-  && chmod -R go-w /opt/chariox-egress
+  && chmod -R a+rX,go-w /opt/chariox-egress
 
 ENV HOST=0.0.0.0
 ENV PORT=3128

@@ -180,5 +180,10 @@ test("publication image labels the protocol version verified against its kernel"
 test("publication egress image runs only the dedicated unprivileged gateway", () => {
   assert.match(egressDockerfile, /USER 10001:10001/)
   assert.match(egressDockerfile, /ENTRYPOINT \["node", "\/opt\/chariox-egress\/gateway\.mjs"\]/)
+  assert.match(
+    egressDockerfile,
+    /chmod -R a\+rX,go-w \/opt\/chariox-egress/,
+    "the unprivileged gateway must remain readable when the build context was checked out under umask 077",
+  )
   assert.doesNotMatch(egressDockerfile, /COPY apps|COPY packages|COPY \. \/|npm install/)
 })
