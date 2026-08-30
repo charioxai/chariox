@@ -30,6 +30,7 @@ test("persistent browser connection returns page identities, focus, and applied 
 
   assert.equal(connectionCount, 1);
   assert.equal(first.browser_generation, 1);
+  assert.equal(first.event_cursor, 1);
   assert.deepEqual(first, second);
   assert.deepEqual(first.tabs, [
     {
@@ -57,6 +58,18 @@ test("persistent browser connection returns page identities, focus, and applied 
     2,
     "each persistent target session should subscribe to Page lifecycle events once",
   );
+  for (const method of [
+    "Page.setLifecycleEventsEnabled",
+    "Runtime.enable",
+    "Network.enable",
+    "Inspector.enable",
+  ]) {
+    assert.equal(
+      connection.calls.filter((call) => call.method === method).length,
+      2,
+      `${method} should run once for each persistent target session`,
+    );
+  }
   assert.deepEqual(
     connection.calls.find(
       (call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a",
@@ -93,6 +106,23 @@ test("viewport validation happens before opening a browser connection", async ()
     (error) => error.code === "browser_viewport_invalid",
   );
   assert.equal(connected, false);
+});
+
+test("failed event subscription closes the connection before a clean reconnect", async () => {
+  const failed = new FakeConnection();
+  failed.failDiscovery = true;
+  const recovered = new FakeConnection();
+  const connections = [failed, recovered];
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connections.shift(),
+  });
+
+  await assert.rejects(browser.reconcile(viewport), /discovery failed/);
+  assert.equal(failed.open, false);
+  const result = await browser.reconcile(viewport);
+
+  assert.equal(result.browser_generation, 2);
+  assert.equal(result.event_cursor, 1);
 });
 
 test("structured snapshots bind compact accessibility and DOM nodes to one document", async () => {
@@ -350,6 +380,44 @@ test("permission decisions derive the current target origin", async () => {
   );
 });
 
+test("controller event polling uses the reconciliation cursor and persistent session mapping", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  const reconciled = await browser.reconcile(viewport);
+  connection.emit({
+    method: "Runtime.consoleAPICalled",
+    sessionId: "session-a",
+    params: { type: "warning", args: [{ value: "must-not-leave-controller" }] },
+  });
+
+  const replay = browser.pollEvents({
+    browser_generation: reconciled.browser_generation,
+    cursor: reconciled.event_cursor,
+    limit: 10,
+  });
+  assert.equal(replay.replay_gap, false);
+  assert.equal(replay.events.length, 1);
+  assert.equal(replay.events[0].target_id, "target-a");
+  assert.equal(replay.events[0].document_id, "loader-a");
+  assert.equal(JSON.stringify(replay).includes("must-not-leave-controller"), false);
+
+  connection.emit({
+    method: "Browser.downloadWillBegin",
+    params: { frameId: "frame-a", guid: "download-a", url: "https://a.test/file?secret=1", suggestedFilename: "report.txt" },
+  });
+  connection.emit({
+    method: "Browser.downloadProgress",
+    params: { guid: "download-a", state: "completed", receivedBytes: 12, totalBytes: 12 },
+  });
+  const downloads = browser.pollEvents({
+    browser_generation: reconciled.browser_generation,
+    cursor: replay.next_cursor,
+    limit: 10,
+  });
+  assert.deepEqual(downloads.events.map((event) => event.target_id), ["target-a", "target-a"]);
+  assert.equal(JSON.stringify(downloads).includes("secret"), false);
+});
+
 test("debugger discovery cannot redirect the controller away from loopback", () => {
   assert.equal(
     assertPrivateDebuggerUrl(
@@ -385,6 +453,8 @@ test("CDP responses are correlated and command failures stay bounded", async () 
   assert.deepEqual(await response, { targetInfos: [] });
 
   const dialog = connection.waitForEvent("Page.javascriptDialogOpening", 20);
+  const observed = [];
+  connection.subscribe((event) => observed.push(event.method));
   socket.message({
     method: "Page.javascriptDialogOpening",
     sessionId: "session-a",
@@ -395,6 +465,7 @@ test("CDP responses are correlated and command failures stay bounded", async () 
     sessionId: "session-a",
     params: { type: "prompt", message: "Name?" },
   });
+  assert.deepEqual(observed, ["Page.javascriptDialogOpening"]);
 
   const timedOut = connection.send("Page.getFrameTree", {}, "session-a");
   await assert.rejects(timedOut, (error) => error.code === "browser_cdp_timeout");
@@ -405,6 +476,7 @@ class FakeConnection {
   constructor() {
     this.calls = [];
     this.open = true;
+    this.listeners = new Set();
   }
 
   isOpen() {
@@ -415,8 +487,20 @@ class FakeConnection {
     this.open = false;
   }
 
+  subscribe(listener) {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  emit(message) {
+    for (const listener of this.listeners) listener(message);
+  }
+
   async send(method, params = {}, sessionId) {
     this.calls.push({ method, params, sessionId });
+    if (method === "Target.setDiscoverTargets" && this.failDiscovery) {
+      throw new Error("discovery failed");
+    }
     if (method === "Target.getTargets") {
       return {
         targetInfos: [
@@ -432,7 +516,10 @@ class FakeConnection {
     if (method === "Page.getFrameTree") {
       return {
         frameTree: {
-          frame: { loaderId: sessionId === "session-a" ? "loader-a" : "loader-b" },
+          frame: {
+            id: sessionId === "session-a" ? "frame-a" : "frame-b",
+            loaderId: sessionId === "session-a" ? "loader-a" : "loader-b",
+          },
         },
       };
     }

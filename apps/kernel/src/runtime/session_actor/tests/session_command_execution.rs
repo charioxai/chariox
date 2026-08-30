@@ -33,7 +33,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.reconcile"'*)
       printf 'reconcile\n' >> '__LOG__'
-      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
       ;;
     *'"method":"browser.snapshot"'*)
       printf 'snapshot\n' >> '__LOG__'
@@ -58,6 +58,10 @@ while IFS= read -r request; do
     *'"method":"browser.permission"'*)
       printf 'permission\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","permission":"geolocation","setting":"denied"}}\n' "$id"
+      ;;
+    *'"method":"browser.events.poll"'*)
+      printf 'events\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"events":[{"event_id":2,"browser_generation":1,"kind":"console","target_id":"target-a","document_id":"loader-a","data":{"console_type":"warning","argument_count":1}},{"event_id":3,"browser_generation":1,"kind":"target_created","target_id":"other-room-target","document_id":null,"data":{"url":"https://other.test/"}},{"event_id":4,"browser_generation":1,"kind":"browser_connected","target_id":null,"document_id":null,"data":{}}],"next_cursor":4,"replay_gap":false}}\n' "$id"
       ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
@@ -276,6 +280,24 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     assert_eq!(permission.permission, "geolocation");
     assert_eq!(permission.setting, "denied");
     assert_eq!(permission.tab_id, "tab-1");
+    let events = validation_state
+        .poll_browser_environment_events(&session_id, 1, 1, 10)
+        .await
+        .expect("event polling should cross the controller boundary");
+    assert_eq!(events.browser_generation, 1);
+    assert_eq!(events.next_cursor, 4);
+    assert!(!events.replay_gap);
+    assert_eq!(
+        events.events.len(),
+        2,
+        "other Room targets must stay isolated"
+    );
+    assert_eq!(events.events[0].event_id, 2);
+    assert_eq!(events.events[0].kind, "console");
+    assert_eq!(events.events[0].tab_id.as_deref(), Some("tab-1"));
+    assert_eq!(events.events[0].document_id.as_deref(), Some("loader-a"));
+    assert_eq!(events.events[1].kind, "browser_connected");
+    assert_eq!(events.events[1].tab_id, None);
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -344,7 +366,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 

@@ -1,4 +1,5 @@
 use crate::error::DaemonError;
+use crate::runtime::browser_controller_event::{RoomBrowserEvent, RoomBrowserEventBatch};
 use crate::runtime::browser_controller_process::BrowserControllerProcessSnapshot;
 use crate::session::{
     EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
@@ -435,6 +436,73 @@ impl KernelRuntimeState {
             tab_id.to_string(),
             binding.document_revision,
         ))
+    }
+
+    pub(crate) async fn poll_browser_environment_events(
+        &self,
+        session_id: &str,
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    ) -> Result<RoomBrowserEventBatch, DaemonError> {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.events", error))?;
+        let mut tab_ids_by_target = std::collections::BTreeMap::new();
+        for tab in &environment.tabs {
+            let binding = self
+                .room_environment_controller_tab_binding(session_id, &tab.tab_id)
+                .map_err(|error| environment_runtime_error("browser_controller.events", error))?;
+            tab_ids_by_target.insert(binding.runtime_target_id, tab.tab_id.clone());
+        }
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let batch = tokio::task::spawn_blocking(move || {
+            processes.poll_browser_events(&owned_session_id, browser_generation, cursor, limit)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.events",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.events",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.events",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        let events = batch
+            .events
+            .into_iter()
+            .filter_map(|event| {
+                let tab_id = match event.target_id.as_deref() {
+                    Some(target_id) => Some(tab_ids_by_target.get(target_id)?.clone()),
+                    None if matches!(
+                        event.kind.as_str(),
+                        "browser_connected" | "browser_disconnected"
+                    ) =>
+                    {
+                        None
+                    }
+                    None => return None,
+                };
+                Some(RoomBrowserEvent {
+                    event_id: event.event_id,
+                    kind: event.kind,
+                    tab_id,
+                    document_id: event.document_id,
+                    data: event.data,
+                })
+            })
+            .collect();
+        Ok(RoomBrowserEventBatch {
+            browser_generation: batch.browser_generation,
+            events,
+            next_cursor: batch.next_cursor,
+            replay_gap: batch.replay_gap,
+        })
     }
 
     pub(crate) async fn stop_browser_controller_process(

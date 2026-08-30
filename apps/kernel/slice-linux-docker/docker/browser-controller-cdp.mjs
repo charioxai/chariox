@@ -15,6 +15,10 @@ import {
   BrowserPermissionError,
   setBrowserPermission,
 } from "./browser-controller-permissions.mjs";
+import {
+  BrowserEventError,
+  BrowserEventJournal,
+} from "./browser-controller-events.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -37,6 +41,7 @@ export class BrowserCdpClient {
     downloadDirectory,
     uploadRoots = [],
     fileSystem,
+    eventJournal = new BrowserEventJournal(),
   } = {}) {
     this.debuggerEndpoint = new URL(debuggerEndpoint);
     this.requestTimeoutMs = requestTimeoutMs;
@@ -46,9 +51,14 @@ export class BrowserCdpClient {
     this.downloadDirectory = downloadDirectory;
     this.uploadRoots = uploadRoots;
     this.fileSystem = fileSystem;
+    this.eventJournal = eventJournal;
     this.connection = null;
+    this.unsubscribeFromConnection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
+    this.targetsBySession = new Map();
+    this.targetsByFrame = new Map();
+    this.targetsByDownload = new Map();
     this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
   }
@@ -64,9 +74,13 @@ export class BrowserCdpClient {
       const pageTargetIds = new Set(pages.map((target) => target.targetId));
       for (const targetId of this.sessionsByTarget.keys()) {
         if (!pageTargetIds.has(targetId)) {
+          this.targetsBySession.delete(this.sessionsByTarget.get(targetId));
           this.sessionsByTarget.delete(targetId);
           this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
+          for (const [frameId, frameTargetId] of this.targetsByFrame) {
+            if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
+          }
         }
       }
       const inspected = await Promise.all(
@@ -78,11 +92,15 @@ export class BrowserCdpClient {
         tabs: inspected.map(({ focused: _focused, ...tab }) => tab),
         focused_target_id: focused,
         viewport,
+        event_cursor: this.eventJournal.cursor(),
       };
     } catch (error) {
       if (!connection.isOpen()) {
         this.connection = null;
         this.sessionsByTarget.clear();
+        this.targetsBySession.clear();
+        this.targetsByFrame.clear();
+        this.targetsByDownload.clear();
         this.documentIdsByTarget.clear();
       }
       throw normalizeControllerError(error);
@@ -92,7 +110,12 @@ export class BrowserCdpClient {
   async close() {
     const connection = this.connection;
     this.connection = null;
+    this.unsubscribeFromConnection?.();
+    this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
+    this.targetsBySession.clear();
+    this.targetsByFrame.clear();
+    this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     if (connection) {
@@ -104,10 +127,15 @@ export class BrowserCdpClient {
     if (this.connection?.isOpen()) {
       return this.connection;
     }
+    this.unsubscribeFromConnection?.();
+    this.unsubscribeFromConnection = null;
     this.sessionsByTarget.clear();
+    this.targetsBySession.clear();
+    this.targetsByFrame.clear();
+    this.targetsByDownload.clear();
     this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
-    this.connection = this.connectionFactory
+    const connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
           debuggerEndpoint: this.debuggerEndpoint,
@@ -115,8 +143,27 @@ export class BrowserCdpClient {
           fetchImpl: this.fetchImpl,
           webSocketFactory: this.webSocketFactory,
         });
+    this.connection = connection;
     this.browserGeneration += 1;
-    return this.connection;
+    if (typeof connection.subscribe === "function") {
+      this.unsubscribeFromConnection = connection.subscribe(
+        (message) => this.recordConnectionEvent(message),
+      );
+    }
+    try {
+      await connection.send("Target.setDiscoverTargets", { discover: true });
+      this.eventJournal.recordCdp(
+        { method: "Chariox.browserConnected", params: {} },
+        this.eventContext(),
+      );
+      return connection;
+    } catch (error) {
+      this.unsubscribeFromConnection?.();
+      this.unsubscribeFromConnection = null;
+      if (this.connection === connection) this.connection = null;
+      await connection.close().catch(() => {});
+      throw error;
+    }
   }
 
   async inspectPage(connection, target, viewport) {
@@ -139,6 +186,7 @@ export class BrowserCdpClient {
       ),
     ]);
     const documentId = frameTree?.frameTree?.frame?.loaderId;
+    const frameId = frameTree?.frameTree?.frame?.id;
     if (typeof documentId !== "string" || !documentId) {
       throw new BrowserControllerError(
         "browser_document_identity_missing",
@@ -146,6 +194,9 @@ export class BrowserCdpClient {
       );
     }
     this.documentIdsByTarget.set(target.targetId, documentId);
+    if (typeof frameId === "string" && frameId) {
+      this.targetsByFrame.set(frameId, target.targetId);
+    }
     return {
       target_id: target.targetId,
       document_id: documentId,
@@ -357,6 +408,18 @@ export class BrowserCdpClient {
     }
   }
 
+  pollEvents(rawRequest) {
+    try {
+      return this.eventJournal.poll({
+        browserGeneration: rawRequest?.browser_generation,
+        cursor: rawRequest?.cursor,
+        limit: rawRequest?.limit,
+      });
+    } catch (error) {
+      throw normalizeControllerError(error);
+    }
+  }
+
   async resolvePageTarget(targetId) {
     const connection = await this.ensureConnection();
     const { targetInfos = [] } = await connection.send("Target.getTargets");
@@ -392,9 +455,61 @@ export class BrowserCdpClient {
       );
     }
     sessionId = attached.sessionId;
-    await connection.send("Page.enable", {}, sessionId);
     this.sessionsByTarget.set(targetId, sessionId);
+    this.targetsBySession.set(sessionId, targetId);
+    try {
+      await Promise.all([
+        connection.send("Page.enable", {}, sessionId),
+        connection.send("Page.setLifecycleEventsEnabled", { enabled: true }, sessionId),
+        connection.send("Runtime.enable", {}, sessionId),
+        connection.send("Network.enable", {}, sessionId),
+        connection.send("Inspector.enable", {}, sessionId),
+      ]);
+    } catch (error) {
+      this.sessionsByTarget.delete(targetId);
+      this.targetsBySession.delete(sessionId);
+      throw error;
+    }
     return sessionId;
+  }
+
+  recordConnectionEvent(message) {
+    if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
+      const targetId = this.targetsBySession.get(message.sessionId);
+      const documentId = message.params?.frame?.loaderId;
+      const frameId = message.params?.frame?.id;
+      if (targetId && typeof documentId === "string" && documentId) {
+        this.documentIdsByTarget.set(targetId, documentId);
+      }
+      if (targetId && typeof frameId === "string" && frameId) {
+        this.targetsByFrame.set(frameId, targetId);
+      }
+    }
+    if (message?.method === "Browser.downloadWillBegin") {
+      const targetId = this.targetsByFrame.get(message.params?.frameId);
+      const guid = message.params?.guid;
+      if (targetId && typeof guid === "string" && guid) {
+        this.targetsByDownload.set(guid, targetId);
+      }
+    }
+    this.eventJournal.recordCdp(message, this.eventContext());
+    if (
+      message?.method === "Browser.downloadProgress" &&
+      message.params?.state !== "inProgress"
+    ) {
+      const guid = message.params?.guid;
+      if (typeof guid === "string") this.targetsByDownload.delete(guid);
+    }
+  }
+
+  eventContext() {
+    return {
+      browserGeneration: this.browserGeneration,
+      targetIdForSession: (sessionId) => this.targetsBySession.get(sessionId) ?? null,
+      targetIdForFrame: (frameId) => this.targetsByFrame.get(frameId) ?? null,
+      targetIdForDownload: (guid) => this.targetsByDownload.get(guid) ?? null,
+      documentIdForTarget: (targetId) => this.documentIdsByTarget.get(targetId) ?? null,
+    };
   }
 }
 
@@ -405,6 +520,8 @@ export class CdpConnection {
     this.nextRequestId = 1;
     this.pending = new Map();
     this.eventWaiters = new Map();
+    this.eventListeners = new Set();
+    this.disconnectEventSent = false;
     this.closed = false;
     socket.addEventListener("message", (event) => this.receive(event.data));
     socket.addEventListener("close", () => this.failPending("browser_cdp_disconnected"));
@@ -470,6 +587,11 @@ export class CdpConnection {
     };
   }
 
+  subscribe(listener) {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
+
   async close() {
     if (this.closed) {
       return;
@@ -515,6 +637,10 @@ export class CdpConnection {
 
   failPending(code) {
     this.closed = true;
+    if (!this.disconnectEventSent) {
+      this.disconnectEventSent = true;
+      this.notifyListeners({ method: "Chariox.browserDisconnected", params: { code } });
+    }
     for (const pending of this.pending.values()) {
       clearTimeout(pending.timeout);
       pending.reject(new BrowserControllerError(code, "browser CDP connection closed"));
@@ -530,6 +656,7 @@ export class CdpConnection {
   }
 
   dispatchEvent(message) {
+    this.notifyListeners(message);
     const waiters = this.eventWaiters.get(message.method);
     if (!waiters) return;
     for (const waiter of [...waiters]) {
@@ -537,6 +664,16 @@ export class CdpConnection {
       clearTimeout(waiter.timeout);
       this.removeEventWaiter(message.method, waiter);
       waiter.resolve(message);
+    }
+  }
+
+  notifyListeners(message) {
+    for (const listener of this.eventListeners) {
+      try {
+        listener(message);
+      } catch {
+        // A consumer cannot interrupt CDP response handling.
+      }
     }
   }
 
@@ -722,6 +859,9 @@ function normalizeControllerError(error) {
     return new BrowserControllerError(error.code, error.message);
   }
   if (error instanceof BrowserPermissionError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserEventError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

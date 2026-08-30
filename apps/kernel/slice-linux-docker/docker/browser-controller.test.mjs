@@ -57,6 +57,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "permission", request });
       return { permission: request.permission, setting: request.setting };
     },
+    pollEvents: (request) => {
+      calls.push({ method: "events", request });
+      return { events: [], next_cursor: request.cursor, replay_gap: false };
+    },
     close: async () => calls.push({ method: "close" }),
   };
   const viewport = {
@@ -138,8 +142,16 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const events = await handleBrowserControllerRequest(
+    {
+      id: 8,
+      method: "browser.events.poll",
+      params: { browser_generation: 1, cursor: 4, limit: 10 },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 8, method: "shutdown" },
+    { id: 9, method: "shutdown" },
     { browser },
   );
 
@@ -154,6 +166,7 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
   assert.deepEqual(downloads.result, { enabled: true });
   assert.deepEqual(upload.result, { file_count: 1 });
   assert.deepEqual(permission.result, { permission: "geolocation", setting: "denied" });
+  assert.deepEqual(events.result, { events: [], next_cursor: 4, replay_gap: false });
   assert.equal(shutdown.ok, true);
   assert.deepEqual(calls, [
     { method: "reconcile", viewport },
@@ -199,6 +212,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         permission: "geolocation",
         setting: "denied",
       },
+    },
+    {
+      method: "events",
+      request: { browser_generation: 1, cursor: 4, limit: 10 },
     },
     { method: "close" },
   ]);

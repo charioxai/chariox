@@ -13,6 +13,7 @@ use super::browser_controller_action::{
     validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
     BrowserDialogAction, BrowserLocatorAction,
 };
+use super::browser_controller_event::{BrowserControllerEventBatch, MAX_BROWSER_EVENT_POLL_LIMIT};
 use super::browser_controller_file_transfer::{
     BrowserControllerDownloadsResult, BrowserControllerUploadResult, BrowserUploadFiles,
 };
@@ -61,6 +62,8 @@ pub(crate) struct BrowserControllerReconciliation {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct BrowserControllerBrowserSnapshot {
     pub(crate) browser_generation: u64,
+    #[serde(default)]
+    pub(crate) event_cursor: u64,
     pub(crate) tabs: Vec<BrowserControllerTabSnapshot>,
     pub(crate) focused_target_id: Option<String>,
     viewport: BrowserControllerViewport,
@@ -142,6 +145,14 @@ pub(crate) trait BrowserControllerProcessBackend {
         _setting: BrowserPermissionSetting,
     ) -> Result<BrowserControllerPermissionResult, String> {
         Err("browser controller backend does not support permissions".to_string())
+    }
+    fn poll_browser_events(
+        &mut self,
+        _browser_generation: u64,
+        _cursor: u64,
+        _limit: u16,
+    ) -> Result<BrowserControllerEventBatch, String> {
+        Err("browser controller backend does not support event polling".to_string())
     }
 }
 
@@ -563,6 +574,33 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(target_id, document_id, permission, setting)?;
         Ok(result)
     }
+
+    fn poll_browser_events(
+        &mut self,
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    ) -> Result<BrowserControllerEventBatch, String> {
+        if browser_generation == 0 {
+            return Err("browser event generation must be positive".to_string());
+        }
+        if limit == 0 || limit > MAX_BROWSER_EVENT_POLL_LIMIT {
+            return Err(format!(
+                "browser event limit must be between 1 and {MAX_BROWSER_EVENT_POLL_LIMIT}"
+            ));
+        }
+        let response = self.request(
+            "browser.events.poll",
+            serde_json::json!({
+                "browser_generation": browser_generation,
+                "cursor": cursor,
+                "limit": limit,
+            }),
+        )?;
+        let result = response.into_result::<BrowserControllerEventBatch>("browser.events.poll")?;
+        result.validate(browser_generation, cursor, limit)?;
+        Ok(result)
+    }
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -810,6 +848,18 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .set_browser_permission(target_id, document_id, permission, setting)
     }
 
+    pub(crate) fn poll_browser_events(
+        &mut self,
+        session_id: &str,
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    ) -> Result<BrowserControllerEventBatch, String> {
+        self.require_lease(session_id)?;
+        self.supervisor
+            .poll_browser_events(browser_generation, cursor, limit)
+    }
+
     fn require_lease(&self, session_id: &str) -> Result<(), String> {
         if !self.owner_session_ids.contains(session_id) {
             return Err(format!(
@@ -1034,6 +1084,24 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn poll_browser_events(
+        &self,
+        session_id: &str,
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    ) -> Result<Option<BrowserControllerEventBatch>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .poll_browser_events(session_id, browser_generation, cursor, limit)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -1178,6 +1246,17 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.ensure_started()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
+    }
+
+    fn poll_browser_events(
+        &mut self,
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    ) -> Result<BrowserControllerEventBatch, String> {
+        self.ensure_started()?;
+        self.backend
+            .poll_browser_events(browser_generation, cursor, limit)
     }
 
     fn start(&mut self) -> Result<(), String> {

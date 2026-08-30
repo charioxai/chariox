@@ -65,6 +65,12 @@ export async function handleBrowserControllerRequest(
         await browser.setPermission(request.params),
       );
     }
+    if (request.method === "browser.events.poll") {
+      return successResponse(
+        request.id,
+        browser.pollEvents(request.params),
+      );
+    }
     if (request.method === "shutdown") {
       await browser.close();
       return successResponse(request.id, {
