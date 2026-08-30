@@ -160,6 +160,22 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn request_takeover_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        target: super::InputTarget,
+    ) -> Result<(super::TakeoverOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let outcome = environment.request_takeover_as_actor(actor, target)?;
+        Ok((outcome, environment.snapshot()))
+    }
+
     pub(crate) fn snapshot(
         &self,
         session_id: &str,

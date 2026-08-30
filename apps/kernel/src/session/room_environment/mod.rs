@@ -19,7 +19,7 @@ pub use model::{
     EnvironmentComponent, EnvironmentComponentHealth, EnvironmentComponentHealthState,
     EnvironmentError, EnvironmentLifecycle, EnvironmentTab, RoomEnvironmentSnapshot,
 };
-pub use ownership::{InputOwnership, TakeoverOutcome};
+pub use ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};
 pub(crate) use registry::RoomEnvironmentRegistry;
 pub use state::RoomEnvironment;
 

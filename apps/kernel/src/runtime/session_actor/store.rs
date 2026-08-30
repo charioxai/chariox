@@ -3,9 +3,10 @@ use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
     AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
-    LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
-    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
+    LocalDaemonResponse, RenameProjectRequest, RequestRoomEnvironmentInputTakeoverRequest,
+    RespondToInteractionRequest, RestoreProjectRequest, RetryRoomEnvironmentRequest,
+    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
+    UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -146,6 +147,32 @@ impl SessionRuntimeStore {
                     room_environment_control_error("environment.viewport.update", error)
                 })
         });
+        (result, None)
+    }
+
+    pub(super) async fn request_room_environment_input_takeover(
+        &self,
+        request: RequestRoomEnvironmentInputTakeoverRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor = crate::session::EnvironmentActor::new(
+            crate::session::human_environment_actor_id(&caller_user_id),
+            crate::session::EnvironmentActorKind::Human,
+            crate::session::human_environment_actor_label(&caller_user_id),
+        );
+        let result = self
+            .state
+            .request_room_environment_takeover_as_actor(&request.session_id, actor, request.target)
+            .map(
+                |(outcome, environment)| LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+                    outcome,
+                    environment,
+                },
+            )
+            .map_err(|error| room_environment_control_error("environment.input.takeover", error));
         (result, None)
     }
 

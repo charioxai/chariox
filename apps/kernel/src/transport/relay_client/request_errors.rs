@@ -68,6 +68,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(_) => "environment.input.takeover",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
@@ -108,9 +109,9 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
 mod tests {
     use super::*;
     use crate::local::{
-        GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest,
-        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-        UpdateRoomEnvironmentViewportRequest,
+        GetRoomEnvironmentStateRequest, RequestRoomEnvironmentInputTakeoverRequest,
+        RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest,
+        StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -185,5 +186,17 @@ mod tests {
         );
 
         assert_eq!(relay_request_kind(&request), "environment.viewport.update");
+    }
+
+    #[test]
+    fn room_environment_takeover_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: "session-1".to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.input.takeover");
     }
 }

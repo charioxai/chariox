@@ -7,7 +7,7 @@ use super::action::{
 use super::model::{
     EnvironmentActor, EnvironmentActorKind, EnvironmentError, EnvironmentLifecycle,
 };
-use super::ownership::{InputOwnership, TakeoverOutcome};
+use super::ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};
 use super::tabs::TabRegistry;
 
 pub(crate) struct ActionFinishEffect {
@@ -56,6 +56,17 @@ impl EnvironmentActionLedger {
             .map(|(target, actor_id)| InputOwnership {
                 target: target.clone(),
                 actor_id: actor_id.clone(),
+            })
+            .collect()
+    }
+
+    pub(crate) fn pending_takeovers(&self) -> Vec<PendingInputTakeover> {
+        self.pending_takeovers
+            .iter()
+            .map(|(target, human_actor_id)| PendingInputTakeover {
+                target: target.clone(),
+                human_actor_id: human_actor_id.clone(),
+                blocking_action_ids: self.reservations.get(target).into_iter().cloned().collect(),
             })
             .collect()
     }

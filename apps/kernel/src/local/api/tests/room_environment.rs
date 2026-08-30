@@ -2,6 +2,68 @@ use super::*;
 use crate::session::CanonicalViewport;
 
 #[test]
+fn room_environment_takeover_uses_authenticated_actor_and_room_lane() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-takeover",
+                "worktree-environment-takeover",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::StartRoomEnvironment(
+            StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        ))
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("managed runtime should become ready");
+    });
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ))
+        .expect("authenticated Room member should take desktop input");
+    let LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome,
+        environment,
+    } = response
+    else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert_eq!(outcome, crate::session::TakeoverOutcome::Granted);
+    assert_eq!(environment.input_ownership.len(), 1);
+    assert_eq!(
+        environment.input_ownership[0].actor_id,
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID)
+    );
+    assert_eq!(
+        environment.input_ownership[0].target,
+        crate::session::InputTarget::Desktop
+    );
+}
+
+#[test]
 fn room_environment_reconciles_human_and_agent_presence() {
     let harness = LocalRouterTestHarness::new();
     let (session, default_agent) = match harness
@@ -637,6 +699,12 @@ fn room_environment_lifecycle_requires_room_membership() {
         LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
             session_id: session.id().to_string(),
         }),
+        LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+            RequestRoomEnvironmentInputTakeoverRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ),
     ] {
         let error = harness
             .dispatch_as_user("outsider-1", request)

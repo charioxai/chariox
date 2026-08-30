@@ -212,6 +212,11 @@ impl SessionRuntimeCommandExecutor {
                     .update_room_environment_viewport(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => {
+                self.store
+                    .request_room_environment_input_takeover(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
                 self.store.create_agent_prompt_schedule(request).await
             }

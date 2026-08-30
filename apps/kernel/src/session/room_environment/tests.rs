@@ -312,6 +312,14 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }
     );
     assert!(environment.snapshot().input_ownership.is_empty());
+    assert_eq!(
+        environment.snapshot().pending_input_takeovers,
+        vec![PendingInputTakeover {
+            target: InputTarget::BrowserTab(tab_id.clone()),
+            human_actor_id: "user-1".to_string(),
+            blocking_action_ids: vec![action_id.clone()],
+        }]
+    );
     assert!(matches!(
         environment
             .submit_action(EnvironmentActionRequest::browser_mutation(
@@ -334,6 +342,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
             actor_id: "user-1".to_string(),
         }]
     );
+    assert!(environment.snapshot().pending_input_takeovers.is_empty());
     assert_eq!(
         environment
             .request_takeover("user-1", InputTarget::BrowserTab(tab_id.clone()))
@@ -344,6 +353,24 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         .release_input("user-1", &InputTarget::BrowserTab(tab_id))
         .unwrap();
     assert!(environment.snapshot().input_ownership.is_empty());
+}
+
+#[test]
+fn failed_takeover_does_not_register_the_authenticated_actor() {
+    let mut environment = ready_environment();
+
+    assert_eq!(
+        environment.request_takeover_as_actor(
+            EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "Miguel"),
+            InputTarget::BrowserTab("missing-tab".to_string()),
+        ),
+        Err(EnvironmentError::UnknownTab {
+            tab_id: "missing-tab".to_string(),
+        })
+    );
+    assert!(environment.snapshot().actors.is_empty());
+    assert!(environment.snapshot().input_ownership.is_empty());
+    assert!(environment.snapshot().pending_input_takeovers.is_empty());
 }
 
 #[test]

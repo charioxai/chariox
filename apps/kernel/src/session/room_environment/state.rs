@@ -74,6 +74,7 @@ impl RoomEnvironment {
             focused_tab_id,
             actions: self.action_ledger.actions(),
             input_ownership: self.action_ledger.ownership(),
+            pending_input_takeovers: self.action_ledger.pending_takeovers(),
             event_cursor: self.event_log.cursor(),
         }
     }
@@ -342,6 +343,46 @@ impl RoomEnvironment {
             self.action_ledger
                 .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
         if ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        Ok(outcome)
+    }
+
+    pub fn request_takeover_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        target: InputTarget,
+    ) -> Result<TakeoverOutcome, EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
+            });
+        }
+
+        let mut actors = self.actors.clone();
+        if let Some(existing) = actors.get(&actor.actor_id) {
+            if existing.kind != actor.kind {
+                return Err(EnvironmentError::ActorKindConflict {
+                    actor_id: actor.actor_id,
+                });
+            }
+        }
+        actors.insert(actor.actor_id.clone(), actor.clone());
+
+        let mut action_ledger = self.action_ledger.clone();
+        let (outcome, _) =
+            action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
+        let actors_changed = actors != self.actors;
+        let input_state_changed = action_ledger != self.action_ledger;
+        self.actors = actors;
+        self.action_ledger = action_ledger;
+        if actors_changed {
+            self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
         Ok(outcome)

@@ -36,3 +36,9 @@ pub struct UpdateRoomEnvironmentViewportRequest {
     pub expected_revision: u64,
     pub viewport: RoomEnvironmentViewportRequest,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestRoomEnvironmentInputTakeoverRequest {
+    pub session_id: String,
+    pub target: crate::session::InputTarget,
+}

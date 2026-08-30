@@ -63,6 +63,16 @@ export type RoomEnvironmentInputOwnership = {
   actor_id: string
 }
 
+export type RoomEnvironmentPendingInputTakeover = {
+  target: RoomEnvironmentInputTarget
+  human_actor_id: string
+  blocking_action_ids: string[]
+}
+
+export type RoomEnvironmentTakeoverOutcome =
+  | { state: "granted" }
+  | { state: "cancellation_required"; action_ids: string[] }
+
 export type RoomEnvironmentSnapshot = {
   session_id: string
   environment_id: string
@@ -75,6 +85,7 @@ export type RoomEnvironmentSnapshot = {
   focused_tab_id: string | null
   actions: RoomEnvironmentAction[]
   input_ownership: RoomEnvironmentInputOwnership[]
+  pending_input_takeovers: RoomEnvironmentPendingInputTakeover[]
   event_cursor: number
 }
 
@@ -86,6 +97,13 @@ export type RoomEnvironmentStateResponse = {
 
 export type RoomEnvironmentUpdatedResponse = {
   RoomEnvironmentUpdated: {
+    environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentTakeoverUpdatedResponse = {
+  RoomEnvironmentTakeoverUpdated: {
+    outcome: RoomEnvironmentTakeoverOutcome
     environment: RoomEnvironmentSnapshot
   }
 }

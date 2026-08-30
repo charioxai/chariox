@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   getRoomEnvironmentStateRequest,
+  requestRoomEnvironmentInputTakeoverRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
   updateRoomEnvironmentViewportRequest,
@@ -14,8 +15,8 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 271", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 271)
+test("Room Environment state request matches protocol 272", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 272)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -84,6 +85,7 @@ test("Room Environment state request matches protocol 271", () => {
             actor_id: "human-1",
           },
         ],
+        pending_input_takeovers: [],
         event_cursor: 7,
       },
     },
@@ -136,6 +138,7 @@ test("Room Environment start request keeps viewport ownership at the kernel seam
         focused_tab_id: null,
         actions: [],
         input_ownership: [],
+        pending_input_takeovers: [],
         event_cursor: 1,
       },
     },
@@ -183,6 +186,18 @@ test("Room Environment viewport update carries only dimensions and observed revi
           desktop_pixel_width: 2880,
           desktop_pixel_height: 1800,
         },
+      },
+    },
+  )
+})
+
+test("Room Environment takeover request cannot forge Actor identity", () => {
+  assert.deepEqual(
+    requestRoomEnvironmentInputTakeoverRequest("session-1", { kind: "desktop" }),
+    {
+      RequestRoomEnvironmentInputTakeover: {
+        session_id: "session-1",
+        target: { kind: "desktop" },
       },
     },
   )

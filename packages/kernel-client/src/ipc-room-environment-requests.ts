@@ -55,3 +55,15 @@ export function updateRoomEnvironmentViewportRequest(
     },
   }
 }
+
+export function requestRoomEnvironmentInputTakeoverRequest(
+  sessionId: string,
+  target: import("./kernel-types-environment.js").RoomEnvironmentInputTarget,
+) {
+  return {
+    RequestRoomEnvironmentInputTakeover: {
+      session_id: sessionId,
+      target,
+    },
+  }
+}

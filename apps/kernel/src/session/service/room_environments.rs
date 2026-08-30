@@ -107,4 +107,19 @@ impl SessionService {
         }
         self.room_environments.reconcile_actors(session_id, actors)
     }
+
+    pub(crate) fn request_room_environment_takeover_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        target: InputTarget,
+    ) -> Result<(TakeoverOutcome, RoomEnvironmentSnapshot), EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .request_takeover_as_actor(session_id, actor, target)
+    }
 }

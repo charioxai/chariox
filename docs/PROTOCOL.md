@@ -567,7 +567,7 @@ This does not require all provider adapters to use the same wire transport inter
 
 ## 4.1.2 Shared Room environment protocol direction
 
-This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. Protocol v270 adds membership-scoped `StartRoomEnvironment`, `StopRoomEnvironment`, and `RetryRoomEnvironment` requests plus the shared `RoomEnvironmentUpdated` response. Start creates the Room's default Environment on first use, keeps its identity on repeated start, and accepts only initial viewport dimensions; later start requests retain the kernel-owned viewport without validating their ignored viewport fields. Stop preserves Environment identity and runtime generation. Until the Milestone 2 managed controller reports process completion, stop records the `stopping` transition and synchronously returns the Environment as `stopped`, so start-after-stop remains available. Retry preserves Environment identity, invalidates failed runtime handles, increments runtime generation, and returns the lifecycle to `starting`. Protocol v271 adds `UpdateRoomEnvironmentViewport`. The request carries dimensions and the revision observed by the caller. It does not accept client-supplied Environment, Actor, owner, or new revision values. The session lane derives the namespaced `user:<user_id>` Actor from the authenticated caller and the kernel assigns the next revision. Rejections use stable `environment_*` error codes on the relay surface and include that code in local IPC error text. The remaining takeover, mutation, history, and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
+This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. Protocol v270 adds membership-scoped `StartRoomEnvironment`, `StopRoomEnvironment`, and `RetryRoomEnvironment` requests plus the shared `RoomEnvironmentUpdated` response. Start creates the Room's default Environment on first use, keeps its identity on repeated start, and accepts only initial viewport dimensions; later start requests retain the kernel-owned viewport without validating their ignored viewport fields. Stop preserves Environment identity and runtime generation. Until the Milestone 2 managed controller reports process completion, stop records the `stopping` transition and synchronously returns the Environment as `stopped`, so start-after-stop remains available. Retry preserves Environment identity, invalidates failed runtime handles, increments runtime generation, and returns the lifecycle to `starting`. Protocol v271 adds `UpdateRoomEnvironmentViewport`. The request carries dimensions and the revision observed by the caller. It does not accept client-supplied Environment, Actor, owner, or new revision values. The session lane derives the namespaced `user:<user_id>` Actor from the authenticated caller and the kernel assigns the next revision. Protocol v272 adds membership-scoped `RequestRoomEnvironmentInputTakeover`, the `RoomEnvironmentTakeoverUpdated` response, and pending-takeover state in the shared snapshot. The request carries only the Room and input target; the session lane derives the human Actor from the authenticated caller. Rejections use stable `environment_*` error codes on the relay surface and include that code in local IPC error text. The remaining release, mutation, history, and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
 
 The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
 
@@ -584,6 +584,7 @@ A full Environment snapshot carries at least:
 - canonical viewport dimensions, scale, revision, and current owner
 - ordered Room-visible tabs and the focused Tab
 - present Actors and current input ownership
+- pending human takeovers and the active Actions blocking them
 - active and recently terminal Actions
 - snapshot event cursor
 
@@ -661,7 +662,7 @@ Queue and reservation waits have bounded deadlines. Cancellation and process los
 
 ### Human takeover
 
-Takeover requests identify Actor, Environment, and input target. A successful response is not sent until the active agent Action has reached `cancelled`, `failed`, or `completed` and the target belongs to the human Actor.
+Takeover requests identify the Room and input target. The kernel derives the human Actor from the authenticated session caller; clients cannot claim another Actor identity. When no agent Action reserves the target, the response is `granted` and its authoritative snapshot shows the human owner. When an active agent Action blocks takeover, the response is `cancellation_required` and its snapshot projects the pending human Actor and blocking Action IDs. A later response may report `granted` only after every blocking Action has reached `cancelled`, `failed`, or `completed` and the target belongs to the human Actor.
 
 Takeover emits ordered Action and ownership events. Every attached client projects the same transition. A takeover request is idempotent for the same Actor and target. A conflicting human request follows Room permission policy rather than last-writer-wins behavior.
 
@@ -689,8 +690,8 @@ The smallest request set is:
 - `environment.start` (serialized in local daemon protocol v270)
 - `environment.stop` (serialized in local daemon protocol v270)
 - `environment.retry` (serialized in local daemon protocol v270)
-- `environment.viewport.update`
-- `environment.input.takeover`
+- `environment.viewport.update` (serialized in local daemon protocol v271)
+- `environment.input.takeover` (serialized in local daemon protocol v272)
 - `environment.input.release`
 - `environment.action.submit`
 - `environment.action.cancel`
@@ -733,7 +734,7 @@ Process recovery follows these rules:
 
 ### Compatibility policy
 
-Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot. Protocol v270 clients may also request start, stop, and retry through the kernel-owned lifecycle lane. They do not gain takeover, mutation, or history authority until those requests are released. During migration:
+Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot. Protocol v270 clients may also request start, stop, and retry through the kernel-owned lifecycle lane. Protocol v271 clients may update the canonical viewport. Protocol v272 clients may request authenticated human takeover and observe pending takeover state. They do not gain release, mutation, or history authority until those requests are released. During migration:
 
 - the kernel keeps the old tool names behind a compatibility adapter
 - compatibility calls still enter the kernel-owned Action path once it exists
@@ -742,7 +743,7 @@ Protocol v268 clients know slice display endpoints and one-shot browser/computer
 - unknown Environment events remain ignorable only when the client's behavior stays safe
 - a client that needs takeover, Action history, stable Tabs, or canonical viewport requires the new minimum protocol version
 
-No minimum version changes for clients that do not use the Environment lifecycle contract. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer.
+No minimum version changes for clients that do not use these Environment controls. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer; one that updates the canonical viewport must require v271 or newer; one that requests or depends on human takeover state must require v272 or newer.
 
 ## 4.2 Planned Command-Dispatch Surface
 

@@ -8,7 +8,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -75,11 +75,12 @@ fn room_environment_state_shape_is_versioned() {
                 target: InputTarget::Desktop,
                 actor_id: "agent-1".to_string(),
             }],
+            pending_input_takeovers: Vec::new(),
             event_cursor: 0,
         },
     };
     assert_eq!(
-        serde_json::to_value(response).expect("Room Environment state response should encode"),
+        serde_json::to_value(&response).expect("Room Environment state response should encode"),
         serde_json::json!({
             "RoomEnvironmentState": {
                 "environment": {
@@ -139,16 +140,32 @@ fn room_environment_state_shape_is_versioned() {
                         },
                         "actor_id": "agent-1"
                     }],
+                    "pending_input_takeovers": [],
                     "event_cursor": 0
                 }
             }
         })
     );
+
+    let mut previous_protocol_value =
+        serde_json::to_value(&response).expect("Room Environment response should encode");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment snapshot should be an object")
+        .remove("pending_input_takeovers");
+    let LocalDaemonResponse::RoomEnvironmentState { environment } =
+        serde_json::from_value(previous_protocol_value)
+            .expect("pre-v272 snapshots should decode with no pending takeovers")
+    else {
+        panic!("expected Room Environment state response");
+    };
+    assert!(environment.pending_input_takeovers.is_empty());
 }
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -196,6 +213,7 @@ fn room_environment_start_shape_is_versioned() {
             focused_tab_id: None,
             actions: Vec::new(),
             input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
             event_cursor: 1,
         },
     };
@@ -223,6 +241,7 @@ fn room_environment_start_shape_is_versioned() {
                     "focused_tab_id": null,
                     "actions": [],
                     "input_ownership": [],
+                    "pending_input_takeovers": [],
                     "event_cursor": 1
                 }
             }
@@ -232,7 +251,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -255,7 +274,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -278,7 +297,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 271);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -313,5 +332,87 @@ fn room_environment_viewport_update_shape_is_versioned() {
         serde_json::from_value::<LocalDaemonRequest>(value)
             .expect("viewport request should decode"),
         request
+    );
+}
+
+#[test]
+fn room_environment_takeover_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 272);
+
+    let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
+        RequestRoomEnvironmentInputTakeoverRequest {
+            session_id: "session-1".to_string(),
+            target: InputTarget::Desktop,
+        },
+    );
+    let request_value = serde_json::json!({
+        "RequestRoomEnvironmentInputTakeover": {
+            "session_id": "session-1",
+            "target": {
+                "kind": "desktop"
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("takeover request should encode"),
+        request_value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(request_value)
+            .expect("takeover request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentTakeoverUpdated {
+        outcome: crate::session::TakeoverOutcome::Granted,
+        environment: RoomEnvironmentSnapshot {
+            session_id: "session-1".to_string(),
+            environment_id: "environment-session-1".to_string(),
+            runtime_generation: 1,
+            lifecycle: EnvironmentLifecycle::Ready,
+            health: Vec::new(),
+            viewport: CanonicalViewport::new(1280, 800, 1, 1280, 800)
+                .expect("viewport should be valid"),
+            actors: Vec::new(),
+            tabs: Vec::new(),
+            focused_tab_id: None,
+            actions: Vec::new(),
+            input_ownership: Vec::new(),
+            pending_input_takeovers: Vec::new(),
+            event_cursor: 2,
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(response).expect("takeover response should encode"),
+        serde_json::json!({
+            "RoomEnvironmentTakeoverUpdated": {
+                "outcome": {
+                    "state": "granted"
+                },
+                "environment": {
+                    "session_id": "session-1",
+                    "environment_id": "environment-session-1",
+                    "runtime_generation": 1,
+                    "lifecycle": "ready",
+                    "health": [],
+                    "viewport": {
+                        "css_width": 1280,
+                        "css_height": 800,
+                        "device_scale_factor": 1,
+                        "desktop_pixel_width": 1280,
+                        "desktop_pixel_height": 800,
+                        "revision": 1,
+                        "last_actor_id": null
+                    },
+                    "actors": [],
+                    "tabs": [],
+                    "focused_tab_id": null,
+                    "actions": [],
+                    "input_ownership": [],
+                    "pending_input_takeovers": [],
+                    "event_cursor": 2
+                }
+            }
+        })
     );
 }

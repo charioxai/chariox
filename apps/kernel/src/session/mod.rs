@@ -42,7 +42,7 @@ pub use room_environment::{
     EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
     EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
     EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
-    InputTarget, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    InputTarget, PendingInputTakeover, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,

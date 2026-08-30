@@ -1,5 +1,5 @@
 use super::action::{EnvironmentAction, EnvironmentActionState, InputTarget};
-use super::ownership::InputOwnership;
+use super::ownership::{InputOwnership, PendingInputTakeover};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -149,6 +149,8 @@ pub struct RoomEnvironmentSnapshot {
     pub focused_tab_id: Option<String>,
     pub actions: Vec<EnvironmentAction>,
     pub input_ownership: Vec<InputOwnership>,
+    #[serde(default)]
+    pub pending_input_takeovers: Vec<PendingInputTakeover>,
     pub event_cursor: u64,
 }
 
