@@ -134,7 +134,11 @@ impl EnvironmentActionRequest {
             && self.kind == other.kind
             && self.mutates == other.mutates
             && self.targets == other.targets
-            && self.tab_preconditions == other.tab_preconditions
+            && self
+                .tab_preconditions
+                .iter()
+                .map(|(tab_id, _)| tab_id)
+                .eq(other.tab_preconditions.iter().map(|(tab_id, _)| tab_id))
     }
 }
 

@@ -358,6 +358,9 @@ impl RoomEnvironment {
             });
         }
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
+        self.emit(EnvironmentEventKind::LifecycleChanged {
+            lifecycle: EnvironmentLifecycle::Starting,
+        });
     }
 
     fn emit(&mut self, kind: EnvironmentEventKind) {

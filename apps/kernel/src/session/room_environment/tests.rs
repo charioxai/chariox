@@ -431,6 +431,7 @@ fn process_loss_fails_only_running_actions_and_invalidates_runtime_handles() {
             .unwrap(),
     );
 
+    let cursor = environment.snapshot().event_cursor;
     environment.invalidate_runtime_after_process_loss().unwrap();
     let snapshot = environment.snapshot();
     assert_eq!(snapshot.runtime_generation, 2);
@@ -454,6 +455,17 @@ fn process_loss_fails_only_running_actions_and_invalidates_runtime_handles() {
             .state,
         EnvironmentActionState::Failed
     );
+    assert!(matches!(
+        environment.events_after(cursor),
+        EnvironmentReplay::Events { events, .. }
+            if matches!(events[events.len() - 2].kind, EnvironmentEventKind::RuntimeInvalidated)
+                && matches!(
+                    events[events.len() - 1].kind,
+                    EnvironmentEventKind::LifecycleChanged {
+                        lifecycle: EnvironmentLifecycle::Starting,
+                    }
+                )
+    ));
 }
 
 #[test]
@@ -610,7 +622,7 @@ fn idempotency_survives_generation_change_without_repeating_work() {
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();
 
-    let retry = EnvironmentActionRequest::browser_mutation("agent-1", 2, "send", &tab_id, 1)
+    let retry = EnvironmentActionRequest::browser_mutation("agent-1", 2, "send", &tab_id, 99)
         .with_idempotency_key("send-message-1");
     assert_eq!(
         environment.submit_action(retry).unwrap(),
