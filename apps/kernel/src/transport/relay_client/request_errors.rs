@@ -67,6 +67,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
