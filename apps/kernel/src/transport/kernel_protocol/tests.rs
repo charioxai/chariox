@@ -10,6 +10,19 @@ use crate::session::{
 use crate::terminal::TerminalOutputKind;
 
 #[test]
+fn credential_vault_locked_uses_a_stable_transport_error_code() {
+    let error = DaemonError::LocalTransport {
+        operation: "credential_vault_locked",
+        message: "Chariox vault is locked".to_string(),
+    };
+
+    let mapped = map_kernel_error(&error);
+
+    assert_eq!(mapped.code, "credential_vault_locked");
+    assert!(!mapped.retryable);
+}
+
+#[test]
 fn terminal_output_event_batches_stay_under_json_byte_cap() {
     let records = (0..20)
         .map(|index| TerminalOutputRecord {

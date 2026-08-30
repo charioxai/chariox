@@ -68,6 +68,31 @@ test("settleAttachProviderRun keeps the TUI attachable when the credential vault
   assert.equal(result.targetAgent?.id, "agent-vault")
 })
 
+test("settleAttachProviderRun recognizes the structured vault-locked error code", async () => {
+  const result = await settleAttachProviderRun(
+    session,
+    { provider: "codex", model: "gpt-5.6-luna", effort: "low" },
+    "codex-secondary",
+    false,
+    {
+      launchProviderRun: async () => {
+        throw new LocalIpcError(
+          "handle kernel response",
+          "vault access is unavailable",
+          "credential_vault_locked",
+          false,
+        )
+      },
+      getSessionState: async () => session,
+      tryGetProviderRun: async () => null,
+    },
+  )
+
+  assert.equal(result.action, "skipped")
+  if (result.action !== "skipped") return
+  assert.equal(result.reason, "credential_vault_locked")
+})
+
 test("settleAttachProviderRun still surfaces unrelated provider launch failures", async () => {
   const launchError = new LocalIpcError(
     "handle kernel response",

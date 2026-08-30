@@ -135,7 +135,8 @@ export async function settleAttachProviderRun(
 }
 
 function isCredentialVaultLockedError(error: unknown): boolean {
-  return error instanceof LocalIpcError
-    && error.code === "local_transport_error"
+  if (!(error instanceof LocalIpcError)) return false
+  if (error.code === "credential_vault_locked") return true
+  return error.code === "local_transport_error"
     && error.message.includes("`credential_vault_locked`")
 }

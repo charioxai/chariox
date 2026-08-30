@@ -796,6 +796,11 @@ pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
         DaemonError::ProviderProtocol { .. } => {
             kernel_error("provider_protocol_error", error, true)
         }
+        DaemonError::LocalTransport { operation, .. }
+            if *operation == "credential_vault_locked" =>
+        {
+            kernel_error("credential_vault_locked", error, false)
+        }
         DaemonError::LocalTransport { .. } => kernel_error("local_transport_error", error, true),
         DaemonError::PtySpawn { .. } => kernel_error("pty_spawn_failed", error, true),
         DaemonError::PtyCleanup { .. } => kernel_error("pty_cleanup_failed", error, true),

@@ -289,6 +289,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
         })
       }
 
+      let postHydrationStatusLine: string | null = null
       const providerSettlement = await settleAttachProviderRun(
         attachedSession,
         launch,
@@ -367,7 +368,8 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
               session_id: session.id,
               agent_id: providerSettlement.targetAgent?.id ?? null,
             })
-            deps.setStatusLine("Chariox vault locked. Run /credential vault manage.")
+            postHydrationStatusLine = "Chariox vault locked. Run /credential vault manage."
+            deps.setStatusLine(postHydrationStatusLine)
           }
           deps.setProviderRunState(null)
           break
@@ -412,6 +414,9 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
       }
 
       applyAttachedState(hydratedSession, attachment, createdSession)
+      if (postHydrationStatusLine) {
+        deps.setStatusLine(postHydrationStatusLine)
+      }
 
       await refreshAttachedSessionRow(hydratedSession)
 
