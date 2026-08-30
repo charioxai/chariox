@@ -5,10 +5,15 @@ on:
     branches:
       - main
   pull_request:
-    types: [opened, synchronize, reopened, ready_for_review]
+    # Opening a non-draft PR or marking a draft ready starts the final CI run.
+    # A later push has no CI run. Return the PR to draft, complete review, then
+    # mark the exact head ready again, or dispatch this workflow for that head.
+    types: [opened, ready_for_review]
+  workflow_dispatch:
 
 jobs:
   node:
+    if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
     steps:
@@ -50,9 +55,6 @@ jobs:
         run: pnpm test
 
   rust:
-    # The full workspace suite is intentionally deferred for draft PRs. The
-    # reviewer still receives every synchronize event, while the expensive
-    # Rust gate runs on the final ready-for-review head and on main.
     if: github.event_name != 'pull_request' || github.event.pull_request.draft == false
     runs-on: ubuntu-latest
 
