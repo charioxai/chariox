@@ -1,6 +1,13 @@
 import assert from "node:assert/strict"
+import { spawn } from "node:child_process"
+import { once } from "node:events"
+import path from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 import { startBrowserComputerFixture } from "./browser-computer-fixture.mjs"
+
+const scriptDir = path.dirname(fileURLToPath(import.meta.url))
+const fixtureEntrypoint = path.resolve(scriptDir, "..", "live-browser-computer-fixture.mjs")
 
 test("fixture exercises persisted browser state and difficult browser structures", async () => {
   const fixture = await startBrowserComputerFixture({ password: "fixture-test-password" })
@@ -87,7 +94,12 @@ test("fixture provides authenticated mail without exposing its password", async 
     assert.equal(sent.status, 200)
     assert.match(await sent.text(), /CHARIOX_FIXTURE_MESSAGE_SENT/)
 
-    const messages = await fetch(`${fixture.origin}/api/messages`).then((response) => response.json())
+    const unauthenticatedMessages = await fetch(`${fixture.origin}/api/messages`)
+    assert.equal(unauthenticatedMessages.status, 403)
+    const unauthenticatedUpload = await fetch(`${fixture.origin}/uploads`, { method: "POST", body: "untrusted" })
+    assert.equal(unauthenticatedUpload.status, 403)
+
+    const messages = await fetch(`${fixture.origin}/api/messages`, { headers: { cookie } }).then((response) => response.json())
     assert.equal(messages.messages.length, 1)
     assert.deepEqual(messages.messages[0], {
       id: "message-1",
@@ -98,6 +110,15 @@ test("fixture provides authenticated mail without exposing its password", async 
       sentAt: messages.messages[0].sentAt,
     })
     assert.equal(fixture.messages.length, 1)
+
+    const upload = await fetch(`${fixture.origin}/uploads`, {
+      method: "POST",
+      headers: { cookie, "content-type": "text/plain" },
+      body: "fixture upload",
+    })
+    assert.equal(upload.status, 200)
+    assert.match(await upload.text(), /CHARIOX_FIXTURE_UPLOAD 14/)
+    assert.deepEqual(fixture.uploads, [{ contentType: "text/plain", sizeBytes: 14 }])
   } finally {
     await fixture.close()
   }
@@ -110,3 +131,77 @@ test("fixture validates required credentials and releases its listener", async (
   await fixture.close()
   await assert.rejects(() => fetch(`${origin}/health`), /fetch failed/)
 })
+
+test("fixture entrypoint rejects invalid configuration and stops on SIGTERM", async () => {
+  const env = { ...process.env }
+  delete env.CHARIOX_BROWSER_FIXTURE_PASSWORD
+
+  const missingPassword = await runEntrypoint(env)
+  assert.equal(missingPassword.code, 1)
+  assert.match(missingPassword.stderr, /CHARIOX_BROWSER_FIXTURE_PASSWORD is required/)
+
+  const invalidPort = await runEntrypoint({
+    ...env,
+    CHARIOX_BROWSER_FIXTURE_PASSWORD: "fixture-entrypoint-password",
+    CHARIOX_BROWSER_FIXTURE_PORT: "65536",
+  })
+  assert.notEqual(invalidPort.code, 0)
+  assert.match(invalidPort.stderr, /CHARIOX_BROWSER_FIXTURE_PORT must be a valid TCP port/)
+
+  const password = "fixture-entrypoint-password"
+  const child = spawn(process.execPath, [fixtureEntrypoint], {
+    env: {
+      ...env,
+      CHARIOX_BROWSER_FIXTURE_PASSWORD: password,
+      CHARIOX_BROWSER_FIXTURE_PORT: "0",
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", (chunk) => { stdout += chunk })
+  child.stderr.on("data", (chunk) => { stderr += chunk })
+  try {
+    const readyLine = await waitForReadyLine(child, () => stdout)
+    const ready = JSON.parse(readyLine.slice(readyLine.indexOf("{")).trim())
+    assert.deepEqual(await fetch(`${ready.origin}/health`).then((response) => response.json()), { ok: true })
+    assert.doesNotMatch(`${stdout}\n${stderr}`, new RegExp(password))
+
+    child.kill("SIGTERM")
+    const [code, signal] = await waitForClose(child)
+    assert.equal(code, 0)
+    assert.equal(signal, null)
+    await assert.rejects(() => fetch(`${ready.origin}/health`), /fetch failed/)
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL")
+  }
+})
+
+async function runEntrypoint(env) {
+  const child = spawn(process.execPath, [fixtureEntrypoint], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  let stdout = ""
+  let stderr = ""
+  child.stdout.on("data", (chunk) => { stdout += chunk })
+  child.stderr.on("data", (chunk) => { stderr += chunk })
+  const [code, signal] = await waitForClose(child)
+  return { code, signal, stdout, stderr }
+}
+
+async function waitForReadyLine(child, readOutput) {
+  const timeout = AbortSignal.timeout(5_000)
+  while (child.exitCode === null && child.signalCode === null) {
+    const nextData = once(child.stdout, "data", { signal: timeout })
+    const line = readOutput().split("\n").find((value) => value.startsWith("CHARIOX_BROWSER_COMPUTER_FIXTURE_READY "))
+    if (line) return line
+    await nextData
+  }
+  throw new Error(`fixture exited before readiness with code ${child.exitCode}`)
+}
+
+async function waitForClose(child) {
+  if (child.exitCode !== null || child.signalCode !== null) return [child.exitCode, child.signalCode]
+  return await once(child, "close", { signal: AbortSignal.timeout(5_000) })
+}

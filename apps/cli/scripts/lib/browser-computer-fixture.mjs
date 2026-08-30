@@ -114,6 +114,10 @@ async function routeRequest({ request, response, account, password, sessions, me
     return
   }
   if (url.pathname === "/api/messages") {
+    if (!authenticated) {
+      send(response, 403, "not authenticated", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
     sendJson(response, 200, { messages })
     return
   }
@@ -141,6 +145,10 @@ async function routeRequest({ request, response, account, password, sessions, me
     return
   }
   if (url.pathname === "/uploads" && request.method === "POST") {
+    if (!authenticated) {
+      send(response, 403, "not authenticated", { "content-type": "text/plain; charset=utf-8" })
+      return
+    }
     const body = await readBody(request)
     uploads.push({ contentType: request.headers["content-type"] ?? "", sizeBytes: Buffer.byteLength(body) })
     sendHtml(response, html("Upload complete", `<h1 id="upload-marker">CHARIOX_FIXTURE_UPLOAD ${Buffer.byteLength(body)}</h1>`))
@@ -386,7 +394,10 @@ function listen(server, host, port) {
 
 async function closeServer(server) {
   if (!server.listening) return
-  await new Promise((resolve) => server.close(resolve))
+  await new Promise((resolve) => {
+    server.close(resolve)
+    server.closeAllConnections()
+  })
 }
 
 function nonEmptyString(value) {
