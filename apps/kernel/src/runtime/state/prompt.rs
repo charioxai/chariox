@@ -25,26 +25,32 @@ impl KernelRuntimeOwnedState {
         if active_prompt.id() != prompt_id {
             return Ok(None);
         }
-        if active_prompt.workflow_run_id().is_some() {
-            if let Err(error) = self.workflow_fail_provider_prompt_without_queue_advance(
+        let workflow_prompt_settled = if active_prompt.workflow_run_id().is_some() {
+            match self.workflow_fail_provider_prompt_without_queue_advance(
                 session_id,
                 &active_prompt,
                 Some(provider_run_id),
                 message,
             ) {
-                crate::logging::warn_with_fields(
-                    "daemon.prompt_delivery",
-                    "failed to settle workflow after prompt dispatch failure",
-                    serde_json::json!({
-                        "session_id": session_id,
-                        "agent_id": agent_id,
-                        "prompt_id": active_prompt.id(),
-                        "provider_run_id": provider_run_id,
-                        "error": error.to_string(),
-                    }),
-                );
+                Ok(()) => true,
+                Err(error) => {
+                    crate::logging::warn_with_fields(
+                        "daemon.prompt_delivery",
+                        "failed to settle workflow after prompt dispatch failure",
+                        serde_json::json!({
+                            "session_id": session_id,
+                            "agent_id": agent_id,
+                            "prompt_id": active_prompt.id(),
+                            "provider_run_id": provider_run_id,
+                            "error": error.to_string(),
+                        }),
+                    );
+                    false
+                }
             }
-        }
+        } else {
+            false
+        };
         let cancelled = self.cancel_active_prompt_only(session_id, agent_id)?;
         self.agent_store
             .set_agent_state(agent_id, crate::agent::AgentState::Error)?;
@@ -62,7 +68,11 @@ impl KernelRuntimeOwnedState {
         }
         let released_claim = self.clear_prompt_activity(provider_run_id);
         let _ = self.session_snapshot(session_id)?;
-        Ok(Some(released_claim))
+        // Workflow failure settlement releases the claim by run/node identity before
+        // prompt activity is cleared by provider-run identity. Preserve that signal so
+        // the caller still retries nodes which were already blocked on the released
+        // worktree claim.
+        Ok(Some(released_claim || workflow_prompt_settled))
     }
 
     pub(super) fn complete_local_prompt_without_advance(

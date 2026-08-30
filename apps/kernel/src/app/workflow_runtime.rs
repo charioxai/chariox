@@ -302,6 +302,10 @@ impl DaemonApp {
         workflow_run: &WorkflowRun,
         error: &DaemonError,
     ) {
+        let failed_node_run_id = workflow_run
+            .node_runs()
+            .first()
+            .map(|node_run| node_run.id().to_string());
         if let Some(node_run) = workflow_run.node_runs().first() {
             let _ = self.sessions_mut().record_workflow_failure_event(
                 session_id,
@@ -317,6 +321,11 @@ impl DaemonApp {
         let _ = self
             .sessions_mut()
             .fail_workflow_run(session_id, workflow_run.id());
+        if failed_node_run_id.is_some_and(|node_run_id| {
+            self.release_workflow_node_workspace_claim(session_id, workflow_run.id(), &node_run_id)
+        }) {
+            retry_blocked_workflow_claims_from_runtime(self);
+        }
     }
 
     #[cfg(test)]
@@ -694,6 +703,110 @@ mod tests {
         agent_id: &str,
     ) -> Result<String, DaemonError> {
         WorkflowProgression::ensure_provider_run(app, session_id, agent_id, false, false, false)
+    }
+
+    #[test]
+    fn failed_claimed_workflow_run_releases_its_workspace_claim() {
+        let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let (failed_session, failed_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "shared-workspace",
+                "shared-worktree",
+            ))
+            .expect("failed session should be created");
+        let failed_workflow = app
+            .sessions_mut()
+            .create_workflow(failed_session.id(), Some("failed-workflow".to_string()))
+            .expect("failed workflow should be created");
+        let failed_node = app
+            .sessions_mut()
+            .add_workflow_node(failed_session.id(), failed_workflow.id(), failed_agent.id())
+            .expect("failed node should be created");
+        let failed_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                failed_session.id(),
+                failed_workflow.id(),
+                failed_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("failed endpoint should be created");
+        let failed_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                failed_session.id(),
+                failed_workflow.id(),
+                failed_endpoint.id(),
+                Some("dispatch will fail".to_string()),
+            )
+            .expect("failed run should be created");
+        let failed_node_run = failed_run
+            .node_runs()
+            .first()
+            .expect("failed run should have an entry node");
+        app.acquire_workflow_node_workspace_claim(
+            failed_session.id(),
+            "provider-run-failed",
+            failed_agent.id(),
+            failed_run.id(),
+            failed_node_run.id(),
+        )
+        .expect("failed run should own the worktree claim");
+
+        app.fail_claimed_workflow_run(
+            failed_session.id(),
+            &failed_run,
+            &DaemonError::LocalTransport {
+                operation: "test workflow dispatch",
+                message: "dispatch failed".to_string(),
+            },
+        );
+
+        let (next_session, next_agent) = crate::app::KernelSessionService::new(&mut app)
+            .create_session(crate::session::CreateSessionRequest::new(
+                "shared-workspace",
+                "shared-worktree",
+            ))
+            .expect("next session should be created");
+        let next_workflow = app
+            .sessions_mut()
+            .create_workflow(next_session.id(), Some("next-workflow".to_string()))
+            .expect("next workflow should be created");
+        let next_node = app
+            .sessions_mut()
+            .add_workflow_node(next_session.id(), next_workflow.id(), next_agent.id())
+            .expect("next node should be created");
+        let next_endpoint = app
+            .sessions_mut()
+            .create_workflow_endpoint(
+                next_session.id(),
+                next_workflow.id(),
+                next_node.id(),
+                Some("entry".to_string()),
+            )
+            .expect("next endpoint should be created");
+        let next_run = app
+            .sessions_mut()
+            .invoke_workflow_endpoint(
+                next_session.id(),
+                next_workflow.id(),
+                next_endpoint.id(),
+                Some("next dispatch".to_string()),
+            )
+            .expect("next run should be created");
+        let next_node_run = next_run
+            .node_runs()
+            .first()
+            .expect("next run should have an entry node");
+        app.acquire_workflow_node_workspace_claim(
+            next_session.id(),
+            "provider-run-next",
+            next_agent.id(),
+            next_run.id(),
+            next_node_run.id(),
+        )
+        .expect("a terminal dispatch failure must release its worktree claim");
     }
 
     #[test]

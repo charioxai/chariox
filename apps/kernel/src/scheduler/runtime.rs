@@ -526,6 +526,10 @@ fn fail_workflow_node_after_schedule_error(
         workflow_run_id,
         workflow_node_run_id,
     );
+    if app.release_workflow_node_workspace_claim(session_id, workflow_run_id, workflow_node_run_id)
+    {
+        let _ = retry_blocked_workflow_claims(app);
+    }
     match app.start_next_queued_workflow_prompt(session_id) {
         Ok(Some(crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
             workflow_run,

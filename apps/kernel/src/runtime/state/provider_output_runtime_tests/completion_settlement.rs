@@ -1539,6 +1539,103 @@ async fn settle_and_promote_next_queued_prompt(
 }
 
 #[tokio::test]
+async fn failed_workflow_dispatch_retries_a_node_blocked_on_its_released_claim() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, _default_agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-failed-dispatch-retry",
+            "worktree-blocked-retry-fifo",
+        ))
+        .expect("session should be created");
+    let holder = spawn_shared_worktree_agent(&mut app, session.id(), "failed-holder");
+    let worker = spawn_shared_worktree_agent(&mut app, session.id(), "blocked-worker");
+
+    let (holder_run, holder_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-failed-holder", &holder);
+    let holder_provider_run = app
+        .providers()
+        .get_run_for_agent(session.id(), &holder)
+        .expect("holder provider run should exist");
+    let holder_prompt = app
+        .prompt_owner_active_prompt_for_agent(session.id(), &holder)
+        .expect("holder prompt state should load")
+        .expect("holder workflow prompt should be active");
+    let (blocked_run, blocked_node) =
+        invoke_single_node_workflow(&mut app, session.id(), "wf-blocked-worker", &worker);
+    assert_eq!(
+        app.sessions()
+            .resolve_workflow_run_ref(session.id(), blocked_run.id())
+            .expect("blocked run should resolve")
+            .node_runs()
+            .first()
+            .expect("blocked run should have an entry node")
+            .status(),
+        crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+    );
+
+    let dispatch = crate::app::KernelPromptDispatch {
+        session_id: session.id().to_string(),
+        provider_run_id: holder_provider_run.id().to_string(),
+        agent_id: holder.clone(),
+        prompt_id: holder_prompt.id().to_string(),
+        target_active_prompt_id: None,
+        source_attachment_id: holder_prompt.source_attachment_id().to_string(),
+        prompt: holder_prompt.prompt().to_string(),
+        hidden_system_context: holder_prompt.hidden_system_context().to_string(),
+        attachments: Vec::new(),
+        prompt_origin: crate::session::PromptOrigin::Chariox,
+        external_provider: None,
+        external_provider_session_id: None,
+        external_provider_turn_id: None,
+        steering: false,
+    };
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+
+    let result = runtime
+        .fail_prompt_dispatch(
+            dispatch,
+            crate::error::DaemonError::LocalTransport {
+                operation: "test failed workflow dispatch",
+                message: "provider did not acknowledge".to_string(),
+            },
+        )
+        .await;
+    assert!(result.is_err(), "dispatch failure should remain observable");
+
+    let projected = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("session should still exist");
+    let retried = projected
+        .workflow_run(blocked_run.id())
+        .expect("blocked run should remain in the hot session");
+    assert_eq!(
+        retried
+            .node_runs()
+            .iter()
+            .find(|node| node.id() == blocked_node)
+            .expect("blocked node should resolve")
+            .status(),
+        crate::session::WorkflowNodeRunStatus::Running,
+        "asynchronous failure settlement must retry the node after releasing the claim",
+    );
+    let holder_claim_id =
+        runtime
+            .owned
+            .workflow_dispatch_claim_id(session.id(), holder_run.id(), &holder_node);
+    assert!(
+        !runtime
+            .owned
+            .prompt_workspace_claims
+            .contains(&holder_claim_id),
+        "failed holder claim must be removed",
+    );
+}
+
+#[tokio::test]
 async fn blocked_claim_retry_queued_behind_work_advances_in_fifo_order() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");

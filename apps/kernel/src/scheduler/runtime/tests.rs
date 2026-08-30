@@ -491,6 +491,75 @@ fn workflow_notice_uses_current_run_after_dispatch_failure() {
 }
 
 #[test]
+fn downstream_schedule_failure_releases_its_workspace_claim() {
+    let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
+    let (failed_session, failed_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-downstream-schedule-failure");
+    let (failed_workflow_id, failed_node_id) = create_workflow_node(
+        &mut app,
+        failed_session.id(),
+        "wf-downstream-schedule-failure",
+        &failed_agent_id,
+    );
+    let failed_run = prepare_active_workflow_run(
+        &mut app,
+        failed_session.id(),
+        &failed_workflow_id,
+        &failed_node_id,
+    );
+    let failed_node_run = failed_run
+        .node_runs()
+        .first()
+        .expect("failed run should have an entry node");
+    app.acquire_workflow_node_workspace_claim(
+        failed_session.id(),
+        "provider-run-downstream-failed",
+        &failed_agent_id,
+        failed_run.id(),
+        failed_node_run.id(),
+    )
+    .expect("failed downstream run should own the claim");
+
+    super::fail_workflow_node_after_schedule_error(
+        &mut app,
+        failed_session.id(),
+        failed_run.id(),
+        failed_node_run.id(),
+        &crate::error::DaemonError::LocalTransport {
+            operation: "test downstream workflow dispatch",
+            message: "dispatch failed".to_string(),
+        },
+    );
+
+    let (next_session, next_agent_id) =
+        create_scheduler_session_and_agent(&mut app, "client-after-downstream-failure");
+    let (next_workflow_id, next_node_id) = create_workflow_node(
+        &mut app,
+        next_session.id(),
+        "wf-after-downstream-failure",
+        &next_agent_id,
+    );
+    let next_run = prepare_active_workflow_run(
+        &mut app,
+        next_session.id(),
+        &next_workflow_id,
+        &next_node_id,
+    );
+    let next_node_run = next_run
+        .node_runs()
+        .first()
+        .expect("next run should have an entry node");
+    app.acquire_workflow_node_workspace_claim(
+        next_session.id(),
+        "provider-run-after-downstream-failure",
+        &next_agent_id,
+        next_run.id(),
+        next_node_run.id(),
+    )
+    .expect("a downstream scheduling failure must release its worktree claim");
+}
+
+#[test]
 fn provider_completion_without_structured_output_fails_without_automatic_retry() {
     let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot");
     let (session, agent_id) =

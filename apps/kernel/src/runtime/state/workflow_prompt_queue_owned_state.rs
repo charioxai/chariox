@@ -782,6 +782,10 @@ impl KernelRuntimeOwnedState {
         {
             Ok(dispatches) => dispatches,
             Err(error) => {
+                let failed_node_run_id = workflow_run
+                    .node_runs()
+                    .first()
+                    .map(|node_run| node_run.id().to_string());
                 if let Some(node_run) = workflow_run.node_runs().first() {
                     let _ = self.session_store.write().record_workflow_failure_event(
                         session_id,
@@ -797,6 +801,13 @@ impl KernelRuntimeOwnedState {
                         session_id,
                         workflow_run.id(),
                         node_run.id(),
+                    );
+                }
+                if let Some(node_run_id) = failed_node_run_id {
+                    self.release_workflow_node_workspace_claim(
+                        session_id,
+                        workflow_run.id(),
+                        &node_run_id,
                     );
                 }
                 let _ = self

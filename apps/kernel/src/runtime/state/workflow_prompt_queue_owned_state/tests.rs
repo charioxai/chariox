@@ -422,6 +422,82 @@ fn owned_workflow_launch_retires_idle_provider_and_suppresses_resume_state() {
 }
 
 #[test]
+fn failed_owned_queue_launch_releases_its_workspace_claim() {
+    let (runtime, session_id, workflow_id, endpoint_id, _test_root) = runtime_with_idle_workflow();
+    let source = runtime
+        .owned
+        .agent_store
+        .get_session_agents(&session_id)
+        .into_iter()
+        .find(|agent| agent.alias() == Some("owned-workflow-agent"))
+        .expect("workflow agent should resolve");
+    runtime
+        .owned
+        .session_store
+        .write()
+        .enqueue_workflow_prompt(
+            &session_id,
+            &workflow_id,
+            &endpoint_id,
+            Some("fail before provider dispatch".to_string()),
+            None,
+            crate::session::WorkflowQueuedPromptSource::Manual,
+            None,
+        )
+        .expect("workflow prompt should enqueue");
+    runtime
+        .owned
+        .workflow_ensure_dispatchable_runtime_instance(&session_id)
+        .expect("idle workflow instance should be dispatchable");
+    let (queued_prompt, workflow_run, workflow, endpoint) = runtime
+        .owned
+        .session_store
+        .write()
+        .dequeue_next_workflow_prompt_and_create_run(&session_id)
+        .expect("queued prompt should be claimable")
+        .expect("queued prompt should create a workflow run");
+    let node_run = workflow_run
+        .node_runs()
+        .first()
+        .expect("workflow run should retain its entry node");
+    let claim_id =
+        runtime
+            .owned
+            .workflow_dispatch_claim_id(&session_id, workflow_run.id(), node_run.id());
+    runtime
+        .owned
+        .acquire_workflow_node_workspace_claim(
+            &session_id,
+            &claim_id,
+            source.id(),
+            workflow_run.id(),
+            node_run.id(),
+        )
+        .expect("the launch should own its workspace claim");
+    runtime
+        .owned
+        .destroy_agent(source.id(), crate::session::DEFAULT_LOCAL_USER_ID)
+        .expect("test should remove the node agent after claim acquisition");
+
+    let failed_launch = runtime.owned.workflow_schedule_queued_prompt_run(
+        &session_id,
+        queued_prompt,
+        workflow_run,
+        workflow,
+        endpoint,
+    );
+    assert!(
+        failed_launch.is_err(),
+        "missing node agent should fail the queued launch"
+    );
+
+    assert!(
+        !runtime.owned.prompt_workspace_claims.contains(&claim_id),
+        "failed queue launch must not retain its workspace claim"
+    );
+}
+
+#[test]
 fn runtime_cleanup_removes_unreferenced_hidden_agents_and_worktrees() {
     let (runtime, session_id, _workflow_id, _endpoint_id, _test_root) =
         runtime_with_idle_workflow();
