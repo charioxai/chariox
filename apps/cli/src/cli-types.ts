@@ -428,6 +428,7 @@ export type SessionBinding = {
   session: RuntimeSession
   attachment: RuntimeAttachment
   providerRun: RuntimeProviderRun | null
+  providerLaunchIssue?: "credential_vault_locked" | null
   createdSession: boolean
   historyEntries: TranscriptEntry[]
   promptHistoryEntries: string[]

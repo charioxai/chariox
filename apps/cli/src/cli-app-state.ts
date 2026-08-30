@@ -181,7 +181,11 @@ export function createCliAppState(options: {
   const [streamingAgentId, setStreamingAgentId] = createSignal<string | null>(
     sessionProjectedStreamingAgentId(initialSession),
   )
-  const [statusLine, setStatusLine] = createSignal(DEFAULT_CONNECTED_STATUS)
+  const [statusLine, setStatusLine] = createSignal(
+    initialBinding?.providerLaunchIssue === "credential_vault_locked"
+      ? "Chariox vault locked. Run /credential vault manage."
+      : DEFAULT_CONNECTED_STATUS,
+  )
   const [fatalError, setFatalError] = createSignal<string | null>(null)
   const [submitting, setSubmitting] = createSignal(false)
   const [entryCounter, setEntryCounter] = createSignal(initialEntries.length)

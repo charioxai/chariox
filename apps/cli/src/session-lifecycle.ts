@@ -362,6 +362,12 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
               agent_id: providerSettlement.targetAgent?.id ?? null,
               worker_kernel_id: providerSettlement.targetAgent?.remote_execution?.worker_kernel_id ?? null,
             })
+          } else if (providerSettlement.reason === "credential_vault_locked") {
+            deps.logWarning?.("skipping attach-time provider launch because the credential vault is locked", {
+              session_id: session.id,
+              agent_id: providerSettlement.targetAgent?.id ?? null,
+            })
+            deps.setStatusLine("Chariox vault locked. Run /credential vault manage.")
           }
           deps.setProviderRunState(null)
           break

@@ -7,9 +7,10 @@ import type {
   RuntimeProviderRun,
   RuntimeSession,
 } from "./cli-types.js"
+import { LocalIpcError } from "./ipc.js"
 
 type RuntimeAgent = RuntimeSession["agents"][number]
-type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent"
+type SkipReason = "no_visible_agents" | "missing_focused_agent" | "remote_backed_agent" | "credential_vault_locked"
 
 export type AttachProviderRunSettlement =
   | {
@@ -91,6 +92,17 @@ export async function settleAttachProviderRun(
           targetAgentId: decision.targetAgentId,
         }
       } catch (launchError) {
+        if (isCredentialVaultLockedError(launchError)) {
+          return {
+            action: "skipped",
+            session,
+            providerRun: null,
+            launch: decision.launch,
+            reason: "credential_vault_locked",
+            targetAgent: decision.targetAgent,
+            recoveredRemotePlacement: false,
+          }
+        }
         let refreshedSession: RuntimeSession
         try {
           refreshedSession = await deps.getSessionState(session.id)
@@ -120,4 +132,10 @@ export async function settleAttachProviderRun(
       throw new Error(`unhandled attach provider launch decision ${String(exhaustive)}`)
     }
   }
+}
+
+function isCredentialVaultLockedError(error: unknown): boolean {
+  return error instanceof LocalIpcError
+    && error.code === "local_transport_error"
+    && error.message.includes("`credential_vault_locked`")
 }
