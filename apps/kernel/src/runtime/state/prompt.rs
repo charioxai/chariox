@@ -32,7 +32,7 @@ impl KernelRuntimeOwnedState {
                 Some(provider_run_id),
                 message,
             ) {
-                Ok(()) => true,
+                Ok(released_claim) => released_claim,
                 Err(error) => {
                     crate::logging::warn_with_fields(
                         "daemon.prompt_delivery",

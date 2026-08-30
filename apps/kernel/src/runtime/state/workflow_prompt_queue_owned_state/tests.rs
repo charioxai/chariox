@@ -150,8 +150,9 @@ fn owned_launch_reports_started_when_prompt_admitted_by_concurrent_dispatch() {
     let (claimed_outcome, _dispatches) = runtime
         .owned
         .workflow_start_next_queued_prompt_for_response(&session_id)
-        .expect("dispatch should succeed")
-        .expect("the idle primary instance should admit exactly one run");
+        .expect("dispatch should succeed");
+    let claimed_outcome =
+        claimed_outcome.expect("the idle primary instance should admit exactly one run");
     let started_run = match claimed_outcome {
         crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
             workflow_run
@@ -474,17 +475,92 @@ fn failed_owned_queue_launch_releases_its_workspace_claim() {
             node_run.id(),
         )
         .expect("the launch should own its workspace claim");
+
+    let source_worktree = runtime
+        .owned
+        .session_store
+        .get_session(&session_id)
+        .expect("source session should retain its worktree")
+        .worktree_id()
+        .to_string();
+    let blocked_agent = runtime
+        .owned
+        .agent_store
+        .materialize_workflow_runtime_agent(source.clone(), &session_id, &source_worktree);
+    let blocked_workflow = runtime
+        .owned
+        .session_store
+        .write()
+        .create_workflow(&session_id, Some("blocked-after-failed-launch".to_string()))
+        .expect("blocked workflow should be created");
+    runtime
+        .owned
+        .session_store
+        .write()
+        .set_workflow_flush_agent_context_before_run(&session_id, blocked_workflow.id(), false)
+        .expect("blocked workflow should keep provider context");
+    let blocked_node = runtime
+        .owned
+        .session_store
+        .write()
+        .add_workflow_node_owned(
+            &session_id,
+            blocked_workflow.id(),
+            blocked_agent.id(),
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            crate::session::DEFAULT_LOCAL_USER_ID.to_string(),
+            "Blocked workflow node".to_string(),
+        )
+        .expect("blocked workflow node should be created");
+    let blocked_endpoint = runtime
+        .owned
+        .session_store
+        .write()
+        .create_workflow_endpoint(
+            &session_id,
+            blocked_workflow.id(),
+            blocked_node.id(),
+            Some("entry".to_string()),
+        )
+        .expect("blocked workflow endpoint should be created");
+    let (blocked_outcome, _) = runtime
+        .owned
+        .workflow_enqueue_prompt_and_maybe_start(
+            &session_id,
+            blocked_workflow.id(),
+            blocked_endpoint.id(),
+            Some("wait for the failed launch claim".to_string()),
+            None,
+            None,
+        )
+        .expect("blocked workflow invocation should be admitted");
+    let blocked_run = match blocked_outcome {
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Started { workflow_run, .. } => {
+            workflow_run
+        }
+        crate::app::workflow_runtime::WorkflowLaunchOutcome::Enqueued { .. } => {
+            panic!("independent workflow should create a run before blocking on the claim")
+        }
+    };
+    let blocked_node_run_id = blocked_run.node_runs()[0].id().to_string();
+    assert_eq!(
+        blocked_run.node_runs()[0].status(),
+        crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+    );
+
     runtime
         .owned
         .destroy_agent(source.id(), crate::session::DEFAULT_LOCAL_USER_ID)
         .expect("test should remove the node agent after claim acquisition");
 
+    let mut failure_dispatches = WorkflowPromptDispatches::default();
     let failed_launch = runtime.owned.workflow_schedule_queued_prompt_run(
         &session_id,
         queued_prompt,
         workflow_run,
         workflow,
         endpoint,
+        &mut failure_dispatches,
     );
     assert!(
         failed_launch.is_err(),
@@ -494,6 +570,26 @@ fn failed_owned_queue_launch_releases_its_workspace_claim() {
     assert!(
         !runtime.owned.prompt_workspace_claims.contains(&claim_id),
         "failed queue launch must not retain its workspace claim"
+    );
+    assert!(
+        !failure_dispatches.is_empty(),
+        "claim release must return the blocked workflow's retry dispatch"
+    );
+    let retried_run = runtime
+        .owned
+        .session_store
+        .read()
+        .resolve_workflow_run_ref(&session_id, blocked_run.id())
+        .expect("retried workflow run should resolve");
+    assert_ne!(
+        retried_run
+            .node_runs()
+            .iter()
+            .find(|node_run| node_run.id() == blocked_node_run_id)
+            .expect("retried node should resolve")
+            .status(),
+        crate::session::WorkflowNodeRunStatus::BlockedOnWorkspaceClaim,
+        "failed queue launch must immediately retry a node blocked on its released claim"
     );
 }
 

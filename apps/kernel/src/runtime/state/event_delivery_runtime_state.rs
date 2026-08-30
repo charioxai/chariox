@@ -296,8 +296,7 @@ impl KernelRuntimeState {
             .owned
             .workflow_start_next_queued_prompt_for_response(&session_id)
         {
-            Ok(Some((_, dispatches))) => dispatches,
-            Ok(None) => WorkflowPromptDispatches::default(),
+            Ok((_, dispatches)) => dispatches,
             Err(error) => {
                 crate::logging::warn_with_fields(
                     "daemon.event_delivery",

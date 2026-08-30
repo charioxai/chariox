@@ -81,13 +81,14 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         message: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         if prompt.workflow_run_id().is_none() || prompt.workflow_node_run_id().is_none() {
-            return Ok(());
+            return Ok(false);
         }
-        self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
+        let released_claim =
+            self.workflow_fail_provider_prompt_state(session_id, prompt, provider_run_id, message)?;
         self.persist_workflow_runtime_session(session_id, "workflow_provider_prompt_failed")?;
-        Ok(())
+        Ok(released_claim)
     }
 
     fn workflow_fail_provider_prompt_state(
@@ -96,11 +97,11 @@ impl KernelRuntimeOwnedState {
         prompt: &crate::session::PromptQueueItem,
         provider_run_id: Option<&str>,
         message: &str,
-    ) -> Result<(), DaemonError> {
+    ) -> Result<bool, DaemonError> {
         let (Some(workflow_run_id), Some(workflow_node_run_id)) =
             (prompt.workflow_run_id(), prompt.workflow_node_run_id())
         else {
-            return Ok(());
+            return Ok(false);
         };
         self.workflow_record_failure(
             session_id,
@@ -117,7 +118,7 @@ impl KernelRuntimeOwnedState {
             workflow_run_id,
             workflow_node_run_id,
         )?;
-        let _ = self.release_workflow_node_workspace_claim(
+        let released_claim = self.release_workflow_node_workspace_claim(
             session_id,
             workflow_run_id,
             workflow_node_run_id,
@@ -133,7 +134,7 @@ impl KernelRuntimeOwnedState {
                 message
             ),
         );
-        Ok(())
+        Ok(released_claim)
     }
 }
 

@@ -612,7 +612,8 @@ impl KernelRuntimeOwnedState {
                 Some(plan.watchdog_id.clone()),
             )?;
         }
-        let outcome = self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
+        let (_outcome, dispatches) =
+            self.workflow_start_next_queued_prompt_for_response(&plan.session_id)?;
         if self
             .session_store
             .read()
@@ -623,9 +624,7 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .mark_workflow_watchdog_queued(&plan.session_id, &plan.watchdog_id);
         }
-        Ok(outcome
-            .map(|(_, dispatches)| dispatches)
-            .unwrap_or_default())
+        Ok(dispatches)
     }
 
     pub(super) fn workflow_enqueue_prompt_and_maybe_start(
@@ -667,8 +666,9 @@ impl KernelRuntimeOwnedState {
                 None,
                 publication_invocation,
             )?;
-        let claimed = self.workflow_start_next_queued_prompt_for_response(session_id)?;
-        let Some((claimed_outcome, dispatches)) = claimed else {
+        let (claimed, dispatches) =
+            self.workflow_start_next_queued_prompt_for_response(session_id)?;
+        let Some(claimed_outcome) = claimed else {
             // This invocation dispatched nothing itself, but a concurrent
             // invocation may have already admitted our prompt into the primary
             // run between our enqueue and this point. Attribute that Started run
@@ -684,7 +684,7 @@ impl KernelRuntimeOwnedState {
                         workflow,
                         endpoint,
                     },
-                    WorkflowPromptDispatches::default(),
+                    dispatches,
                 ));
             }
             return Ok((
@@ -693,7 +693,7 @@ impl KernelRuntimeOwnedState {
                     workflow,
                     endpoint,
                 },
-                WorkflowPromptDispatches::default(),
+                dispatches,
             ));
         };
         let claimed_requested_prompt = match &claimed_outcome {
@@ -762,6 +762,7 @@ impl KernelRuntimeOwnedState {
         workflow_run: crate::session::WorkflowRun,
         workflow: crate::session::WorkflowDefinition,
         endpoint: crate::session::WorkflowEndpointDefinition,
+        failure_dispatches: &mut WorkflowPromptDispatches,
     ) -> Result<
         (
             crate::app::workflow_runtime::WorkflowLaunchOutcome,
@@ -804,11 +805,13 @@ impl KernelRuntimeOwnedState {
                     );
                 }
                 if let Some(node_run_id) = failed_node_run_id {
-                    self.release_workflow_node_workspace_claim(
+                    if self.release_workflow_node_workspace_claim(
                         session_id,
                         workflow_run.id(),
                         &node_run_id,
-                    );
+                    ) {
+                        failure_dispatches.extend(self.workflow_retry_blocked_claims());
+                    }
                 }
                 let _ = self
                     .session_store
@@ -835,13 +838,14 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> Result<
-        Option<(
-            crate::app::workflow_runtime::WorkflowLaunchOutcome,
+        (
+            Option<crate::app::workflow_runtime::WorkflowLaunchOutcome>,
             WorkflowPromptDispatches,
-        )>,
+        ),
         DaemonError,
     > {
         self.workflow_reconcile_live_orphans(session_id);
+        let mut accumulated = WorkflowPromptDispatches::default();
         loop {
             self.workflow_ensure_dispatchable_runtime_instance(session_id)?;
             let Some((queued_prompt, workflow_run, workflow, endpoint)) = self
@@ -849,7 +853,7 @@ impl KernelRuntimeOwnedState {
                 .write()
                 .dequeue_next_workflow_prompt_and_create_run(session_id)?
             else {
-                return Ok(None);
+                return Ok((None, accumulated));
             };
             match self.workflow_schedule_queued_prompt_run(
                 session_id,
@@ -857,8 +861,12 @@ impl KernelRuntimeOwnedState {
                 workflow_run,
                 workflow,
                 endpoint,
+                &mut accumulated,
             ) {
-                Ok(outcome) => return Ok(Some(outcome)),
+                Ok((outcome, dispatches)) => {
+                    accumulated.extend(dispatches);
+                    return Ok((Some(outcome), accumulated));
+                }
                 Err(error) => {
                     self.record_queued_workflow_prompt_launch_failure(
                         session_id,
@@ -951,6 +959,7 @@ impl KernelRuntimeOwnedState {
                 workflow_run,
                 workflow,
                 endpoint,
+                &mut accumulated,
             ) {
                 Ok((
                     crate::app::workflow_runtime::WorkflowLaunchOutcome::Started {
