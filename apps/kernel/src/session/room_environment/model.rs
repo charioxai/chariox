@@ -95,6 +95,10 @@ impl EnvironmentActor {
     }
 }
 
+pub fn human_environment_actor_id(user_id: &str) -> String {
+    format!("user:{user_id}")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentComponent {

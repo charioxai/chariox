@@ -54,14 +54,16 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
     let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = response else {
         panic!("unexpected local response: {response:?}");
     };
+    let expected_actor_id =
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID);
     assert_eq!(environment.viewport.css_width, 1440);
     assert_eq!(environment.viewport.revision, 2);
     assert_eq!(
         environment.viewport.last_actor_id.as_deref(),
-        Some(crate::session::DEFAULT_LOCAL_USER_ID)
+        Some(expected_actor_id.as_str())
     );
     assert!(environment.actors.iter().any(|actor| {
-        actor.actor_id == crate::session::DEFAULT_LOCAL_USER_ID
+        actor.actor_id == expected_actor_id
             && actor.kind == crate::session::EnvironmentActorKind::Human
     }));
 
