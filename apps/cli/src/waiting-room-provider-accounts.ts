@@ -24,6 +24,23 @@ export function selectedProviderAccount(
   return accounts.find((profile) => profile.profile_id === profileId) ?? null
 }
 
+export function providerAccountForSelection(
+  profiles: readonly ProviderAccountProfile[] | undefined,
+  provider: string,
+  reference: string,
+): ProviderAccountProfile | null {
+  const accounts = providerAccountsForProvider(profiles, provider)
+  const normalized = reference.trim()
+  const profile = accounts.find((candidate) => candidate.profile_id === normalized)
+  if (profile) return profile
+  const exactAlias = accounts.find((candidate) => candidate.label === normalized)
+  if (exactAlias) return exactAlias
+  const foldedAliases = accounts.filter(
+    (candidate) => candidate.label.localeCompare(normalized, undefined, { sensitivity: "accent" }) === 0,
+  )
+  return foldedAliases.length === 1 ? foldedAliases[0]! : null
+}
+
 export function defaultProviderAccountProfileId(
   profiles: readonly ProviderAccountProfile[] | undefined,
   provider: string,

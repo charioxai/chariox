@@ -5,6 +5,7 @@ import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   defaultProviderAccountProfileId,
   providerAccountFamily,
+  providerAccountForSelection,
   providerAccountDisplayLabel,
   providerAccountsForProvider,
   selectedProviderAccount,
@@ -51,6 +52,27 @@ test("provider account display uses only the public alias", () => {
   profile.identity_summary = "owner@example.com"
 
   assert.equal(providerAccountDisplayLabel(profile), "codex-1")
+})
+
+test("provider account selection accepts public aliases while preserving internal id support", () => {
+  const primary = account("codex", "internal-primary", true)
+  primary.label = "codex-1"
+  const secondary = account("codex", "internal-secondary")
+  secondary.label = "Validation"
+
+  assert.equal(providerAccountForSelection([primary, secondary], "codex", "Validation")?.profile_id, "internal-secondary")
+  assert.equal(providerAccountForSelection([primary, secondary], "codex", " validation ")?.profile_id, "internal-secondary")
+  assert.equal(providerAccountForSelection([primary, secondary], "codex", "internal-secondary")?.profile_id, "internal-secondary")
+  assert.equal(providerAccountForSelection([primary, secondary], "opencode", "Validation"), null)
+})
+
+test("provider account selection rejects ambiguous case-folded aliases", () => {
+  const first = account("codex", "internal-first")
+  first.label = "Work"
+  const second = account("codex", "internal-second")
+  second.label = "work"
+
+  assert.equal(providerAccountForSelection([first, second], "codex", "WORK"), null)
 })
 
 function account(

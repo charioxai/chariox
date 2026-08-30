@@ -136,7 +136,7 @@ test("provider selection controller loads the chosen account catalog before one 
     scopedCatalog: secondaryCatalog,
   })
 
-  await harness.controller.applyAccountSelection("secondary")
+  await harness.controller.applyAccountSelection("Validation")
 
   assert.deepEqual(harness.catalogLoads(), [{ provider: "codex", accountProfile: "secondary" }])
   assert.deepEqual(harness.profileUpdates().at(-1)?.profile, {

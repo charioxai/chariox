@@ -25,7 +25,7 @@ import {
 } from "./waiting-room-controller.js"
 import {
   defaultProviderAccountProfileId,
-  providerAccountsForProvider,
+  providerAccountForSelection,
 } from "./waiting-room-provider-accounts.js"
 import type { SessionListEntry } from "./sessions.js"
 
@@ -265,8 +265,7 @@ export function createProviderSelectionController(
     async applyAccountSelection(accountProfile) {
       const current = deps.currentProviderSelection()
       const provider = normalizeBackendProviderId(current.provider)
-      const profile = providerAccountsForProvider(providerAccounts(), provider)
-        .find((candidate) => candidate.profile_id === accountProfile)
+      const profile = providerAccountForSelection(providerAccounts(), provider, accountProfile)
       if (!profile) {
         deps.flashFooter(`unknown ${backendProviderLabel(provider)} account`, "error")
         return
