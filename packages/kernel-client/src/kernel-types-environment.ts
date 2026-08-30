@@ -83,3 +83,9 @@ export type RoomEnvironmentStateResponse = {
     environment: RoomEnvironmentSnapshot
   }
 }
+
+export type RoomEnvironmentUpdatedResponse = {
+  RoomEnvironmentUpdated: {
+    environment: RoomEnvironmentSnapshot
+  }
+}

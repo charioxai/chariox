@@ -1,12 +1,20 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 
-import { getRoomEnvironmentStateRequest } from "./ipc-room-environment-requests.js"
-import type { RoomEnvironmentStateResponse } from "./kernel-types-environment.js"
+import {
+  getRoomEnvironmentStateRequest,
+  startRoomEnvironmentRequest,
+  stopRoomEnvironmentRequest,
+  retryRoomEnvironmentRequest,
+} from "./ipc-room-environment-requests.js"
+import type {
+  RoomEnvironmentStateResponse,
+  RoomEnvironmentUpdatedResponse,
+} from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 269", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 269)
+test("Room Environment state request matches protocol 270", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 270)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -80,4 +88,72 @@ test("Room Environment state request matches protocol 269", () => {
     },
   }
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
+})
+
+test("Room Environment start request keeps viewport ownership at the kernel seam", () => {
+  assert.deepEqual(
+    startRoomEnvironmentRequest("session-1", {
+      css_width: 1280,
+      css_height: 800,
+      device_scale_factor: 2,
+      desktop_pixel_width: 2560,
+      desktop_pixel_height: 1600,
+    }),
+    {
+      StartRoomEnvironment: {
+        session_id: "session-1",
+        viewport: {
+          css_width: 1280,
+          css_height: 800,
+          device_scale_factor: 2,
+          desktop_pixel_width: 2560,
+          desktop_pixel_height: 1600,
+        },
+      },
+    },
+  )
+
+  const response: RoomEnvironmentUpdatedResponse = {
+    RoomEnvironmentUpdated: {
+      environment: {
+        session_id: "session-1",
+        environment_id: "environment-session-1",
+        runtime_generation: 1,
+        lifecycle: "starting",
+        health: [],
+        viewport: {
+          css_width: 1280,
+          css_height: 800,
+          device_scale_factor: 2,
+          desktop_pixel_width: 2560,
+          desktop_pixel_height: 1600,
+          revision: 1,
+          last_actor_id: null,
+        },
+        actors: [],
+        tabs: [],
+        focused_tab_id: null,
+        actions: [],
+        input_ownership: [],
+        event_cursor: 1,
+      },
+    },
+  }
+  assert.equal(response.RoomEnvironmentUpdated.environment.lifecycle, "starting")
+})
+
+test("Room Environment stop request uses the shared lifecycle seam", () => {
+  assert.deepEqual(stopRoomEnvironmentRequest("session-1"), {
+    StopRoomEnvironment: {
+      session_id: "session-1",
+    },
+  })
+})
+
+test("Room Environment retry request uses the shared lifecycle seam", () => {
+  assert.deepEqual(retryRoomEnvironmentRequest("session-1"), {
+    RetryRoomEnvironment: {
+      session_id: "session-1",
+    },
+  })
 })

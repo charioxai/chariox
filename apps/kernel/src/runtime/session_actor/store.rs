@@ -4,6 +4,7 @@ use crate::local::{
     AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
     LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
+    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
     UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
@@ -41,6 +42,60 @@ impl SessionRuntimeStore {
         attachment_id: &str,
     ) -> Result<String, DaemonError> {
         self.state.attachment_session_id(attachment_id).await
+    }
+
+    pub(super) async fn start_room_environment(
+        &self,
+        request: StartRoomEnvironmentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let viewport = crate::session::CanonicalViewport::new(
+            request.viewport.css_width,
+            request.viewport.css_height,
+            request.viewport.device_scale_factor,
+            request.viewport.desktop_pixel_width,
+            request.viewport.desktop_pixel_height,
+        )
+        .map_err(|error| room_environment_control_error("environment.start", error));
+        let result = viewport.and_then(|viewport| {
+            self.state
+                .start_room_environment(&request.session_id, viewport)
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+                .map_err(|error| room_environment_control_error("environment.start", error))
+        });
+        (result, None)
+    }
+
+    pub(super) async fn stop_room_environment(
+        &self,
+        request: StopRoomEnvironmentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .stop_room_environment(&request.session_id)
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+            .map_err(|error| room_environment_control_error("environment.stop", error));
+        (result, None)
+    }
+
+    pub(super) async fn retry_room_environment(
+        &self,
+        request: RetryRoomEnvironmentRequest,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let result = self
+            .state
+            .retry_room_environment(&request.session_id)
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+            .map_err(|error| room_environment_control_error("environment.retry", error));
+        (result, None)
     }
 
     pub(super) async fn verify_metaagent_caller(
@@ -412,5 +467,20 @@ impl SessionRuntimeStore {
             .await
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await
+    }
+}
+
+fn room_environment_control_error(
+    operation: &'static str,
+    error: crate::session::EnvironmentError,
+) -> DaemonError {
+    match error {
+        crate::session::EnvironmentError::RoomNotFound { session_id } => {
+            DaemonError::SessionNotFound { session_id }
+        }
+        other => DaemonError::LocalTransport {
+            operation,
+            message: format!("room_environment_control_failed: {other:?}"),
+        },
     }
 }

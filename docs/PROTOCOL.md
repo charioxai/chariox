@@ -567,7 +567,7 @@ This does not require all provider adapters to use the same wire transport inter
 
 ## 4.1.2 Shared Room environment protocol direction
 
-This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. The remaining lifecycle, mutation, history, and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
+This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. Protocol v270 adds membership-scoped `StartRoomEnvironment`, `StopRoomEnvironment`, and `RetryRoomEnvironment` requests plus the shared `RoomEnvironmentUpdated` response. Start creates the Room's default Environment on first use, keeps its identity on repeated start, and accepts only initial viewport dimensions. Stop preserves Environment identity and runtime generation while the managed runtime shuts down. Retry preserves Environment identity, invalidates failed runtime handles, increments runtime generation, and returns the lifecycle to `starting`. The kernel assigns Environment identity, viewport revision, and viewport Actor ownership. The remaining mutation, history, and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
 
 The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
 
@@ -684,9 +684,9 @@ Viewer-only scaling is local presentation state and does not change the canonica
 The smallest request set is:
 
 - `environment.state.get` (serialized in local daemon protocol v269)
-- `environment.start`
-- `environment.stop`
-- `environment.retry`
+- `environment.start` (serialized in local daemon protocol v270)
+- `environment.stop` (serialized in local daemon protocol v270)
+- `environment.retry` (serialized in local daemon protocol v270)
 - `environment.viewport.update`
 - `environment.input.takeover`
 - `environment.input.release`
@@ -731,7 +731,7 @@ Process recovery follows these rules:
 
 ### Compatibility policy
 
-Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot but do not gain lifecycle, takeover, mutation, or history authority until those requests are released. During migration:
+Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot. Protocol v270 clients may also request start, stop, and retry through the kernel-owned lifecycle lane. They do not gain takeover, mutation, or history authority until those requests are released. During migration:
 
 - the kernel keeps the old tool names behind a compatibility adapter
 - compatibility calls still enter the kernel-owned Action path once it exists
@@ -740,7 +740,7 @@ Protocol v268 clients know slice display endpoints and one-shot browser/computer
 - unknown Environment events remain ignorable only when the client's behavior stays safe
 - a client that needs takeover, Action history, stable Tabs, or canonical viewport requires the new minimum protocol version
 
-No minimum version changes until a released client depends on the serialized contract.
+No minimum version changes for clients that do not use the Environment lifecycle contract. A released client that invokes `environment.start`, `environment.stop`, or `environment.retry` must require protocol v270 or newer.
 
 ## 4.2 Planned Command-Dispatch Surface
 

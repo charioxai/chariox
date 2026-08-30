@@ -37,7 +37,7 @@ fn sample_event_connection(
 
 #[test]
 fn local_daemon_protocol_event_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 269);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 270);
     let requests = vec![
         LocalDaemonRequest::GetEventGeneratorCatalogLanding(
             crate::local::GetEventGeneratorCatalogLandingRequest { limit: 12 },
@@ -368,6 +368,6 @@ fn local_daemon_protocol_event_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "8d9778e257b53fa2ea9ab1a3aebee4ea1bdf755d5a2f40ab3269e67f379185bd"
+        "8d9778e257b53fa2ea9ab1a3aebee4ea1bdf755d5a2f40ab3270e67f379185bd"
     );
 }

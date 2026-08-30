@@ -53,6 +53,15 @@ pub(super) async fn resolve_session_lane_key(
                 &request.attachment_id,
             )
         }
+        LocalDaemonRequest::StartRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::StopRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
+        LocalDaemonRequest::RetryRoomEnvironment(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

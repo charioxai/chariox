@@ -143,6 +143,15 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::StartRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::StopRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
+        LocalDaemonRequest::RetryRoomEnvironment(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::UpdateMetaagentTask(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

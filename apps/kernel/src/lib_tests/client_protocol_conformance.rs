@@ -304,12 +304,22 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &[
                                 "LOCAL_DAEMON_PROTOCOL_VERSION",
                                 "GetRoomEnvironmentState",
+                                "StartRoomEnvironment",
+                                "StopRoomEnvironment",
+                                "RetryRoomEnvironment",
                                 "RoomEnvironmentState",
+                                "RoomEnvironmentUpdated",
                             ],
                         ),
                         evidence(
                             "packages/kernel-client/src/ipc-room-environment-requests.test.ts",
-                            &["LOCAL_DAEMON_PROTOCOL_VERSION", "GetRoomEnvironmentState"],
+                            &[
+                                "LOCAL_DAEMON_PROTOCOL_VERSION",
+                                "GetRoomEnvironmentState",
+                                "StartRoomEnvironment",
+                                "StopRoomEnvironment",
+                                "RetryRoomEnvironment",
+                            ],
                         ),
                     ],
                 ),
