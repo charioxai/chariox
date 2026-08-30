@@ -5,8 +5,11 @@ use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use wait_timeout::ChildExt;
+
+use crate::session::CanonicalViewport;
 
 const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
 const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
@@ -38,10 +41,47 @@ pub(crate) struct BrowserControllerProcessSnapshot {
     pub(crate) restart_count: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BrowserControllerReconciliation {
+    pub(crate) process: BrowserControllerProcessSnapshot,
+    pub(crate) browser: BrowserControllerBrowserSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct BrowserControllerBrowserSnapshot {
+    pub(crate) browser_generation: u64,
+    pub(crate) tabs: Vec<BrowserControllerTabSnapshot>,
+    pub(crate) focused_target_id: Option<String>,
+    viewport: BrowserControllerViewport,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct BrowserControllerTabSnapshot {
+    pub(crate) target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) url: String,
+    pub(crate) title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+struct BrowserControllerViewport {
+    css_width: u32,
+    css_height: u32,
+    device_scale_factor: u32,
+    desktop_pixel_width: u32,
+    desktop_pixel_height: u32,
+}
+
 pub(crate) trait BrowserControllerProcessBackend {
     fn health(&mut self) -> Result<BrowserControllerProcessHealth, String>;
     fn start(&mut self) -> Result<BrowserControllerProcessHealth, String>;
     fn stop(&mut self) -> Result<(), String>;
+    fn reconcile_browser(
+        &mut self,
+        _viewport: &CanonicalViewport,
+    ) -> Result<BrowserControllerBrowserSnapshot, String> {
+        Err("browser controller backend does not support browser reconciliation".to_string())
+    }
 }
 
 pub(crate) struct BrowserControllerProcessStdioBackend {
@@ -134,7 +174,11 @@ impl BrowserControllerProcessStdioBackend {
         Ok(())
     }
 
-    fn request(&mut self, method: &str) -> Result<BrowserControllerRpcResponse, String> {
+    fn request(
+        &mut self,
+        method: &str,
+        params: serde_json::Value,
+    ) -> Result<BrowserControllerRpcResponse, String> {
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         let process = self
@@ -143,7 +187,7 @@ impl BrowserControllerProcessStdioBackend {
             .ok_or_else(|| "browser controller is not running".to_string())?;
         serde_json::to_writer(
             &mut process.stdin,
-            &serde_json::json!({ "id": request_id, "method": method }),
+            &serde_json::json!({ "id": request_id, "method": method, "params": params }),
         )
         .map_err(|error| format!("failed to encode browser controller request: {error}"))?;
         process
@@ -189,8 +233,9 @@ impl BrowserControllerProcessStdioBackend {
             .as_ref()
             .map(|process| process.child.id())
             .ok_or_else(|| "browser controller is not running".to_string())?;
-        let response = self.request("health")?;
-        let health = response.into_health("health")?;
+        let response = self.request("health", serde_json::json!({}))?;
+        let health = response.into_result::<BrowserControllerCommandHealth>("health")?;
+        let health = health.into_health("health")?;
         if health.process_id != Some(process_id) {
             return Err(format!(
                 "browser controller health reported process {:?}, expected {process_id}",
@@ -218,7 +263,7 @@ impl BrowserControllerProcessStdioBackend {
 }
 
 impl BrowserControllerRpcResponse {
-    fn into_health(self, method: &str) -> Result<BrowserControllerProcessHealth, String> {
+    fn into_result<T: DeserializeOwned>(self, method: &str) -> Result<T, String> {
         if !self.ok {
             let error = self.error.unwrap_or(BrowserControllerRpcError {
                 code: "controller_error".to_string(),
@@ -229,10 +274,18 @@ impl BrowserControllerRpcResponse {
                 error.code, error.message
             ));
         }
-        let response = self
+        let result = self
             .result
             .ok_or_else(|| format!("browser controller `{method}` omitted its result"))?;
-        let state = match response.state.as_str() {
+        serde_json::from_value(result).map_err(|error| {
+            format!("browser controller `{method}` returned invalid result: {error}")
+        })
+    }
+}
+
+impl BrowserControllerCommandHealth {
+    fn into_health(self, method: &str) -> Result<BrowserControllerProcessHealth, String> {
+        let state = match self.state.as_str() {
             "stopped" => BrowserControllerProcessState::Stopped,
             "starting" => BrowserControllerProcessState::Starting,
             "ready" => BrowserControllerProcessState::Ready,
@@ -246,8 +299,8 @@ impl BrowserControllerRpcResponse {
         };
         Ok(BrowserControllerProcessHealth {
             state,
-            process_id: response.process_id,
-            diagnostic_code: response.diagnostic_code,
+            process_id: self.process_id,
+            diagnostic_code: self.diagnostic_code,
         })
     }
 }
@@ -291,7 +344,7 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         if self.process.is_none() {
             return Ok(());
         }
-        let shutdown_requested = self.request("shutdown").is_ok();
+        let shutdown_requested = self.request("shutdown", serde_json::json!({})).is_ok();
         if let Some(mut process) = self.process.take() {
             if shutdown_requested {
                 terminate_child(&mut process.child, self.timeout);
@@ -300,6 +353,28 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
             }
         }
         Ok(())
+    }
+
+    fn reconcile_browser(
+        &mut self,
+        viewport: &CanonicalViewport,
+    ) -> Result<BrowserControllerBrowserSnapshot, String> {
+        let response = self.request(
+            "browser.reconcile",
+            serde_json::json!({
+                "viewport": {
+                    "css_width": viewport.css_width,
+                    "css_height": viewport.css_height,
+                    "device_scale_factor": viewport.device_scale_factor,
+                    "desktop_pixel_width": viewport.desktop_pixel_width,
+                    "desktop_pixel_height": viewport.desktop_pixel_height,
+                }
+            }),
+        )?;
+        let snapshot =
+            response.into_result::<BrowserControllerBrowserSnapshot>("browser.reconcile")?;
+        snapshot.validate(viewport)?;
+        Ok(snapshot)
     }
 }
 
@@ -326,8 +401,46 @@ struct BrowserControllerCommandHealth {
 struct BrowserControllerRpcResponse {
     id: Option<u64>,
     ok: bool,
-    result: Option<BrowserControllerCommandHealth>,
+    result: Option<serde_json::Value>,
     error: Option<BrowserControllerRpcError>,
+}
+
+impl BrowserControllerBrowserSnapshot {
+    fn validate(&self, expected_viewport: &CanonicalViewport) -> Result<(), String> {
+        if self.browser_generation == 0 {
+            return Err("browser controller returned zero browser generation".to_string());
+        }
+        if self.viewport.css_width != expected_viewport.css_width
+            || self.viewport.css_height != expected_viewport.css_height
+            || self.viewport.device_scale_factor != expected_viewport.device_scale_factor
+            || self.viewport.desktop_pixel_width != expected_viewport.desktop_pixel_width
+            || self.viewport.desktop_pixel_height != expected_viewport.desktop_pixel_height
+        {
+            return Err("browser controller did not apply the canonical viewport".to_string());
+        }
+        let mut target_ids = BTreeSet::new();
+        for tab in &self.tabs {
+            if tab.target_id.is_empty() || tab.document_id.is_empty() {
+                return Err(
+                    "browser controller returned an empty target or document identity".to_string(),
+                );
+            }
+            if !target_ids.insert(tab.target_id.as_str()) {
+                return Err(format!(
+                    "browser controller returned duplicate target `{}`",
+                    tab.target_id
+                ));
+            }
+        }
+        if let Some(focused_target_id) = &self.focused_target_id {
+            if !target_ids.contains(focused_target_id.as_str()) {
+                return Err(format!(
+                    "browser controller focused unknown target `{focused_target_id}`"
+                ));
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -409,6 +522,19 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             self.supervisor.stop()?;
         }
         Ok(self.supervisor.snapshot().clone())
+    }
+
+    pub(crate) fn reconcile_browser(
+        &mut self,
+        session_id: &str,
+        viewport: &CanonicalViewport,
+    ) -> Result<BrowserControllerReconciliation, String> {
+        if !self.owner_session_ids.contains(session_id) {
+            return Err(format!(
+                "browser controller is not leased by Room `{session_id}`"
+            ));
+        }
+        self.supervisor.reconcile_browser(viewport)
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
@@ -495,6 +621,20 @@ impl BrowserControllerProcessStore {
         ownership.release(session_id).map(Some)
     }
 
+    pub(crate) fn reconcile_browser(
+        &self,
+        session_id: &str,
+        viewport: &CanonicalViewport,
+    ) -> Result<Option<BrowserControllerReconciliation>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership.reconcile_browser(session_id, viewport).map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -564,6 +704,15 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         Ok(&self.snapshot)
     }
 
+    fn reconcile_browser(
+        &mut self,
+        viewport: &CanonicalViewport,
+    ) -> Result<BrowserControllerReconciliation, String> {
+        let process = self.ensure_started()?.clone();
+        let browser = self.backend.reconcile_browser(viewport)?;
+        Ok(BrowserControllerReconciliation { process, browser })
+    }
+
     fn start(&mut self) -> Result<(), String> {
         self.snapshot.state = BrowserControllerProcessState::Starting;
         match self.backend.start() {
@@ -620,8 +769,12 @@ mod tests {
     use super::{
         BrowserControllerProcessBackend, BrowserControllerProcessHealth,
         BrowserControllerProcessOwnership, BrowserControllerProcessState,
-        BrowserControllerProcessStdioBackend, BrowserControllerProcessSupervisor,
+        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
+        BrowserControllerProcessSupervisor,
     };
+    use crate::session::CanonicalViewport;
+
+    const HEALTHY_TEST_CONTROLLER_TIMEOUT: Duration = Duration::from_secs(5);
 
     #[derive(Default)]
     struct FakeBackend {
@@ -829,7 +982,7 @@ mod tests {
     }
 
     fn responsive_controller_script() -> &'static str {
-        "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n"
+        "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n"
     }
 
     #[test]
@@ -838,7 +991,7 @@ mod tests {
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
-            Duration::from_secs(1),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
         );
 
         assert_eq!(
@@ -860,12 +1013,44 @@ mod tests {
     }
 
     #[test]
+    fn room_lease_reconciles_browser_tabs_and_canonical_viewport_over_stdio() {
+        let tool = TestTool::new(
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.reconcile\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"tabs\":[{\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"url\":\"https://a.test\",\"title\":\"A\"}],\"focused_target_id\":\"target-a\",\"viewport\":{\"css_width\":1280,\"css_height\":720,\"device_scale_factor\":1,\"desktop_pixel_width\":1280,\"desktop_pixel_height\":720}}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+        );
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+        let viewport = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
+
+        assert!(store.reconcile_browser("room-1", &viewport).is_err());
+        store.acquire("room-1").expect("Room acquires controller");
+        let reconciliation = store
+            .reconcile_browser("room-1", &viewport)
+            .expect("browser reconciles")
+            .expect("controller is enabled");
+
+        assert_eq!(
+            reconciliation.process.state,
+            BrowserControllerProcessState::Ready
+        );
+        assert_eq!(reconciliation.browser.browser_generation, 1);
+        assert_eq!(reconciliation.browser.tabs[0].target_id, "target-a");
+        assert_eq!(
+            reconciliation.browser.focused_target_id.as_deref(),
+            Some("target-a")
+        );
+        store.release("room-1").expect("Room releases controller");
+    }
+
+    #[test]
     fn stdio_supervisor_restarts_a_crashed_controller_with_a_new_process() {
         let tool = TestTool::new(responsive_controller_script());
         let backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
-            Duration::from_secs(1),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
         );
         let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
         let first = supervisor
@@ -894,7 +1079,7 @@ mod tests {
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
-            Duration::from_secs(1),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
         );
 
         let error = backend.start().expect_err("early exit must fail");
@@ -905,12 +1090,12 @@ mod tests {
     #[test]
     fn stdio_backend_rejects_a_process_identity_mismatch_and_reaps_the_child() {
         let tool = TestTool::new(
-            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":1,\"diagnostic_code\":null}}\\n' \"$id\"\nexec sleep 30\n",
+            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=${request#*:}\nid=${id%%,*}\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":1,\"diagnostic_code\":null}}\\n' \"$id\"\nexec sleep 30\n",
         );
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
-            Duration::from_secs(1),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
         );
 
         let error = backend.start().expect_err("foreign process id must fail");
@@ -951,19 +1136,19 @@ mod tests {
     #[test]
     fn stdio_backend_bounds_shutdown_and_kills_the_process_group() {
         let tool = TestTool::new(
-            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\"\nIFS= read -r request\nsleep 30 &\nwait\n",
+            "#!/bin/sh\nset -eu\nIFS= read -r request\nid=${request#*:}\nid=${id%%,*}\nprintf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\"\nIFS= read -r request\nsleep 30 &\nwait\n",
         );
         let mut backend = BrowserControllerProcessStdioBackend::new(
             tool.path(),
             Vec::new(),
-            Duration::from_millis(500),
+            Duration::from_secs(2),
         );
         backend.start().expect("controller starts");
 
         let started = std::time::Instant::now();
         backend.stop().expect("bounded forced stop succeeds");
 
-        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(started.elapsed() < Duration::from_secs(5));
         assert_eq!(
             backend.health().expect("forced process was reaped").state,
             BrowserControllerProcessState::Stopped

@@ -6,8 +6,8 @@ import { fileURLToPath } from "node:url";
 
 import { handleBrowserControllerRequest } from "./browser-controller.mjs";
 
-test("controller health is request-correlated and process-owned", () => {
-  assert.deepEqual(handleBrowserControllerRequest({ id: 7, method: "health" }, 41), {
+test("controller health is request-correlated and process-owned", async () => {
+  assert.deepEqual(await handleBrowserControllerRequest({ id: 7, method: "health" }, { processId: 41 }), {
     id: 7,
     ok: true,
     result: {
@@ -18,9 +18,44 @@ test("controller health is request-correlated and process-owned", () => {
   });
 });
 
-test("controller rejects invalid and unknown requests", () => {
-  assert.equal(handleBrowserControllerRequest({ id: 1, method: "missing" }).ok, false);
-  assert.equal(handleBrowserControllerRequest({ method: "health" }).error.code, "invalid_request");
+test("controller rejects invalid and unknown requests", async () => {
+  assert.equal((await handleBrowserControllerRequest({ id: 1, method: "missing" })).ok, false);
+  assert.equal(
+    (await handleBrowserControllerRequest({ method: "health" })).error.code,
+    "invalid_request",
+  );
+});
+
+test("controller delegates browser reconciliation and closes CDP on shutdown", async () => {
+  const calls = [];
+  const browser = {
+    reconcile: async (viewport) => {
+      calls.push({ method: "reconcile", viewport });
+      return { tabs: [], focused_target_id: null, viewport };
+    },
+    close: async () => calls.push({ method: "close" }),
+  };
+  const viewport = {
+    css_width: 1280,
+    css_height: 720,
+    device_scale_factor: 1,
+    desktop_pixel_width: 1280,
+    desktop_pixel_height: 720,
+  };
+
+  const reconciled = await handleBrowserControllerRequest(
+    { id: 1, method: "browser.reconcile", params: { viewport } },
+    { browser },
+  );
+  const shutdown = await handleBrowserControllerRequest(
+    { id: 2, method: "shutdown" },
+    { browser },
+  );
+
+  assert.equal(reconciled.ok, true);
+  assert.deepEqual(reconciled.result.viewport, viewport);
+  assert.equal(shutdown.ok, true);
+  assert.deepEqual(calls, [{ method: "reconcile", viewport }, { method: "close" }]);
 });
 
 test("stdio controller stays private to its owning process and shuts down cleanly", async (context) => {

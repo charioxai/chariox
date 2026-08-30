@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::{
     CanonicalViewport, EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState,
-    EnvironmentError, EnvironmentLifecycle, EnvironmentReplay, RoomEnvironment,
-    RoomEnvironmentSnapshot,
+    EnvironmentError, EnvironmentLifecycle, EnvironmentReplay, EnvironmentTabObservation,
+    RoomEnvironment, RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -199,6 +199,22 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.reconcile_actors(actors)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn reconcile_controller_tabs(
+        &mut self,
+        session_id: &str,
+        tabs: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.reconcile_controller_tabs(tabs, focused_runtime_target_id);
         Ok(environment.snapshot())
     }
 

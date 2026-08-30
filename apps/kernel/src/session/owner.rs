@@ -316,6 +316,19 @@ impl SessionStateStore {
             .reconcile_room_environment_actors(session_id, actors)
     }
 
+    pub(crate) fn reconcile_room_environment_controller_tabs(
+        &self,
+        session_id: &str,
+        tabs: Vec<super::EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().reconcile_room_environment_controller_tabs(
+            session_id,
+            tabs,
+            focused_runtime_target_id,
+        )
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &self,
         session_id: &str,

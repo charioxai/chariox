@@ -5,44 +5,66 @@ import process from "node:process";
 import readline from "node:readline";
 import { fileURLToPath } from "node:url";
 
-export function handleBrowserControllerRequest(request, processId = process.pid) {
+import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-cdp.mjs";
+
+export async function handleBrowserControllerRequest(
+  request,
+  { processId = process.pid, browser = new BrowserCdpClient() } = {},
+) {
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
   }
-  if (request.method === "health") {
-    return {
-      id: request.id,
-      ok: true,
-      result: {
+  try {
+    if (request.method === "health") {
+      return successResponse(request.id, {
         state: "ready",
         process_id: processId,
         diagnostic_code: null,
-      },
-    };
-  }
-  if (request.method === "shutdown") {
-    return {
-      id: request.id,
-      ok: true,
-      result: {
+      });
+    }
+    if (request.method === "browser.reconcile") {
+      return successResponse(
+        request.id,
+        await browser.reconcile(request.params?.viewport),
+      );
+    }
+    if (request.method === "shutdown") {
+      await browser.close();
+      return successResponse(request.id, {
         state: "stopped",
         process_id: null,
         diagnostic_code: null,
-      },
-    };
+      });
+    }
+    return errorResponse(
+      request.id,
+      "unknown_method",
+      `unknown browser controller method ${JSON.stringify(request.method)}`,
+    );
+  } catch (error) {
+    const code =
+      error instanceof BrowserControllerError
+        ? error.code
+        : "browser_controller_internal";
+    return errorResponse(
+      request.id,
+      code,
+      error instanceof Error ? error.message : String(error),
+    );
   }
-  return errorResponse(
-    request.id,
-    "unknown_method",
-    `unknown browser controller method ${JSON.stringify(request.method)}`,
-  );
 }
 
 export class BrowserControllerStdioServer {
-  constructor({ input = process.stdin, output = process.stdout, processId = process.pid } = {}) {
+  constructor({
+    input = process.stdin,
+    output = process.stdout,
+    processId = process.pid,
+    browser = new BrowserCdpClient(),
+  } = {}) {
     this.input = input;
     this.output = output;
     this.processId = processId;
+    this.browser = browser;
   }
 
   async run() {
@@ -68,7 +90,10 @@ export class BrowserControllerStdioServer {
         );
         continue;
       }
-      const response = handleBrowserControllerRequest(request, this.processId);
+      const response = await handleBrowserControllerRequest(request, {
+        processId: this.processId,
+        browser: this.browser,
+      });
       this.write(response);
       if (request.method === "shutdown" && response.ok) {
         lines.close();
@@ -80,6 +105,10 @@ export class BrowserControllerStdioServer {
   write(response) {
     this.output.write(`${JSON.stringify(response)}\n`);
   }
+}
+
+function successResponse(id, result) {
+  return { id, ok: true, result };
 }
 
 function errorResponse(id, code, message) {

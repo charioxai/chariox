@@ -177,7 +177,43 @@ impl SessionRuntimeStore {
                 crate::session::EnvironmentComponentHealthState::Ready,
                 None,
             )
-            .map_err(|error| room_environment_control_error(operation, error))
+            .map_err(|error| room_environment_control_error(operation, error))?;
+        self.state
+            .update_room_environment_component_health(
+                session_id,
+                crate::session::EnvironmentComponent::Browser,
+                crate::session::EnvironmentComponentHealthState::Starting,
+                None,
+            )
+            .map_err(|error| room_environment_control_error(operation, error))?;
+        match self
+            .state
+            .reconcile_browser_controller_environment(session_id)
+            .await
+        {
+            Ok(_) => self
+                .state
+                .update_room_environment_component_health(
+                    session_id,
+                    crate::session::EnvironmentComponent::Browser,
+                    crate::session::EnvironmentComponentHealthState::Ready,
+                    None,
+                )
+                .map_err(|error| room_environment_control_error(operation, error)),
+            Err(error) => {
+                let _ = self.state.update_room_environment_component_health(
+                    session_id,
+                    crate::session::EnvironmentComponent::Browser,
+                    crate::session::EnvironmentComponentHealthState::Unavailable,
+                    Some("browser_reconcile_failed"),
+                );
+                let _ = self.state.transition_room_environment(
+                    session_id,
+                    crate::session::EnvironmentLifecycle::Failed,
+                );
+                Err(error)
+            }
+        }
     }
 
     pub(super) async fn update_room_environment_viewport(
@@ -210,11 +246,59 @@ impl SessionRuntimeStore {
                     request.expected_revision,
                     viewport,
                 )
-                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
                 .map_err(|error| {
                     room_environment_control_error("environment.viewport.update", error)
                 })
         });
+        let result = match result {
+            Ok(environment) if self.state.browser_controller_process_enabled() => {
+                match self
+                    .state
+                    .reconcile_browser_controller_environment(&request.session_id)
+                    .await
+                {
+                    Ok(_) => self
+                        .state
+                        .update_room_environment_component_health(
+                            &request.session_id,
+                            crate::session::EnvironmentComponent::Browser,
+                            crate::session::EnvironmentComponentHealthState::Ready,
+                            None,
+                        )
+                        .map_err(|error| {
+                            room_environment_control_error("environment.viewport.update", error)
+                        }),
+                    Err(_) => {
+                        let degraded = self
+                            .state
+                            .update_room_environment_component_health(
+                                &request.session_id,
+                                crate::session::EnvironmentComponent::Browser,
+                                crate::session::EnvironmentComponentHealthState::Degraded,
+                                Some("viewport_apply_failed"),
+                            )
+                            .unwrap_or(environment);
+                        if degraded.lifecycle == crate::session::EnvironmentLifecycle::Ready {
+                            self.state
+                                .transition_room_environment(
+                                    &request.session_id,
+                                    crate::session::EnvironmentLifecycle::Degraded,
+                                )
+                                .map_err(|error| {
+                                    room_environment_control_error(
+                                        "environment.viewport.update",
+                                        error,
+                                    )
+                                })
+                        } else {
+                            Ok(degraded)
+                        }
+                    }
+                }
+            }
+            other => other,
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
         (result, None)
     }
 

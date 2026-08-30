@@ -1,7 +1,8 @@
 use super::*;
 use crate::session::{
     ActionCancellationOutcome, EnvironmentActor, EnvironmentComponent,
-    EnvironmentComponentHealthState, EnvironmentLifecycle, InputTarget, TakeoverOutcome,
+    EnvironmentComponentHealthState, EnvironmentLifecycle, EnvironmentTabObservation, InputTarget,
+    TakeoverOutcome,
 };
 
 impl SessionService {
@@ -180,6 +181,24 @@ impl SessionService {
             });
         }
         self.room_environments.reconcile_actors(session_id, actors)
+    }
+
+    pub(crate) fn reconcile_room_environment_controller_tabs(
+        &mut self,
+        session_id: &str,
+        tabs: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.reconcile_controller_tabs(
+            session_id,
+            tabs,
+            focused_runtime_target_id,
+        )
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(

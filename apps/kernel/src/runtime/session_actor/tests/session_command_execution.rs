@@ -20,10 +20,30 @@ impl TestBrowserControllerTool {
         std::fs::create_dir_all(&root).expect("create controller tool root");
         let path = root.join("controller-tool.sh");
         let log = root.join("commands.log");
-        let script = format!(
-            "#!/bin/sh\nset -eu\nprintf 'start\\n' >> '{}'\nwhile IFS= read -r request; do\n  id=$(printf '%s' \"$request\" | sed -n 's/.*\"id\":\\([0-9][0-9]*\\).*/\\1/p')\n  case \"$request\" in\n    *'\"method\":\"health\"'*)\n      printf 'health\\n' >> '{}'\n      printf '{{\"id\":%s,\"ok\":true,\"result\":{{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}}}\\n' \"$id\" \"$$\"\n      ;;\n    *'\"method\":\"shutdown\"'*)\n      printf 'shutdown\\n' >> '{}'\n      printf '{{\"id\":%s,\"ok\":true,\"result\":{{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}}}\\n' \"$id\"\n      exit 0\n      ;;\n  esac\ndone\n",
-            log.display(), log.display(), log.display(),
-        );
+        let script = r#"#!/bin/sh
+set -eu
+printf 'start\n' >> '__LOG__'
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*)
+      printf 'health\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$"
+      ;;
+    *'"method":"browser.reconcile"'*)
+      printf 'reconcile\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
+      ;;
+    *'"method":"shutdown"'*)
+      printf 'shutdown\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+"#
+        .replace("__LOG__", &log.display().to_string());
         std::fs::write(&path, script).expect("write controller tool");
         let mut permissions = std::fs::metadata(&path)
             .expect("controller tool metadata")
@@ -61,7 +81,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
         crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
             &tool.path,
             Vec::new(),
-            Duration::from_secs(1),
+            Duration::from_secs(5),
         ),
     );
     let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
@@ -107,6 +127,14 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
         health.component == crate::session::EnvironmentComponent::BrowserController
             && health.state == crate::session::EnvironmentComponentHealthState::Ready
     }));
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::Browser
+            && health.state == crate::session::EnvironmentComponentHealthState::Ready
+    }));
+    assert_eq!(environment.tabs.len(), 1);
+    assert_eq!(environment.tabs[0].tab_id, "tab-1");
+    assert_eq!(environment.tabs[0].url, "https://a.test");
+    assert!(environment.tabs[0].focused);
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -175,7 +203,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nshutdown\nstart\nhealth\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 

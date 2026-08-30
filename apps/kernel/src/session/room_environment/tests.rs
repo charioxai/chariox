@@ -91,6 +91,97 @@ fn tab_identity_survives_reconciliation_and_navigation_invalidates_old_reference
 }
 
 #[test]
+fn controller_tab_reconciliation_preserves_identity_and_tracks_documents_and_focus() {
+    let mut environment = ready_environment();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-a", "loader-a1", "https://a.test", "A"),
+            observed_tab("target-b", "loader-b1", "https://b.test", "B"),
+        ],
+        Some("target-b"),
+    );
+    let initial = environment.snapshot();
+    assert_eq!(
+        initial
+            .tabs
+            .iter()
+            .map(|tab| (tab.tab_id.as_str(), tab.document_revision, tab.focused))
+            .collect::<Vec<_>>(),
+        vec![("tab-1", 1, false), ("tab-2", 1, true)]
+    );
+
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-b", "loader-b2", "https://b.test/inbox", "Inbox"),
+            observed_tab("target-a", "loader-a1", "https://a.test", "A renamed"),
+            observed_tab("target-c", "loader-c1", "https://c.test", "C"),
+        ],
+        Some("target-a"),
+    );
+    let reconciled = environment.snapshot();
+    assert_eq!(
+        reconciled
+            .tabs
+            .iter()
+            .map(|tab| (
+                tab.tab_id.as_str(),
+                tab.url.as_str(),
+                tab.title.as_str(),
+                tab.document_revision,
+                tab.focused,
+            ))
+            .collect::<Vec<_>>(),
+        vec![
+            ("tab-1", "https://a.test", "A renamed", 1, true),
+            ("tab-2", "https://b.test/inbox", "Inbox", 2, false),
+            ("tab-3", "https://c.test", "C", 1, false),
+        ]
+    );
+}
+
+#[test]
+fn controller_tab_reconciliation_retires_missing_targets_and_detects_same_url_reload() {
+    let mut environment = ready_environment();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-a", "loader-a1", "https://a.test", "A"),
+            observed_tab("target-b", "loader-b1", "https://b.test", "B"),
+        ],
+        Some("target-a"),
+    );
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "target-b",
+            "loader-b2",
+            "https://b.test",
+            "B reloaded",
+        )],
+        Some("missing-target"),
+    );
+
+    let snapshot = environment.snapshot();
+    assert_eq!(snapshot.tabs.len(), 1);
+    assert_eq!(snapshot.tabs[0].tab_id, "tab-2");
+    assert_eq!(snapshot.tabs[0].document_revision, 2);
+    assert!(snapshot.tabs[0].focused);
+    assert_eq!(snapshot.focused_tab_id.as_deref(), Some("tab-2"));
+}
+
+fn observed_tab(
+    runtime_target_id: &str,
+    document_id: &str,
+    url: &str,
+    title: &str,
+) -> EnvironmentTabObservation {
+    EnvironmentTabObservation {
+        runtime_target_id: runtime_target_id.to_string(),
+        document_id: document_id.to_string(),
+        url: url.to_string(),
+        title: title.to_string(),
+    }
+}
+
+#[test]
 fn closing_and_resetting_retire_runtime_tab_identity() {
     let mut environment = ready_environment();
     let tab_id = environment

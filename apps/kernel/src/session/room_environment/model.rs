@@ -164,6 +164,14 @@ pub struct EnvironmentTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvironmentTabObservation {
+    pub(crate) runtime_target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) url: String,
+    pub(crate) title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
     InvalidViewport,
     EnvironmentAlreadyExists {

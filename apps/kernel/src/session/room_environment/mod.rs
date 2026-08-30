@@ -15,6 +15,7 @@ pub use action::{
     EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, InputTarget,
 };
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
+pub(crate) use model::EnvironmentTabObservation;
 pub use model::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     CanonicalViewport, EnvironmentActor, EnvironmentActorKind, EnvironmentActorPresence,

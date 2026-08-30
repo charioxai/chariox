@@ -38,6 +38,53 @@ impl KernelRuntimeState {
             })
     }
 
+    pub(crate) async fn reconcile_browser_controller_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        let viewport = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
+            .viewport;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let reconciliation = tokio::task::spawn_blocking(move || {
+            processes.reconcile_browser(&owned_session_id, &viewport)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.reconcile",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.reconcile",
+            message,
+        })?;
+        let Some(reconciliation) = reconciliation else {
+            return self
+                .room_environment_snapshot(session_id)
+                .map_err(|error| environment_runtime_error("browser_controller.reconcile", error));
+        };
+        let focused_target_id = reconciliation.browser.focused_target_id.clone();
+        let tabs = reconciliation
+            .browser
+            .tabs
+            .into_iter()
+            .map(|tab| crate::session::EnvironmentTabObservation {
+                runtime_target_id: tab.target_id,
+                document_id: tab.document_id,
+                url: tab.url,
+                title: tab.title,
+            })
+            .collect();
+        self.reconcile_room_environment_controller_tabs(
+            session_id,
+            tabs,
+            focused_target_id.as_deref(),
+        )
+        .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))
+    }
+
     pub(crate) async fn stop_browser_controller_process(
         &self,
         session_id: &str,

@@ -12,7 +12,7 @@ use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentTabObservation, RoomEnvironmentSnapshot,
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
@@ -186,6 +186,19 @@ impl RoomEnvironment {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
         Ok(tab_id)
+    }
+
+    pub(crate) fn reconcile_controller_tabs(
+        &mut self,
+        observations: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) {
+        if self
+            .tabs
+            .reconcile_controller_tabs(observations, focused_runtime_target_id)
+        {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
     }
 
     pub fn register_actor(&mut self, actor: EnvironmentActor) -> Result<(), EnvironmentError> {
