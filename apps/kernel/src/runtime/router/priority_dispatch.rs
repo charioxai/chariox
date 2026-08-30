@@ -111,6 +111,7 @@ impl CommandRouter {
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)
+            | LocalDaemonRequest::GetRoomEnvironmentState(_)
             | LocalDaemonRequest::ListAgents(_)) => {
                 execute_session_read_request(&self.runtime_state, request).await
             }

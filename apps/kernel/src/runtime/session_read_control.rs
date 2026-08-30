@@ -1,13 +1,13 @@
 use crate::error::DaemonError;
 use crate::local::{
-    GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest,
-    LocalDaemonResponse, ResolveSessionRequest,
+    GetRoomEnvironmentStateRequest, GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
 use crate::runtime::state::KernelRuntimeState;
 use crate::runtime::workflow_projection::{projected_resolve_workflow, projected_workflow_id};
-use crate::session::RuntimeSession;
+use crate::session::{EnvironmentError, RuntimeSession};
 
 fn ensure_projected_workflow_metaagent_scope(
     workflow_metaagent_id: Option<&str>,
@@ -336,6 +336,32 @@ pub(crate) async fn execute_get_session_state_request(
     runtime_state.session_state_response(request)
 }
 
+pub(crate) async fn execute_get_room_environment_state_request(
+    runtime_state: &KernelRuntimeState,
+    request: GetRoomEnvironmentStateRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_snapshot(&request.session_id)
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentState { environment })
+        .map_err(room_environment_read_error)
+}
+
+fn room_environment_read_error(error: EnvironmentError) -> DaemonError {
+    match error {
+        EnvironmentError::RoomNotFound { session_id } => {
+            DaemonError::SessionNotFound { session_id }
+        }
+        EnvironmentError::EnvironmentNotFound { session_id } => DaemonError::LocalTransport {
+            operation: "environment.state.get",
+            message: format!("environment_not_found: Room `{session_id}` has no Environment"),
+        },
+        other => DaemonError::LocalTransport {
+            operation: "environment.state.get",
+            message: format!("environment_state_unavailable: {other:?}"),
+        },
+    }
+}
+
 pub(crate) async fn execute_list_agents_request(
     runtime_state: &KernelRuntimeState,
     request: ListAgentsRequest,
@@ -356,6 +382,9 @@ pub(crate) async fn execute_session_read_request(
         }
         LocalDaemonRequest::GetSessionState(request) => {
             execute_get_session_state_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::GetRoomEnvironmentState(request) => {
+            execute_get_room_environment_state_request(runtime_state, request).await
         }
         LocalDaemonRequest::ListAgents(request) => {
             execute_list_agents_request(runtime_state, request).await

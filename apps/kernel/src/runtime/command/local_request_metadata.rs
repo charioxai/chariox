@@ -421,6 +421,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ListSessions(_) => "session.list",
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
         LocalDaemonRequest::GetMetaagentTurnOverview(_) => "metaagent.turn.overview",
         LocalDaemonRequest::GetMetaagentTurnBlob(_) => "metaagent.turn.blob",

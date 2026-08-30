@@ -55,6 +55,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::CreateSession(_) => "session.create",
         LocalDaemonRequest::AttachToSession(_) => "session.attach",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetSessionHistoryOutline(_) => "session.history.outline.get",
         LocalDaemonRequest::GetSessionHistoryBlobContent(_) => "session.history.blob.get",
         LocalDaemonRequest::ListSlices(_) => "slice.list",
@@ -88,5 +89,20 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::PushWorkspaceBranch(_) => "workspace.git.push",
         LocalDaemonRequest::CommitAndPushWorkspaceChanges(_) => "workspace.git.commit_and_push",
         _ => "other",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local::GetRoomEnvironmentStateRequest;
+
+    #[test]
+    fn room_environment_state_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
+            session_id: "session-1".to_string(),
+        });
+
+        assert_eq!(relay_request_kind(&request), "environment.state.get");
     }
 }
