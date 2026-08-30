@@ -220,6 +220,60 @@ impl KernelRuntimeState {
         ))
     }
 
+    pub(crate) async fn handle_browser_environment_dialog(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_action::BrowserDialogAction,
+    ) -> Result<crate::runtime::browser_controller_action::RoomBrowserDialogResult, DaemonError>
+    {
+        action
+            .validate()
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.dialog",
+                message,
+            })?;
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.dialog", error))?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.dialog", error))?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let target_id = binding.runtime_target_id.clone();
+        let document_id = binding.document_id.clone();
+        let controller_action = action.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            processes.handle_browser_dialog(
+                &owned_session_id,
+                &target_id,
+                &document_id,
+                &controller_action,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.dialog",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.dialog",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.dialog",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        Ok(result.into_room_result(
+            session_id.to_string(),
+            environment.environment_id,
+            environment.runtime_generation,
+            tab_id.to_string(),
+            binding.document_revision,
+        ))
+    }
+
     pub(crate) async fn stop_browser_controller_process(
         &self,
         session_id: &str,

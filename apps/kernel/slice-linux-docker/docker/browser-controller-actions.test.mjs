@@ -75,6 +75,30 @@ test("fill auto-waits, replaces existing text, and inserts through native input"
   );
 });
 
+for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
+  test(`click returns when ${dialogEventType} opens a dialog without waiting for its blocked response`, async () => {
+    const connection = new FakeActionConnection([
+      { state: "ready", x: 50, y: 75, width: 100, height: 30 },
+      { state: "ready", x: 50, y: 75, width: 100, height: 30 },
+    ]);
+    connection.dialogEventType = dialogEventType;
+
+    const result = await performBrowserAction({
+      connection,
+      sessionId: "session-a",
+      targetId: "target-a",
+      documentId: "loader-a",
+      nodeRef: "backend:103",
+      action: { kind: "click" },
+      timeoutMs: 500,
+      sleep: async () => {},
+    });
+
+    assert.equal(result.action_kind, "click");
+    assert.equal(result.dialog_opened, true);
+  });
+}
+
 test("locator actions reject stale documents and time out with stable codes", async () => {
   const stale = new FakeActionConnection([]);
   stale.loaderId = "loader-b";
@@ -181,8 +205,27 @@ class FakeActionConnection {
       return {};
     }
     if (method.startsWith("Input.")) {
+      if (method === "Input.dispatchMouseEvent" && params.type === this.dialogEventType) {
+        this.dialogWaiter?.({ method: "Page.javascriptDialogOpening" });
+        return new Promise(() => {});
+      }
       return {};
     }
     throw new Error(`unexpected CDP method ${method}`);
+  }
+
+  waitForEvent() {
+    let resolve;
+    const promise = new Promise((eventResolve) => {
+      resolve = eventResolve;
+      this.dialogWaiter = eventResolve;
+    });
+    return {
+      promise,
+      cancel: () => {
+        if (this.dialogWaiter === resolve) this.dialogWaiter = null;
+        resolve(null);
+      },
+    };
   }
 }

@@ -41,6 +41,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "action", request });
       return { action_kind: request.action.kind };
     },
+    handleDialog: async (request) => {
+      calls.push({ method: "dialog", request });
+      return { action: request.action };
+    },
     close: async () => calls.push({ method: "close" }),
   };
   const viewport = {
@@ -76,8 +80,20 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const dialog = await handleBrowserControllerRequest(
+    {
+      id: 4,
+      method: "browser.dialog",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        action: "dismiss",
+      },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 4, method: "shutdown" },
+    { id: 5, method: "shutdown" },
     { browser },
   );
 
@@ -88,6 +104,7 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     document_id: "loader-a",
   });
   assert.deepEqual(action.result, { action_kind: "click" });
+  assert.deepEqual(dialog.result, { action: "dismiss" });
   assert.equal(shutdown.ok, true);
   assert.deepEqual(calls, [
     { method: "reconcile", viewport },
@@ -102,6 +119,14 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
         document_id: "loader-a",
         node_ref: "backend:103",
         action: { kind: "click" },
+      },
+    },
+    {
+      method: "dialog",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        action: "dismiss",
       },
     },
     { method: "close" },

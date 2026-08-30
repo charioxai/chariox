@@ -40,6 +40,12 @@ export async function handleBrowserControllerRequest(
         await browser.performAction(request.params),
       );
     }
+    if (request.method === "browser.dialog") {
+      return successResponse(
+        request.id,
+        await browser.handleDialog(request.params),
+      );
+    }
     if (request.method === "shutdown") {
       await browser.close();
       return successResponse(request.id, {
@@ -136,7 +142,11 @@ async function runCli() {
   if (command !== "stdio") {
     throw new Error("usage: browser-controller.mjs stdio");
   }
-  await new BrowserControllerStdioServer().run();
+  const debuggerEndpoint = process.env.CHARIOX_BROWSER_DEBUGGER_ENDPOINT;
+  const browser = debuggerEndpoint
+    ? new BrowserCdpClient({ debuggerEndpoint })
+    : new BrowserCdpClient();
+  await new BrowserControllerStdioServer({ browser }).run();
 }
 
 const invokedPath = process.argv[1] ? realpathSync(process.argv[1]) : null;

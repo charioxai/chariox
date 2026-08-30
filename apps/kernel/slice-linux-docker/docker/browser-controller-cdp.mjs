@@ -34,6 +34,7 @@ export class BrowserCdpClient {
     this.connection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
+    this.documentIdsByTarget = new Map();
     this.snapshotStateByTarget = new Map();
   }
 
@@ -49,6 +50,7 @@ export class BrowserCdpClient {
       for (const targetId of this.sessionsByTarget.keys()) {
         if (!pageTargetIds.has(targetId)) {
           this.sessionsByTarget.delete(targetId);
+          this.documentIdsByTarget.delete(targetId);
           this.snapshotStateByTarget.delete(targetId);
         }
       }
@@ -66,6 +68,7 @@ export class BrowserCdpClient {
       if (!connection.isOpen()) {
         this.connection = null;
         this.sessionsByTarget.clear();
+        this.documentIdsByTarget.clear();
       }
       throw normalizeControllerError(error);
     }
@@ -75,6 +78,7 @@ export class BrowserCdpClient {
     const connection = this.connection;
     this.connection = null;
     this.sessionsByTarget.clear();
+    this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     if (connection) {
       await connection.close();
@@ -86,6 +90,7 @@ export class BrowserCdpClient {
       return this.connection;
     }
     this.sessionsByTarget.clear();
+    this.documentIdsByTarget.clear();
     this.snapshotStateByTarget.clear();
     this.connection = this.connectionFactory
       ? await this.connectionFactory()
@@ -125,6 +130,7 @@ export class BrowserCdpClient {
         `browser target ${JSON.stringify(target.targetId)} has no top-level loader identity`,
       );
     }
+    this.documentIdsByTarget.set(target.targetId, documentId);
     return {
       target_id: target.targetId,
       document_id: documentId,
@@ -216,6 +222,60 @@ export class BrowserCdpClient {
     }
   }
 
+  async handleDialog(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const action = rawRequest?.action;
+    if (action !== "accept" && action !== "dismiss") {
+      throw new BrowserControllerError(
+        "browser_dialog_invalid",
+        "browser dialog action must be accept or dismiss",
+      );
+    }
+    const promptText = rawRequest?.prompt_text;
+    if (
+      promptText !== undefined &&
+      (typeof promptText !== "string" || !utf8ByteLengthAtMost(promptText, 2_048))
+    ) {
+      throw new BrowserControllerError(
+        "browser_dialog_invalid",
+        "browser dialog prompt text must not exceed 2048 UTF-8 bytes",
+      );
+    }
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const target = targetInfos.find(
+      (candidate) => candidate?.type === "page" && candidate.targetId === targetId,
+    );
+    if (!target) {
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(targetId)} is not available`,
+      );
+    }
+    const sessionId = await this.ensureTargetSession(connection, targetId);
+    if (this.documentIdsByTarget.get(targetId) !== documentId) {
+      throw new BrowserControllerError(
+        "stale_document_reference",
+        `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
+      );
+    }
+    await connection.send(
+      "Page.handleJavaScriptDialog",
+      {
+        accept: action === "accept",
+        ...(action === "accept" && promptText !== undefined ? { promptText } : {}),
+      },
+      sessionId,
+    );
+    return {
+      browser_generation: this.browserGeneration,
+      target_id: targetId,
+      document_id: documentId,
+      action,
+    };
+  }
+
   async ensureTargetSession(connection, targetId) {
     let sessionId = this.sessionsByTarget.get(targetId);
     if (sessionId) {
@@ -232,6 +292,7 @@ export class BrowserCdpClient {
       );
     }
     sessionId = attached.sessionId;
+    await connection.send("Page.enable", {}, sessionId);
     this.sessionsByTarget.set(targetId, sessionId);
     return sessionId;
   }
@@ -243,6 +304,7 @@ export class CdpConnection {
     this.requestTimeoutMs = requestTimeoutMs;
     this.nextRequestId = 1;
     this.pending = new Map();
+    this.eventWaiters = new Map();
     this.closed = false;
     socket.addEventListener("message", (event) => this.receive(event.data));
     socket.addEventListener("close", () => this.failPending("browser_cdp_disconnected"));
@@ -285,6 +347,29 @@ export class CdpConnection {
     });
   }
 
+  waitForEvent(method, timeoutMs, sessionId) {
+    let waiter;
+    const promise = new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        this.removeEventWaiter(method, waiter);
+        resolve(null);
+      }, timeoutMs);
+      waiter = { sessionId, resolve, timeout };
+      const waiters = this.eventWaiters.get(method) ?? new Set();
+      waiters.add(waiter);
+      this.eventWaiters.set(method, waiters);
+    });
+    return {
+      promise,
+      cancel: () => {
+        if (!waiter) return;
+        clearTimeout(waiter.timeout);
+        this.removeEventWaiter(method, waiter);
+        waiter.resolve(null);
+      },
+    };
+  }
+
   async close() {
     if (this.closed) {
       return;
@@ -303,6 +388,9 @@ export class CdpConnection {
     } catch {
       this.failPending("browser_cdp_invalid_json");
       return;
+    }
+    if (typeof message?.method === "string") {
+      this.dispatchEvent(message);
     }
     if (!Number.isSafeInteger(message?.id)) {
       return;
@@ -332,6 +420,31 @@ export class CdpConnection {
       pending.reject(new BrowserControllerError(code, "browser CDP connection closed"));
     }
     this.pending.clear();
+    for (const [method, waiters] of this.eventWaiters) {
+      for (const waiter of waiters) {
+        clearTimeout(waiter.timeout);
+        waiter.resolve(null);
+      }
+      this.eventWaiters.delete(method);
+    }
+  }
+
+  dispatchEvent(message) {
+    const waiters = this.eventWaiters.get(message.method);
+    if (!waiters) return;
+    for (const waiter of [...waiters]) {
+      if (waiter.sessionId && waiter.sessionId !== message.sessionId) continue;
+      clearTimeout(waiter.timeout);
+      this.removeEventWaiter(message.method, waiter);
+      waiter.resolve(message);
+    }
+  }
+
+  removeEventWaiter(method, waiter) {
+    const waiters = this.eventWaiters.get(method);
+    if (!waiters) return;
+    waiters.delete(waiter);
+    if (waiters.size === 0) this.eventWaiters.delete(method);
   }
 }
 
@@ -381,6 +494,22 @@ function requiredIdentity(value, field) {
     );
   }
   return value;
+}
+
+function utf8ByteLengthAtMost(value, limit) {
+  let length = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    length += codePoint <= 0x7f
+      ? 1
+      : codePoint <= 0x7ff
+        ? 2
+        : codePoint <= 0xffff
+          ? 3
+          : 4;
+    if (length > limit) return false;
+  }
+  return true;
 }
 
 function deviceMetricsFor(viewport) {

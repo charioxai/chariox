@@ -10,7 +10,8 @@ use serde::Deserialize;
 use wait_timeout::ChildExt;
 
 use super::browser_controller_action::{
-    validate_browser_action_timeout, BrowserControllerActionResult, BrowserLocatorAction,
+    validate_browser_action_timeout, BrowserControllerActionResult, BrowserControllerDialogResult,
+    BrowserDialogAction, BrowserLocatorAction,
 };
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use crate::session::CanonicalViewport;
@@ -102,6 +103,14 @@ pub(crate) trait BrowserControllerProcessBackend {
         _timeout_ms: u64,
     ) -> Result<BrowserControllerActionResult, String> {
         Err("browser controller backend does not support locator actions".to_string())
+    }
+    fn handle_browser_dialog(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+        _action: &BrowserDialogAction,
+    ) -> Result<BrowserControllerDialogResult, String> {
+        Err("browser controller backend does not support dialogs".to_string())
     }
 }
 
@@ -440,6 +449,27 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         result.validate(target_id, document_id, action.kind())?;
         Ok(result)
     }
+
+    fn handle_browser_dialog(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: &BrowserDialogAction,
+    ) -> Result<BrowserControllerDialogResult, String> {
+        action.validate()?;
+        let response = self.request(
+            "browser.dialog",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+                "action": action.kind(),
+                "prompt_text": action.prompt_text(),
+            }),
+        )?;
+        let result = response.into_result::<BrowserControllerDialogResult>("browser.dialog")?;
+        result.validate(target_id, document_id, action)?;
+        Ok(result)
+    }
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -634,6 +664,22 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
+    pub(crate) fn handle_browser_dialog(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: &BrowserDialogAction,
+    ) -> Result<BrowserControllerDialogResult, String> {
+        if !self.owner_session_ids.contains(session_id) {
+            return Err(format!(
+                "browser controller is not leased by Room {session_id}"
+            ));
+        }
+        self.supervisor
+            .handle_browser_dialog(target_id, document_id, action)
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
         self.owner_session_ids.clear();
         self.supervisor.stop().cloned()
@@ -776,6 +822,24 @@ impl BrowserControllerProcessStore {
             .map(Some)
     }
 
+    pub(crate) fn handle_browser_dialog(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+        action: &BrowserDialogAction,
+    ) -> Result<Option<BrowserControllerDialogResult>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .handle_browser_dialog(session_id, target_id, document_id, action)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -877,6 +941,17 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
 
+    fn handle_browser_dialog(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+        action: &BrowserDialogAction,
+    ) -> Result<BrowserControllerDialogResult, String> {
+        self.ensure_started()?;
+        self.backend
+            .handle_browser_dialog(target_id, document_id, action)
+    }
+
     fn start(&mut self) -> Result<(), String> {
         self.snapshot.state = BrowserControllerProcessState::Starting;
         match self.backend.start() {
@@ -936,7 +1011,7 @@ mod tests {
         BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
         BrowserControllerProcessSupervisor,
     };
-    use crate::runtime::browser_controller_action::BrowserLocatorAction;
+    use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
 
     const HEALTHY_TEST_CONTROLLER_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1236,7 +1311,7 @@ mod tests {
     #[test]
     fn room_lease_performs_a_bounded_locator_action_over_stdio() {
         let tool = TestTool::new(
-            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.action\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"action_kind\":\"click\",\"attempts\":2,\"elapsed_ms\":50}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.action\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"action_kind\":\"click\",\"dialog_opened\":true,\"attempts\":2,\"elapsed_ms\":50}}\\n' \"$id\" ;;\n    *'\"method\":\"browser.dialog\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"action\":\"dismiss\"}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
         );
         let store = BrowserControllerProcessStore::new(
             tool.path(),
@@ -1258,8 +1333,19 @@ mod tests {
             .expect("controller is enabled");
 
         assert_eq!(result.action_kind, "click");
+        assert!(result.dialog_opened);
         assert_eq!(result.attempts, 2);
         assert_eq!(result.elapsed_ms, 50);
+        let dialog = store
+            .handle_browser_dialog(
+                "room-1",
+                "target-a",
+                "loader-a",
+                &BrowserDialogAction::Dismiss,
+            )
+            .expect("dialog action succeeds")
+            .expect("controller is enabled");
+        assert_eq!(dialog.action, "dismiss");
         store.release("room-1").expect("Room releases controller");
     }
 

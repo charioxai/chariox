@@ -31,6 +31,7 @@ export async function performBrowserAction({
   let attempts = 0;
   let previousGeometry = null;
   let lastReason = "not_ready";
+  let releaseInBackground = false;
 
   while (true) {
     if (attempts > 0 && now() - startedAt >= boundedTimeoutMs) {
@@ -48,24 +49,30 @@ export async function performBrowserAction({
       const geometry = readyGeometry(actionability, normalizedAction);
       lastReason = actionability.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
-        await executeAction(
+        const actionResult = await executeAction(
           connection,
           sessionId,
           objectId,
           geometry,
           normalizedAction,
         );
+        releaseInBackground = actionResult.dialogOpened;
         return {
           target_id: targetId,
           document_id: documentId,
           action_kind: normalizedAction.kind,
+          dialog_opened: actionResult.dialogOpened,
           attempts,
           elapsed_ms: Math.max(0, now() - startedAt),
         };
       }
       previousGeometry = geometry;
     } finally {
-      await releaseObject(connection, sessionId, objectId);
+      if (releaseInBackground) {
+        void releaseObject(connection, sessionId, objectId);
+      } else {
+        await releaseObject(connection, sessionId, objectId);
+      }
     }
     await sleep(ACTION_POLL_INTERVAL_MS);
   }
@@ -288,8 +295,9 @@ async function executeAction(
   action,
 ) {
   if (action.kind === "click") {
-    await dispatchClick(connection, sessionId, geometry.x, geometry.y);
-    return;
+    return {
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y),
+    };
   }
   await focusElement(connection, sessionId, objectId, !action.append);
   if (action.text) {
@@ -297,20 +305,56 @@ async function executeAction(
   } else if (!action.append) {
     await dispatchBackspace(connection, sessionId);
   }
+  return { dialogOpened: false };
 }
 
 async function dispatchClick(connection, sessionId, x, y) {
-  await connection.send("Input.dispatchMouseEvent", { type: "mouseMoved", x, y }, sessionId);
-  await connection.send(
-    "Input.dispatchMouseEvent",
-    { type: "mousePressed", x, y, button: "left", clickCount: 1 },
-    sessionId,
-  );
-  await connection.send(
-    "Input.dispatchMouseEvent",
-    { type: "mouseReleased", x, y, button: "left", clickCount: 1 },
-    sessionId,
-  );
+  if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
+    return true;
+  }
+  if (await dispatchMouseEvent(connection, sessionId, {
+    type: "mousePressed",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  })) {
+    return true;
+  }
+  return dispatchMouseEvent(connection, sessionId, {
+    type: "mouseReleased",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  });
+}
+
+async function dispatchMouseEvent(connection, sessionId, params) {
+  const dialogWaiter = typeof connection.waitForEvent === "function"
+    ? connection.waitForEvent("Page.javascriptDialogOpening", 250, sessionId)
+    : null;
+  const command = connection.send("Input.dispatchMouseEvent", params, sessionId);
+  if (!dialogWaiter) {
+    await command;
+    return false;
+  }
+  const outcome = await Promise.race([
+    command.then(() => ({ kind: "completed" })),
+    dialogWaiter.promise.then((event) => ({
+      kind: event ? "dialog" : "event_timeout",
+    })),
+  ]);
+  if (outcome.kind === "completed") {
+    dialogWaiter.cancel();
+    return false;
+  }
+  if (outcome.kind === "dialog") {
+    void command.catch(() => {});
+    return true;
+  }
+  await command;
+  return false;
 }
 
 async function focusElement(connection, sessionId, objectId, selectAll) {

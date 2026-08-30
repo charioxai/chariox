@@ -41,7 +41,11 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.action"'*)
       printf 'action\n' >> '__LOG__'
-      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action_kind":"click","attempts":2,"elapsed_ms":50}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action_kind":"click","dialog_opened":true,"attempts":2,"elapsed_ms":50}}\n' "$id"
+      ;;
+    *'"method":"browser.dialog"'*)
+      printf 'dialog\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action":"dismiss"}}\n' "$id"
       ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
@@ -214,8 +218,23 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
         first_snapshot.dom_nodes[0].element_ref
     );
     assert_eq!(action_result.action_kind, "click");
+    assert!(action_result.dialog_opened);
     assert_eq!(action_result.attempts, 2);
     assert_eq!(action_result.elapsed_ms, 50);
+    let dialog_result = validation_state
+        .handle_browser_environment_dialog(
+            &session_id,
+            "tab-1",
+            crate::runtime::browser_controller_action::BrowserDialogAction::Dismiss,
+        )
+        .await
+        .expect("dialog response should cross the controller boundary");
+    assert_eq!(dialog_result.session_id, session_id);
+    assert_eq!(dialog_result.environment_id, environment_id);
+    assert_eq!(dialog_result.runtime_generation, 1);
+    assert_eq!(dialog_result.tab_id, "tab-1");
+    assert_eq!(dialog_result.document_revision, 1);
+    assert_eq!(dialog_result.action, "dismiss");
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -284,7 +303,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 

@@ -52,6 +52,11 @@ test("persistent browser connection returns page identities, focus, and applied 
     2,
     "persistent target sessions should be reused",
   );
+  assert.equal(
+    connection.calls.filter((call) => call.method === "Page.enable").length,
+    2,
+    "each persistent target session should subscribe to Page lifecycle events once",
+  );
   assert.deepEqual(
     connection.calls.find(
       (call) => call.method === "Emulation.setDeviceMetricsOverride" && call.sessionId === "session-a",
@@ -198,6 +203,66 @@ test("structured snapshot strings are bounded by UTF-8 bytes", async () => {
   );
 });
 
+test("dialog handling is document-bound and validates prompt input", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+  });
+  await browser.reconcile(viewport);
+  const frameTreeCallsBeforeDialog = connection.calls.filter(
+    (call) => call.method === "Page.getFrameTree",
+  ).length;
+
+  const accepted = await browser.handleDialog({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "accept",
+    prompt_text: "answer",
+  });
+
+  assert.deepEqual(accepted, {
+    browser_generation: 1,
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "accept",
+  });
+  assert.deepEqual(
+    connection.calls.find((call) => call.method === "Page.handleJavaScriptDialog").params,
+    { accept: true, promptText: "answer" },
+  );
+  await browser.handleDialog({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "accept",
+    prompt_text: "",
+  });
+  assert.deepEqual(
+    connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").at(-1).params,
+    { accept: true, promptText: "" },
+  );
+  assert.equal(
+    connection.calls.filter((call) => call.method === "Page.getFrameTree").length,
+    frameTreeCallsBeforeDialog,
+    "dialog handling must use the last controller-observed document because page commands block while a dialog is open",
+  );
+  await assert.rejects(
+    browser.handleDialog({
+      target_id: "target-a",
+      document_id: "loader-b",
+      action: "dismiss",
+    }),
+    (error) => error.code === "stale_document_reference",
+  );
+  await assert.rejects(
+    browser.handleDialog({
+      target_id: "target-a",
+      document_id: "loader-a",
+      action: "ignore",
+    }),
+    (error) => error.code === "browser_dialog_invalid",
+  );
+});
+
 test("debugger discovery cannot redirect the controller away from loopback", () => {
   assert.equal(
     assertPrivateDebuggerUrl(
@@ -231,6 +296,18 @@ test("CDP responses are correlated and command failures stay bounded", async () 
   const request = JSON.parse(socket.sent[0]);
   socket.message({ id: request.id, result: { targetInfos: [] } });
   assert.deepEqual(await response, { targetInfos: [] });
+
+  const dialog = connection.waitForEvent("Page.javascriptDialogOpening", 20);
+  socket.message({
+    method: "Page.javascriptDialogOpening",
+    sessionId: "session-a",
+    params: { type: "prompt", message: "Name?" },
+  });
+  assert.deepEqual(await dialog.promise, {
+    method: "Page.javascriptDialogOpening",
+    sessionId: "session-a",
+    params: { type: "prompt", message: "Name?" },
+  });
 
   const timedOut = connection.send("Page.getFrameTree", {}, "session-a");
   await assert.rejects(timedOut, (error) => error.code === "browser_cdp_timeout");
