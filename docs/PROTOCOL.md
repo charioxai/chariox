@@ -616,7 +616,7 @@ An Actor projection carries:
 
 Attachment identity and Actor identity are distinct. A human may reconnect through another Attachment and retain the same Actor identity. An agent may change provider runs without becoming another Actor. Presence never grants permission or input ownership.
 
-Kernel-derived human Actor IDs use `user:<user_id>` and kernel-derived agent Actor IDs use `agent:<agent_id>`. Multiple live Attachments for one user project as one present human Actor. Active session agents project as present agent Actors; when the final user Attachment leaves or an agent is removed, the Actor remains in the snapshot as `disconnected` so event and Action history keep stable attribution. Agent aliases update only the safe display label, never Actor identity.
+Kernel-derived human Actor IDs use `user:<user_id>` and kernel-derived agent Actor IDs use `agent:<agent_id>`. Human labels use the kernel-safe `Local user` or `Room member` fallback until an authenticated profile projection supplies a display name; raw user IDs do not become labels. Multiple live Attachments for one user project as one present human Actor. Active session agents project as present agent Actors; when the final user Attachment leaves or an agent is removed, the Actor remains in the snapshot as `disconnected` so event and Action history keep stable attribution. Agent aliases update only the safe display label, never Actor identity.
 
 ### Action envelope
 

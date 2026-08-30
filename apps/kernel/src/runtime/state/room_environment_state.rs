@@ -1,8 +1,9 @@
 use std::collections::BTreeSet;
 
 use crate::session::{
-    agent_environment_actor_id, human_environment_actor_id, CanonicalViewport, EnvironmentActor,
-    EnvironmentActorKind, EnvironmentError, RoomEnvironmentSnapshot,
+    agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
+    CanonicalViewport, EnvironmentActor, EnvironmentActorKind, EnvironmentError,
+    RoomEnvironmentSnapshot,
 };
 
 use super::KernelRuntimeState;
@@ -84,7 +85,7 @@ impl KernelRuntimeState {
                 EnvironmentActor::new(
                     human_environment_actor_id(&user_id),
                     EnvironmentActorKind::Human,
-                    user_id,
+                    human_environment_actor_label(&user_id),
                 )
             })
             .collect::<Vec<_>>();

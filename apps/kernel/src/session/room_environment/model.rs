@@ -99,6 +99,14 @@ pub fn human_environment_actor_id(user_id: &str) -> String {
     format!("user:{user_id}")
 }
 
+pub fn human_environment_actor_label(user_id: &str) -> &'static str {
+    if user_id == crate::session::DEFAULT_LOCAL_USER_ID {
+        "Local user"
+    } else {
+        "Room member"
+    }
+}
+
 pub fn agent_environment_actor_id(agent_id: &str) -> String {
     format!("agent:{agent_id}")
 }

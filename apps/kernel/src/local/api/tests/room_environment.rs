@@ -38,6 +38,7 @@ fn room_environment_reconciles_human_and_agent_presence() {
     let default_agent_actor_id = crate::session::agent_environment_actor_id(default_agent.id());
     assert!(environment.actors.iter().any(|actor| {
         actor.actor_id == human_actor_id
+            && actor.display_label == "Local user"
             && actor.presence == crate::session::EnvironmentActorPresence::Present
     }));
     assert!(environment.actors.iter().any(|actor| {
