@@ -24,21 +24,32 @@ export function selectedProviderAccount(
   return accounts.find((profile) => profile.profile_id === profileId) ?? null
 }
 
-export function providerAccountForSelection(
+export type ProviderAccountSelection =
+  | { readonly kind: "resolved"; readonly profile: ProviderAccountProfile }
+  | { readonly kind: "ambiguous"; readonly aliases: readonly string[] }
+  | { readonly kind: "missing" }
+
+export function resolveProviderAccountSelection(
   profiles: readonly ProviderAccountProfile[] | undefined,
   provider: string,
   reference: string,
-): ProviderAccountProfile | null {
+): ProviderAccountSelection {
   const accounts = providerAccountsForProvider(profiles, provider)
   const normalized = reference.trim()
   const profile = accounts.find((candidate) => candidate.profile_id === normalized)
-  if (profile) return profile
+  if (profile) return { kind: "resolved", profile }
   const exactAlias = accounts.find((candidate) => candidate.label === normalized)
-  if (exactAlias) return exactAlias
+  if (exactAlias) return { kind: "resolved", profile: exactAlias }
   const foldedAliases = accounts.filter(
-    (candidate) => candidate.label.localeCompare(normalized, undefined, { sensitivity: "accent" }) === 0,
+    (candidate) => candidate.label.localeCompare(normalized, "en", { sensitivity: "accent" }) === 0,
   )
-  return foldedAliases.length === 1 ? foldedAliases[0]! : null
+  if (foldedAliases.length === 1) {
+    return { kind: "resolved", profile: foldedAliases[0]! }
+  }
+  if (foldedAliases.length > 1) {
+    return { kind: "ambiguous", aliases: foldedAliases.map((candidate) => candidate.label) }
+  }
+  return { kind: "missing" }
 }
 
 export function defaultProviderAccountProfileId(

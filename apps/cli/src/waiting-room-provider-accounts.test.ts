@@ -5,9 +5,9 @@ import type { ProviderAccountProfile } from "@chariox/kernel-client"
 import {
   defaultProviderAccountProfileId,
   providerAccountFamily,
-  providerAccountForSelection,
   providerAccountDisplayLabel,
   providerAccountsForProvider,
+  resolveProviderAccountSelection,
   selectedProviderAccount,
 } from "./waiting-room-provider-accounts.js"
 
@@ -60,10 +60,10 @@ test("provider account selection accepts public aliases while preserving interna
   const secondary = account("codex", "internal-secondary")
   secondary.label = "Validation"
 
-  assert.equal(providerAccountForSelection([primary, secondary], "codex", "Validation")?.profile_id, "internal-secondary")
-  assert.equal(providerAccountForSelection([primary, secondary], "codex", " validation ")?.profile_id, "internal-secondary")
-  assert.equal(providerAccountForSelection([primary, secondary], "codex", "internal-secondary")?.profile_id, "internal-secondary")
-  assert.equal(providerAccountForSelection([primary, secondary], "opencode", "Validation"), null)
+  assert.equal(resolveProviderAccountSelection([primary, secondary], "codex", "Validation").kind, "resolved")
+  assert.equal(resolvedProfileId(resolveProviderAccountSelection([primary, secondary], "codex", " validation ")), "internal-secondary")
+  assert.equal(resolvedProfileId(resolveProviderAccountSelection([primary, secondary], "codex", "internal-secondary")), "internal-secondary")
+  assert.equal(resolveProviderAccountSelection([primary, secondary], "opencode", "Validation").kind, "missing")
 })
 
 test("provider account selection rejects ambiguous case-folded aliases", () => {
@@ -72,8 +72,15 @@ test("provider account selection rejects ambiguous case-folded aliases", () => {
   const second = account("codex", "internal-second")
   second.label = "work"
 
-  assert.equal(providerAccountForSelection([first, second], "codex", "WORK"), null)
+  assert.deepEqual(resolveProviderAccountSelection([first, second], "codex", "WORK"), {
+    kind: "ambiguous",
+    aliases: ["Work", "work"],
+  })
 })
+
+function resolvedProfileId(selection: ReturnType<typeof resolveProviderAccountSelection>): string | null {
+  return selection.kind === "resolved" ? selection.profile.profile_id : null
+}
 
 function account(
   provider: string,

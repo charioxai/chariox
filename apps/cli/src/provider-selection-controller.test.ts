@@ -148,6 +148,34 @@ test("provider selection controller loads the chosen account catalog before one 
   assert.deepEqual(harness.footerMessages().at(-1), { message: "account set to Validation", tone: "info" })
 })
 
+test("provider selection controller reports ambiguous aliases without exposing internal ids", async () => {
+  const first = {
+    provider: "codex",
+    profile_id: "internal-first",
+    label: "Work",
+    auth_state: "authenticated",
+    is_default: false,
+  } as ProviderAccountProfile
+  const second = {
+    ...first,
+    profile_id: "internal-second",
+    label: "work",
+  }
+  const harness = createHarness({
+    attached: true,
+    providerAccounts: [first, second],
+    currentSelection: { provider: "codex", accountProfile: "default", model: "codex/gpt-5.4", effort: "high" },
+  })
+
+  await harness.controller.applyAccountSelection("WORK")
+
+  assert.deepEqual(harness.profileUpdates(), [])
+  assert.deepEqual(harness.footerMessages().at(-1), {
+    message: "ambiguous Codex account: Work, work",
+    tone: "error",
+  })
+})
+
 test("provider selection controller marks attached profile updates from local provider fallback", async () => {
   const harness = createHarness({
     attached: true,

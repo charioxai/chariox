@@ -25,7 +25,7 @@ import {
 } from "./waiting-room-controller.js"
 import {
   defaultProviderAccountProfileId,
-  providerAccountForSelection,
+  resolveProviderAccountSelection,
 } from "./waiting-room-provider-accounts.js"
 import type { SessionListEntry } from "./sessions.js"
 
@@ -265,11 +265,16 @@ export function createProviderSelectionController(
     async applyAccountSelection(accountProfile) {
       const current = deps.currentProviderSelection()
       const provider = normalizeBackendProviderId(current.provider)
-      const profile = providerAccountForSelection(providerAccounts(), provider, accountProfile)
-      if (!profile) {
+      const selection = resolveProviderAccountSelection(providerAccounts(), provider, accountProfile)
+      if (selection.kind === "ambiguous") {
+        deps.flashFooter(`ambiguous ${backendProviderLabel(provider)} account: ${selection.aliases.join(", ")}`, "error")
+        return
+      }
+      if (selection.kind === "missing") {
         deps.flashFooter(`unknown ${backendProviderLabel(provider)} account`, "error")
         return
       }
+      const profile = selection.profile
       let catalog: ProviderCatalog
       try {
         catalog = await loadProviderCatalog(provider, profile.profile_id)
