@@ -5,6 +5,7 @@ mod owner;
 mod prompt_queue;
 mod prompt_runtime;
 mod queued_metaagent_task;
+mod room_environment;
 mod runtime_interactions;
 mod runtime_project;
 mod runtime_session;
@@ -33,6 +34,14 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
+pub use room_environment::{
+    ActionAdmission, CanonicalViewport, EnvironmentAction, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
+    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
+    EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
+    EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
+    InputTarget, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+};
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };
