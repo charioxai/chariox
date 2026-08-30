@@ -145,6 +145,21 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn reconcile_actors(
+        &mut self,
+        session_id: &str,
+        actors: Vec<EnvironmentActor>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.reconcile_actors(actors)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn snapshot(
         &self,
         session_id: &str,

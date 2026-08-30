@@ -261,6 +261,15 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn reconcile_room_environment_actors(
+        &self,
+        session_id: &str,
+        actors: Vec<super::EnvironmentActor>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .reconcile_room_environment_actors(session_id, actors)
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,

@@ -47,6 +47,7 @@ impl SessionRuntimeStore {
     pub(super) async fn start_room_environment(
         &self,
         request: StartRoomEnvironmentRequest,
+        caller_user_id: String,
     ) -> (
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
@@ -68,6 +69,12 @@ impl SessionRuntimeStore {
         let result = viewport.and_then(|viewport| {
             self.state
                 .start_room_environment(&request.session_id, viewport)
+                .and_then(|_| {
+                    self.state.reconcile_room_environment_actors(
+                        &request.session_id,
+                        Some(&caller_user_id),
+                    )
+                })
                 .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
                 .map_err(|error| room_environment_control_error("environment.start", error))
         });
@@ -301,11 +308,12 @@ impl SessionRuntimeStore {
             request.capability_level,
             caller_user_id,
         );
-        let result = self
-            .state
-            .attach(attach_request)
-            .await
-            .map(|attachment| LocalDaemonResponse::SessionAttached { attachment });
+        let result = match self.state.attach(attach_request).await {
+            Ok(attachment) => self
+                .reconcile_room_environment_actors_if_started(attachment.session_id())
+                .map(|()| LocalDaemonResponse::SessionAttached { attachment }),
+            Err(error) => Err(error),
+        };
         self.with_session_projection_action_result(result).await
     }
 
@@ -316,11 +324,12 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .detach(&request.attachment_id)
-            .await
-            .map(|attachment| LocalDaemonResponse::SessionDetached { attachment });
+        let result = match self.state.detach(&request.attachment_id).await {
+            Ok(attachment) => self
+                .reconcile_room_environment_actors_if_started(attachment.session_id())
+                .map(|()| LocalDaemonResponse::SessionDetached { attachment }),
+            Err(error) => Err(error),
+        };
         self.with_session_projection_action_result(result).await
     }
 
@@ -515,6 +524,22 @@ impl SessionRuntimeStore {
             .await
             .map(|session| LocalDaemonResponse::SessionDeleted { session });
         self.with_session_projection_action_result(result).await
+    }
+
+    fn reconcile_room_environment_actors_if_started(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        match self
+            .state
+            .reconcile_room_environment_actors(session_id, None)
+        {
+            Ok(_) | Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => Ok(()),
+            Err(error) => Err(room_environment_control_error(
+                "environment.actors.reconcile",
+                error,
+            )),
+        }
     }
 }
 

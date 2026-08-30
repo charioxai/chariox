@@ -14,10 +14,10 @@ pub use action::{
 };
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
 pub use model::{
-    human_environment_actor_id, CanonicalViewport, EnvironmentActor, EnvironmentActorKind,
-    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle, EnvironmentTab,
-    RoomEnvironmentSnapshot,
+    agent_environment_actor_id, human_environment_actor_id, CanonicalViewport, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentLifecycle, EnvironmentTab, RoomEnvironmentSnapshot,
 };
 pub use ownership::{InputOwnership, TakeoverOutcome};
 pub(crate) use registry::RoomEnvironmentRegistry;

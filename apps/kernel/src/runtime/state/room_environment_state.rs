@@ -1,5 +1,8 @@
+use std::collections::BTreeSet;
+
 use crate::session::{
-    CanonicalViewport, EnvironmentActor, EnvironmentError, RoomEnvironmentSnapshot,
+    agent_environment_actor_id, human_environment_actor_id, CanonicalViewport, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentError, RoomEnvironmentSnapshot,
 };
 
 use super::KernelRuntimeState;
@@ -53,5 +56,55 @@ impl KernelRuntimeState {
                 expected_revision,
                 viewport,
             )
+    }
+
+    pub(crate) fn reconcile_room_environment_actors(
+        &self,
+        session_id: &str,
+        additional_user_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let mut user_ids = self
+            .owned
+            .attachment_store
+            .list_session_attachment_ids(session_id)
+            .into_iter()
+            .filter_map(|attachment_id| {
+                self.owned
+                    .attachment_store
+                    .get_attachment(&attachment_id)
+                    .ok()
+                    .map(|attachment| attachment.owner_user_id().to_string())
+            })
+            .collect::<BTreeSet<_>>();
+        user_ids.extend(additional_user_id.map(str::to_string));
+
+        let mut actors = user_ids
+            .into_iter()
+            .map(|user_id| {
+                EnvironmentActor::new(
+                    human_environment_actor_id(&user_id),
+                    EnvironmentActorKind::Human,
+                    user_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        actors.extend(
+            self.owned
+                .agent_store
+                .get_session_agents(session_id)
+                .into_iter()
+                .map(|agent| {
+                    let display_label = agent.alias().unwrap_or(agent.agent_ref());
+                    EnvironmentActor::new(
+                        agent_environment_actor_id(agent.id()),
+                        EnvironmentActorKind::Agent,
+                        display_label,
+                    )
+                }),
+        );
+
+        self.owned
+            .session_store
+            .reconcile_room_environment_actors(session_id, actors)
     }
 }

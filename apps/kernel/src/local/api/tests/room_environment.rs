@@ -2,6 +2,178 @@ use super::*;
 use crate::session::CanonicalViewport;
 
 #[test]
+fn room_environment_reconciles_human_and_agent_presence() {
+    let harness = LocalRouterTestHarness::new();
+    let (session, default_agent) = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-actors",
+                "worktree-environment-actors",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, agent } => (session, agent),
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let started = harness
+        .dispatch(LocalDaemonRequest::StartRoomEnvironment(
+            StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        ))
+        .expect("Room Environment should start");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = started else {
+        panic!("unexpected local response: {started:?}");
+    };
+    let human_actor_id =
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID);
+    let default_agent_actor_id = crate::session::agent_environment_actor_id(default_agent.id());
+    assert!(environment.actors.iter().any(|actor| {
+        actor.actor_id == human_actor_id
+            && actor.presence == crate::session::EnvironmentActorPresence::Present
+    }));
+    assert!(environment.actors.iter().any(|actor| {
+        actor.actor_id == default_agent_actor_id
+            && actor.kind == crate::session::EnvironmentActorKind::Agent
+            && actor.presence == crate::session::EnvironmentActorPresence::Present
+    }));
+
+    let attachment_one = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "environment-client-1".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("first attachment should join")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let attachment_two = match harness
+        .dispatch(LocalDaemonRequest::AttachToSession(
+            AttachToSessionRequest {
+                session_id: session.id().to_string(),
+                client_id: "environment-client-2".to_string(),
+                capability_level: ClientCapabilityLevel::FullTerminal,
+            },
+        ))
+        .expect("second attachment should join")
+    {
+        LocalDaemonResponse::SessionAttached { attachment } => attachment,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
+            DetachFromSessionRequest {
+                attachment_id: attachment_one.id().to_string(),
+            },
+        ))
+        .expect("first attachment should leave");
+    let after_first_detach = room_environment_state(&harness, session.id());
+    assert_eq!(
+        actor_presence(&after_first_detach, &human_actor_id),
+        crate::session::EnvironmentActorPresence::Present
+    );
+
+    harness
+        .dispatch(LocalDaemonRequest::DetachFromSession(
+            DetachFromSessionRequest {
+                attachment_id: attachment_two.id().to_string(),
+            },
+        ))
+        .expect("second attachment should leave");
+    let after_last_detach = room_environment_state(&harness, session.id());
+    assert_eq!(
+        actor_presence(&after_last_detach, &human_actor_id),
+        crate::session::EnvironmentActorPresence::Disconnected
+    );
+
+    let spawned = match harness
+        .dispatch(LocalDaemonRequest::SpawnAgent(SpawnAgentRequest {
+            account_profile: None,
+            session_id: session.id().to_string(),
+            alias: Some("Navigator".to_string()),
+            provider: Some("dev-stub".to_string()),
+            model: None,
+            effort: None,
+            execution_mode: None,
+            permission_level: None,
+            worktree_id: None,
+            kernel_ref: None,
+            slice_ref: None,
+            worktree_placement: None,
+            metaagent: false,
+        }))
+        .expect("agent should spawn")
+    {
+        LocalDaemonResponse::AgentSpawned { agent } => agent,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    let spawned_actor_id = crate::session::agent_environment_actor_id(spawned.id());
+    let after_spawn = room_environment_state(&harness, session.id());
+    let spawned_actor = after_spawn
+        .actors
+        .iter()
+        .find(|actor| actor.actor_id == spawned_actor_id)
+        .expect("spawned agent should have an Environment Actor");
+    assert_eq!(spawned_actor.display_label, "Navigator");
+    assert_eq!(
+        spawned_actor.presence,
+        crate::session::EnvironmentActorPresence::Present
+    );
+
+    harness
+        .dispatch(LocalDaemonRequest::DestroyAgent(DestroyAgentRequest {
+            agent_id: spawned.id().to_string(),
+        }))
+        .expect("agent should be destroyed");
+    let after_destroy = room_environment_state(&harness, session.id());
+    assert_eq!(
+        actor_presence(&after_destroy, &spawned_actor_id),
+        crate::session::EnvironmentActorPresence::Disconnected
+    );
+}
+
+fn room_environment_state(
+    harness: &LocalRouterTestHarness,
+    session_id: &str,
+) -> crate::session::RoomEnvironmentSnapshot {
+    match harness
+        .dispatch(LocalDaemonRequest::GetRoomEnvironmentState(
+            GetRoomEnvironmentStateRequest {
+                session_id: session_id.to_string(),
+            },
+        ))
+        .expect("Room Environment state should be readable")
+    {
+        LocalDaemonResponse::RoomEnvironmentState { environment } => environment,
+        other => panic!("unexpected local response: {other:?}"),
+    }
+}
+
+fn actor_presence(
+    environment: &crate::session::RoomEnvironmentSnapshot,
+    actor_id: &str,
+) -> crate::session::EnvironmentActorPresence {
+    environment
+        .actors
+        .iter()
+        .find(|actor| actor.actor_id == actor_id)
+        .unwrap_or_else(|| panic!("missing Environment Actor `{actor_id}`"))
+        .presence
+}
+
+#[test]
 fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
