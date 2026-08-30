@@ -1,4 +1,5 @@
 import path from "node:path"
+import { fileURLToPath } from "node:url"
 
 import {
   isSensitiveDrillKey,
@@ -131,13 +132,15 @@ const CASES = deepFreeze([
 ])
 
 const CASE_BY_ID = new Map(CASES.map((item) => [item.id, item]))
+const ALL_CASE_IDS = deepFreeze(CASES.map((item) => item.id))
+const DEFAULT_REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
 
 export function browserComputerFunctionalCases() {
   return CASES
 }
 
 export function validateBrowserComputerFunctionalEvidence(report, {
-  requiredCaseIds = CASES.map((item) => item.id),
+  requiredCaseIds,
   repoRoots = [],
 } = {}) {
   requireObject(report, "browser/computer functional evidence")
@@ -148,9 +151,19 @@ export function validateBrowserComputerFunctionalEvidence(report, {
   validateDrillTimestampOrder(report, "browser/computer functional evidence")
   requireProfile(report.profile)
   requireStack(report.stack)
-  validateArtifactRoot(report.artifactRoot, repoRoots)
+  validateArtifactRoot(report.artifactRoot, [DEFAULT_REPO_ROOT, ...repoRoots])
 
-  const requiredIds = validateRequiredCaseIds(requiredCaseIds)
+  const declaredIds = validateRequiredCaseIds(report.caseIds, "declared browser/computer case ids")
+  const expectedCoverage = JSON.stringify(declaredIds) === JSON.stringify(ALL_CASE_IDS) ? "complete" : "subset"
+  if (report.coverage !== expectedCoverage) {
+    throw new Error(`browser/computer functional evidence.coverage must be ${expectedCoverage}`)
+  }
+  const requiredIds = requiredCaseIds === undefined
+    ? declaredIds
+    : validateRequiredCaseIds(requiredCaseIds, "required browser/computer case ids")
+  if (JSON.stringify(declaredIds) !== JSON.stringify(requiredIds)) {
+    throw new Error(`browser/computer functional evidence declared coverage differs; expected ${requiredIds.join(", ")}`)
+  }
   if (!Array.isArray(report.cases)) throw new Error("browser/computer functional evidence.cases is not an array")
   const actualIds = report.cases.map((result, index) => {
     requireObject(result, `browser/computer functional evidence.cases[${index}]`)
@@ -210,15 +223,19 @@ function validateCaseResult(result, definition, index) {
   }
 }
 
-function validateRequiredCaseIds(requiredCaseIds) {
+function validateRequiredCaseIds(requiredCaseIds, source) {
   if (!Array.isArray(requiredCaseIds) || requiredCaseIds.length === 0) {
-    throw new Error("required browser/computer case ids must be a non-empty array")
+    throw new Error(`${source} must be a non-empty array`)
   }
   if (new Set(requiredCaseIds).size !== requiredCaseIds.length) {
-    throw new Error("required browser/computer case ids contain duplicates")
+    throw new Error(`${source} contain duplicates`)
   }
   for (const caseId of requiredCaseIds) {
-    if (!CASE_BY_ID.has(caseId)) throw new Error(`unknown required browser/computer case id ${caseId}`)
+    if (!CASE_BY_ID.has(caseId)) throw new Error(`${source} contain unknown case id ${caseId}`)
+  }
+  const catalogIndexes = requiredCaseIds.map((caseId) => ALL_CASE_IDS.indexOf(caseId))
+  if (catalogIndexes.some((value, index) => index > 0 && value <= catalogIndexes[index - 1])) {
+    throw new Error(`${source} must follow catalog order`)
   }
   return requiredCaseIds
 }

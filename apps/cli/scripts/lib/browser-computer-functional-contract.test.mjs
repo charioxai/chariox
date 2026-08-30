@@ -1,5 +1,7 @@
 import assert from "node:assert/strict"
+import path from "node:path"
 import test from "node:test"
+import { fileURLToPath } from "node:url"
 
 import {
   BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA,
@@ -7,6 +9,8 @@ import {
   validateBrowserComputerFunctionalEvidence,
 } from "./browser-computer-functional-contract.mjs"
 import { validateKnownArtifactContents } from "./drill-artifact-content-validation.mjs"
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..")
 
 test("functional catalog covers browser, computer, shared control, named faults, resources, and cleanup", () => {
   const cases = browserComputerFunctionalCases()
@@ -38,6 +42,7 @@ test("functional evidence accepts an exact passing subset", () => {
     requiredCaseIds: caseIds,
     repoRoots: ["/work/chariox"],
   }), report)
+  assert.equal(report.coverage, "subset")
 })
 
 test("functional evidence preserves red cases and derives the failed status", () => {
@@ -107,9 +112,10 @@ test("not-applicable cases require a reason and keep the run red", () => {
   )
 })
 
-test("generic artifact validation recognizes functional evidence", () => {
+test("generic artifact validation recognizes complete and declared subset evidence", () => {
   const caseIds = browserComputerFunctionalCases().map((item) => item.id)
   const report = evidence(caseIds)
+  assert.equal(report.coverage, "complete")
   assert.doesNotThrow(() => validateKnownArtifactContents(
     Buffer.from(JSON.stringify(report)),
     "/evidence/browser-computer-functional.json",
@@ -122,6 +128,38 @@ test("generic artifact validation recognizes functional evidence", () => {
       "/evidence/browser-computer-functional.json",
     ),
     /status does not match its assertions/,
+  )
+
+  const subset = evidence(["browser.discovery", "cleanup.resources"])
+  assert.doesNotThrow(() => validateKnownArtifactContents(
+    Buffer.from(JSON.stringify(subset)),
+    "/evidence/browser-computer-functional.json",
+  ))
+})
+
+test("generic artifact validation rejects repository-local evidence and dishonest scope", () => {
+  const report = evidence(["browser.discovery"])
+  report.artifactRoot = path.join(REPO_ROOT, ".artifacts", "run")
+  assert.throws(
+    () => validateKnownArtifactContents(
+      Buffer.from(JSON.stringify(report)),
+      "/evidence/browser-computer-functional.json",
+    ),
+    /must stay outside repositories/,
+  )
+
+  const dishonestScope = evidence(["browser.discovery"])
+  dishonestScope.coverage = "complete"
+  assert.throws(
+    () => validateBrowserComputerFunctionalEvidence(dishonestScope),
+    /coverage must be subset/,
+  )
+
+  const undeclaredCase = evidence(["browser.discovery"])
+  undeclaredCase.cases.push(evidence(["cleanup.resources"]).cases[0])
+  assert.throws(
+    () => validateBrowserComputerFunctionalEvidence(undeclaredCase),
+    /case order or coverage differs/,
   )
 })
 
@@ -148,6 +186,8 @@ function evidence(caseIds) {
       browserVersion: "140.0.0",
     },
     artifactRoot: "/Users/tester/.codex/evidence/browser-computer-use/m0/m0-functional-run",
+    caseIds,
+    coverage: caseIds.length === browserComputerFunctionalCases().length ? "complete" : "subset",
     cases: caseIds.map((caseId) => ({
       caseId,
       status: "passed",
