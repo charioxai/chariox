@@ -4,6 +4,7 @@ import test from "node:test"
 import {
   getRoomEnvironmentStateRequest,
   requestRoomEnvironmentInputTakeoverRequest,
+  releaseRoomEnvironmentInputRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
   updateRoomEnvironmentViewportRequest,
@@ -15,8 +16,8 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 272", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 272)
+test("Room Environment state request matches protocol 273", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 273)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -196,6 +197,18 @@ test("Room Environment takeover request cannot forge Actor identity", () => {
     requestRoomEnvironmentInputTakeoverRequest("session-1", { kind: "desktop" }),
     {
       RequestRoomEnvironmentInputTakeover: {
+        session_id: "session-1",
+        target: { kind: "desktop" },
+      },
+    },
+  )
+})
+
+test("Room Environment input release request cannot forge Actor identity", () => {
+  assert.deepEqual(
+    releaseRoomEnvironmentInputRequest("session-1", { kind: "desktop" }),
+    {
+      ReleaseRoomEnvironmentInput: {
         session_id: "session-1",
         target: { kind: "desktop" },
       },

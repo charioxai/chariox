@@ -2,7 +2,7 @@ use super::*;
 use crate::session::CanonicalViewport;
 
 #[test]
-fn room_environment_takeover_uses_authenticated_actor_and_room_lane() {
+fn room_environment_takeover_and_release_use_authenticated_actor_and_room_lane() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
@@ -61,6 +61,19 @@ fn room_environment_takeover_uses_authenticated_actor_and_room_lane() {
         environment.input_ownership[0].target,
         crate::session::InputTarget::Desktop
     );
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::ReleaseRoomEnvironmentInput(
+            ReleaseRoomEnvironmentInputRequest {
+                session_id: session.id().to_string(),
+                target: crate::session::InputTarget::Desktop,
+            },
+        ))
+        .expect("authenticated Room member should release desktop input");
+    let LocalDaemonResponse::RoomEnvironmentInputReleased { environment } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    assert!(environment.input_ownership.is_empty());
 }
 
 #[test]
@@ -705,6 +718,10 @@ fn room_environment_lifecycle_requires_room_membership() {
                 target: crate::session::InputTarget::Desktop,
             },
         ),
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
+            session_id: session.id().to_string(),
+            target: crate::session::InputTarget::Desktop,
+        }),
     ] {
         let error = harness
             .dispatch_as_user("outsider-1", request)

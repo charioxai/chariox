@@ -374,6 +374,38 @@ fn failed_takeover_does_not_register_the_authenticated_actor() {
 }
 
 #[test]
+fn only_the_authenticated_owner_can_release_input() {
+    let mut environment = ready_environment();
+    for actor_id in ["user-1", "user-2"] {
+        environment
+            .register_actor(EnvironmentActor::new(
+                actor_id,
+                EnvironmentActorKind::Human,
+                actor_id,
+            ))
+            .unwrap();
+    }
+    environment
+        .request_takeover("user-1", InputTarget::Desktop)
+        .unwrap();
+
+    assert_eq!(
+        environment.release_input("user-2", &InputTarget::Desktop),
+        Err(EnvironmentError::InputOwnedByAnotherActor {
+            target: InputTarget::Desktop,
+            actor_id: "user-1".to_string(),
+        })
+    );
+    assert_eq!(
+        environment.snapshot().input_ownership,
+        vec![InputOwnership {
+            target: InputTarget::Desktop,
+            actor_id: "user-1".to_string(),
+        }]
+    );
+}
+
+#[test]
 fn desktop_owner_exclusively_controls_viewport_updates() {
     let mut environment = ready_environment_with_agent();
     environment

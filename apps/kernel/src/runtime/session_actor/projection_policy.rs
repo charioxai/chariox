@@ -263,6 +263,7 @@ pub(super) fn projected_session_absence_response(
         LocalDaemonRequest::RetryRoomEnvironment(request) => &request.session_id,
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => &request.session_id,
         LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(request) => &request.session_id,
+        LocalDaemonRequest::ReleaseRoomEnvironmentInput(request) => &request.session_id,
         LocalDaemonRequest::EndSession(request) => &request.session_id,
         _ => return None,
     };

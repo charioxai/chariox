@@ -176,6 +176,22 @@ impl RoomEnvironmentRegistry {
         Ok((outcome, environment.snapshot()))
     }
 
+    pub(crate) fn release_input(
+        &mut self,
+        session_id: &str,
+        actor_id: &str,
+        target: &super::InputTarget,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.release_input(actor_id, target)?;
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn snapshot(
         &self,
         session_id: &str,

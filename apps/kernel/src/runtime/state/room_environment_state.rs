@@ -119,4 +119,15 @@ impl KernelRuntimeState {
             .session_store
             .request_room_environment_takeover_as_actor(session_id, actor, target)
     }
+
+    pub(crate) fn release_room_environment_input(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        target: &crate::session::InputTarget,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .release_room_environment_input(session_id, actor_id, target)
+    }
 }

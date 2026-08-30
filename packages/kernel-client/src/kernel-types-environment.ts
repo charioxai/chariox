@@ -107,3 +107,9 @@ export type RoomEnvironmentTakeoverUpdatedResponse = {
     environment: RoomEnvironmentSnapshot
   }
 }
+
+export type RoomEnvironmentInputReleasedResponse = {
+  RoomEnvironmentInputReleased: {
+    environment: RoomEnvironmentSnapshot
+  }
+}

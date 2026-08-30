@@ -280,6 +280,16 @@ impl SessionStateStore {
             .request_room_environment_takeover_as_actor(session_id, actor, target)
     }
 
+    pub(crate) fn release_room_environment_input(
+        &self,
+        session_id: &str,
+        actor_id: &str,
+        target: &super::InputTarget,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .release_room_environment_input(session_id, actor_id, target)
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,

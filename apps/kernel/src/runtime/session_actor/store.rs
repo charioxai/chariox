@@ -3,10 +3,10 @@ use crate::local::{
     AcknowledgeAgentOutputSeenRequest, AliasSessionRequest, ArchiveProjectRequest,
     AttachToSessionRequest, CycleAgentFocusRequest, DeleteProjectRequest, DeleteSessionRequest,
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
-    LocalDaemonResponse, RenameProjectRequest, RequestRoomEnvironmentInputTakeoverRequest,
-    RespondToInteractionRequest, RestoreProjectRequest, RetryRoomEnvironmentRequest,
-    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
-    UpdateSessionConfigRequest,
+    LocalDaemonResponse, ReleaseRoomEnvironmentInputRequest, RenameProjectRequest,
+    RequestRoomEnvironmentInputTakeoverRequest, RespondToInteractionRequest, RestoreProjectRequest,
+    RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -173,6 +173,23 @@ impl SessionRuntimeStore {
                 },
             )
             .map_err(|error| room_environment_control_error("environment.input.takeover", error));
+        (result, None)
+    }
+
+    pub(super) async fn release_room_environment_input(
+        &self,
+        request: ReleaseRoomEnvironmentInputRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
+        let result = self
+            .state
+            .release_room_environment_input(&request.session_id, &actor_id, &request.target)
+            .map(|environment| LocalDaemonResponse::RoomEnvironmentInputReleased { environment })
+            .map_err(|error| room_environment_control_error("environment.input.release", error));
         (result, None)
     }
 

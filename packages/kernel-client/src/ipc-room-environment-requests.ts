@@ -67,3 +67,15 @@ export function requestRoomEnvironmentInputTakeoverRequest(
     },
   }
 }
+
+export function releaseRoomEnvironmentInputRequest(
+  sessionId: string,
+  target: import("./kernel-types-environment.js").RoomEnvironmentInputTarget,
+) {
+  return {
+    ReleaseRoomEnvironmentInput: {
+      session_id: sessionId,
+      target,
+    },
+  }
+}
