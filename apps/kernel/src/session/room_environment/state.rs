@@ -325,7 +325,7 @@ impl RoomEnvironment {
                 next_cursor,
             },
             EnvironmentReplayPlan::SnapshotRequired => EnvironmentReplay::SnapshotRequired {
-                snapshot: self.snapshot(),
+                snapshot: Box::new(self.snapshot()),
             },
         }
     }

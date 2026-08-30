@@ -35,6 +35,6 @@ pub enum EnvironmentReplay {
         next_cursor: u64,
     },
     SnapshotRequired {
-        snapshot: RoomEnvironmentSnapshot,
+        snapshot: Box<RoomEnvironmentSnapshot>,
     },
 }
