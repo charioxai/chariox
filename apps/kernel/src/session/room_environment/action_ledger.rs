@@ -18,9 +18,10 @@ pub(crate) struct ActionFinishEffect {
 
 pub(crate) struct ActionTakeoverEffect {
     pub(crate) outcome: TakeoverOutcome,
-    pub(crate) ownership_changed: bool,
+    pub(crate) input_state_changed: bool,
     pub(crate) cancelled_action_ids: Vec<String>,
     pub(crate) started_action_ids: Vec<String>,
+    pub(crate) cancellation_requested_action_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,6 +59,12 @@ impl EnvironmentActionLedger {
             .iter()
             .filter_map(|action_id| self.actions.get(action_id).cloned())
             .collect()
+    }
+
+    pub(crate) fn cancellation_requested(&self, action_id: &str) -> bool {
+        self.actions
+            .get(action_id)
+            .is_some_and(|action| action.cancellation_requested)
     }
 
     pub(crate) fn ownership(&self) -> Vec<InputOwnership> {
@@ -202,6 +209,7 @@ impl EnvironmentActionLedger {
             } else {
                 EnvironmentActionState::Running
             },
+            cancellation_requested: false,
         };
         if request.mutates && !queued {
             for target in targets {
@@ -250,6 +258,7 @@ impl EnvironmentActionLedger {
             });
         }
         action.state = state;
+        action.cancellation_requested = false;
         self.reservations
             .retain(|_, reserved_action_id| reserved_action_id != action_id);
         let ownership_changed = self.finalize_takeovers();
@@ -284,9 +293,10 @@ impl EnvironmentActionLedger {
             if owner_actor_id == actor_id {
                 return Ok(ActionTakeoverEffect {
                     outcome: TakeoverOutcome::Granted,
-                    ownership_changed: false,
+                    input_state_changed: false,
                     cancelled_action_ids: Vec::new(),
                     started_action_ids: Vec::new(),
+                    cancellation_requested_action_ids: Vec::new(),
                 });
             }
             return Err(EnvironmentError::InputOwnedByAnotherActor {
@@ -301,30 +311,33 @@ impl EnvironmentActionLedger {
                     actor_id: pending_actor_id.clone(),
                 });
             }
+            let action_ids = self.blocking_action_ids(&target, actors);
+            let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
             return Ok(ActionTakeoverEffect {
-                outcome: TakeoverOutcome::CancellationRequired {
-                    action_ids: self.blocking_action_ids(&target, actors),
-                },
-                ownership_changed: false,
+                outcome: TakeoverOutcome::CancellationRequired { action_ids },
+                input_state_changed: false,
                 cancelled_action_ids: Vec::new(),
                 started_action_ids: Vec::new(),
+                cancellation_requested_action_ids,
             });
         }
         let cancelled_action_ids = self.cancel_queued_agent_actions(&target, actors);
         let action_ids = self.blocking_action_ids(&target, actors);
-        let (outcome, ownership_changed) = if action_ids.is_empty() {
+        let cancellation_requested_action_ids = self.request_action_cancellation(&action_ids);
+        let outcome = if action_ids.is_empty() {
             self.input_owners.insert(target, actor_id.to_string());
-            (TakeoverOutcome::Granted, true)
+            TakeoverOutcome::Granted
         } else {
             self.pending_takeovers.insert(target, actor_id.to_string());
-            (TakeoverOutcome::CancellationRequired { action_ids }, false)
+            TakeoverOutcome::CancellationRequired { action_ids }
         };
         let started_action_ids = self.promote_queued_actions();
         Ok(ActionTakeoverEffect {
             outcome,
-            ownership_changed,
+            input_state_changed: true,
             cancelled_action_ids,
             started_action_ids,
+            cancellation_requested_action_ids,
         })
     }
 
@@ -366,6 +379,7 @@ impl EnvironmentActionLedger {
         for action_id in &active_action_ids {
             if let Some(action) = self.actions.get_mut(action_id) {
                 action.state = EnvironmentActionState::Failed;
+                action.cancellation_requested = false;
             }
         }
         self.compact_terminal_actions();
@@ -423,6 +437,21 @@ impl EnvironmentActionLedger {
         }
         self.compact_terminal_actions();
         action_ids
+    }
+
+    fn request_action_cancellation(&mut self, action_ids: &[String]) -> Vec<String> {
+        let mut changed_action_ids = Vec::new();
+        for action_id in action_ids {
+            let action = self
+                .actions
+                .get_mut(action_id)
+                .expect("blocking action should remain in the ledger");
+            if !action.cancellation_requested {
+                action.cancellation_requested = true;
+                changed_action_ids.push(action_id.clone());
+            }
+        }
+        changed_action_ids
     }
 
     fn finalize_takeovers(&mut self) -> bool {

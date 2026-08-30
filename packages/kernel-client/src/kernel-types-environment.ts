@@ -57,6 +57,7 @@ export type RoomEnvironmentAction = {
   kind: string
   targets: RoomEnvironmentInputTarget[]
   state: "queued" | "running" | "completed" | "failed" | "cancelled"
+  cancellation_requested: boolean
 }
 
 export type RoomEnvironmentInputOwnership = {
@@ -98,7 +99,13 @@ export type RoomEnvironmentEventKind =
   | { ViewportChanged: { revision: number } }
   | "ActorsChanged"
   | "InputOwnershipChanged"
-  | { ActionChanged: { action_id: string; state: RoomEnvironmentAction["state"] } }
+  | {
+      ActionChanged: {
+        action_id: string
+        state: RoomEnvironmentAction["state"]
+        cancellation_requested: boolean
+      }
+    }
 
 export type RoomEnvironmentEvent = {
   event_id: number

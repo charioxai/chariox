@@ -18,8 +18,8 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 275", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 275)
+test("Room Environment state request matches protocol 276", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 276)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -81,6 +81,7 @@ test("Room Environment state request matches protocol 275", () => {
               { kind: "browser_tab", id: "tab-1" },
             ],
             state: "completed",
+            cancellation_requested: false,
           },
           {
             action_id: "action-2",
@@ -92,6 +93,7 @@ test("Room Environment state request matches protocol 275", () => {
             kind: "second-click",
             targets: [{ kind: "browser_tab", id: "tab-1" }],
             state: "queued",
+            cancellation_requested: false,
           },
         ],
         input_ownership: [
@@ -108,8 +110,8 @@ test("Room Environment state request matches protocol 275", () => {
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
 })
 
-test("Room Environment event replay request matches protocol 275", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 275)
+test("Room Environment event replay request matches protocol 276", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 276)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",

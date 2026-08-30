@@ -463,6 +463,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
             ))
             .unwrap(),
     );
+    let takeover_cursor = environment.snapshot().event_cursor;
 
     assert_eq!(
         environment
@@ -473,6 +474,27 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }
     );
     assert!(environment.snapshot().input_ownership.is_empty());
+    assert!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .unwrap()
+            .cancellation_requested
+    );
+    assert!(matches!(
+        environment.events_after(takeover_cursor),
+        EnvironmentReplay::Events { events, .. }
+            if events.iter().any(|event| matches!(
+                &event.kind,
+                EnvironmentEventKind::ActionChanged {
+                    action_id: changed_action_id,
+                    state: EnvironmentActionState::Running,
+                    cancellation_requested: true,
+                } if changed_action_id == &action_id
+            ))
+    ));
     assert_eq!(
         environment
             .snapshot()
@@ -524,6 +546,15 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }]
     );
     assert!(environment.snapshot().pending_input_takeovers.is_empty());
+    assert!(
+        !environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .unwrap()
+            .cancellation_requested
+    );
     assert_eq!(
         environment
             .snapshot()

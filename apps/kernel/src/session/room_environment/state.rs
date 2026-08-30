@@ -329,16 +329,10 @@ impl RoomEnvironment {
         )?;
         match &admission {
             ActionAdmission::Accepted { action_id } => {
-                self.emit(EnvironmentEventKind::ActionChanged {
-                    action_id: action_id.clone(),
-                    state: EnvironmentActionState::Running,
-                });
+                self.emit_action_changed(action_id, EnvironmentActionState::Running);
             }
             ActionAdmission::Queued { action_id, .. } => {
-                self.emit(EnvironmentEventKind::ActionChanged {
-                    action_id: action_id.clone(),
-                    state: EnvironmentActionState::Queued,
-                });
+                self.emit_action_changed(action_id, EnvironmentActionState::Queued);
             }
             _ => {}
         }
@@ -351,18 +345,12 @@ impl RoomEnvironment {
         terminal: EnvironmentActionTerminal,
     ) -> Result<(), EnvironmentError> {
         let effect = self.action_ledger.finish(action_id, terminal)?;
-        self.emit(EnvironmentEventKind::ActionChanged {
-            action_id: action_id.to_string(),
-            state: effect.state,
-        });
+        self.emit_action_changed(action_id, effect.state);
         if effect.ownership_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
         for started_action_id in effect.started_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id: started_action_id,
-                state: EnvironmentActionState::Running,
-            });
+            self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
         }
         Ok(())
     }
@@ -374,25 +362,23 @@ impl RoomEnvironment {
     ) -> Result<TakeoverOutcome, EnvironmentError> {
         let ActionTakeoverEffect {
             outcome,
-            ownership_changed,
+            input_state_changed,
             cancelled_action_ids,
             started_action_ids,
+            cancellation_requested_action_ids,
         } = self
             .action_ledger
             .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
         for action_id in cancelled_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Cancelled,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
         }
         for action_id in started_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Running,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
         }
-        if ownership_changed {
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
         Ok(outcome)
@@ -427,6 +413,7 @@ impl RoomEnvironment {
             outcome,
             cancelled_action_ids,
             started_action_ids,
+            cancellation_requested_action_ids,
             ..
         } = action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
         let actors_changed = actors != self.actors;
@@ -437,16 +424,13 @@ impl RoomEnvironment {
             self.emit(EnvironmentEventKind::ActorsChanged);
         }
         for action_id in cancelled_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Cancelled,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Cancelled);
         }
         for action_id in started_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Running,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        for action_id in cancellation_requested_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
         }
         if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
@@ -519,10 +503,7 @@ impl RoomEnvironment {
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
         for action_id in failed_action_ids {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id,
-                state: EnvironmentActionState::Failed,
-            });
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
@@ -533,6 +514,15 @@ impl RoomEnvironment {
     fn emit(&mut self, kind: EnvironmentEventKind) {
         self.event_log
             .push(&self.environment_id, self.runtime_generation, kind);
+    }
+
+    fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
+        let cancellation_requested = self.action_ledger.cancellation_requested(action_id);
+        self.emit(EnvironmentEventKind::ActionChanged {
+            action_id: action_id.to_string(),
+            state,
+            cancellation_requested,
+        });
     }
 }
 

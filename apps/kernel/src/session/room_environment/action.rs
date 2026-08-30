@@ -55,6 +55,8 @@ pub struct EnvironmentAction {
     pub kind: String,
     pub targets: Vec<InputTarget>,
     pub state: EnvironmentActionState,
+    #[serde(default)]
+    pub cancellation_requested: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

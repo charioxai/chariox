@@ -27,6 +27,8 @@ pub enum EnvironmentEventKind {
     ActionChanged {
         action_id: String,
         state: EnvironmentActionState,
+        #[serde(default)]
+        cancellation_requested: bool,
     },
 }
 

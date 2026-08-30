@@ -9,7 +9,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -73,6 +73,7 @@ fn room_environment_state_shape_is_versioned() {
                         InputTarget::BrowserTab("tab-1".to_string()),
                     ],
                     state: EnvironmentActionState::Running,
+                    cancellation_requested: true,
                 },
                 EnvironmentAction {
                     action_id: "action-2".to_string(),
@@ -84,6 +85,7 @@ fn room_environment_state_shape_is_versioned() {
                     kind: "second-click".to_string(),
                     targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
                     state: EnvironmentActionState::Queued,
+                    cancellation_requested: false,
                 },
             ],
             input_ownership: vec![InputOwnership {
@@ -149,7 +151,8 @@ fn room_environment_state_shape_is_versioned() {
                                     "id": "tab-1"
                                 }
                             ],
-                            "state": "running"
+                            "state": "running",
+                            "cancellation_requested": true
                         },
                         {
                             "action_id": "action-2",
@@ -163,7 +166,8 @@ fn room_environment_state_shape_is_versioned() {
                                 "kind": "browser_tab",
                                 "id": "tab-1"
                             }],
-                            "state": "queued"
+                            "state": "queued",
+                            "cancellation_requested": false
                         }
                     ],
                     "input_ownership": [{
@@ -191,6 +195,11 @@ fn room_environment_state_shape_is_versioned() {
         .and_then(serde_json::Value::as_object_mut)
         .expect("Room Environment Action should be an object")
         .remove("sequence");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment/actions/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment Action should be an object")
+        .remove("cancellation_requested");
     let LocalDaemonResponse::RoomEnvironmentState { environment } =
         serde_json::from_value(previous_protocol_value)
             .expect("pre-v272 snapshots should decode with no pending takeovers")
@@ -199,11 +208,12 @@ fn room_environment_state_shape_is_versioned() {
     };
     assert!(environment.pending_input_takeovers.is_empty());
     assert_eq!(environment.actions[0].sequence, 0);
+    assert!(!environment.actions[0].cancellation_requested);
 }
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -268,11 +278,25 @@ fn room_environment_event_replay_shape_is_versioned() {
             .expect("Room Environment event replay should decode"),
         response
     );
+    assert_eq!(
+        serde_json::from_value::<EnvironmentEventKind>(serde_json::json!({
+            "ActionChanged": {
+                "action_id": "action-1",
+                "state": "running",
+            }
+        }))
+        .expect("pre-v276 Action events should decode"),
+        EnvironmentEventKind::ActionChanged {
+            action_id: "action-1".to_string(),
+            state: EnvironmentActionState::Running,
+            cancellation_requested: false,
+        }
+    );
 }
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -358,7 +382,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -381,7 +405,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -404,7 +428,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -444,7 +468,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -526,7 +550,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 276);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
