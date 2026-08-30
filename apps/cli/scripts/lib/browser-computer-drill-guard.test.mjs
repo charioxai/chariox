@@ -113,7 +113,10 @@ test("cleanup rejects owned and newly-created slice resources", async () => {
       ownedContainers: ["chariox-slice-owned"],
       ownedVolumes: ["chariox-slice-owned-home"],
       tempRoots: [tempRoot],
-      liveChildLabels: ["kernel"],
+      childProcesses: [
+        { drillLabel: "kernel", exitCode: null, signalCode: null },
+        { drillLabel: "fixture", exitCode: 0, signalCode: null },
+      ],
     })
 
     assert.equal(result.ok, false)
@@ -122,6 +125,31 @@ test("cleanup rejects owned and newly-created slice resources", async () => {
     assert.match(result.violations.join("\n"), /owned volume remains: chariox-slice-owned-home/)
     assert.match(result.violations.join("\n"), /temporary root remains/)
     assert.match(result.violations.join("\n"), /child process remains alive: kernel/)
+    assert.doesNotMatch(result.violations.join("\n"), /new slice container remains: chariox-slice-owned/)
+    assert.doesNotMatch(result.violations.join("\n"), /new slice volume remains: chariox-slice-owned-home/)
+    assert.doesNotMatch(result.violations.join("\n"), /fixture/)
+  } finally {
+    await rm(tempRoot, { recursive: true, force: true })
+  }
+})
+
+test("cleanup permits deliberately retained resources but still rejects live children", async () => {
+  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "chariox-browser-cleanup-retained-"))
+  try {
+    const result = await evaluateBrowserComputerCleanup({
+      before: snapshot(),
+      after: snapshot({
+        containers: ["chariox-slice-owned", "chariox-slice-debug"],
+        volumes: ["chariox-slice-owned-home", "chariox-slice-debug-home"],
+      }),
+      ownedContainers: ["chariox-slice-owned"],
+      ownedVolumes: ["chariox-slice-owned-home"],
+      tempRoots: [tempRoot],
+      childProcesses: [{ drillLabel: "kernel", exitCode: null, signalCode: null }],
+      allowRetainedResources: true,
+    })
+
+    assert.deepEqual(result.violations, ["child process remains alive: kernel"])
   } finally {
     await rm(tempRoot, { recursive: true, force: true })
   }

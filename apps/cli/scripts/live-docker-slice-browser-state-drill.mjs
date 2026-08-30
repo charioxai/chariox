@@ -89,7 +89,8 @@ try {
         ownedContainers: [containerName],
         ownedVolumes: [homeVolume],
         tempRoots: [tempRoot],
-        liveChildLabels: children.filter((child) => child.exitCode === null && child.signalCode === null).map((child) => child.drillLabel),
+        childProcesses: children,
+        allowRetainedResources: process.env.M20_KEEP_RESOURCES === "1",
       })
       await writeFile(path.join(artifactDir, "resources-after.json"), `${JSON.stringify({
         snapshot: resourceAfter,

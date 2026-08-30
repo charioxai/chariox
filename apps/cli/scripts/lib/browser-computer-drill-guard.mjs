@@ -104,35 +104,46 @@ export async function evaluateBrowserComputerCleanup({
   ownedContainers = [],
   ownedVolumes = [],
   tempRoots = [],
-  liveChildLabels = [],
+  childProcesses = [],
+  allowRetainedResources = false,
 }) {
   const afterContainers = new Set(names(after?.docker?.containers))
   const afterVolumes = new Set(names(after?.docker?.volumes))
   const beforeContainers = new Set(names(before?.docker?.containers))
   const beforeVolumes = new Set(names(before?.docker?.volumes))
+  const ownedContainerNames = new Set(names(ownedContainers))
+  const ownedVolumeNames = new Set(names(ownedVolumes))
   const violations = []
 
-  for (const name of names(ownedContainers)) {
-    if (afterContainers.has(name)) violations.push(`owned container remains: ${name}`)
-  }
-  for (const name of names(ownedVolumes)) {
-    if (afterVolumes.has(name)) violations.push(`owned volume remains: ${name}`)
-  }
-  for (const name of afterContainers) {
-    if (name.startsWith(SLICE_CONTAINER_PREFIX) && !beforeContainers.has(name)) {
-      violations.push(`new slice container remains: ${name}`)
+  if (!allowRetainedResources) {
+    for (const name of ownedContainerNames) {
+      if (afterContainers.has(name)) violations.push(`owned container remains: ${name}`)
+    }
+    for (const name of ownedVolumeNames) {
+      if (afterVolumes.has(name)) violations.push(`owned volume remains: ${name}`)
+    }
+    for (const name of afterContainers) {
+      if (name.startsWith(SLICE_CONTAINER_PREFIX)
+        && !beforeContainers.has(name)
+        && !ownedContainerNames.has(name)) {
+        violations.push(`new slice container remains: ${name}`)
+      }
+    }
+    for (const name of afterVolumes) {
+      if (name.startsWith(SLICE_CONTAINER_PREFIX)
+        && !beforeVolumes.has(name)
+        && !ownedVolumeNames.has(name)) {
+        violations.push(`new slice volume remains: ${name}`)
+      }
+    }
+    for (const tempRoot of tempRoots) {
+      if (await exists(tempRoot)) violations.push(`temporary root remains: ${tempRoot}`)
     }
   }
-  for (const name of afterVolumes) {
-    if (name.startsWith(SLICE_CONTAINER_PREFIX) && !beforeVolumes.has(name)) {
-      violations.push(`new slice volume remains: ${name}`)
+  for (const child of childProcesses) {
+    if (child?.exitCode === null && child?.signalCode === null) {
+      violations.push(`child process remains alive: ${child.drillLabel ?? child.spawnfile ?? "unknown"}`)
     }
-  }
-  for (const tempRoot of tempRoots) {
-    if (await exists(tempRoot)) violations.push(`temporary root remains: ${tempRoot}`)
-  }
-  for (const label of names(liveChildLabels)) {
-    violations.push(`child process remains alive: ${label}`)
   }
 
   return {
