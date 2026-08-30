@@ -62,13 +62,16 @@ test("Room Environment state request matches protocol 269", () => {
             runtime_generation: 1,
             mode: "browser",
             kind: "click",
-            targets: [{ kind: "browser_tab", id: "tab-1" }],
+            targets: [
+              { kind: "desktop" },
+              { kind: "browser_tab", id: "tab-1" },
+            ],
             state: "completed",
           },
         ],
         input_ownership: [
           {
-            target: { kind: "browser_tab", id: "tab-1" },
+            target: { kind: "desktop" },
             actor_id: "human-1",
           },
         ],

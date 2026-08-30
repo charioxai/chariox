@@ -65,11 +65,14 @@ fn room_environment_state_shape_is_versioned() {
                 runtime_generation: 1,
                 mode: EnvironmentMode::Browser,
                 kind: "click".to_string(),
-                targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
+                targets: vec![
+                    InputTarget::Desktop,
+                    InputTarget::BrowserTab("tab-1".to_string()),
+                ],
                 state: EnvironmentActionState::Running,
             }],
             input_ownership: vec![InputOwnership {
-                target: InputTarget::BrowserTab("tab-1".to_string()),
+                target: InputTarget::Desktop,
                 actor_id: "agent-1".to_string(),
             }],
             event_cursor: 0,
@@ -119,16 +122,20 @@ fn room_environment_state_shape_is_versioned() {
                         "runtime_generation": 1,
                         "mode": "browser",
                         "kind": "click",
-                        "targets": [{
-                            "kind": "browser_tab",
-                            "id": "tab-1"
-                        }],
+                        "targets": [
+                            {
+                                "kind": "desktop"
+                            },
+                            {
+                                "kind": "browser_tab",
+                                "id": "tab-1"
+                            }
+                        ],
                         "state": "running"
                     }],
                     "input_ownership": [{
                         "target": {
-                            "kind": "browser_tab",
-                            "id": "tab-1"
+                            "kind": "desktop"
                         },
                         "actor_id": "agent-1"
                     }],
