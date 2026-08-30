@@ -41,3 +41,17 @@ export function retryRoomEnvironmentRequest(sessionId: string) {
     },
   }
 }
+
+export function updateRoomEnvironmentViewportRequest(
+  sessionId: string,
+  expectedRevision: number,
+  viewport: RoomEnvironmentViewportRequest,
+) {
+  return {
+    UpdateRoomEnvironmentViewport: {
+      session_id: sessionId,
+      expected_revision: expectedRevision,
+      viewport,
+    },
+  }
+}

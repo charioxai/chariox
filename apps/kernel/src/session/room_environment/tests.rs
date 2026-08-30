@@ -163,6 +163,25 @@ fn viewport_updates_reject_unknown_actors() {
 }
 
 #[test]
+fn authenticated_viewport_update_does_not_register_actor_before_admission() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    let replacement = CanonicalViewport::new(1280, 720, 1, 1280, 720).unwrap();
+    assert_eq!(
+        environment.update_viewport_as_actor(
+            EnvironmentActor::new("user-1", EnvironmentActorKind::Human, "User 1"),
+            1,
+            replacement,
+        ),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Stopped,
+        })
+    );
+    assert!(environment.snapshot().actors.is_empty());
+    assert_eq!(environment.snapshot().viewport.revision, 1);
+}
+
+#[test]
 fn observations_run_concurrently_and_mutations_serialize_per_target() {
     let mut environment = ready_environment_with_agent();
     let tab_a = environment

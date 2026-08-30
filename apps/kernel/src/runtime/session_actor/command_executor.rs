@@ -205,6 +205,11 @@ impl SessionRuntimeCommandExecutor {
             LocalDaemonRequest::RetryRoomEnvironment(request) => {
                 self.store.retry_room_environment(request).await
             }
+            LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+                self.store
+                    .update_room_environment_viewport(request, caller_user_id)
+                    .await
+            }
             LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
                 self.store.create_agent_prompt_schedule(request).await
             }

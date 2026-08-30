@@ -425,6 +425,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
         LocalDaemonRequest::SearchMetaagentCommands(_) => "metaagent.command.search",
         LocalDaemonRequest::GetMetaagentTurnOverview(_) => "metaagent.turn.overview",
         LocalDaemonRequest::GetMetaagentTurnBlob(_) => "metaagent.turn.blob",

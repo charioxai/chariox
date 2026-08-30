@@ -246,6 +246,21 @@ impl SessionStateStore {
             .transition_room_environment(session_id, lifecycle)
     }
 
+    pub(crate) fn update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: super::EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().update_room_environment_viewport_as_actor(
+            session_id,
+            actor,
+            expected_revision,
+            viewport,
+        )
+    }
+
     pub(crate) fn replace_publication_runtime_workflows(
         &self,
         session_id: &str,

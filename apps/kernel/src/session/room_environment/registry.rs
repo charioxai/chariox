@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentError, EnvironmentLifecycle, RoomEnvironment,
+    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, RoomEnvironment,
     RoomEnvironmentSnapshot,
 };
 
@@ -125,6 +125,23 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.transition_to(lifecycle)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn update_viewport_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.update_viewport_as_actor(actor, expected_revision, viewport)?;
         Ok(environment.snapshot())
     }
 

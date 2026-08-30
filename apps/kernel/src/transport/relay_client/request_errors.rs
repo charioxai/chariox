@@ -109,6 +109,7 @@ mod tests {
     use crate::local::{
         GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest,
         RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+        UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -164,5 +165,24 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_viewport_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::UpdateRoomEnvironmentViewport(
+            UpdateRoomEnvironmentViewportRequest {
+                session_id: "session-1".to_string(),
+                expected_revision: 1,
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.viewport.update");
     }
 }

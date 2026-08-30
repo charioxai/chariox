@@ -5,6 +5,7 @@ import {
   getRoomEnvironmentStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
+  updateRoomEnvironmentViewportRequest,
   retryRoomEnvironmentRequest,
 } from "./ipc-room-environment-requests.js"
 import type {
@@ -13,8 +14,8 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 270", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 270)
+test("Room Environment state request matches protocol 271", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 271)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -156,4 +157,33 @@ test("Room Environment retry request uses the shared lifecycle seam", () => {
       session_id: "session-1",
     },
   })
+})
+
+test("Room Environment viewport update carries only dimensions and observed revision", () => {
+  assert.deepEqual(
+    updateRoomEnvironmentViewportRequest(
+      "session-1",
+      4,
+      {
+        css_width: 1440,
+        css_height: 900,
+        device_scale_factor: 2,
+        desktop_pixel_width: 2880,
+        desktop_pixel_height: 1800,
+      },
+    ),
+    {
+      UpdateRoomEnvironmentViewport: {
+        session_id: "session-1",
+        expected_revision: 4,
+        viewport: {
+          css_width: 1440,
+          css_height: 900,
+          device_scale_factor: 2,
+          desktop_pixel_width: 2880,
+          desktop_pixel_height: 1800,
+        },
+      },
+    },
+  )
 })
