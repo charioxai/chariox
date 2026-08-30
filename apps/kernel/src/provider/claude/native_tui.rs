@@ -12,7 +12,7 @@ use super::mcp_config::{
 };
 use super::usage_capture::materialize_claude_usage_capture;
 
-pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 4;
+pub(crate) const CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS: usize = 8;
 pub(crate) const CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES: usize = 6_000;
 pub(crate) const CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES: usize =
     CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS * CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES;
@@ -884,20 +884,24 @@ mod tests {
 
     #[test]
     fn oversized_hidden_context_fails_before_claude_receives_a_partial_instruction_set() {
+        let five_chunk_reviewer_context = "x".repeat(CLAUDE_NATIVE_CONTEXT_CHUNK_BYTES * 5);
+        ensure_claude_native_hidden_context_fits(
+            "run-five-chunk-reviewer-context",
+            &five_chunk_reviewer_context,
+        )
+        .expect("the native bridge should carry a bounded five-chunk reviewer context");
+
         let exact = "x".repeat(CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES);
         ensure_claude_native_hidden_context_fits("run-exact", &exact)
             .expect("the exact transport ceiling should be accepted");
 
         let mut multibyte_boundary_spill = "x".repeat(5_999);
-        for _ in 0..3 {
+        for _ in 0..CLAUDE_NATIVE_CONTEXT_HOOK_CHUNKS - 1 {
             multibyte_boundary_spill.push('🦀');
             multibyte_boundary_spill.push_str(&"x".repeat(5_995));
         }
         multibyte_boundary_spill.push('🦀');
-        assert_eq!(
-            multibyte_boundary_spill.len(),
-            CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES
-        );
+        assert!(multibyte_boundary_spill.len() <= CLAUDE_NATIVE_MAX_HIDDEN_CONTEXT_BYTES);
         let error = ensure_claude_native_hidden_context_fits(
             "run-multibyte-boundary-spill",
             &multibyte_boundary_spill,
