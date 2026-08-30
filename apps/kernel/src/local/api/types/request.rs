@@ -27,6 +27,7 @@ pub enum LocalDaemonRequest {
     GetSessionState(GetSessionStateRequest),
     GetRoomEnvironmentState(GetRoomEnvironmentStateRequest),
     GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest),
+    ListRoomEnvironmentActionHistory(ListRoomEnvironmentActionHistoryRequest),
     StartRoomEnvironment(StartRoomEnvironmentRequest),
     StopRoomEnvironment(StopRoomEnvironmentRequest),
     RetryRoomEnvironment(RetryRoomEnvironmentRequest),

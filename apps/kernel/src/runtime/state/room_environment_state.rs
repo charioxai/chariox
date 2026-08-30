@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
-    ActionCancellationOutcome, CanonicalViewport, EnvironmentActor, EnvironmentActorKind,
-    EnvironmentError, EnvironmentReplay, RoomEnvironmentSnapshot,
+    ActionCancellationOutcome, CanonicalViewport, EnvironmentActionHistoryPage, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentError, EnvironmentReplay, RoomEnvironmentSnapshot,
 };
 
 use super::KernelRuntimeState;
@@ -26,6 +26,17 @@ impl KernelRuntimeState {
         self.owned
             .session_store
             .room_environment_events_after(session_id, cursor)
+    }
+
+    pub(crate) fn room_environment_action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<EnvironmentActionHistoryPage, EnvironmentError> {
+        self.owned
+            .session_store
+            .room_environment_action_history(session_id, before_sequence, limit)
     }
 
     pub(crate) fn start_room_environment(

@@ -151,6 +151,15 @@ export type RoomEnvironmentEventsResponse = {
   }
 }
 
+export type RoomEnvironmentActionHistoryResponse = {
+  RoomEnvironmentActionHistoryListed: {
+    page: {
+      actions: RoomEnvironmentAction[]
+      next_before_sequence: number | null
+    }
+  }
+}
+
 export type RoomEnvironmentUpdatedResponse = {
   RoomEnvironmentUpdated: {
     environment: RoomEnvironmentSnapshot

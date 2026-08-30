@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::action::{
-    ActionAdmission, ActionCancellationOutcome, EnvironmentActionRequest, EnvironmentActionState,
-    EnvironmentActionTerminal, InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionHistoryPage,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
 };
 use super::action_ledger::{
     ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
@@ -18,6 +18,7 @@ use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
 
 const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 128;
+const MAX_ACTION_HISTORY_PAGE_SIZE: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomEnvironment {
@@ -97,6 +98,17 @@ impl RoomEnvironment {
             pending_input_takeovers: self.action_ledger.pending_takeovers(),
             event_cursor: self.event_log.cursor(),
         }
+    }
+
+    pub fn action_history(
+        &self,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> EnvironmentActionHistoryPage {
+        self.action_ledger.action_history(
+            before_sequence,
+            limit.clamp(1, MAX_ACTION_HISTORY_PAGE_SIZE),
+        )
     }
 
     pub fn transition_to(&mut self, next: EnvironmentLifecycle) -> Result<(), EnvironmentError> {

@@ -233,6 +233,20 @@ impl RoomEnvironmentRegistry {
             })
     }
 
+    pub(crate) fn action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<super::EnvironmentActionHistoryPage, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .map(|environment| environment.action_history(before_sequence, limit))
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })
+    }
+
     pub(crate) fn remove(&mut self, session_id: &str) -> Option<RoomEnvironmentSnapshot> {
         self.environments_by_session
             .remove(session_id)

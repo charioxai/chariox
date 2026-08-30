@@ -5,6 +5,7 @@ import {
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentEventsRequest,
   getRoomEnvironmentStateRequest,
+  listRoomEnvironmentActionHistoryRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   releaseRoomEnvironmentInputRequest,
   startRoomEnvironmentRequest,
@@ -14,14 +15,15 @@ import {
 } from "./ipc-room-environment-requests.js"
 import type {
   RoomEnvironmentActionCancellationOutcome,
+  RoomEnvironmentActionHistoryResponse,
   RoomEnvironmentEventsResponse,
   RoomEnvironmentStateResponse,
   RoomEnvironmentUpdatedResponse,
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 278", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 278)
+test("Room Environment state request matches protocol 279", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 279)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -120,8 +122,8 @@ test("Room Environment state request matches protocol 278", () => {
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
 })
 
-test("Room Environment event replay request matches protocol 278", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 278)
+test("Room Environment event replay request matches protocol 279", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 279)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -159,6 +161,26 @@ test("Room Environment event replay request matches protocol 278", () => {
       next_cursor: 42,
     },
   })
+})
+
+test("Room Environment Action history request matches protocol 279", () => {
+  assert.deepEqual(listRoomEnvironmentActionHistoryRequest("session-1", 42, 25), {
+    ListRoomEnvironmentActionHistory: {
+      session_id: "session-1",
+      before_sequence: 42,
+      limit: 25,
+    },
+  })
+
+  const response: RoomEnvironmentActionHistoryResponse = {
+    RoomEnvironmentActionHistoryListed: {
+      page: {
+        actions: [],
+        next_before_sequence: null,
+      },
+    },
+  }
+  assert.deepEqual(response.RoomEnvironmentActionHistoryListed.page.actions, [])
 })
 
 test("Room Environment start request keeps viewport ownership at the kernel seam", () => {

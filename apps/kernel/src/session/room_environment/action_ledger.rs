@@ -34,6 +34,8 @@ pub(crate) struct ActionCancellationEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnvironmentActionLedger {
     actions: BTreeMap<String, EnvironmentAction>,
+    history_records: BTreeMap<u64, EnvironmentAction>,
+    history_action_sequences: BTreeMap<String, u64>,
     requests: BTreeMap<String, EnvironmentActionRequest>,
     idempotency_actions: BTreeMap<String, String>,
     order: Vec<String>,
@@ -49,6 +51,8 @@ impl EnvironmentActionLedger {
     pub(crate) fn new(terminal_capacity: usize, queue_capacity: usize) -> Self {
         Self {
             actions: BTreeMap::new(),
+            history_records: BTreeMap::new(),
+            history_action_sequences: BTreeMap::new(),
             requests: BTreeMap::new(),
             idempotency_actions: BTreeMap::new(),
             order: Vec::new(),
@@ -70,6 +74,40 @@ impl EnvironmentActionLedger {
 
     pub(crate) fn action(&self, action_id: &str) -> Option<&EnvironmentAction> {
         self.actions.get(action_id)
+    }
+
+    pub(crate) fn action_history(
+        &self,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> super::action::EnvironmentActionHistoryPage {
+        let mut actions = match before_sequence {
+            Some(sequence) => self
+                .history_records
+                .range(..sequence)
+                .rev()
+                .take(limit.saturating_add(1))
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+            None => self
+                .history_records
+                .iter()
+                .rev()
+                .take(limit.saturating_add(1))
+                .map(|(_, action)| action.clone())
+                .collect::<Vec<_>>(),
+        };
+        let has_more = actions.len() > limit;
+        actions.truncate(limit);
+        let next_before_sequence = if has_more {
+            actions.last().map(|action| action.sequence)
+        } else {
+            None
+        };
+        super::action::EnvironmentActionHistoryPage {
+            actions,
+            next_before_sequence,
+        }
     }
 
     pub(crate) fn ownership(&self) -> Vec<InputOwnership> {
@@ -127,7 +165,12 @@ impl EnvironmentActionLedger {
                 let action = self
                     .actions
                     .get(action_id)
-                    .expect("idempotency index must reference an action");
+                    .or_else(|| {
+                        self.history_action_sequences
+                            .get(action_id)
+                            .and_then(|sequence| self.history_records.get(sequence))
+                    })
+                    .expect("idempotency index must reference Action history");
                 return Ok(ActionAdmission::Existing {
                     action_id: action_id.clone(),
                     state: action.state,
@@ -226,6 +269,9 @@ impl EnvironmentActionLedger {
                 self.reservations.insert(target, action_id.clone());
             }
         }
+        self.history_records.insert(sequence, action.clone());
+        self.history_action_sequences
+            .insert(action_id.clone(), sequence);
         self.actions.insert(action_id.clone(), action);
         if let Some(idempotency_key) = request.idempotency_key {
             self.requests.insert(action_id.clone(), accepted_request);
@@ -285,6 +331,7 @@ impl EnvironmentActionLedger {
             },
         });
         action.cancellation_requested = false;
+        self.sync_history_action(action_id);
         self.reservations
             .retain(|_, reserved_action_id| reserved_action_id != action_id);
         let ownership_changed = self.finalize_takeovers();
@@ -350,6 +397,7 @@ impl EnvironmentActionLedger {
             action.outcome = Some(EnvironmentActionOutcome::Cancelled {
                 reason: EnvironmentActionCancellationReason::Requested,
             });
+            self.sync_history_action(action_id);
             let started_action_ids = self.promote_queued_actions();
             return Ok(ActionCancellationEffect {
                 outcome: ActionCancellationOutcome::Cancelled,
@@ -364,6 +412,7 @@ impl EnvironmentActionLedger {
             .expect("running action should remain in the ledger");
         let action_changed = !action.cancellation_requested;
         action.cancellation_requested = true;
+        self.sync_history_action(action_id);
         Ok(ActionCancellationEffect {
             outcome: ActionCancellationOutcome::CancellationRequested,
             action_changed,
@@ -487,6 +536,7 @@ impl EnvironmentActionLedger {
                     code: EnvironmentActionFailureCode::ProcessLost,
                 });
             }
+            self.sync_history_action(action_id);
         }
         active_action_ids
     }
@@ -544,6 +594,7 @@ impl EnvironmentActionLedger {
             action.outcome = Some(EnvironmentActionOutcome::Cancelled {
                 reason: EnvironmentActionCancellationReason::HumanTakeover,
             });
+            self.sync_history_action(action_id);
         }
         action_ids
     }
@@ -559,6 +610,7 @@ impl EnvironmentActionLedger {
                 action.cancellation_requested = true;
                 changed_action_ids.push(action_id.clone());
             }
+            self.sync_history_action(action_id);
         }
         changed_action_ids
     }
@@ -604,6 +656,9 @@ impl EnvironmentActionLedger {
                 .expect("queued action should remain in the ledger");
             action.state = EnvironmentActionState::Running;
             action.started_at_ms = Some(next_action_timestamp(action));
+            let history_action = action.clone();
+            self.history_records
+                .insert(history_action.sequence, history_action);
             started_action_ids.push(action_id.clone());
         }
         started_action_ids
@@ -627,16 +682,18 @@ impl EnvironmentActionLedger {
             .collect();
         let evict_count = terminal_ids.len().saturating_sub(self.terminal_capacity);
         for action_id in terminal_ids.into_iter().take(evict_count) {
-            if let Some(action) = self.actions.remove(&action_id) {
-                if let Some(idempotency_key) = action.idempotency_key {
-                    if self.idempotency_actions.get(&idempotency_key) == Some(&action_id) {
-                        self.idempotency_actions.remove(&idempotency_key);
-                    }
-                }
-            }
-            self.requests.remove(&action_id);
+            self.actions.remove(&action_id);
             self.order.retain(|candidate| candidate != &action_id);
         }
+    }
+
+    fn sync_history_action(&mut self, action_id: &str) {
+        let action = self
+            .actions
+            .get(action_id)
+            .expect("Action history must reference a hot Action")
+            .clone();
+        self.history_records.insert(action.sequence, action);
     }
 }
 

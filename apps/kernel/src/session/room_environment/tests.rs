@@ -1161,7 +1161,7 @@ fn restarting_a_stopped_runtime_invalidates_old_handles() {
 }
 
 #[test]
-fn terminal_action_history_is_bounded_but_active_actions_are_retained() {
+fn terminal_action_snapshot_is_bounded_but_history_and_idempotency_are_retained() {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment =
         RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 2).unwrap();
@@ -1222,6 +1222,105 @@ fn terminal_action_history_is_bounded_but_active_actions_are_retained() {
             completed_ids[2].clone(),
             active_id,
         ]
+    );
+    assert_eq!(
+        environment
+            .submit_action(
+                EnvironmentActionRequest::browser_mutation("agent-1", 1, "click-1", &tab_id, 1,)
+                    .with_idempotency_key("click-1"),
+            )
+            .unwrap(),
+        ActionAdmission::Existing {
+            action_id: completed_ids[0].clone(),
+            state: EnvironmentActionState::Completed,
+        }
+    );
+}
+
+#[test]
+fn action_history_pages_newest_first_across_hot_record_compaction() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_capacities("room-1", "environment-1", viewport, 1, 128).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+
+    let mut action_ids = Vec::new();
+    for operation in ["click", "fill", "key-chord"] {
+        let action_id = accepted_action_id(
+            environment
+                .submit_action(EnvironmentActionRequest::computer_mutation(
+                    "agent-1", 1, operation, None,
+                ))
+                .unwrap(),
+        );
+        environment
+            .finish_action(&action_id, EnvironmentActionTerminal::Completed)
+            .unwrap();
+        action_ids.push(action_id);
+    }
+
+    assert_eq!(environment.snapshot().actions.len(), 1);
+    let first_page = environment.action_history(None, 2);
+    assert_eq!(
+        first_page
+            .actions
+            .iter()
+            .map(|action| action.action_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![action_ids[2].as_str(), action_ids[1].as_str()]
+    );
+    assert!(first_page
+        .actions
+        .iter()
+        .all(|action| action.outcome == Some(EnvironmentActionOutcome::Completed)));
+    assert_eq!(first_page.next_before_sequence, Some(2));
+
+    let second_page = environment.action_history(first_page.next_before_sequence, 2);
+    assert_eq!(
+        second_page
+            .actions
+            .iter()
+            .map(|action| action.action_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![action_ids[0].as_str()]
+    );
+    assert_eq!(second_page.next_before_sequence, None);
+
+    let running_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1", 1, "scroll", None,
+            ))
+            .unwrap(),
+    );
+    environment
+        .cancel_action("agent-1", &running_action_id)
+        .unwrap();
+    let running_page = environment.action_history(None, 1);
+    assert_eq!(running_page.actions[0].action_id, running_action_id);
+    assert_eq!(
+        running_page.actions[0].state,
+        EnvironmentActionState::Running
+    );
+    assert!(running_page.actions[0].cancellation_requested);
+    environment
+        .finish_action(&running_action_id, EnvironmentActionTerminal::Cancelled)
+        .unwrap();
+    assert_eq!(
+        environment.action_history(None, 1).actions[0].outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::Requested,
+        })
     );
 }
 

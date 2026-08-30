@@ -1,8 +1,8 @@
 use crate::error::DaemonError;
 use crate::local::{
     GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
-    ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
-    ResolveSessionRequest,
+    ListAgentsRequest, ListRoomEnvironmentActionHistoryRequest, ListSessionsRequest,
+    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
@@ -357,6 +357,20 @@ pub(crate) async fn execute_get_room_environment_events_request(
         .map_err(|error| room_environment_read_error("environment.events.get", error))
 }
 
+pub(crate) async fn execute_list_room_environment_action_history_request(
+    runtime_state: &KernelRuntimeState,
+    request: ListRoomEnvironmentActionHistoryRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_action_history(
+            &request.session_id,
+            request.before_sequence,
+            request.limit.unwrap_or(50) as usize,
+        )
+        .map(|page| LocalDaemonResponse::RoomEnvironmentActionHistoryListed { page })
+        .map_err(|error| room_environment_read_error("environment.history.list", error))
+}
+
 fn room_environment_read_error(operation: &'static str, error: EnvironmentError) -> DaemonError {
     match error {
         EnvironmentError::RoomNotFound { session_id } => {
@@ -399,6 +413,9 @@ pub(crate) async fn execute_session_read_request(
         }
         LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
             execute_get_room_environment_events_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(request) => {
+            execute_list_room_environment_action_history_request(runtime_state, request).await
         }
         LocalDaemonRequest::ListAgents(request) => {
             execute_list_agents_request(runtime_state, request).await

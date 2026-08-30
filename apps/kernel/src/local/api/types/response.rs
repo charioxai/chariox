@@ -40,6 +40,7 @@ pub enum LocalDaemonResponse {
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },
+    RoomEnvironmentActionHistoryListed { page: crate::session::EnvironmentActionHistoryPage, },
     RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentTakeoverUpdated { outcome: crate::session::TakeoverOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentInputReleased { environment: crate::session::RoomEnvironmentSnapshot, },

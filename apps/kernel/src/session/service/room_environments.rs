@@ -39,6 +39,21 @@ impl SessionService {
         self.room_environments.events_after(session_id, cursor)
     }
 
+    pub(crate) fn room_environment_action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<crate::session::EnvironmentActionHistoryPage, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .action_history(session_id, before_sequence, limit)
+    }
+
     pub(crate) fn start_room_environment(
         &mut self,
         session_id: &str,

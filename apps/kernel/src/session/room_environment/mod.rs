@@ -10,9 +10,9 @@ mod tabs;
 
 pub use action::{
     ActionAdmission, ActionCancellationOutcome, EnvironmentAction,
-    EnvironmentActionCancellationReason, EnvironmentActionFailureCode, EnvironmentActionOutcome,
-    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode,
-    InputTarget,
+    EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, InputTarget,
 };
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
 pub use model::{

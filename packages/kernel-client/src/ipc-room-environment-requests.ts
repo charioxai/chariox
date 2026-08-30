@@ -15,6 +15,20 @@ export function getRoomEnvironmentEventsRequest(sessionId: string, cursor: numbe
   }
 }
 
+export function listRoomEnvironmentActionHistoryRequest(
+  sessionId: string,
+  beforeSequence: number | null = null,
+  limit: number | null = null,
+) {
+  return {
+    ListRoomEnvironmentActionHistory: {
+      session_id: sessionId,
+      before_sequence: beforeSequence,
+      limit,
+    },
+  }
+}
+
 export type RoomEnvironmentViewportRequest = {
   css_width: number
   css_height: number

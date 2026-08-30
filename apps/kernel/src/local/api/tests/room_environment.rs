@@ -769,6 +769,65 @@ fn room_environment_event_replay_crosses_the_router_boundary() {
 }
 
 #[test]
+fn room_environment_action_history_crosses_the_authenticated_read_boundary() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::CreateSession(CreateSessionRequest::new(
+                "workspace-environment-history",
+                "worktree-environment-history",
+            )),
+        )
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .create_room_environment(
+                session.id(),
+                "environment-1",
+                CanonicalViewport::new(1280, 800, 1, 1280, 800).expect("viewport should be valid"),
+            )
+            .expect("Room should acquire an Environment");
+    });
+
+    let response = harness
+        .dispatch_as_user(
+            "owner-1",
+            LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+                crate::local::ListRoomEnvironmentActionHistoryRequest {
+                    session_id: session.id().to_string(),
+                    before_sequence: None,
+                    limit: Some(25),
+                },
+            ),
+        )
+        .expect("Room members should list Environment Action history");
+    assert!(matches!(
+        response,
+        LocalDaemonResponse::RoomEnvironmentActionHistoryListed { page }
+            if page.actions.is_empty() && page.next_before_sequence.is_none()
+    ));
+
+    let error = harness
+        .dispatch_as_user(
+            "outsider-1",
+            LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+                crate::local::ListRoomEnvironmentActionHistoryRequest {
+                    session_id: session.id().to_string(),
+                    before_sequence: None,
+                    limit: Some(25),
+                },
+            ),
+        )
+        .expect_err("an outsider must not list Environment Action history");
+    assert!(matches!(error, DaemonError::SessionAccessDenied { .. }));
+}
+
+#[test]
 fn room_environment_state_requires_room_membership() {
     let harness = LocalRouterTestHarness::new();
     let session = match harness

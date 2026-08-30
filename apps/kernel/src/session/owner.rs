@@ -222,6 +222,16 @@ impl SessionStateStore {
             .room_environment_events_after(session_id, cursor)
     }
 
+    pub(crate) fn room_environment_action_history(
+        &self,
+        session_id: &str,
+        before_sequence: Option<u64>,
+        limit: usize,
+    ) -> Result<super::EnvironmentActionHistoryPage, EnvironmentError> {
+        self.read()
+            .room_environment_action_history(session_id, before_sequence, limit)
+    }
+
     pub(crate) fn start_room_environment(
         &self,
         session_id: &str,

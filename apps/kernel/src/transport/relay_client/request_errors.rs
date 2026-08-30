@@ -65,6 +65,7 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
+        LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
@@ -113,10 +114,10 @@ mod tests {
     use super::*;
     use crate::local::{
         CancelRoomEnvironmentActionRequest, GetRoomEnvironmentEventsRequest,
-        GetRoomEnvironmentStateRequest, ReleaseRoomEnvironmentInputRequest,
-        RequestRoomEnvironmentInputTakeoverRequest, RetryRoomEnvironmentRequest,
-        RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-        UpdateRoomEnvironmentViewportRequest,
+        GetRoomEnvironmentStateRequest, ListRoomEnvironmentActionHistoryRequest,
+        ReleaseRoomEnvironmentInputRequest, RequestRoomEnvironmentInputTakeoverRequest,
+        RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest, StartRoomEnvironmentRequest,
+        StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
     };
 
     #[test]
@@ -137,6 +138,19 @@ mod tests {
             });
 
         assert_eq!(relay_request_kind(&request), "environment.events.get");
+    }
+
+    #[test]
+    fn room_environment_history_uses_the_shared_relay_request_path() {
+        let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
+            ListRoomEnvironmentActionHistoryRequest {
+                session_id: "session-1".to_string(),
+                before_sequence: Some(12),
+                limit: Some(25),
+            },
+        );
+
+        assert_eq!(relay_request_kind(&request), "environment.history.list");
     }
 
     #[test]

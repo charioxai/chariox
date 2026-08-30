@@ -67,6 +67,12 @@ pub struct EnvironmentAction {
     pub outcome: Option<EnvironmentActionOutcome>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentActionHistoryPage {
+    pub actions: Vec<EnvironmentAction>,
+    pub next_before_sequence: Option<u64>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum EnvironmentActionOutcome {
