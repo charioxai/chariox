@@ -300,7 +300,7 @@ export class BrowserCdpClient {
     }
     const promptText = rawRequest?.prompt_text;
     if (
-      promptText !== undefined &&
+      promptText != null &&
       (typeof promptText !== "string" || !utf8ByteLengthAtMost(promptText, 2_048))
     ) {
       throw new BrowserControllerError(
@@ -330,7 +330,7 @@ export class BrowserCdpClient {
       "Page.handleJavaScriptDialog",
       {
         accept: action === "accept",
-        ...(action === "accept" && promptText !== undefined ? { promptText } : {}),
+        ...(action === "accept" && promptText != null ? { promptText } : {}),
       },
       sessionId,
     );
@@ -474,6 +474,17 @@ export class BrowserCdpClient {
   }
 
   recordConnectionEvent(message) {
+    if (message?.method === "Target.detachedFromTarget") {
+      const sessionId = message.params?.sessionId ?? message.sessionId;
+      const targetId = this.targetsBySession.get(sessionId) ?? message.params?.targetId;
+      if (typeof sessionId === "string") this.targetsBySession.delete(sessionId);
+      if (typeof targetId === "string") {
+        this.sessionsByTarget.delete(targetId);
+        for (const [frameId, frameTargetId] of this.targetsByFrame) {
+          if (frameTargetId === targetId) this.targetsByFrame.delete(frameId);
+        }
+      }
+    }
     if (message?.method === "Page.frameNavigated" && !message.params?.frame?.parentId) {
       const targetId = this.targetsBySession.get(message.sessionId);
       const documentId = message.params?.frame?.loaderId;

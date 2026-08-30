@@ -371,6 +371,97 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
 }
 
 #[tokio::test]
+async fn ending_a_session_survives_managed_environment_cleanup_failure() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new(
+                "cleanup-failure-workspace",
+                "cleanup-failure-worktree",
+            ))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let tool = TestBrowserControllerTool::new();
+    let mut state = owned_runtime_state(&app).await;
+    state.set_browser_controller_process_store_for_test(
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+            &tool.path,
+            Vec::new(),
+            Duration::from_secs(5),
+        ),
+    );
+    let validation_state = state.clone();
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        state,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let start_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "cleanup-failure-controller-start",
+                None,
+                None,
+                &start_request,
+            ),
+            start_request,
+        )
+        .await
+        .expect("managed Environment should start");
+    validation_state
+        .begin_stop_room_environment(&session_id)
+        .expect("test should leave the Environment mid-stop");
+
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "cleanup-failure-session-end",
+                None,
+                None,
+                &end_request,
+            ),
+            end_request,
+        )
+        .await
+        .expect("controller cleanup failure must not block session teardown");
+
+    assert!(matches!(
+        end_response,
+        LocalDaemonResponse::SessionEnded { .. }
+    ));
+    assert_eq!(
+        validation_state
+            .session_snapshot(&session_id)
+            .await
+            .expect("ended session remains queryable")
+            .status(),
+        crate::session::SessionStatus::Ended
+    );
+}
+
+#[tokio::test]
 async fn create_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),

@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   BrowserActionError,
+  actionabilityFunction,
   performBrowserAction,
 } from "./browser-controller-actions.mjs";
 
@@ -39,6 +40,71 @@ test("click auto-waits for a stable actionable element and uses native input", a
       .filter((call) => call.method === "Page.getFrameTree")
       .every((call) => call.sessionId === "session-a"),
   );
+});
+
+test("actionability accepts a hit inside the target's own shadow tree", () => {
+  const ownerWindow = {
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  ownerWindow.top = ownerWindow;
+  const shadowRoot = {};
+  const inner = { getRootNode: () => shadowRoot };
+  const target = {
+    isConnected: true,
+    scrollIntoView: () => {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 100, height: 30 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+    isContentEditable: false,
+  };
+  shadowRoot.host = target;
+  target.shadowRoot = { elementFromPoint: () => inner };
+  target.ownerDocument = {
+    defaultView: ownerWindow,
+    elementFromPoint: () => target,
+  };
+
+  assert.equal(actionabilityFunction.call(target).state, "ready");
+});
+
+test("actionability converts nested-frame coordinates through border and padding insets", () => {
+  const topWindow = {
+    getComputedStyle: () => ({ paddingLeft: "4px", paddingTop: "5px" }),
+  };
+  topWindow.top = topWindow;
+  const frameElement = {
+    clientLeft: 2,
+    clientTop: 3,
+    getBoundingClientRect: () => ({ left: 100, top: 50 }),
+    ownerDocument: { defaultView: topWindow },
+  };
+  const ownerWindow = {
+    top: topWindow,
+    frameElement,
+    getComputedStyle: () => ({ display: "block", visibility: "visible", opacity: "1" }),
+  };
+  const target = {
+    isConnected: true,
+    scrollIntoView: () => {},
+    getBoundingClientRect: () => ({ left: 10, top: 20, width: 20, height: 10 }),
+    matches: () => false,
+    closest: () => null,
+    getAttribute: () => null,
+    contains: () => false,
+    isContentEditable: false,
+  };
+  target.ownerDocument = {
+    defaultView: ownerWindow,
+    elementFromPoint: () => target,
+  };
+
+  const result = actionabilityFunction.call(target);
+
+  assert.equal(result.state, "ready");
+  assert.equal(result.x, 126);
+  assert.equal(result.y, 83);
 });
 
 test("fill auto-waits, replaces existing text, and inserts through native input", async () => {
@@ -146,6 +212,7 @@ for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
 
     assert.equal(result.action_kind, "click");
     assert.equal(result.dialog_opened, true);
+    assert.ok(connection.dialogWaitTimeoutMs >= 5_000);
   });
 }
 
@@ -264,7 +331,8 @@ class FakeActionConnection {
     throw new Error(`unexpected CDP method ${method}`);
   }
 
-  waitForEvent() {
+  waitForEvent(_method, timeoutMs) {
+    this.dialogWaitTimeoutMs = timeoutMs;
     let resolve;
     const promise = new Promise((eventResolve) => {
       resolve = eventResolve;

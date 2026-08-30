@@ -672,7 +672,7 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
         self.stop_managed_environment_for_session_lifecycle(session_id)
-            .await?;
+            .await;
         let owned = &self.owned;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         for provider_run_id in terminated_run_ids {
@@ -700,7 +700,7 @@ impl KernelRuntimeState {
             .resolve_session_ref_id(session_ref, workspace_id)
             .await?;
         self.stop_managed_environment_for_session_lifecycle(&session_id)
-            .await?;
+            .await;
         let owned = &self.owned;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session_ref(session_ref, workspace_id)?;
@@ -722,14 +722,11 @@ impl KernelRuntimeState {
         Ok(session)
     }
 
-    async fn stop_managed_environment_for_session_lifecycle(
-        &self,
-        session_id: &str,
-    ) -> Result<(), DaemonError> {
+    async fn stop_managed_environment_for_session_lifecycle(&self, session_id: &str) {
         if !self.browser_controller_process_enabled() {
-            return Ok(());
+            return;
         }
-        match self.room_environment_snapshot(session_id) {
+        let result = match self.room_environment_snapshot(session_id) {
             Ok(_) => self
                 .stop_managed_room_environment_runtime(session_id)
                 .await
@@ -739,6 +736,13 @@ impl KernelRuntimeState {
                 operation: "environment.stop.session_lifecycle",
                 message: format!("{}: {error:?}", error.code()),
             }),
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "managed browser environment cleanup failed during session teardown"
+            );
         }
     }
 

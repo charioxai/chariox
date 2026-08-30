@@ -292,10 +292,6 @@ impl BrowserControllerProcessStdioBackend {
             if response.id == Some(request_id) {
                 return Ok(response);
             }
-            return Err(format!(
-                "browser controller response id {:?} did not match request {request_id}",
-                response.id
-            ));
         }
     }
 
@@ -1557,6 +1553,25 @@ mod tests {
             backend.health().expect("stopped health").state,
             BrowserControllerProcessState::Stopped
         );
+    }
+
+    #[test]
+    fn stdio_backend_skips_a_stale_response_before_the_matching_reply() {
+        let tool = TestTool::new(
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":0,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$$\"; printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+        );
+        let mut backend = BrowserControllerProcessStdioBackend::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+
+        let started = backend
+            .start()
+            .expect("a stale response should not mask the matching health reply");
+
+        assert_eq!(started.state, BrowserControllerProcessState::Ready);
+        backend.stop().expect("controller stops");
     }
 
     #[test]

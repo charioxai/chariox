@@ -125,6 +125,26 @@ test("failed event subscription closes the connection before a clean reconnect",
   assert.equal(result.event_cursor, 1);
 });
 
+test("a detached target session is discarded before the next reconcile", async () => {
+  const connection = new FakeConnection();
+  const browser = new BrowserCdpClient({ connectionFactory: async () => connection });
+  await browser.reconcile(viewport);
+
+  connection.emit({
+    method: "Target.detachedFromTarget",
+    sessionId: "session-a",
+    params: { sessionId: "session-a", targetId: "target-a" },
+  });
+  await browser.reconcile(viewport);
+
+  assert.equal(
+    connection.calls.filter(
+      (call) => call.method === "Target.attachToTarget" && call.params.targetId === "target-a",
+    ).length,
+    2,
+  );
+});
+
 test("structured snapshots bind compact accessibility and DOM nodes to one document", async () => {
   const connection = new SnapshotConnection();
   const browser = new BrowserCdpClient({
@@ -269,6 +289,16 @@ test("dialog handling is document-bound and validates prompt input", async () =>
   assert.deepEqual(
     connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").at(-1).params,
     { accept: true, promptText: "" },
+  );
+  await browser.handleDialog({
+    target_id: "target-a",
+    document_id: "loader-a",
+    action: "dismiss",
+    prompt_text: null,
+  });
+  assert.deepEqual(
+    connection.calls.filter((call) => call.method === "Page.handleJavaScriptDialog").at(-1).params,
+    { accept: false },
   );
   assert.equal(
     connection.calls.filter((call) => call.method === "Page.getFrameTree").length,

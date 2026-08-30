@@ -3,6 +3,7 @@ const MAX_ACTION_TIMEOUT_MS = 5_000;
 const MIN_ACTION_TIMEOUT_MS = 100;
 const ACTION_POLL_INTERVAL_MS = 50;
 const MAX_FILL_TEXT_BYTES = 65_536;
+const DIALOG_OPEN_WAIT_MS = 5_000;
 
 export class BrowserActionError extends Error {
   constructor(code, message, details = {}) {
@@ -192,7 +193,7 @@ async function inspectActionability(connection, sessionId, objectId) {
   return result;
 }
 
-function actionabilityFunction() {
+export function actionabilityFunction() {
   if (!this.isConnected) return { state: "detached" };
   this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
   const ownerDocument = this.ownerDocument;
@@ -224,7 +225,13 @@ function actionabilityFunction() {
     if (!nestedTarget || nestedTarget === hitTarget) break;
     hitTarget = nestedTarget;
   }
-  if (!hitTarget || (hitTarget !== this && !this.contains?.(hitTarget))) {
+  let hitInsideTarget = hitTarget === this || this.contains?.(hitTarget);
+  let hitRoot = hitTarget?.getRootNode?.();
+  while (!hitInsideTarget && hitRoot?.host) {
+    hitInsideTarget = hitRoot.host === this || this.contains?.(hitRoot.host);
+    hitRoot = hitRoot.host.getRootNode?.();
+  }
+  if (!hitTarget || !hitInsideTarget) {
     return { state: "obscured" };
   }
   let x = localX;
@@ -234,8 +241,11 @@ function actionabilityFunction() {
     const frameElement = currentWindow.frameElement;
     if (!frameElement) return { state: "frame_unavailable" };
     const frameRect = frameElement.getBoundingClientRect();
-    x += frameRect.left;
-    y += frameRect.top;
+    const frameStyle = frameElement.ownerDocument.defaultView.getComputedStyle(frameElement);
+    const paddingLeft = Number.parseFloat(frameStyle.paddingLeft) || 0;
+    const paddingTop = Number.parseFloat(frameStyle.paddingTop) || 0;
+    x += frameRect.left + frameElement.clientLeft + paddingLeft;
+    y += frameRect.top + frameElement.clientTop + paddingTop;
     currentWindow = frameElement.ownerDocument.defaultView;
   }
   const inputType = this.matches?.("input")
@@ -368,7 +378,7 @@ async function dispatchClick(connection, sessionId, x, y) {
 
 async function dispatchMouseEvent(connection, sessionId, params) {
   const dialogWaiter = typeof connection.waitForEvent === "function"
-    ? connection.waitForEvent("Page.javascriptDialogOpening", 250, sessionId)
+    ? connection.waitForEvent("Page.javascriptDialogOpening", DIALOG_OPEN_WAIT_MS, sessionId)
     : null;
   const command = connection.send("Input.dispatchMouseEvent", params, sessionId);
   if (!dialogWaiter) {
