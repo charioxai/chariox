@@ -155,4 +155,8 @@ test("event journal maps page, target, download, and crash lifecycle events", ()
   });
   assert.equal(replay.events[3].target_id, "target-a");
   assert.equal(replay.events[4].target_id, "target-a");
+  assert.deepEqual(replay.events[5].data, {
+    status: "crashed",
+    error_code: null,
+  });
 });

@@ -170,7 +170,10 @@ function mapCdpEvent(message, context) {
         error_code: Number.isSafeInteger(params.errorCode) ? params.errorCode : null,
       });
     case "Inspector.targetCrashed":
-      return event("target_crashed", sessionTargetId, currentDocumentId, {});
+      return event("target_crashed", sessionTargetId, currentDocumentId, {
+        status: "crashed",
+        error_code: null,
+      });
     case "Browser.downloadWillBegin":
       return event("download_started", context.targetIdForFrame?.(params.frameId) ?? null, null, {
         guid: boundedString(params.guid, 128),

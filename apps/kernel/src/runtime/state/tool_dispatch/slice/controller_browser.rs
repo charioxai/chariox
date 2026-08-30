@@ -455,19 +455,30 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
     let timeout_ms = timeout_ms.unwrap_or(10_000).clamp(100, 60_000);
     let timeout = std::time::Duration::from_millis(timeout_ms);
     let started = std::time::Instant::now();
+    let environment = ensure_controller_browser_environment(
+        state,
+        provider_run.session_id(),
+        "runtime_tool_slice_browser_wait_for_text",
+    )
+    .await?;
+    let tab_id = environment
+        .focused_tab_id
+        .as_deref()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "runtime_tool_slice_browser_wait_for_text",
+            message: "the Room browser has no focused tab".to_string(),
+        })?
+        .to_string();
     loop {
-        let (environment, text) = capture_controller_browser_text(
-            state,
-            provider_run.session_id(),
-            "runtime_tool_slice_browser_wait_for_text",
-        )
-        .await?;
+        let text =
+            capture_controller_browser_text_from_tab(state, provider_run.session_id(), &tab_id)
+                .await?;
         let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if text.contains(query) {
             return Ok(controller_browser_wait_for_text_result(
                 slice_id,
                 agent_id,
-                environment,
+                environment.clone(),
                 query,
                 waited_ms,
                 true,
@@ -479,7 +490,7 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
             return Ok(controller_browser_wait_for_text_result(
                 slice_id,
                 agent_id,
-                environment,
+                environment.clone(),
                 query,
                 waited_ms,
                 false,
@@ -507,10 +518,19 @@ pub(super) async fn capture_controller_browser_text(
                 operation,
                 message: "the Room browser has no focused tab".to_string(),
             })?;
+    let text = capture_controller_browser_text_from_tab(state, session_id, tab_id).await?;
+    Ok((environment, text))
+}
+
+async fn capture_controller_browser_text_from_tab(
+    state: &KernelRuntimeState,
+    session_id: &str,
+    tab_id: &str,
+) -> Result<String, DaemonError> {
     let snapshot = state
         .capture_browser_environment_snapshot(session_id, tab_id)
         .await?;
-    Ok((environment, controller_browser_document_text(&snapshot)))
+    Ok(controller_browser_document_text(&snapshot))
 }
 
 fn slice_environment_viewport(

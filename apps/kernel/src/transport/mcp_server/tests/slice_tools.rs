@@ -693,6 +693,33 @@ done
         wait_value["result"]["structuredContent"]["browser"]["ok"],
         true
     );
+    let missing_wait_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 70,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_browser_wait_for_text",
+                "arguments": {"text": "Missing", "timeout_ms": 100}
+            }
+        }),
+    )
+    .await
+    .expect("missing browser text wait should return an MCP response");
+    let missing_wait_body = missing_wait_response
+        .into_body()
+        .collect()
+        .await
+        .expect("missing browser text wait body should collect")
+        .to_bytes();
+    let missing_wait_value: Value =
+        serde_json::from_slice(&missing_wait_body).expect("missing browser text wait body json");
+    assert_eq!(
+        missing_wait_value["result"]["structuredContent"]["browser"]["ok"],
+        false
+    );
     let secret_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -819,7 +846,7 @@ done
     }
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

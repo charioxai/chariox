@@ -184,6 +184,28 @@ mod tests {
     }
 
     #[test]
+    fn inspector_crash_payload_satisfies_the_target_crash_contract() {
+        let batch: BrowserControllerEventBatch = serde_json::from_value(serde_json::json!({
+            "browser_generation": 2,
+            "events": [{
+                "event_id": 1,
+                "browser_generation": 2,
+                "kind": "target_crashed",
+                "target_id": "target-a",
+                "document_id": "loader-a",
+                "data": {"status": "crashed", "error_code": null}
+            }],
+            "next_cursor": 1,
+            "replay_gap": false
+        }))
+        .expect("crash batch should deserialize");
+
+        batch
+            .validate(2, 0, 10)
+            .expect("Inspector crash data should satisfy the kernel contract");
+    }
+
+    #[test]
     fn event_batch_requires_strict_order_and_target_attribution() {
         let batch: BrowserControllerEventBatch = serde_json::from_value(serde_json::json!({
             "browser_generation": 2,
