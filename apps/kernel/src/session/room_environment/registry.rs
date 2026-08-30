@@ -12,6 +12,8 @@ impl RoomEnvironmentRegistry {
         Self::default()
     }
 
+    // The serialized lifecycle command lands in the next isolated protocol PR.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create(
         &mut self,
         session_id: impl Into<String>,
@@ -31,6 +33,8 @@ impl RoomEnvironmentRegistry {
         Ok(snapshot)
     }
 
+    // The serialized read projection lands in the next isolated protocol PR.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn snapshot(
         &self,
         session_id: &str,

@@ -1,6 +1,8 @@
 use super::*;
 
 impl SessionService {
+    // The serialized lifecycle command lands in the next isolated protocol PR.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create_room_environment(
         &mut self,
         session_id: &str,
@@ -16,6 +18,8 @@ impl SessionService {
             .create(session_id, environment_id, viewport)
     }
 
+    // The serialized read projection lands in the next isolated protocol PR.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn room_environment_snapshot(
         &self,
         session_id: &str,
