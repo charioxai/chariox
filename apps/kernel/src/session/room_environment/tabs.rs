@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use super::model::{EnvironmentError, EnvironmentTab, EnvironmentTabObservation};
+use super::model::{
+    EnvironmentError, EnvironmentTab, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TabState {
@@ -234,6 +236,28 @@ impl TabRegistry {
 
     pub(crate) fn contains(&self, tab_id: &str) -> bool {
         self.tabs.contains_key(tab_id)
+    }
+
+    pub(crate) fn controller_binding(
+        &self,
+        tab_id: &str,
+    ) -> Result<EnvironmentTabRuntimeBinding, EnvironmentError> {
+        let state = self
+            .tabs
+            .get(tab_id)
+            .ok_or_else(|| EnvironmentError::UnknownTab {
+                tab_id: tab_id.to_string(),
+            })?;
+        let document_id = state.document_id.clone().ok_or_else(|| {
+            EnvironmentError::StructuredObservationUnavailable {
+                tab_id: tab_id.to_string(),
+            }
+        })?;
+        Ok(EnvironmentTabRuntimeBinding {
+            runtime_target_id: state.controller_target_id.clone(),
+            document_id,
+            document_revision: state.tab.document_revision,
+        })
     }
 
     pub(crate) fn clear(&mut self) {

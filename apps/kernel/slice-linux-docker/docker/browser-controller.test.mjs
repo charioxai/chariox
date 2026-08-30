@@ -26,12 +26,16 @@ test("controller rejects invalid and unknown requests", async () => {
   );
 });
 
-test("controller delegates browser reconciliation and closes CDP on shutdown", async () => {
+test("controller delegates browser observations and closes CDP on shutdown", async () => {
   const calls = [];
   const browser = {
     reconcile: async (viewport) => {
       calls.push({ method: "reconcile", viewport });
       return { tabs: [], focused_target_id: null, viewport };
+    },
+    snapshot: async (request) => {
+      calls.push({ method: "snapshot", request });
+      return { target_id: request.target_id, document_id: request.document_id };
     },
     close: async () => calls.push({ method: "close" }),
   };
@@ -47,15 +51,34 @@ test("controller delegates browser reconciliation and closes CDP on shutdown", a
     { id: 1, method: "browser.reconcile", params: { viewport } },
     { browser },
   );
+  const snapshot = await handleBrowserControllerRequest(
+    {
+      id: 2,
+      method: "browser.snapshot",
+      params: { target_id: "target-a", document_id: "loader-a" },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 2, method: "shutdown" },
+    { id: 3, method: "shutdown" },
     { browser },
   );
 
   assert.equal(reconciled.ok, true);
   assert.deepEqual(reconciled.result.viewport, viewport);
+  assert.deepEqual(snapshot.result, {
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
   assert.equal(shutdown.ok, true);
-  assert.deepEqual(calls, [{ method: "reconcile", viewport }, { method: "close" }]);
+  assert.deepEqual(calls, [
+    { method: "reconcile", viewport },
+    {
+      method: "snapshot",
+      request: { target_id: "target-a", document_id: "loader-a" },
+    },
+    { method: "close" },
+  ]);
 });
 
 test("stdio controller stays private to its owning process and shuts down cleanly", async (context) => {

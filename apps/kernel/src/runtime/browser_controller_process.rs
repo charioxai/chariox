@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::Deserialize;
 use wait_timeout::ChildExt;
 
+use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use crate::session::CanonicalViewport;
 
 const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
@@ -81,6 +82,13 @@ pub(crate) trait BrowserControllerProcessBackend {
         _viewport: &CanonicalViewport,
     ) -> Result<BrowserControllerBrowserSnapshot, String> {
         Err("browser controller backend does not support browser reconciliation".to_string())
+    }
+    fn capture_browser_snapshot(
+        &mut self,
+        _target_id: &str,
+        _document_id: &str,
+    ) -> Result<BrowserControllerStructuredSnapshot, String> {
+        Err("browser controller backend does not support structured snapshots".to_string())
     }
 }
 
@@ -376,6 +384,24 @@ impl BrowserControllerProcessBackend for BrowserControllerProcessStdioBackend {
         snapshot.validate(viewport)?;
         Ok(snapshot)
     }
+
+    fn capture_browser_snapshot(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerStructuredSnapshot, String> {
+        let response = self.request(
+            "browser.snapshot",
+            serde_json::json!({
+                "target_id": target_id,
+                "document_id": document_id,
+            }),
+        )?;
+        let snapshot =
+            response.into_result::<BrowserControllerStructuredSnapshot>("browser.snapshot")?;
+        snapshot.validate(target_id, document_id)?;
+        Ok(snapshot)
+    }
 }
 
 impl Drop for BrowserControllerProcessStdioBackend {
@@ -537,6 +563,21 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         self.supervisor.reconcile_browser(viewport)
     }
 
+    pub(crate) fn capture_browser_snapshot(
+        &mut self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerStructuredSnapshot, String> {
+        if !self.owner_session_ids.contains(session_id) {
+            return Err(format!(
+                "browser controller is not leased by Room {session_id}"
+            ));
+        }
+        self.supervisor
+            .capture_browser_snapshot(target_id, document_id)
+    }
+
     pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
         self.owner_session_ids.clear();
         self.supervisor.stop().cloned()
@@ -635,6 +676,23 @@ impl BrowserControllerProcessStore {
         ownership.reconcile_browser(session_id, viewport).map(Some)
     }
 
+    pub(crate) fn capture_browser_snapshot(
+        &self,
+        session_id: &str,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<Option<BrowserControllerStructuredSnapshot>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let mut ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        ownership
+            .capture_browser_snapshot(session_id, target_id, document_id)
+            .map(Some)
+    }
+
     pub(crate) fn shutdown(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
         let Some(ownership) = &self.ownership else {
             return Ok(None);
@@ -711,6 +769,16 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         let process = self.ensure_started()?.clone();
         let browser = self.backend.reconcile_browser(viewport)?;
         Ok(BrowserControllerReconciliation { process, browser })
+    }
+
+    fn capture_browser_snapshot(
+        &mut self,
+        target_id: &str,
+        document_id: &str,
+    ) -> Result<BrowserControllerStructuredSnapshot, String> {
+        self.ensure_started()?;
+        self.backend
+            .capture_browser_snapshot(target_id, document_id)
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -1041,6 +1109,30 @@ mod tests {
             reconciliation.browser.focused_target_id.as_deref(),
             Some("target-a")
         );
+        store.release("room-1").expect("Room releases controller");
+    }
+
+    #[test]
+    fn room_lease_captures_a_document_bound_structured_snapshot_over_stdio() {
+        let tool = TestTool::new(
+            "#!/bin/sh\nset -eu\nwhile IFS= read -r request; do\n  id=${request#*:}\n  id=${id%%,*}\n  case \"$request\" in\n    *'\"method\":\"health\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"ready\",\"process_id\":%s,\"diagnostic_code\":null}}\\n' \"$id\" \"$$\" ;;\n    *'\"method\":\"browser.snapshot\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"browser_generation\":1,\"target_id\":\"target-a\",\"document_id\":\"loader-a\",\"snapshot_revision\":1,\"accessibility_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":null,\"child_refs\":[],\"role\":\"button\",\"name\":\"Save\",\"description\":\"\",\"value\":\"\",\"ignored\":false,\"disabled\":false,\"focused\":true}],\"dom_nodes\":[{\"node_ref\":\"backend:103\",\"parent_ref\":\"backend:102\",\"node_type\":1,\"node_name\":\"BUTTON\",\"text\":\"\",\"attributes\":{\"id\":\"save\"},\"bounds\":{\"x\":10,\"y\":20,\"width\":100,\"height\":30}}]}}\\n' \"$id\" ;;\n    *'\"method\":\"shutdown\"'*) printf '{\"id\":%s,\"ok\":true,\"result\":{\"state\":\"stopped\",\"process_id\":null,\"diagnostic_code\":null}}\\n' \"$id\"; exit 0 ;;\n  esac\ndone\n",
+        );
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+        store.acquire("room-1").expect("Room acquires controller");
+
+        let snapshot = store
+            .capture_browser_snapshot("room-1", "target-a", "loader-a")
+            .expect("structured snapshot succeeds")
+            .expect("controller is enabled");
+
+        assert_eq!(snapshot.browser_generation, 1);
+        assert_eq!(snapshot.snapshot_revision, 1);
+        assert_eq!(snapshot.accessibility_nodes[0].node_ref, "backend:103");
+        assert_eq!(snapshot.dom_nodes[0].attributes["id"], "save");
         store.release("room-1").expect("Room releases controller");
     }
 

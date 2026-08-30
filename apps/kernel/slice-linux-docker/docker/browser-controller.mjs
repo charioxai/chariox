@@ -28,6 +28,12 @@ export async function handleBrowserControllerRequest(
         await browser.reconcile(request.params?.viewport),
       );
     }
+    if (request.method === "browser.snapshot") {
+      return successResponse(
+        request.id,
+        await browser.snapshot(request.params),
+      );
+    }
     if (request.method === "shutdown") {
       await browser.close();
       return successResponse(request.id, {

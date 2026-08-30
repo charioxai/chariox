@@ -167,6 +167,62 @@ fn controller_tab_reconciliation_retires_missing_targets_and_detects_same_url_re
     assert_eq!(snapshot.focused_tab_id.as_deref(), Some("tab-2"));
 }
 
+#[test]
+fn element_references_are_opaque_stable_within_a_document_and_stale_after_navigation() {
+    let mut environment = ready_environment();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab("target-a", "loader-a1", "https://a.test", "A")],
+        Some("target-a"),
+    );
+    let binding = environment
+        .controller_tab_binding("tab-1")
+        .expect("controller binding exists");
+    assert_eq!(binding.runtime_target_id, "target-a");
+    assert_eq!(binding.document_id, "loader-a1");
+    assert_eq!(binding.document_revision, 1);
+
+    let first = environment
+        .register_element_references(
+            "tab-1",
+            1,
+            1,
+            ["backend:103".to_string(), "backend:104".to_string()],
+        )
+        .expect("element references register");
+    let repeated = environment
+        .register_element_references("tab-1", 1, 1, ["backend:103".to_string()])
+        .expect("same document reuses references");
+    assert_eq!(first["backend:103"], repeated["backend:103"]);
+    assert!(first["backend:103"].starts_with("element-"));
+
+    let resolved = environment
+        .resolve_element_reference(&first["backend:103"])
+        .expect("current reference resolves");
+    assert_eq!(resolved.tab_id, "tab-1");
+    assert_eq!(resolved.document_revision, 1);
+    assert_eq!(resolved.controller_node_ref, "backend:103");
+
+    environment.reconcile_controller_tabs(
+        vec![observed_tab("target-a", "loader-a2", "https://a.test", "A")],
+        Some("target-a"),
+    );
+    assert!(matches!(
+        environment.resolve_element_reference(&first["backend:103"]),
+        Err(EnvironmentError::StaleElementReference { .. })
+    ));
+
+    let current = environment
+        .register_element_references("tab-1", 1, 2, ["backend:203".to_string()])
+        .expect("new document receives a new reference");
+    environment
+        .invalidate_runtime_after_process_loss()
+        .expect("process loss invalidates the runtime");
+    assert!(matches!(
+        environment.resolve_element_reference(&current["backend:203"]),
+        Err(EnvironmentError::StaleElementReference { .. })
+    ));
+}
+
 fn observed_tab(
     runtime_target_id: &str,
     document_id: &str,

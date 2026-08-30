@@ -5,6 +5,7 @@ pub mod agent_prompt_service;
 pub(crate) mod agent_utility_executor;
 pub(crate) mod app_lock;
 pub(crate) mod browser_controller_process;
+pub(crate) mod browser_controller_snapshot;
 pub mod capability_executor;
 pub(crate) mod capability_registry;
 pub(crate) mod cloud_api_client;

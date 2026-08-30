@@ -7,12 +7,14 @@ use super::action::{
 use super::action_ledger::{
     ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
 };
+use super::elements::{ElementReferenceRegistry, EnvironmentElementTarget};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, EnvironmentTabObservation, RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentSnapshot,
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
@@ -31,6 +33,7 @@ pub struct RoomEnvironment {
     health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
     actors: BTreeMap<String, EnvironmentActor>,
     tabs: TabRegistry,
+    element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
     event_log: EnvironmentEventLog,
 }
@@ -76,6 +79,7 @@ impl RoomEnvironment {
             health: default_component_health(),
             actors: BTreeMap::new(),
             tabs: TabRegistry::new(),
+            element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
@@ -193,12 +197,46 @@ impl RoomEnvironment {
         observations: Vec<EnvironmentTabObservation>,
         focused_runtime_target_id: Option<&str>,
     ) {
-        if self
+        let changed = self
             .tabs
-            .reconcile_controller_tabs(observations, focused_runtime_target_id)
-        {
+            .reconcile_controller_tabs(observations, focused_runtime_target_id);
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
+        if changed {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
+    }
+
+    pub(crate) fn controller_tab_binding(
+        &self,
+        tab_id: &str,
+    ) -> Result<EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.tabs.controller_binding(tab_id)
+    }
+
+    pub(crate) fn register_element_references(
+        &mut self,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, String>, EnvironmentError> {
+        self.element_references.register(
+            &self.tabs,
+            self.runtime_generation,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_element_reference(
+        &self,
+        reference_id: &str,
+    ) -> Result<EnvironmentElementTarget, EnvironmentError> {
+        self.element_references
+            .resolve(&self.tabs, self.runtime_generation, reference_id)
     }
 
     pub fn register_actor(&mut self, actor: EnvironmentActor) -> Result<(), EnvironmentError> {
@@ -562,12 +600,16 @@ impl RoomEnvironment {
     ) -> Result<(), EnvironmentError> {
         self.tabs
             .record_navigation(tab_id, url.into(), title.into())?;
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
         Ok(())
     }
 
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), EnvironmentError> {
         self.tabs.close(tab_id)?;
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
         Ok(())
     }
@@ -606,6 +648,7 @@ impl RoomEnvironment {
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
+        self.element_references.clear();
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
         for action_id in failed_action_ids {

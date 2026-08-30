@@ -85,6 +85,64 @@ impl KernelRuntimeState {
         .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))
     }
 
+    pub(crate) async fn capture_browser_environment_snapshot(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<
+        crate::runtime::browser_controller_snapshot::RoomBrowserStructuredSnapshot,
+        DaemonError,
+    > {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let target_id = binding.runtime_target_id.clone();
+        let document_id = binding.document_id.clone();
+        let controller_snapshot = tokio::task::spawn_blocking(move || {
+            processes.capture_browser_snapshot(&owned_session_id, &target_id, &document_id)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.snapshot",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.snapshot",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.snapshot",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        let references = self
+            .register_room_environment_element_references(
+                session_id,
+                tab_id,
+                environment.runtime_generation,
+                binding.document_revision,
+                controller_snapshot.controller_node_refs(),
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
+        controller_snapshot
+            .into_room_snapshot(
+                session_id.to_string(),
+                environment.environment_id,
+                environment.runtime_generation,
+                tab_id.to_string(),
+                binding.document_revision,
+                &references,
+            )
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.snapshot",
+                message,
+            })
+    }
+
     pub(crate) async fn stop_browser_controller_process(
         &self,
         session_id: &str,

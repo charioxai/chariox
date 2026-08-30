@@ -1,3 +1,8 @@
+import {
+  BrowserSnapshotError,
+  captureBrowserSnapshot,
+} from "./browser-controller-snapshot.mjs";
+
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 
@@ -25,6 +30,7 @@ export class BrowserCdpClient {
     this.connection = null;
     this.browserGeneration = 0;
     this.sessionsByTarget = new Map();
+    this.snapshotStateByTarget = new Map();
   }
 
   async reconcile(rawViewport) {
@@ -39,6 +45,7 @@ export class BrowserCdpClient {
       for (const targetId of this.sessionsByTarget.keys()) {
         if (!pageTargetIds.has(targetId)) {
           this.sessionsByTarget.delete(targetId);
+          this.snapshotStateByTarget.delete(targetId);
         }
       }
       const inspected = await Promise.all(
@@ -64,6 +71,7 @@ export class BrowserCdpClient {
     const connection = this.connection;
     this.connection = null;
     this.sessionsByTarget.clear();
+    this.snapshotStateByTarget.clear();
     if (connection) {
       await connection.close();
     }
@@ -74,6 +82,7 @@ export class BrowserCdpClient {
       return this.connection;
     }
     this.sessionsByTarget.clear();
+    this.snapshotStateByTarget.clear();
     this.connection = this.connectionFactory
       ? await this.connectionFactory()
       : await connectToBrowser({
@@ -87,21 +96,7 @@ export class BrowserCdpClient {
   }
 
   async inspectPage(connection, target, viewport) {
-    let sessionId = this.sessionsByTarget.get(target.targetId);
-    if (!sessionId) {
-      const attached = await connection.send("Target.attachToTarget", {
-        targetId: target.targetId,
-        flatten: true,
-      });
-      if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
-        throw new BrowserControllerError(
-          "browser_attach_failed",
-          `browser target ${JSON.stringify(target.targetId)} did not return a session`,
-        );
-      }
-      sessionId = attached.sessionId;
-      this.sessionsByTarget.set(target.targetId, sessionId);
-    }
+    const sessionId = await this.ensureTargetSession(connection, target.targetId);
     await connection.send(
       "Emulation.setDeviceMetricsOverride",
       deviceMetricsFor(viewport),
@@ -133,6 +128,73 @@ export class BrowserCdpClient {
       title: typeof target.title === "string" ? target.title : "",
       focused: focus?.result?.value === true,
     };
+  }
+
+  async snapshot(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(
+      rawRequest?.document_id,
+      "document_id",
+    );
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const target = targetInfos.find(
+      (candidate) =>
+        candidate?.type === "page" && candidate.targetId === targetId,
+    );
+    if (!target) {
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(targetId)} is not available`,
+      );
+    }
+    const sessionId = await this.ensureTargetSession(connection, targetId);
+    const previous = this.snapshotStateByTarget.get(targetId);
+    const snapshotRevision =
+      previous?.documentId === documentId ? previous.revision + 1 : 1;
+    this.snapshotStateByTarget.set(targetId, {
+      documentId,
+      revision: snapshotRevision,
+    });
+    try {
+      return await captureBrowserSnapshot({
+        connection,
+        sessionId,
+        targetId,
+        documentId,
+        browserGeneration: this.browserGeneration,
+        snapshotRevision,
+      });
+    } catch (error) {
+      if (this.snapshotStateByTarget.get(targetId)?.revision === snapshotRevision) {
+        if (previous) {
+          this.snapshotStateByTarget.set(targetId, previous);
+        } else {
+          this.snapshotStateByTarget.delete(targetId);
+        }
+      }
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async ensureTargetSession(connection, targetId) {
+    let sessionId = this.sessionsByTarget.get(targetId);
+    if (sessionId) {
+      return sessionId;
+    }
+    const attached = await connection.send("Target.attachToTarget", {
+      targetId,
+      flatten: true,
+    });
+    if (typeof attached?.sessionId !== "string" || !attached.sessionId) {
+      throw new BrowserControllerError(
+        "browser_attach_failed",
+        `browser target ${JSON.stringify(targetId)} did not return a session`,
+      );
+    }
+    sessionId = attached.sessionId;
+    this.sessionsByTarget.set(targetId, sessionId);
+    return sessionId;
   }
 }
 
@@ -272,6 +334,16 @@ function canonicalViewport(viewport) {
   return canonical;
 }
 
+function requiredIdentity(value, field) {
+  if (typeof value !== "string" || !value) {
+    throw new BrowserControllerError(
+      "browser_snapshot_invalid",
+      `browser snapshot ${field} must be a non-empty string`,
+    );
+  }
+  return value;
+}
+
 function deviceMetricsFor(viewport) {
   return {
     width: viewport.css_width,
@@ -371,6 +443,9 @@ function normalizedPort(url) {
 function normalizeControllerError(error) {
   if (error instanceof BrowserControllerError) {
     return error;
+  }
+  if (error instanceof BrowserSnapshotError) {
+    return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(
     "browser_controller_internal",

@@ -201,6 +201,56 @@ impl SessionService {
         )
     }
 
+    pub(crate) fn room_environment_controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<crate::session::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .controller_tab_binding(session_id, tab_id)
+    }
+
+    pub(crate) fn register_room_environment_element_references(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<std::collections::BTreeMap<String, String>, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.register_element_references(
+            session_id,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_room_environment_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<crate::session::EnvironmentElementTarget, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .resolve_element_reference(session_id, reference_id)
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &mut self,
         session_id: &str,

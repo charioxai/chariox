@@ -90,6 +90,107 @@ test("viewport validation happens before opening a browser connection", async ()
   assert.equal(connected, false);
 });
 
+test("structured snapshots bind compact accessibility and DOM nodes to one document", async () => {
+  const connection = new SnapshotConnection();
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+  });
+  await browser.reconcile(viewport);
+
+  const first = await browser.snapshot({
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
+  const second = await browser.snapshot({
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
+
+  assert.equal(first.browser_generation, 1);
+  assert.equal(first.target_id, "target-a");
+  assert.equal(first.document_id, "loader-a");
+  assert.equal(first.snapshot_revision, 1);
+  assert.equal(second.snapshot_revision, 2);
+  assert.deepEqual(first.accessibility_nodes, [
+    {
+      node_ref: "backend:103",
+      parent_ref: null,
+      child_refs: ["backend:104"],
+      role: "button",
+      name: "Save",
+      description: "Save this form",
+      value: "",
+      ignored: false,
+      disabled: false,
+      focused: true,
+    },
+    {
+      node_ref: "backend:104",
+      parent_ref: "backend:103",
+      child_refs: [],
+      role: "StaticText",
+      name: "Save",
+      description: "",
+      value: "",
+      ignored: false,
+      disabled: false,
+      focused: false,
+    },
+  ]);
+  assert.deepEqual(
+    first.dom_nodes.find((node) => node.node_ref === "backend:103"),
+    {
+      node_ref: "backend:103",
+      parent_ref: "backend:102",
+      node_type: 1,
+      node_name: "BUTTON",
+      text: "",
+      attributes: { id: "save", type: "submit" },
+      bounds: { x: 10, y: 20, width: 100, height: 30 },
+    },
+  );
+  assert.deepEqual(
+    first.dom_nodes.find((node) => node.node_ref === "backend:105").attributes,
+    { type: "password", value: "[redacted]" },
+    "password values must never leave the controller snapshot",
+  );
+
+  connection.loaderId = "loader-a2";
+  await assert.rejects(
+    browser.snapshot({ target_id: "target-a", document_id: "loader-a" }),
+    (error) => error.code === "stale_document_reference",
+  );
+  connection.loaderId = "loader-a";
+  const afterRejectedCapture = await browser.snapshot({
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
+  assert.equal(
+    afterRejectedCapture.snapshot_revision,
+    3,
+    "a rejected capture must not consume a snapshot revision",
+  );
+});
+
+test("structured snapshot strings are bounded by UTF-8 bytes", async () => {
+  const connection = new SnapshotConnection();
+  connection.accessibilityName = "😀".repeat(2_000);
+  const browser = new BrowserCdpClient({
+    connectionFactory: async () => connection,
+  });
+  await browser.reconcile(viewport);
+
+  const snapshot = await browser.snapshot({
+    target_id: "target-a",
+    document_id: "loader-a",
+  });
+
+  assert.equal(
+    new TextEncoder().encode(snapshot.accessibility_nodes[0].name).length,
+    2_048,
+  );
+});
+
 test("debugger discovery cannot redirect the controller away from loopback", () => {
   assert.equal(
     assertPrivateDebuggerUrl(
@@ -168,6 +269,87 @@ class FakeConnection {
       return { result: { value: sessionId === "session-b" } };
     }
     return {};
+  }
+}
+
+class SnapshotConnection extends FakeConnection {
+  constructor() {
+    super();
+    this.loaderId = "loader-a";
+    this.accessibilityName = "Save";
+  }
+
+  async send(method, params = {}, sessionId) {
+    if (method === "Page.getFrameTree") {
+      this.calls.push({ method, params, sessionId });
+      return { frameTree: { frame: { loaderId: this.loaderId } } };
+    }
+    if (method === "Accessibility.getFullAXTree") {
+      this.calls.push({ method, params, sessionId });
+      return {
+        nodes: [
+          {
+            nodeId: "ax-button",
+            backendDOMNodeId: 103,
+            ignored: false,
+            role: { value: "button" },
+            name: { value: this.accessibilityName },
+            description: { value: "Save this form" },
+            childIds: ["ax-text"],
+            properties: [
+              { name: "focused", value: { value: true } },
+              { name: "disabled", value: { value: false } },
+            ],
+          },
+          {
+            nodeId: "ax-text",
+            backendDOMNodeId: 104,
+            parentId: "ax-button",
+            ignored: false,
+            role: { value: "StaticText" },
+            name: { value: "Save" },
+          },
+        ],
+      };
+    }
+    if (method === "DOMSnapshot.captureSnapshot") {
+      this.calls.push({ method, params, sessionId });
+      return {
+        strings: [
+          "#document",
+          "HTML",
+          "BODY",
+          "BUTTON",
+          "#text",
+          "Save",
+          "id",
+          "save",
+          "type",
+          "submit",
+          "INPUT",
+          "password",
+          "value",
+          "top-secret",
+        ],
+        documents: [
+          {
+            nodes: {
+              parentIndex: [-1, 0, 1, 2, 3, 2],
+              nodeType: [9, 1, 1, 1, 3, 1],
+              nodeName: [0, 1, 2, 3, 4, 10],
+              nodeValue: [0, 0, 0, 0, 5, 0],
+              backendNodeId: [100, 101, 102, 103, 104, 105],
+              attributes: [[], [], [], [6, 7, 8, 9], [], [8, 11, 12, 13]],
+            },
+            layout: {
+              nodeIndex: [3],
+              bounds: [[10, 20, 100, 30]],
+            },
+          },
+        ],
+      };
+    }
+    return super.send(method, params, sessionId);
   }
 }
 

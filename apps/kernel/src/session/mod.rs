@@ -45,7 +45,10 @@ pub use room_environment::{
     EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
     InputTarget, PendingInputTakeover, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
 };
-pub(crate) use room_environment::{EnvironmentTabObservation, RoomEnvironmentRegistry};
+pub(crate) use room_environment::{
+    EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentRegistry,
+};
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,
 };

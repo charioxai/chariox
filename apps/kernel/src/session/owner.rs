@@ -329,6 +329,41 @@ impl SessionStateStore {
         )
     }
 
+    pub(crate) fn room_environment_controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<super::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.read()
+            .room_environment_controller_tab_binding(session_id, tab_id)
+    }
+
+    pub(crate) fn register_room_environment_element_references(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<std::collections::BTreeMap<String, String>, EnvironmentError> {
+        self.write().register_room_environment_element_references(
+            session_id,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_room_environment_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<super::EnvironmentElementTarget, EnvironmentError> {
+        self.read()
+            .resolve_room_environment_element_reference(session_id, reference_id)
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &self,
         session_id: &str,

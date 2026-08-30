@@ -218,6 +218,53 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<super::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .controller_tab_binding(tab_id)
+    }
+
+    pub(crate) fn register_element_references(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, String>, EnvironmentError> {
+        self.environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .register_element_references(
+                tab_id,
+                runtime_generation,
+                document_revision,
+                controller_node_refs,
+            )
+    }
+
+    pub(crate) fn resolve_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<super::EnvironmentElementTarget, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .resolve_element_reference(reference_id)
+    }
+
     pub(crate) fn request_takeover_as_actor(
         &mut self,
         session_id: &str,

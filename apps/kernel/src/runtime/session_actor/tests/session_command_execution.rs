@@ -35,6 +35,10 @@ while IFS= read -r request; do
       printf 'reconcile\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
       ;;
+    *'"method":"browser.snapshot"'*)
+      printf 'snapshot\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"button","name":"Save","description":"","value":"","ignored":false,"disabled":false,"focused":true}],"dom_nodes":[{"node_ref":"backend:103","parent_ref":"backend:102","node_type":1,"node_name":"BUTTON","text":"","attributes":{"id":"save"},"bounds":{"x":10,"y":20,"width":100,"height":30}}]}}\n' "$id"
+      ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"
@@ -84,6 +88,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
             Duration::from_secs(5),
         ),
     );
+    let validation_state = state.clone();
     let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
         state,
         1,
@@ -135,6 +140,57 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     assert_eq!(environment.tabs[0].tab_id, "tab-1");
     assert_eq!(environment.tabs[0].url, "https://a.test");
     assert!(environment.tabs[0].focused);
+    let environment_id = environment.environment_id.clone();
+
+    let first_snapshot = validation_state
+        .capture_browser_environment_snapshot(&session_id, "tab-1")
+        .await
+        .expect("structured snapshot should cross the controller boundary");
+    let second_snapshot = validation_state
+        .capture_browser_environment_snapshot(&session_id, "tab-1")
+        .await
+        .expect("repeated structured snapshot should remain valid");
+    assert_eq!(first_snapshot.session_id, session_id);
+    assert_eq!(first_snapshot.environment_id, environment_id);
+    assert_eq!(first_snapshot.runtime_generation, 1);
+    assert_eq!(first_snapshot.tab_id, "tab-1");
+    assert_eq!(first_snapshot.document_revision, 1);
+    assert_eq!(first_snapshot.snapshot_revision, 1);
+    let accessibility_node = &first_snapshot.accessibility_nodes[0];
+    assert_eq!(accessibility_node.parent_ref, None);
+    assert!(accessibility_node.child_refs.is_empty());
+    assert_eq!(accessibility_node.role, "button");
+    assert_eq!(accessibility_node.name, "Save");
+    assert_eq!(accessibility_node.description, "");
+    assert_eq!(accessibility_node.value, "");
+    assert!(!accessibility_node.ignored);
+    assert!(!accessibility_node.disabled);
+    assert!(accessibility_node.focused);
+    let dom_node = &first_snapshot.dom_nodes[0];
+    assert_eq!(dom_node.parent_ref, None);
+    assert_eq!(dom_node.node_type, 1);
+    assert_eq!(dom_node.node_name, "BUTTON");
+    assert_eq!(dom_node.text, "");
+    assert_eq!(dom_node.attributes["id"], "save");
+    assert_eq!(dom_node.bounds.expect("button bounds").width, 100.0);
+    assert_eq!(
+        first_snapshot.accessibility_nodes[0].element_ref,
+        first_snapshot.dom_nodes[0].element_ref
+    );
+    assert_eq!(
+        first_snapshot.dom_nodes[0].element_ref, second_snapshot.dom_nodes[0].element_ref,
+        "opaque element references should remain stable within one document"
+    );
+    let resolved = validation_state
+        .resolve_room_environment_element_reference(
+            &session_id,
+            &first_snapshot.dom_nodes[0].element_ref,
+        )
+        .expect("opaque element reference resolves inside the kernel");
+    assert_eq!(resolved.tab_id, "tab-1");
+    assert_eq!(resolved.runtime_generation, 1);
+    assert_eq!(resolved.document_revision, 1);
+    assert_eq!(resolved.controller_node_ref, "backend:103");
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -203,7 +259,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 
