@@ -13,6 +13,7 @@ mod prompt_settings;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod room_environment;
 mod slice_logs;
 mod workflow_code;
 mod workspace_history_external;

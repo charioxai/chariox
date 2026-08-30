@@ -567,7 +567,7 @@ This does not require all provider adapters to use the same wire transport inter
 
 ## 4.1.2 Shared Room environment protocol direction
 
-This section defines the logical contract for the Room-owned browser and graphical Environment. It is a design contract, not part of local daemon protocol v268. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
+This section defines the logical contract for the Room-owned browser and graphical Environment. Local daemon protocol v269 introduces the membership-scoped `GetRoomEnvironmentState` request and `RoomEnvironmentState` response carrying the complete snapshot below. The remaining lifecycle, mutation, history, and pushed-event surfaces are still design contracts. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
 
 The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
 
@@ -681,9 +681,9 @@ Viewer-only scaling is local presentation state and does not change the canonica
 
 ### Planned requests
 
-The smallest planned request set is:
+The smallest request set is:
 
-- `environment.state.get`
+- `environment.state.get` (serialized in local daemon protocol v269)
 - `environment.start`
 - `environment.stop`
 - `environment.retry`
@@ -731,7 +731,7 @@ Process recovery follows these rules:
 
 ### Compatibility policy
 
-Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. During migration:
+Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. Protocol v269 clients may read the complete Environment snapshot but do not gain lifecycle, takeover, mutation, or history authority until those requests are released. During migration:
 
 - the kernel keeps the old tool names behind a compatibility adapter
 - compatibility calls still enter the kernel-owned Action path once it exists

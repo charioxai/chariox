@@ -25,6 +25,7 @@ pub enum LocalDaemonRequest {
     ListSessions(ListSessionsRequest),
     ResolveSession(ResolveSessionRequest),
     GetSessionState(GetSessionStateRequest),
+    GetRoomEnvironmentState(GetRoomEnvironmentStateRequest),
     UpdateMetaagentTask(UpdateMetaagentTaskRequest),
     PauseMetaagentTask(PauseMetaagentTaskRequest),
     ResumeMetaagentTask(ResumeMetaagentTaskRequest),

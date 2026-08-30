@@ -1,6 +1,7 @@
 use super::action::InputTarget;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InputOwnership {
     pub target: InputTarget,
     pub actor_id: String,

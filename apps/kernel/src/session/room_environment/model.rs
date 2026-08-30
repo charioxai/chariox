@@ -1,7 +1,9 @@
 use super::action::{EnvironmentAction, EnvironmentActionState, InputTarget};
 use super::ownership::InputOwnership;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentLifecycle {
     Stopped,
     Starting,
@@ -13,7 +15,7 @@ pub enum EnvironmentLifecycle {
     Failed,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalViewport {
     pub css_width: u32,
     pub css_height: u32,
@@ -55,20 +57,22 @@ impl CanonicalViewport {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentActorKind {
     Human,
     Agent,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentActorPresence {
     Present,
     Away,
     Disconnected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentActor {
     pub actor_id: String,
     pub kind: EnvironmentActorKind,
@@ -91,7 +95,8 @@ impl EnvironmentActor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentComponent {
     BrowserController,
     Browser,
@@ -99,7 +104,8 @@ pub enum EnvironmentComponent {
     Streamer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum EnvironmentComponentHealthState {
     Starting,
     Ready,
@@ -107,14 +113,14 @@ pub enum EnvironmentComponentHealthState {
     Unavailable,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentComponentHealth {
     pub component: EnvironmentComponent,
     pub state: EnvironmentComponentHealthState,
     pub diagnostic_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomEnvironmentSnapshot {
     pub session_id: String,
     pub environment_id: String,
@@ -130,7 +136,7 @@ pub struct RoomEnvironmentSnapshot {
     pub event_cursor: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentTab {
     pub tab_id: String,
     pub url: String,

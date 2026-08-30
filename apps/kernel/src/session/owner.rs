@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock, RwLockReadGuard, RwLockWriteGuard};
 use crate::error::DaemonError;
 
 use super::{
-    CreateSessionRequest, PromptQueueItem, RuntimeProject, RuntimeSession, SessionConfigState,
-    SessionService,
+    CanonicalViewport, CreateSessionRequest, EnvironmentError, PromptQueueItem,
+    RoomEnvironmentSnapshot, RuntimeProject, RuntimeSession, SessionConfigState, SessionService,
 };
 
 #[derive(Debug, Clone)]
@@ -194,6 +194,23 @@ impl SessionStateStore {
 
     pub(crate) fn remove_restored_session(&self, session_id: &str) -> Option<RuntimeSession> {
         self.write().remove_restored_session(session_id)
+    }
+
+    pub(crate) fn create_room_environment(
+        &self,
+        session_id: &str,
+        environment_id: impl Into<String>,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .create_room_environment(session_id, environment_id, viewport)
+    }
+
+    pub(crate) fn room_environment_snapshot(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.read().room_environment_snapshot(session_id)
     }
 
     pub(crate) fn replace_publication_runtime_workflows(
