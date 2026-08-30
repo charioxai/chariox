@@ -143,6 +143,9 @@ pub(crate) fn request_session_scope(
         LocalDaemonRequest::GetRoomEnvironmentState(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => Some(
+            SessionMembershipScope::SessionId(request.session_id.clone()),
+        ),
         LocalDaemonRequest::StartRoomEnvironment(request) => Some(
             SessionMembershipScope::SessionId(request.session_id.clone()),
         ),

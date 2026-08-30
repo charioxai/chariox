@@ -304,6 +304,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &[
                                 "LOCAL_DAEMON_PROTOCOL_VERSION",
                                 "GetRoomEnvironmentState",
+                                "GetRoomEnvironmentEvents",
                                 "StartRoomEnvironment",
                                 "StopRoomEnvironment",
                                 "RetryRoomEnvironment",
@@ -311,6 +312,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                                 "RequestRoomEnvironmentInputTakeover",
                                 "ReleaseRoomEnvironmentInput",
                                 "RoomEnvironmentState",
+                                "RoomEnvironmentEvents",
                                 "RoomEnvironmentUpdated",
                                 "RoomEnvironmentTakeoverUpdated",
                                 "RoomEnvironmentInputReleased",
@@ -321,6 +323,7 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                             &[
                                 "LOCAL_DAEMON_PROTOCOL_VERSION",
                                 "GetRoomEnvironmentState",
+                                "GetRoomEnvironmentEvents",
                                 "StartRoomEnvironment",
                                 "StopRoomEnvironment",
                                 "RetryRoomEnvironment",

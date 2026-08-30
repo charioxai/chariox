@@ -2,6 +2,7 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  getRoomEnvironmentEventsRequest,
   getRoomEnvironmentStateRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   releaseRoomEnvironmentInputRequest,
@@ -11,13 +12,14 @@ import {
   retryRoomEnvironmentRequest,
 } from "./ipc-room-environment-requests.js"
 import type {
+  RoomEnvironmentEventsResponse,
   RoomEnvironmentStateResponse,
   RoomEnvironmentUpdatedResponse,
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 274", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 274)
+test("Room Environment state request matches protocol 275", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 275)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -104,6 +106,47 @@ test("Room Environment state request matches protocol 274", () => {
     },
   }
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
+})
+
+test("Room Environment event replay request matches protocol 275", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 275)
+  assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
+    GetRoomEnvironmentEvents: {
+      session_id: "session-1",
+      cursor: 41,
+    },
+  })
+
+  const response: RoomEnvironmentEventsResponse = {
+    RoomEnvironmentEvents: {
+      replay: {
+        Events: {
+          events: [
+            {
+              event_id: 42,
+              environment_id: "environment-1",
+              runtime_generation: 3,
+              kind: { ViewportChanged: { revision: 7 } },
+            },
+          ],
+          next_cursor: 42,
+        },
+      },
+    },
+  }
+  assert.deepEqual(response.RoomEnvironmentEvents.replay, {
+    Events: {
+      events: [
+        {
+          event_id: 42,
+          environment_id: "environment-1",
+          runtime_generation: 3,
+          kind: { ViewportChanged: { revision: 7 } },
+        },
+      ],
+      next_cursor: 42,
+    },
+  })
 })
 
 test("Room Environment start request keeps viewport ownership at the kernel seam", () => {

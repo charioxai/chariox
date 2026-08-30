@@ -1,7 +1,8 @@
 use crate::error::DaemonError;
 use crate::local::{
-    GetRoomEnvironmentStateRequest, GetSessionStateRequest, ListAgentsRequest, ListSessionsRequest,
-    LocalDaemonRequest, LocalDaemonResponse, ResolveSessionRequest,
+    GetRoomEnvironmentEventsRequest, GetRoomEnvironmentStateRequest, GetSessionStateRequest,
+    ListAgentsRequest, ListSessionsRequest, LocalDaemonRequest, LocalDaemonResponse,
+    ResolveSessionRequest,
 };
 use crate::runtime::projection::{ProviderRunProjectionStore, SessionStateProjectionStore};
 use crate::runtime::provider_launch_executor::ProviderLaunchPendingTracker;
@@ -343,20 +344,30 @@ pub(crate) async fn execute_get_room_environment_state_request(
     runtime_state
         .room_environment_snapshot(&request.session_id)
         .map(|environment| LocalDaemonResponse::RoomEnvironmentState { environment })
-        .map_err(room_environment_read_error)
+        .map_err(|error| room_environment_read_error("environment.state.get", error))
 }
 
-fn room_environment_read_error(error: EnvironmentError) -> DaemonError {
+pub(crate) async fn execute_get_room_environment_events_request(
+    runtime_state: &KernelRuntimeState,
+    request: GetRoomEnvironmentEventsRequest,
+) -> Result<LocalDaemonResponse, DaemonError> {
+    runtime_state
+        .room_environment_events_after(&request.session_id, request.cursor)
+        .map(|replay| LocalDaemonResponse::RoomEnvironmentEvents { replay })
+        .map_err(|error| room_environment_read_error("environment.events.get", error))
+}
+
+fn room_environment_read_error(operation: &'static str, error: EnvironmentError) -> DaemonError {
     match error {
         EnvironmentError::RoomNotFound { session_id } => {
             DaemonError::SessionNotFound { session_id }
         }
         EnvironmentError::EnvironmentNotFound { session_id } => DaemonError::LocalTransport {
-            operation: "environment.state.get",
+            operation,
             message: format!("environment_not_found: Room `{session_id}` has no Environment"),
         },
         other => DaemonError::LocalTransport {
-            operation: "environment.state.get",
+            operation,
             message: format!("environment_state_unavailable: {other:?}"),
         },
     }
@@ -385,6 +396,9 @@ pub(crate) async fn execute_session_read_request(
         }
         LocalDaemonRequest::GetRoomEnvironmentState(request) => {
             execute_get_room_environment_state_request(runtime_state, request).await
+        }
+        LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
+            execute_get_room_environment_events_request(runtime_state, request).await
         }
         LocalDaemonRequest::ListAgents(request) => {
             execute_list_agents_request(runtime_state, request).await

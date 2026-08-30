@@ -1,7 +1,9 @@
+use serde::{Deserialize, Serialize};
+
 use super::action::EnvironmentActionState;
 use super::model::{EnvironmentLifecycle, RoomEnvironmentSnapshot};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentEvent {
     pub event_id: u64,
     pub environment_id: String,
@@ -9,7 +11,7 @@ pub struct EnvironmentEvent {
     pub kind: EnvironmentEventKind,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnvironmentEventKind {
     LifecycleChanged {
         lifecycle: EnvironmentLifecycle,
@@ -28,7 +30,7 @@ pub enum EnvironmentEventKind {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum EnvironmentReplay {
     Events {
         events: Vec<EnvironmentEvent>,

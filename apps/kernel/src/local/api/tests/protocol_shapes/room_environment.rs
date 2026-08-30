@@ -2,13 +2,14 @@ use super::*;
 use crate::session::{
     CanonicalViewport, EnvironmentAction, EnvironmentActionState, EnvironmentActor,
     EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
-    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentLifecycle,
-    EnvironmentMode, EnvironmentTab, InputOwnership, InputTarget, RoomEnvironmentSnapshot,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentEvent,
+    EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab,
+    InputOwnership, InputTarget, RoomEnvironmentSnapshot,
 };
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -201,8 +202,77 @@ fn room_environment_state_shape_is_versioned() {
 }
 
 #[test]
+fn room_environment_event_replay_shape_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
+
+    let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
+        session_id: "session-1".to_string(),
+        cursor: 41,
+    });
+    assert_eq!(
+        serde_json::to_value(&request).expect("Room Environment event request should encode"),
+        serde_json::json!({
+            "GetRoomEnvironmentEvents": {
+                "session_id": "session-1",
+                "cursor": 41,
+            }
+        })
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonRequest>(serde_json::json!({
+            "GetRoomEnvironmentEvents": {
+                "session_id": "session-1",
+                "cursor": 41,
+            }
+        }))
+        .expect("Room Environment event request should decode"),
+        request
+    );
+
+    let response = LocalDaemonResponse::RoomEnvironmentEvents {
+        replay: EnvironmentReplay::Events {
+            events: vec![EnvironmentEvent {
+                event_id: 42,
+                environment_id: "environment-1".to_string(),
+                runtime_generation: 3,
+                kind: EnvironmentEventKind::ViewportChanged { revision: 7 },
+            }],
+            next_cursor: 42,
+        },
+    };
+    let value = serde_json::json!({
+        "RoomEnvironmentEvents": {
+            "replay": {
+                "Events": {
+                    "events": [{
+                        "event_id": 42,
+                        "environment_id": "environment-1",
+                        "runtime_generation": 3,
+                        "kind": {
+                            "ViewportChanged": {
+                                "revision": 7,
+                            }
+                        }
+                    }],
+                    "next_cursor": 42,
+                }
+            }
+        }
+    });
+    assert_eq!(
+        serde_json::to_value(&response).expect("Room Environment event replay should encode"),
+        value
+    );
+    assert_eq!(
+        serde_json::from_value::<LocalDaemonResponse>(value)
+            .expect("Room Environment event replay should decode"),
+        response
+    );
+}
+
+#[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -288,7 +358,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -311,7 +381,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -334,7 +404,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -374,7 +444,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -456,7 +526,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 275);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {

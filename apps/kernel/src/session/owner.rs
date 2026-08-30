@@ -213,6 +213,15 @@ impl SessionStateStore {
         self.read().room_environment_snapshot(session_id)
     }
 
+    pub(crate) fn room_environment_events_after(
+        &self,
+        session_id: &str,
+        cursor: u64,
+    ) -> Result<super::EnvironmentReplay, EnvironmentError> {
+        self.read()
+            .room_environment_events_after(session_id, cursor)
+    }
+
     pub(crate) fn start_room_environment(
         &self,
         session_id: &str,

@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, RoomEnvironment,
-    RoomEnvironmentSnapshot,
+    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, EnvironmentReplay,
+    RoomEnvironment, RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -199,6 +199,19 @@ impl RoomEnvironmentRegistry {
         self.environments_by_session
             .get(session_id)
             .map(RoomEnvironment::snapshot)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })
+    }
+
+    pub(crate) fn events_after(
+        &self,
+        session_id: &str,
+        cursor: u64,
+    ) -> Result<EnvironmentReplay, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .map(|environment| environment.events_after(cursor))
             .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
                 session_id: session_id.to_string(),
             })

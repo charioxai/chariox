@@ -6,6 +6,15 @@ export function getRoomEnvironmentStateRequest(sessionId: string) {
   }
 }
 
+export function getRoomEnvironmentEventsRequest(sessionId: string, cursor: number) {
+  return {
+    GetRoomEnvironmentEvents: {
+      session_id: sessionId,
+      cursor,
+    },
+  }
+}
+
 export type RoomEnvironmentViewportRequest = {
   css_width: number
   css_height: number

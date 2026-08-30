@@ -39,6 +39,7 @@ pub enum LocalDaemonResponse {
         agent_activity_revision: u64,
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
+    RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },
     RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentTakeoverUpdated { outcome: crate::session::TakeoverOutcome, environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentInputReleased { environment: crate::session::RoomEnvironmentSnapshot, },

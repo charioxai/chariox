@@ -422,6 +422,7 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",

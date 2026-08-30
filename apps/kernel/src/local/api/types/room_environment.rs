@@ -6,6 +6,12 @@ pub struct GetRoomEnvironmentStateRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetRoomEnvironmentEventsRequest {
+    pub session_id: String,
+    pub cursor: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RoomEnvironmentViewportRequest {
     pub css_width: u32,
     pub css_height: u32,

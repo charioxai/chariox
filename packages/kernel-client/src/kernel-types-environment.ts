@@ -90,9 +90,36 @@ export type RoomEnvironmentSnapshot = {
   event_cursor: number
 }
 
+export type RoomEnvironmentEventKind =
+  | { LifecycleChanged: { lifecycle: RoomEnvironmentLifecycle } }
+  | "RuntimeInvalidated"
+  | "HealthChanged"
+  | "TabsChanged"
+  | { ViewportChanged: { revision: number } }
+  | "ActorsChanged"
+  | "InputOwnershipChanged"
+  | { ActionChanged: { action_id: string; state: RoomEnvironmentAction["state"] } }
+
+export type RoomEnvironmentEvent = {
+  event_id: number
+  environment_id: string
+  runtime_generation: number
+  kind: RoomEnvironmentEventKind
+}
+
+export type RoomEnvironmentReplay =
+  | { Events: { events: RoomEnvironmentEvent[]; next_cursor: number } }
+  | { SnapshotRequired: { snapshot: RoomEnvironmentSnapshot } }
+
 export type RoomEnvironmentStateResponse = {
   RoomEnvironmentState: {
     environment: RoomEnvironmentSnapshot
+  }
+}
+
+export type RoomEnvironmentEventsResponse = {
+  RoomEnvironmentEvents: {
+    replay: RoomEnvironmentReplay
   }
 }
 
