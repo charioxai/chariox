@@ -237,6 +237,16 @@ fn observations_run_concurrently_and_mutations_serialize_per_target() {
         EnvironmentActionState::Queued
     );
     assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_action_id)
+            .unwrap()
+            .started_at_ms,
+        None
+    );
+    assert_eq!(
         environment.finish_action(&queued_action_id, EnvironmentActionTerminal::Completed),
         Err(EnvironmentError::ActionNotRunning {
             action_id: queued_action_id.clone(),
@@ -247,16 +257,73 @@ fn observations_run_concurrently_and_mutations_serialize_per_target() {
     environment
         .finish_action(&action_a, EnvironmentActionTerminal::Completed)
         .unwrap();
-    assert_eq!(
+    let promoted = environment
+        .snapshot()
+        .actions
+        .into_iter()
+        .find(|action| action.action_id == queued_action_id)
+        .unwrap();
+    assert_eq!(promoted.state, EnvironmentActionState::Running);
+    assert!(promoted.started_at_ms >= Some(promoted.submitted_at_ms));
+}
+
+#[test]
+fn action_lifecycle_records_submission_start_finish_and_redacted_outcome() {
+    let mut environment = ready_environment_with_agent();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let action_id = accepted_action_id(
         environment
-            .snapshot()
-            .actions
-            .iter()
-            .find(|action| action.action_id == queued_action_id)
-            .unwrap()
-            .state,
-        EnvironmentActionState::Running
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "click", &tab_id, 1,
+            ))
+            .unwrap(),
     );
+
+    let running = environment
+        .snapshot()
+        .actions
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .expect("accepted Action should be projected");
+    assert!(running.submitted_at_ms > 0);
+    assert_eq!(running.started_at_ms, Some(running.submitted_at_ms));
+    assert_eq!(running.finished_at_ms, None);
+    assert_eq!(running.outcome, None);
+
+    let event_cursor = environment.snapshot().event_cursor;
+    environment
+        .finish_action(&action_id, EnvironmentActionTerminal::Completed)
+        .unwrap();
+    let completed = environment
+        .snapshot()
+        .actions
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .expect("completed Action should remain in recent history");
+    assert!(completed.finished_at_ms >= completed.started_at_ms);
+    assert_eq!(completed.outcome, Some(EnvironmentActionOutcome::Completed));
+    assert!(matches!(
+        environment.events_after(event_cursor),
+        EnvironmentReplay::Events { events, .. }
+            if matches!(
+                events.as_slice(),
+                [EnvironmentEvent {
+                    kind: EnvironmentEventKind::ActionChanged {
+                        action_id: changed_action_id,
+                        state: EnvironmentActionState::Completed,
+                        started_at_ms,
+                        finished_at_ms,
+                        outcome: Some(EnvironmentActionOutcome::Completed),
+                        ..
+                    },
+                    ..
+                }] if changed_action_id == &action_id
+                    && *started_at_ms == completed.started_at_ms
+                    && *finished_at_ms == completed.finished_at_ms
+            )
+    ));
 }
 
 #[test]
@@ -477,6 +544,19 @@ fn cancelling_queued_work_promotes_the_next_eligible_action() {
             .state,
         EnvironmentActionState::Cancelled
     );
+    let cancelled = snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == queued_computer_action_id)
+        .unwrap();
+    assert_eq!(cancelled.started_at_ms, None);
+    assert!(cancelled.finished_at_ms >= Some(cancelled.submitted_at_ms));
+    assert_eq!(
+        cancelled.outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::Requested,
+        })
+    );
     assert_eq!(
         snapshot
             .actions
@@ -604,6 +684,7 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
                     action_id: changed_action_id,
                     state: EnvironmentActionState::Running,
                     cancellation_requested: true,
+                    ..
                 } if changed_action_id == &action_id
             ))
     ));
@@ -664,24 +745,30 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }]
     );
     assert!(environment.snapshot().pending_input_takeovers.is_empty());
-    assert!(
-        !environment
-            .snapshot()
-            .actions
-            .iter()
-            .find(|action| action.action_id == action_id)
-            .unwrap()
-            .cancellation_requested
-    );
+    let snapshot = environment.snapshot();
+    let cancelled_running = snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == action_id)
+        .unwrap();
+    assert!(!cancelled_running.cancellation_requested);
     assert_eq!(
-        environment
-            .snapshot()
-            .actions
-            .iter()
-            .find(|action| action.action_id == queued_browser_action_id)
-            .unwrap()
-            .state,
-        EnvironmentActionState::Cancelled
+        cancelled_running.outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::Requested,
+        })
+    );
+    let cancelled_queued = snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == queued_browser_action_id)
+        .unwrap();
+    assert_eq!(cancelled_queued.state, EnvironmentActionState::Cancelled);
+    assert_eq!(
+        cancelled_queued.outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::HumanTakeover,
+        })
     );
     assert_eq!(
         environment
@@ -873,6 +960,18 @@ fn process_loss_fails_only_running_actions_and_invalidates_runtime_handles() {
             .state,
         EnvironmentActionState::Failed
     );
+    let failed = snapshot
+        .actions
+        .iter()
+        .find(|action| action.action_id == running_id)
+        .unwrap();
+    assert!(failed.finished_at_ms >= failed.started_at_ms);
+    assert_eq!(
+        failed.outcome,
+        Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ProcessLost,
+        })
+    );
     assert!(matches!(
         environment.events_after(cursor),
         EnvironmentReplay::Events { events, .. }
@@ -884,6 +983,51 @@ fn process_loss_fails_only_running_actions_and_invalidates_runtime_handles() {
                     }
                 )
     ));
+}
+
+#[test]
+fn process_loss_emits_action_changes_before_compacting_terminal_records() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_capacities("room-1", "environment-1", viewport, 1, 128).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+    let tab_a = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let tab_b = environment
+        .register_or_reconcile_tab("target-b", "https://b.test", "B")
+        .unwrap();
+    for (tab_id, operation) in [(tab_a, "click"), (tab_b, "fill")] {
+        accepted_action_id(
+            environment
+                .submit_action(EnvironmentActionRequest::browser_mutation(
+                    "agent-1", 1, operation, &tab_id, 1,
+                ))
+                .unwrap(),
+        );
+    }
+
+    environment.invalidate_runtime_after_process_loss().unwrap();
+
+    let snapshot = environment.snapshot();
+    assert_eq!(snapshot.actions.len(), 1);
+    assert_eq!(snapshot.actions[0].state, EnvironmentActionState::Failed);
+    assert_eq!(
+        snapshot.actions[0].outcome,
+        Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ProcessLost,
+        })
+    );
 }
 
 #[test]
@@ -935,6 +1079,61 @@ fn terminal_action_state_is_immutable() {
         Err(EnvironmentError::ActionAlreadyTerminal {
             action_id,
             state: EnvironmentActionState::Completed,
+        })
+    );
+}
+
+#[test]
+fn controller_terminal_outcomes_use_closed_redacted_codes() {
+    let mut environment = ready_environment_with_agent();
+    let failed_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "key-chord",
+                None,
+            ))
+            .unwrap(),
+    );
+    environment
+        .finish_action(&failed_action_id, EnvironmentActionTerminal::Failed)
+        .unwrap();
+    let cancelled_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "mouse-click",
+                None,
+            ))
+            .unwrap(),
+    );
+    environment
+        .finish_action(&cancelled_action_id, EnvironmentActionTerminal::Cancelled)
+        .unwrap();
+
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == failed_action_id)
+            .unwrap()
+            .outcome,
+        Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ControllerFailure,
+        })
+    );
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == cancelled_action_id)
+            .unwrap()
+            .outcome,
+        Some(EnvironmentActionOutcome::Cancelled {
+            reason: EnvironmentActionCancellationReason::ControllerCancellation,
         })
     );
 }

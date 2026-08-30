@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::action::{
-    ActionAdmission, ActionCancellationOutcome, EnvironmentAction, EnvironmentActionRequest,
-    EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentAction,
+    EnvironmentActionCancellationReason, EnvironmentActionFailureCode, EnvironmentActionOutcome,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
 };
 use super::model::{
     EnvironmentActor, EnvironmentActorKind, EnvironmentError, EnvironmentLifecycle,
@@ -67,10 +68,8 @@ impl EnvironmentActionLedger {
             .collect()
     }
 
-    pub(crate) fn cancellation_requested(&self, action_id: &str) -> bool {
-        self.actions
-            .get(action_id)
-            .is_some_and(|action| action.cancellation_requested)
+    pub(crate) fn action(&self, action_id: &str) -> Option<&EnvironmentAction> {
+        self.actions.get(action_id)
     }
 
     pub(crate) fn ownership(&self) -> Vec<InputOwnership> {
@@ -201,6 +200,7 @@ impl EnvironmentActionLedger {
         let sequence = self.next_sequence;
         let action_id = format!("action-{sequence}");
         self.next_sequence += 1;
+        let submitted_at_ms = crate::session::unix_epoch_ms();
         let action = EnvironmentAction {
             action_id: action_id.clone(),
             sequence,
@@ -216,6 +216,10 @@ impl EnvironmentActionLedger {
                 EnvironmentActionState::Running
             },
             cancellation_requested: false,
+            submitted_at_ms,
+            started_at_ms: (!queued).then_some(submitted_at_ms),
+            finished_at_ms: None,
+            outcome: None,
         };
         if request.mutates && !queued {
             for target in targets {
@@ -264,12 +268,27 @@ impl EnvironmentActionLedger {
             });
         }
         action.state = state;
+        let finished_at_ms = next_action_timestamp(action);
+        action.finished_at_ms = Some(finished_at_ms);
+        action.outcome = Some(match terminal {
+            EnvironmentActionTerminal::Completed => EnvironmentActionOutcome::Completed,
+            EnvironmentActionTerminal::Failed => EnvironmentActionOutcome::Failed {
+                code: EnvironmentActionFailureCode::ControllerFailure,
+            },
+            EnvironmentActionTerminal::Cancelled if action.cancellation_requested => {
+                EnvironmentActionOutcome::Cancelled {
+                    reason: EnvironmentActionCancellationReason::Requested,
+                }
+            }
+            EnvironmentActionTerminal::Cancelled => EnvironmentActionOutcome::Cancelled {
+                reason: EnvironmentActionCancellationReason::ControllerCancellation,
+            },
+        });
         action.cancellation_requested = false;
         self.reservations
             .retain(|_, reserved_action_id| reserved_action_id != action_id);
         let ownership_changed = self.finalize_takeovers();
         let started_action_ids = self.promote_queued_actions();
-        self.compact_terminal_actions();
         Ok(ActionFinishEffect {
             state,
             ownership_changed,
@@ -322,12 +341,16 @@ impl EnvironmentActionLedger {
         }
 
         if action.state == EnvironmentActionState::Queued {
-            self.actions
+            let action = self
+                .actions
                 .get_mut(action_id)
-                .expect("queued action should remain in the ledger")
-                .state = EnvironmentActionState::Cancelled;
+                .expect("queued action should remain in the ledger");
+            action.state = EnvironmentActionState::Cancelled;
+            action.finished_at_ms = Some(next_action_timestamp(action));
+            action.outcome = Some(EnvironmentActionOutcome::Cancelled {
+                reason: EnvironmentActionCancellationReason::Requested,
+            });
             let started_action_ids = self.promote_queued_actions();
-            self.compact_terminal_actions();
             return Ok(ActionCancellationEffect {
                 outcome: ActionCancellationOutcome::Cancelled,
                 action_changed: true,
@@ -443,23 +466,28 @@ impl EnvironmentActionLedger {
         self.input_owners.clear();
         self.pending_takeovers.clear();
         let active_action_ids: Vec<_> = self
-            .actions
-            .values()
-            .filter(|action| {
-                matches!(
-                    action.state,
-                    EnvironmentActionState::Queued | EnvironmentActionState::Running
-                )
+            .order
+            .iter()
+            .filter(|action_id| {
+                self.actions.get(*action_id).is_some_and(|action| {
+                    matches!(
+                        action.state,
+                        EnvironmentActionState::Queued | EnvironmentActionState::Running
+                    )
+                })
             })
-            .map(|action| action.action_id.clone())
+            .cloned()
             .collect();
         for action_id in &active_action_ids {
             if let Some(action) = self.actions.get_mut(action_id) {
                 action.state = EnvironmentActionState::Failed;
                 action.cancellation_requested = false;
+                action.finished_at_ms = Some(next_action_timestamp(action));
+                action.outcome = Some(EnvironmentActionOutcome::Failed {
+                    code: EnvironmentActionFailureCode::ProcessLost,
+                });
             }
         }
-        self.compact_terminal_actions();
         active_action_ids
     }
 
@@ -507,12 +535,16 @@ impl EnvironmentActionLedger {
             .map(|action| action.action_id.clone())
             .collect();
         for action_id in &action_ids {
-            self.actions
+            let action = self
+                .actions
                 .get_mut(action_id)
-                .expect("queued action should remain in the ledger")
-                .state = EnvironmentActionState::Cancelled;
+                .expect("queued action should remain in the ledger");
+            action.state = EnvironmentActionState::Cancelled;
+            action.finished_at_ms = Some(next_action_timestamp(action));
+            action.outcome = Some(EnvironmentActionOutcome::Cancelled {
+                reason: EnvironmentActionCancellationReason::HumanTakeover,
+            });
         }
-        self.compact_terminal_actions();
         action_ids
     }
 
@@ -566,16 +598,18 @@ impl EnvironmentActionLedger {
             for target in targets {
                 self.reservations.insert(target, action_id.clone());
             }
-            self.actions
+            let action = self
+                .actions
                 .get_mut(action_id)
-                .expect("queued action should remain in the ledger")
-                .state = EnvironmentActionState::Running;
+                .expect("queued action should remain in the ledger");
+            action.state = EnvironmentActionState::Running;
+            action.started_at_ms = Some(next_action_timestamp(action));
             started_action_ids.push(action_id.clone());
         }
         started_action_ids
     }
 
-    fn compact_terminal_actions(&mut self) {
+    pub(crate) fn compact_terminal_actions(&mut self) {
         let terminal_ids: Vec<_> = self
             .order
             .iter()
@@ -604,6 +638,15 @@ impl EnvironmentActionLedger {
             self.order.retain(|candidate| candidate != &action_id);
         }
     }
+}
+
+fn next_action_timestamp(action: &EnvironmentAction) -> u64 {
+    crate::session::unix_epoch_ms().max(
+        action
+            .started_at_ms
+            .unwrap_or(action.submitted_at_ms)
+            .max(action.submitted_at_ms),
+    )
 }
 
 fn validate_target(tabs: &TabRegistry, target: &InputTarget) -> Result<(), EnvironmentError> {

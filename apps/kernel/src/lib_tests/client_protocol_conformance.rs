@@ -318,6 +318,8 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                                 "RoomEnvironmentTakeoverUpdated",
                                 "RoomEnvironmentInputReleased",
                                 "RoomEnvironmentActionCancellationUpdated",
+                                "submitted_at_ms",
+                                "process_lost",
                             ],
                         ),
                         evidence(
@@ -333,6 +335,8 @@ fn conformance_evidence() -> BTreeMap<&'static str, BTreeMap<&'static str, Vec<E
                                 "RequestRoomEnvironmentInputTakeover",
                                 "ReleaseRoomEnvironmentInput",
                                 "CancelRoomEnvironmentAction",
+                                "submitted_at_ms",
+                                "status: \"completed\"",
                             ],
                         ),
                     ],

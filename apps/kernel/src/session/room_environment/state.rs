@@ -354,6 +354,7 @@ impl RoomEnvironment {
         for started_action_id in effect.started_action_ids {
             self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
         }
+        self.action_ledger.compact_terminal_actions();
         Ok(())
     }
 
@@ -380,6 +381,7 @@ impl RoomEnvironment {
         for started_action_id in started_action_ids {
             self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
         }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -428,6 +430,7 @@ impl RoomEnvironment {
         for started_action_id in started_action_ids {
             self.emit_action_changed(&started_action_id, EnvironmentActionState::Running);
         }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -457,6 +460,7 @@ impl RoomEnvironment {
         if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -511,6 +515,7 @@ impl RoomEnvironment {
         if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        self.action_ledger.compact_terminal_actions();
         Ok(outcome)
     }
 
@@ -581,6 +586,7 @@ impl RoomEnvironment {
         for action_id in failed_action_ids {
             self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
         }
+        self.action_ledger.compact_terminal_actions();
         self.emit(EnvironmentEventKind::RuntimeInvalidated);
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
@@ -593,11 +599,24 @@ impl RoomEnvironment {
     }
 
     fn emit_action_changed(&mut self, action_id: &str, state: EnvironmentActionState) {
-        let cancellation_requested = self.action_ledger.cancellation_requested(action_id);
+        let action = self
+            .action_ledger
+            .action(action_id)
+            .expect("Action change must reference an Action in the ledger");
+        debug_assert_eq!(action.state, state);
+        let cancellation_requested = action.cancellation_requested;
+        let submitted_at_ms = action.submitted_at_ms;
+        let started_at_ms = action.started_at_ms;
+        let finished_at_ms = action.finished_at_ms;
+        let outcome = action.outcome;
         self.emit(EnvironmentEventKind::ActionChanged {
             action_id: action_id.to_string(),
             state,
             cancellation_requested,
+            submitted_at_ms,
+            started_at_ms,
+            finished_at_ms,
+            outcome,
         });
     }
 }

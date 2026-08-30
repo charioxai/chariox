@@ -57,6 +57,41 @@ pub struct EnvironmentAction {
     pub state: EnvironmentActionState,
     #[serde(default)]
     pub cancellation_requested: bool,
+    #[serde(default)]
+    pub submitted_at_ms: u64,
+    #[serde(default)]
+    pub started_at_ms: Option<u64>,
+    #[serde(default)]
+    pub finished_at_ms: Option<u64>,
+    #[serde(default)]
+    pub outcome: Option<EnvironmentActionOutcome>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum EnvironmentActionOutcome {
+    Completed,
+    Failed {
+        code: EnvironmentActionFailureCode,
+    },
+    Cancelled {
+        reason: EnvironmentActionCancellationReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActionFailureCode {
+    ControllerFailure,
+    ProcessLost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentActionCancellationReason {
+    Requested,
+    HumanTakeover,
+    ControllerCancellation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

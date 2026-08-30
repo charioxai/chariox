@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use super::action::EnvironmentActionState;
+use super::action::{EnvironmentActionOutcome, EnvironmentActionState};
 use super::model::{EnvironmentLifecycle, RoomEnvironmentSnapshot};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,6 +29,14 @@ pub enum EnvironmentEventKind {
         state: EnvironmentActionState,
         #[serde(default)]
         cancellation_requested: bool,
+        #[serde(default)]
+        submitted_at_ms: u64,
+        #[serde(default)]
+        started_at_ms: Option<u64>,
+        #[serde(default)]
+        finished_at_ms: Option<u64>,
+        #[serde(default)]
+        outcome: Option<EnvironmentActionOutcome>,
     },
 }
 

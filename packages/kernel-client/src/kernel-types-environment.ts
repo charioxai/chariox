@@ -58,7 +58,19 @@ export type RoomEnvironmentAction = {
   targets: RoomEnvironmentInputTarget[]
   state: "queued" | "running" | "completed" | "failed" | "cancelled"
   cancellation_requested: boolean
+  submitted_at_ms: number
+  started_at_ms: number | null
+  finished_at_ms: number | null
+  outcome: RoomEnvironmentActionOutcome | null
 }
+
+export type RoomEnvironmentActionOutcome =
+  | { status: "completed" }
+  | { status: "failed"; code: "controller_failure" | "process_lost" }
+  | {
+      status: "cancelled"
+      reason: "requested" | "human_takeover" | "controller_cancellation"
+    }
 
 export type RoomEnvironmentInputOwnership = {
   target: RoomEnvironmentInputTarget
@@ -109,6 +121,10 @@ export type RoomEnvironmentEventKind =
         action_id: string
         state: RoomEnvironmentAction["state"]
         cancellation_requested: boolean
+        submitted_at_ms: number
+        started_at_ms: number | null
+        finished_at_ms: number | null
+        outcome: RoomEnvironmentActionOutcome | null
       }
     }
 
