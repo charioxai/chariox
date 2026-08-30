@@ -1,7 +1,9 @@
 use super::*;
 use crate::session::{
-    CanonicalViewport, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentLifecycle, RoomEnvironmentSnapshot,
+    CanonicalViewport, EnvironmentAction, EnvironmentActionState, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentLifecycle,
+    EnvironmentMode, EnvironmentTab, InputOwnership, InputTarget, RoomEnvironmentSnapshot,
 };
 
 #[test]
@@ -42,11 +44,34 @@ fn room_environment_state_shape_is_versioned() {
             }],
             viewport: CanonicalViewport::new(1280, 800, 2, 2560, 1600)
                 .expect("viewport should be valid"),
-            actors: Vec::new(),
-            tabs: Vec::new(),
-            focused_tab_id: None,
-            actions: Vec::new(),
-            input_ownership: Vec::new(),
+            actors: vec![EnvironmentActor {
+                actor_id: "agent-1".to_string(),
+                kind: EnvironmentActorKind::Agent,
+                display_label: "Browser agent".to_string(),
+                presence: EnvironmentActorPresence::Present,
+            }],
+            tabs: vec![EnvironmentTab {
+                tab_id: "tab-1".to_string(),
+                url: "https://example.test/".to_string(),
+                title: "Example".to_string(),
+                document_revision: 3,
+                focused: true,
+            }],
+            focused_tab_id: Some("tab-1".to_string()),
+            actions: vec![EnvironmentAction {
+                action_id: "action-1".to_string(),
+                idempotency_key: Some("idempotency-1".to_string()),
+                actor_id: "agent-1".to_string(),
+                runtime_generation: 1,
+                mode: EnvironmentMode::Browser,
+                kind: "click".to_string(),
+                targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
+                state: EnvironmentActionState::Running,
+            }],
+            input_ownership: vec![InputOwnership {
+                target: InputTarget::BrowserTab("tab-1".to_string()),
+                actor_id: "agent-1".to_string(),
+            }],
             event_cursor: 0,
         },
     };
@@ -73,11 +98,40 @@ fn room_environment_state_shape_is_versioned() {
                         "revision": 1,
                         "last_actor_id": null
                     },
-                    "actors": [],
-                    "tabs": [],
-                    "focused_tab_id": null,
-                    "actions": [],
-                    "input_ownership": [],
+                    "actors": [{
+                        "actor_id": "agent-1",
+                        "kind": "agent",
+                        "display_label": "Browser agent",
+                        "presence": "present"
+                    }],
+                    "tabs": [{
+                        "tab_id": "tab-1",
+                        "url": "https://example.test/",
+                        "title": "Example",
+                        "document_revision": 3,
+                        "focused": true
+                    }],
+                    "focused_tab_id": "tab-1",
+                    "actions": [{
+                        "action_id": "action-1",
+                        "idempotency_key": "idempotency-1",
+                        "actor_id": "agent-1",
+                        "runtime_generation": 1,
+                        "mode": "browser",
+                        "kind": "click",
+                        "targets": [{
+                            "kind": "browser_tab",
+                            "id": "tab-1"
+                        }],
+                        "state": "running"
+                    }],
+                    "input_ownership": [{
+                        "target": {
+                            "kind": "browser_tab",
+                            "id": "tab-1"
+                        },
+                        "actor_id": "agent-1"
+                    }],
                     "event_cursor": 0
                 }
             }
