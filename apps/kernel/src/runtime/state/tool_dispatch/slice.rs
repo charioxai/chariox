@@ -4,6 +4,8 @@ use wait_timeout::ChildExt;
 use crate::error::DaemonError;
 use crate::runtime::state::KernelRuntimeState;
 
+mod controller_browser;
+mod controller_browser_projection;
 mod slice_browser;
 use slice_browser::*;
 
@@ -144,6 +146,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_paste_secret_to_slice",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_paste_secret_to_slice_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let status_output =
                     run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 let browser_status = slice_browser_json(&status_output)?;
@@ -212,6 +224,11 @@ impl KernelRuntimeState {
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
             }
             crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_status_tool_result(provider_run, &slice_id, agent_id)
+                        .await;
+                }
                 let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
@@ -223,6 +240,17 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_find",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_find_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            &args.query,
+                            args.kind.as_deref().unwrap_or("any"),
+                        )
+                        .await;
+                }
                 let output = run_slice_screen_command(vec![
                     "browser-find".to_string(),
                     args.query,
@@ -239,6 +267,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_fill",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_fill_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let selector = required_browser_selector(
                     args.selector.as_deref(),
                     args.field_id.as_deref(),
@@ -257,6 +295,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_click",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_click_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let selector = required_browser_selector(
                     args.selector.as_deref(),
                     args.field_id.as_deref(),
@@ -274,6 +322,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_submit",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_submit_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let mut command_args = vec!["browser-submit".to_string()];
                 if let Some(selector) =
                     browser_selector(args.selector.as_deref(), args.field_id.as_deref())
@@ -291,6 +349,16 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_dialog",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_dialog_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            args,
+                        )
+                        .await;
+                }
                 let mut command_args = vec!["browser-dialog".to_string(), args.action];
                 if let Some(prompt_text) = args.prompt_text {
                     command_args.push(prompt_text);
@@ -299,6 +367,11 @@ impl KernelRuntimeState {
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_text_tool_result(provider_run, &slice_id, agent_id)
+                        .await;
+                }
                 let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
                 payload["text"] = serde_json::Value::String(output.stdout.clone());
@@ -315,6 +388,17 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_text",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
+                if self.browser_controller_process_enabled() {
+                    return self
+                        .controller_browser_wait_for_text_tool_result(
+                            provider_run,
+                            &slice_id,
+                            agent_id,
+                            &args.text,
+                            args.timeout_ms,
+                        )
+                        .await;
+                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-text".to_string(),
                     args.text,

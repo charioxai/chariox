@@ -39,6 +39,75 @@ impl KernelRuntimeState {
             })
     }
 
+    pub(crate) async fn finish_room_environment_controller_start(
+        &self,
+        session_id: &str,
+        operation: &'static str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        if !self.browser_controller_process_enabled() {
+            return self
+                .room_environment_snapshot(session_id)
+                .map_err(|error| environment_runtime_error(operation, error));
+        }
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponentHealthState::Starting,
+            None,
+        )
+        .map_err(|error| environment_runtime_error(operation, error))?;
+        if let Err(error) = self
+            .ensure_browser_controller_process_started(session_id)
+            .await
+        {
+            let _ = self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::BrowserController,
+                EnvironmentComponentHealthState::Unavailable,
+                Some("controller_start_failed"),
+            );
+            let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+            return Err(error);
+        }
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponentHealthState::Ready,
+            None,
+        )
+        .map_err(|error| environment_runtime_error(operation, error))?;
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::Browser,
+            EnvironmentComponentHealthState::Starting,
+            None,
+        )
+        .map_err(|error| environment_runtime_error(operation, error))?;
+        match self
+            .reconcile_browser_controller_environment(session_id)
+            .await
+        {
+            Ok(_) => self
+                .update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::Browser,
+                    EnvironmentComponentHealthState::Ready,
+                    None,
+                )
+                .map_err(|error| environment_runtime_error(operation, error)),
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::Browser,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("browser_reconcile_failed"),
+                );
+                let _ = self.transition_room_environment(session_id, EnvironmentLifecycle::Failed);
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) async fn reconcile_browser_controller_environment(
         &self,
         session_id: &str,

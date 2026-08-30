@@ -395,7 +395,7 @@ pub fn credential_runtime_tool_specs() -> Vec<RuntimeToolSpec> {
                 "required": ["credential_id"],
                 "properties": {
                     "credential_id": {"type": "string"},
-                    "submit": {"type": "boolean", "description": "Press Enter after pasting. Defaults to false."},
+                    "submit": {"type": "boolean", "description": "Submit the containing browser form after filling. Defaults to false."},
                     "expected_host": {"type": "string", "description": "Optional expected current browser host. The paste fails before secret resolution if the browser is on a different host."},
                     "expected_url": {"type": "string", "description": "Optional expected current browser URL prefix. The paste fails before secret resolution if the browser URL does not start with this value."},
                     "selector": {"type": "string", "description": "Optional CSS selector for the intended fillable field."},

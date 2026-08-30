@@ -8,13 +8,18 @@ pub(crate) const MAX_BROWSER_ACTION_TIMEOUT_MS: u64 = 5_000;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum BrowserLocatorAction {
     Click,
-    Fill { text: String, append: bool },
+    Fill {
+        text: String,
+        append: bool,
+        submit: bool,
+    },
+    Submit,
 }
 
 impl BrowserLocatorAction {
     pub(crate) fn validate(&self) -> Result<(), String> {
         match self {
-            Self::Click => Ok(()),
+            Self::Click | Self::Submit => Ok(()),
             Self::Fill { text, .. } if text.len() <= MAX_FILL_TEXT_BYTES => Ok(()),
             Self::Fill { .. } => Err(format!(
                 "browser fill text exceeds {MAX_FILL_TEXT_BYTES} UTF-8 bytes"
@@ -26,17 +31,24 @@ impl BrowserLocatorAction {
         match self {
             Self::Click => "click",
             Self::Fill { .. } => "fill",
+            Self::Submit => "submit",
         }
     }
 
     pub(crate) fn controller_value(&self) -> serde_json::Value {
         match self {
             Self::Click => serde_json::json!({ "kind": "click" }),
-            Self::Fill { text, append } => serde_json::json!({
+            Self::Fill {
+                text,
+                append,
+                submit,
+            } => serde_json::json!({
                 "kind": "fill",
                 "text": text,
                 "append": append,
+                "submit": submit,
             }),
+            Self::Submit => serde_json::json!({ "kind": "submit" }),
         }
     }
 }
@@ -224,6 +236,7 @@ mod tests {
         assert!(BrowserLocatorAction::Fill {
             text: "😀".repeat(20_000),
             append: false,
+            submit: false,
         }
         .validate()
         .is_err());

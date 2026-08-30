@@ -93,7 +93,11 @@ function normalizeAction(action) {
       kind: "fill",
       text: action.text,
       append: action.append === true,
+      submit: action.submit === true,
     };
+  }
+  if (action?.kind === "submit") {
+    return { kind: "submit" };
   }
   throw invalidAction(`unsupported browser action ${JSON.stringify(action?.kind ?? null)}`);
 }
@@ -299,13 +303,45 @@ async function executeAction(
       dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y),
     };
   }
+  if (action.kind === "submit") {
+    await submitNearestForm(connection, sessionId, objectId);
+    return { dialogOpened: false };
+  }
   await focusElement(connection, sessionId, objectId, !action.append);
   if (action.text) {
     await connection.send("Input.insertText", { text: action.text }, sessionId);
   } else if (!action.append) {
     await dispatchBackspace(connection, sessionId);
   }
+  if (action.submit) {
+    await submitNearestForm(connection, sessionId, objectId);
+  }
   return { dialogOpened: false };
+}
+
+async function submitNearestForm(connection, sessionId, objectId) {
+  const response = await connection.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      functionDeclaration: `function() {
+        const form = this.form || this.closest?.("form");
+        if (!form) return { ok: false, reason: "form_not_found" };
+        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        else form.submit();
+        return { ok: true };
+      }`,
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
+    throw new BrowserActionError(
+      "browser_submit_failed",
+      "browser element does not belong to a submittable form",
+    );
+  }
 }
 
 async function dispatchClick(connection, sessionId, x, y) {

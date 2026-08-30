@@ -77,6 +77,7 @@ impl SessionRuntimeStore {
         };
         let result = match result {
             Ok(_) => self
+                .state
                 .finish_room_environment_controller_start(&request.session_id, "environment.start")
                 .await
                 .and_then(|_| {
@@ -126,94 +127,13 @@ impl SessionRuntimeStore {
             .map_err(|error| room_environment_control_error("environment.retry", error));
         let result = match result {
             Ok(_) => self
+                .state
                 .finish_room_environment_controller_start(&request.session_id, "environment.retry")
                 .await
                 .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
             Err(error) => Err(error),
         };
         (result, None)
-    }
-
-    async fn finish_room_environment_controller_start(
-        &self,
-        session_id: &str,
-        operation: &'static str,
-    ) -> Result<crate::session::RoomEnvironmentSnapshot, DaemonError> {
-        if !self.state.browser_controller_process_enabled() {
-            return self
-                .state
-                .room_environment_snapshot(session_id)
-                .map_err(|error| room_environment_control_error(operation, error));
-        }
-        self.state
-            .update_room_environment_component_health(
-                session_id,
-                crate::session::EnvironmentComponent::BrowserController,
-                crate::session::EnvironmentComponentHealthState::Starting,
-                None,
-            )
-            .map_err(|error| room_environment_control_error(operation, error))?;
-        if let Err(error) = self
-            .state
-            .ensure_browser_controller_process_started(session_id)
-            .await
-        {
-            let _ = self.state.update_room_environment_component_health(
-                session_id,
-                crate::session::EnvironmentComponent::BrowserController,
-                crate::session::EnvironmentComponentHealthState::Unavailable,
-                Some("controller_start_failed"),
-            );
-            let _ = self.state.transition_room_environment(
-                session_id,
-                crate::session::EnvironmentLifecycle::Failed,
-            );
-            return Err(error);
-        }
-        self.state
-            .update_room_environment_component_health(
-                session_id,
-                crate::session::EnvironmentComponent::BrowserController,
-                crate::session::EnvironmentComponentHealthState::Ready,
-                None,
-            )
-            .map_err(|error| room_environment_control_error(operation, error))?;
-        self.state
-            .update_room_environment_component_health(
-                session_id,
-                crate::session::EnvironmentComponent::Browser,
-                crate::session::EnvironmentComponentHealthState::Starting,
-                None,
-            )
-            .map_err(|error| room_environment_control_error(operation, error))?;
-        match self
-            .state
-            .reconcile_browser_controller_environment(session_id)
-            .await
-        {
-            Ok(_) => self
-                .state
-                .update_room_environment_component_health(
-                    session_id,
-                    crate::session::EnvironmentComponent::Browser,
-                    crate::session::EnvironmentComponentHealthState::Ready,
-                    None,
-                )
-                .map_err(|error| room_environment_control_error(operation, error)),
-            Err(error) => {
-                let _ = self.state.update_room_environment_component_health(
-                    session_id,
-                    crate::session::EnvironmentComponent::Browser,
-                    crate::session::EnvironmentComponentHealthState::Unavailable,
-                    Some("browser_reconcile_failed"),
-                );
-                let _ = self.state.transition_room_environment(
-                    session_id,
-                    crate::session::EnvironmentLifecycle::Failed,
-                );
-                Err(error)
-            }
-        }
     }
 
     pub(super) async fn update_room_environment_viewport(

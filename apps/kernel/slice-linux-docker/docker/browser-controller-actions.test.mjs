@@ -75,6 +75,56 @@ test("fill auto-waits, replaces existing text, and inserts through native input"
   );
 });
 
+test("submit auto-waits and submits the nearest form through the resolved element", async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+
+  const result = await performBrowserAction({
+    connection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    nodeRef: "backend:104",
+    action: { kind: "submit" },
+    timeoutMs: 500,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.action_kind, "submit");
+  assert.ok(connection.calls.some(
+    (call) =>
+      call.method === "Runtime.callFunctionOn" &&
+      call.params.functionDeclaration.includes("requestSubmit"),
+  ));
+});
+
+test("fill can atomically submit the same resolved form", async () => {
+  const connection = new FakeActionConnection([
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+    { state: "ready", x: 40, y: 20, width: 200, height: 24, editable: true },
+  ]);
+
+  const result = await performBrowserAction({
+    connection,
+    sessionId: "session-a",
+    targetId: "target-a",
+    documentId: "loader-a",
+    nodeRef: "backend:104",
+    action: { kind: "fill", text: "secret", append: false, submit: true },
+    timeoutMs: 500,
+    sleep: async () => {},
+  });
+
+  assert.equal(result.action_kind, "fill");
+  assert.ok(connection.calls.some(
+    (call) =>
+      call.method === "Runtime.callFunctionOn" &&
+      call.params.functionDeclaration.includes("requestSubmit"),
+  ));
+});
+
 for (const dialogEventType of ["mousePressed", "mouseReleased"]) {
   test(`click returns when ${dialogEventType} opens a dialog without waiting for its blocked response`, async () => {
     const connection = new FakeActionConnection([
