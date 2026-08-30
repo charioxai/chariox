@@ -143,6 +143,83 @@ impl KernelRuntimeState {
             })
     }
 
+    pub(crate) async fn perform_browser_environment_locator_action(
+        &self,
+        session_id: &str,
+        element_ref: &str,
+        action: crate::runtime::browser_controller_action::BrowserLocatorAction,
+        timeout_ms: u64,
+    ) -> Result<crate::runtime::browser_controller_action::RoomBrowserActionResult, DaemonError>
+    {
+        action
+            .validate()
+            .and_then(|_| {
+                crate::runtime::browser_controller_action::validate_browser_action_timeout(
+                    timeout_ms,
+                )
+            })
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.action",
+                message,
+            })?;
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.action", error))?;
+        let element = self
+            .resolve_room_environment_element_reference(session_id, element_ref)
+            .map_err(|error| environment_runtime_error("browser_controller.action", error))?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, &element.tab_id)
+            .map_err(|error| environment_runtime_error("browser_controller.action", error))?;
+        if element.runtime_generation != environment.runtime_generation
+            || element.document_revision != binding.document_revision
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.action",
+                message: "browser element reference became stale before dispatch".to_string(),
+            });
+        }
+
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let target_id = binding.runtime_target_id.clone();
+        let document_id = binding.document_id.clone();
+        let controller_node_ref = element.controller_node_ref.clone();
+        let controller_action = action.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            processes.perform_browser_action(
+                &owned_session_id,
+                &target_id,
+                &document_id,
+                &controller_node_ref,
+                &controller_action,
+                timeout_ms,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.action",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.action",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.action",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+
+        Ok(result.into_room_result(
+            session_id.to_string(),
+            environment.environment_id,
+            environment.runtime_generation,
+            element.tab_id,
+            element.document_revision,
+            element_ref.to_string(),
+        ))
+    }
+
     pub(crate) async fn stop_browser_controller_process(
         &self,
         session_id: &str,

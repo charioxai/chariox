@@ -97,6 +97,7 @@ fn linux_docker_slice_support_refresh_includes_runtime_dependencies() {
         "start-providers.sh",
         "slice-screen.sh",
         "browser-cdp.mjs",
+        "browser-controller-actions.mjs",
         "browser-controller-cdp.mjs",
         "browser-controller-snapshot.mjs",
         "browser-controller.mjs",

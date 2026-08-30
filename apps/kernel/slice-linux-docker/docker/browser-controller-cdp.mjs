@@ -2,6 +2,10 @@ import {
   BrowserSnapshotError,
   captureBrowserSnapshot,
 } from "./browser-controller-snapshot.mjs";
+import {
+  BrowserActionError,
+  performBrowserAction,
+} from "./browser-controller-actions.mjs";
 
 const DEFAULT_DEBUGGER_ENDPOINT = "http://127.0.0.1:9222";
 const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
@@ -173,6 +177,41 @@ export class BrowserCdpClient {
           this.snapshotStateByTarget.delete(targetId);
         }
       }
+      throw normalizeControllerError(error);
+    }
+  }
+
+  async performAction(rawRequest) {
+    const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
+    const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
+    const connection = await this.ensureConnection();
+    const { targetInfos = [] } = await connection.send("Target.getTargets");
+    const target = targetInfos.find(
+      (candidate) =>
+        candidate?.type === "page" && candidate.targetId === targetId,
+    );
+    if (!target) {
+      throw new BrowserControllerError(
+        "browser_target_not_found",
+        `browser target ${JSON.stringify(targetId)} is not available`,
+      );
+    }
+    const sessionId = await this.ensureTargetSession(connection, targetId);
+    try {
+      const result = await performBrowserAction({
+        connection,
+        sessionId,
+        targetId,
+        documentId,
+        nodeRef: rawRequest?.node_ref,
+        action: rawRequest?.action,
+        timeoutMs: rawRequest?.timeout_ms,
+      });
+      return {
+        browser_generation: this.browserGeneration,
+        ...result,
+      };
+    } catch (error) {
       throw normalizeControllerError(error);
     }
   }
@@ -445,6 +484,9 @@ function normalizeControllerError(error) {
     return error;
   }
   if (error instanceof BrowserSnapshotError) {
+    return new BrowserControllerError(error.code, error.message);
+  }
+  if (error instanceof BrowserActionError) {
     return new BrowserControllerError(error.code, error.message);
   }
   return new BrowserControllerError(

@@ -34,6 +34,12 @@ export async function handleBrowserControllerRequest(
         await browser.snapshot(request.params),
       );
     }
+    if (request.method === "browser.action") {
+      return successResponse(
+        request.id,
+        await browser.performAction(request.params),
+      );
+    }
     if (request.method === "shutdown") {
       await browser.close();
       return successResponse(request.id, {

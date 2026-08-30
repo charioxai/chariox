@@ -259,6 +259,8 @@ refresh_slice_support_files() {
     || log "screen script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" \
+    || log "browser controller actions module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-cdp.mjs" \
     || log "browser controller CDP module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-snapshot.mjs" \
@@ -269,7 +271,7 @@ refresh_slice_support_files() {
     || log "provider bridge overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" \
     || log "screen validator overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-snapshot.mjs /opt/chariox-slice/browser-controller.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-snapshot.mjs /opt/chariox-slice/browser-controller.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 

@@ -37,6 +37,10 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
       calls.push({ method: "snapshot", request });
       return { target_id: request.target_id, document_id: request.document_id };
     },
+    performAction: async (request) => {
+      calls.push({ method: "action", request });
+      return { action_kind: request.action.kind };
+    },
     close: async () => calls.push({ method: "close" }),
   };
   const viewport = {
@@ -59,8 +63,21 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     },
     { browser },
   );
+  const action = await handleBrowserControllerRequest(
+    {
+      id: 3,
+      method: "browser.action",
+      params: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        node_ref: "backend:103",
+        action: { kind: "click" },
+      },
+    },
+    { browser },
+  );
   const shutdown = await handleBrowserControllerRequest(
-    { id: 3, method: "shutdown" },
+    { id: 4, method: "shutdown" },
     { browser },
   );
 
@@ -70,12 +87,22 @@ test("controller delegates browser observations and closes CDP on shutdown", asy
     target_id: "target-a",
     document_id: "loader-a",
   });
+  assert.deepEqual(action.result, { action_kind: "click" });
   assert.equal(shutdown.ok, true);
   assert.deepEqual(calls, [
     { method: "reconcile", viewport },
     {
       method: "snapshot",
       request: { target_id: "target-a", document_id: "loader-a" },
+    },
+    {
+      method: "action",
+      request: {
+        target_id: "target-a",
+        document_id: "loader-a",
+        node_ref: "backend:103",
+        action: { kind: "click" },
+      },
     },
     { method: "close" },
   ]);

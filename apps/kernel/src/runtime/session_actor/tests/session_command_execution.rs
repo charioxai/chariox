@@ -39,6 +39,10 @@ while IFS= read -r request; do
       printf 'snapshot\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"button","name":"Save","description":"","value":"","ignored":false,"disabled":false,"focused":true}],"dom_nodes":[{"node_ref":"backend:103","parent_ref":"backend:102","node_type":1,"node_name":"BUTTON","text":"","attributes":{"id":"save"},"bounds":{"x":10,"y":20,"width":100,"height":30}}]}}\n' "$id"
       ;;
+    *'"method":"browser.action"'*)
+      printf 'action\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action_kind":"click","attempts":2,"elapsed_ms":50}}\n' "$id"
+      ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
       printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"
@@ -191,6 +195,27 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     assert_eq!(resolved.runtime_generation, 1);
     assert_eq!(resolved.document_revision, 1);
     assert_eq!(resolved.controller_node_ref, "backend:103");
+    let action_result = validation_state
+        .perform_browser_environment_locator_action(
+            &session_id,
+            &first_snapshot.dom_nodes[0].element_ref,
+            crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+            500,
+        )
+        .await
+        .expect("opaque element reference should drive a locator action");
+    assert_eq!(action_result.session_id, session_id);
+    assert_eq!(action_result.environment_id, environment_id);
+    assert_eq!(action_result.runtime_generation, 1);
+    assert_eq!(action_result.tab_id, "tab-1");
+    assert_eq!(action_result.document_revision, 1);
+    assert_eq!(
+        action_result.element_ref,
+        first_snapshot.dom_nodes[0].element_ref
+    );
+    assert_eq!(action_result.action_kind, "click");
+    assert_eq!(action_result.attempts, 2);
+    assert_eq!(action_result.elapsed_ms, 50);
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
@@ -259,7 +284,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     ));
     assert_eq!(
         std::fs::read_to_string(&tool.log).expect("read controller commands"),
-        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
     );
 }
 
