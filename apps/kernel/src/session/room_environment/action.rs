@@ -1,0 +1,162 @@
+use std::collections::BTreeSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentMode {
+    Browser,
+    Computer,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum InputTarget {
+    Desktop,
+    BrowserTab(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentActionState {
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvironmentActionTerminal {
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+impl From<EnvironmentActionTerminal> for EnvironmentActionState {
+    fn from(terminal: EnvironmentActionTerminal) -> Self {
+        match terminal {
+            EnvironmentActionTerminal::Completed => Self::Completed,
+            EnvironmentActionTerminal::Failed => Self::Failed,
+            EnvironmentActionTerminal::Cancelled => Self::Cancelled,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentAction {
+    pub action_id: String,
+    pub idempotency_key: Option<String>,
+    pub actor_id: String,
+    pub runtime_generation: u64,
+    pub mode: EnvironmentMode,
+    pub kind: String,
+    pub targets: Vec<InputTarget>,
+    pub state: EnvironmentActionState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvironmentActionRequest {
+    pub(crate) idempotency_key: Option<String>,
+    pub(crate) actor_id: String,
+    pub(crate) runtime_generation: u64,
+    pub(crate) mode: EnvironmentMode,
+    pub(crate) kind: String,
+    pub(crate) mutates: bool,
+    pub(crate) targets: Vec<InputTarget>,
+    pub(crate) tab_preconditions: Vec<(String, u64)>,
+}
+
+impl EnvironmentActionRequest {
+    pub fn browser_observation(
+        actor_id: impl Into<String>,
+        runtime_generation: u64,
+        kind: impl Into<String>,
+        tab_id: impl Into<String>,
+        document_revision: u64,
+    ) -> Self {
+        let tab_id = tab_id.into();
+        Self {
+            idempotency_key: None,
+            actor_id: actor_id.into(),
+            runtime_generation,
+            mode: EnvironmentMode::Browser,
+            kind: kind.into(),
+            mutates: false,
+            targets: vec![InputTarget::BrowserTab(tab_id.clone())],
+            tab_preconditions: vec![(tab_id, document_revision)],
+        }
+    }
+
+    pub fn browser_mutation(
+        actor_id: impl Into<String>,
+        runtime_generation: u64,
+        kind: impl Into<String>,
+        tab_id: impl Into<String>,
+        document_revision: u64,
+    ) -> Self {
+        let mut request = Self::browser_observation(
+            actor_id,
+            runtime_generation,
+            kind,
+            tab_id,
+            document_revision,
+        );
+        request.mutates = true;
+        request
+    }
+
+    pub fn computer_mutation(
+        actor_id: impl Into<String>,
+        runtime_generation: u64,
+        kind: impl Into<String>,
+        focused_tab_id: Option<&str>,
+    ) -> Self {
+        let mut targets = BTreeSet::from([InputTarget::Desktop]);
+        if let Some(tab_id) = focused_tab_id {
+            targets.insert(InputTarget::BrowserTab(tab_id.to_string()));
+        }
+        Self {
+            idempotency_key: None,
+            actor_id: actor_id.into(),
+            runtime_generation,
+            mode: EnvironmentMode::Computer,
+            kind: kind.into(),
+            mutates: true,
+            targets: targets.into_iter().collect(),
+            tab_preconditions: Vec::new(),
+        }
+    }
+
+    pub fn with_idempotency_key(mut self, idempotency_key: impl Into<String>) -> Self {
+        self.idempotency_key = Some(idempotency_key.into());
+        self
+    }
+
+    pub(crate) fn matches_idempotent_operation(&self, other: &Self) -> bool {
+        self.idempotency_key == other.idempotency_key
+            && self.actor_id == other.actor_id
+            && self.mode == other.mode
+            && self.kind == other.kind
+            && self.mutates == other.mutates
+            && self.targets == other.targets
+            && self
+                .tab_preconditions
+                .iter()
+                .map(|(tab_id, _)| tab_id)
+                .eq(other.tab_preconditions.iter().map(|(tab_id, _)| tab_id))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ActionAdmission {
+    Accepted {
+        action_id: String,
+    },
+    Existing {
+        action_id: String,
+        state: EnvironmentActionState,
+    },
+    RejectedBusy {
+        target: InputTarget,
+        active_action_id: String,
+    },
+    RejectedTakeover {
+        target: InputTarget,
+        human_actor_id: String,
+    },
+}
