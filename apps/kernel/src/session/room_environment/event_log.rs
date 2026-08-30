@@ -1,7 +1,15 @@
 use std::collections::VecDeque;
 
-use super::event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
-use super::model::{EnvironmentError, RoomEnvironmentSnapshot};
+use super::event::{EnvironmentEvent, EnvironmentEventKind};
+use super::model::EnvironmentError;
+
+pub(crate) enum EnvironmentReplayPlan {
+    Events {
+        events: Vec<EnvironmentEvent>,
+        next_cursor: u64,
+    },
+    SnapshotRequired,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct EnvironmentEventLog {
@@ -44,11 +52,7 @@ impl EnvironmentEventLog {
         }
     }
 
-    pub(crate) fn replay(
-        &self,
-        cursor: u64,
-        snapshot: RoomEnvironmentSnapshot,
-    ) -> EnvironmentReplay {
+    pub(crate) fn replay(&self, cursor: u64) -> EnvironmentReplayPlan {
         let current_cursor = self.cursor();
         let oldest_event_id = self
             .events
@@ -56,9 +60,9 @@ impl EnvironmentEventLog {
             .map(|event| event.event_id)
             .unwrap_or(self.next_event_id);
         if cursor > current_cursor || cursor.saturating_add(1) < oldest_event_id {
-            return EnvironmentReplay::SnapshotRequired { snapshot };
+            return EnvironmentReplayPlan::SnapshotRequired;
         }
-        EnvironmentReplay::Events {
+        EnvironmentReplayPlan::Events {
             events: self
                 .events
                 .iter()

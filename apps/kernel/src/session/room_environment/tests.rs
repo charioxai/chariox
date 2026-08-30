@@ -11,9 +11,7 @@ fn lifecycle_preserves_identity_and_reset_invalidates_runtime_handles() {
     );
     assert_eq!(environment.snapshot().runtime_generation, 1);
 
-    environment
-        .transition_to(EnvironmentLifecycle::Starting)
-        .unwrap();
+    environment.start_runtime().unwrap();
     environment
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();
@@ -50,6 +48,13 @@ fn lifecycle_rejects_unsafe_transitions_and_invalid_viewports() {
         Err(EnvironmentError::InvalidLifecycleTransition {
             from: EnvironmentLifecycle::Stopped,
             to: EnvironmentLifecycle::Ready,
+        })
+    );
+    assert_eq!(
+        environment.transition_to(EnvironmentLifecycle::Starting),
+        Err(EnvironmentError::InvalidLifecycleTransition {
+            from: EnvironmentLifecycle::Stopped,
+            to: EnvironmentLifecycle::Starting,
         })
     );
 }
@@ -356,9 +361,7 @@ fn reconnect_replays_ordered_events_or_requires_a_snapshot_after_a_gap() {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment =
         RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 3).unwrap();
-    environment
-        .transition_to(EnvironmentLifecycle::Starting)
-        .unwrap();
+    environment.start_runtime().unwrap();
     environment
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();
@@ -507,6 +510,118 @@ fn terminal_action_state_is_immutable() {
 }
 
 #[test]
+fn restarting_a_stopped_runtime_invalidates_old_handles() {
+    let mut environment = ready_environment();
+    environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Stopping)
+        .unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Stopped)
+        .unwrap();
+
+    environment.start_runtime().unwrap();
+    assert_eq!(environment.snapshot().runtime_generation, 2);
+    assert_eq!(
+        environment.snapshot().lifecycle,
+        EnvironmentLifecycle::Starting
+    );
+    assert!(environment.snapshot().tabs.is_empty());
+}
+
+#[test]
+fn terminal_action_history_is_bounded_but_active_actions_are_retained() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 2).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+
+    let mut completed_ids = Vec::new();
+    for sequence in 1..=3 {
+        let action_id = accepted_action_id(
+            environment
+                .submit_action(
+                    EnvironmentActionRequest::browser_mutation(
+                        "agent-1",
+                        1,
+                        format!("click-{sequence}"),
+                        &tab_id,
+                        1,
+                    )
+                    .with_idempotency_key(format!("click-{sequence}")),
+                )
+                .unwrap(),
+        );
+        environment
+            .finish_action(&action_id, EnvironmentActionTerminal::Completed)
+            .unwrap();
+        completed_ids.push(action_id);
+    }
+    let active_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_observation(
+                "agent-1", 1, "snapshot", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+
+    let retained_ids: Vec<_> = environment
+        .snapshot()
+        .actions
+        .into_iter()
+        .map(|action| action.action_id)
+        .collect();
+    assert_eq!(
+        retained_ids,
+        vec![
+            completed_ids[1].clone(),
+            completed_ids[2].clone(),
+            active_id,
+        ]
+    );
+}
+
+#[test]
+fn idempotency_survives_generation_change_without_repeating_work() {
+    let mut environment = ready_environment_with_agent();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let request = EnvironmentActionRequest::browser_mutation("agent-1", 1, "send", &tab_id, 1)
+        .with_idempotency_key("send-message-1");
+    let action_id = accepted_action_id(environment.submit_action(request).unwrap());
+    environment.invalidate_runtime_after_process_loss().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+
+    let retry = EnvironmentActionRequest::browser_mutation("agent-1", 2, "send", &tab_id, 1)
+        .with_idempotency_key("send-message-1");
+    assert_eq!(
+        environment.submit_action(retry).unwrap(),
+        ActionAdmission::Existing {
+            action_id,
+            state: EnvironmentActionState::Failed,
+        }
+    );
+}
+
+#[test]
 fn actor_reconnect_preserves_identity_and_cannot_change_actor_kind() {
     let mut environment = ready_environment();
     environment
@@ -606,9 +721,7 @@ fn ready_environment_with_agent() -> RoomEnvironment {
 fn ready_environment() -> RoomEnvironment {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
-    environment
-        .transition_to(EnvironmentLifecycle::Starting)
-        .unwrap();
+    environment.start_runtime().unwrap();
     environment
         .transition_to(EnvironmentLifecycle::Ready)
         .unwrap();

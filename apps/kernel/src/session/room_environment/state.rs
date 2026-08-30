@@ -6,7 +6,7 @@ use super::action::{
 };
 use super::action_ledger::EnvironmentActionLedger;
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
-use super::event_log::EnvironmentEventLog;
+use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
@@ -20,6 +20,7 @@ pub struct RoomEnvironment {
     session_id: String,
     environment_id: String,
     runtime_generation: u64,
+    has_started: bool,
     lifecycle: EnvironmentLifecycle,
     viewport: CanonicalViewport,
     health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
@@ -48,12 +49,13 @@ impl RoomEnvironment {
             session_id: session_id.into(),
             environment_id: environment_id.into(),
             runtime_generation: 1,
+            has_started: false,
             lifecycle: EnvironmentLifecycle::Stopped,
             viewport,
             health: default_component_health(),
             actors: BTreeMap::new(),
             tabs: TabRegistry::new(),
-            action_ledger: EnvironmentActionLedger::new(),
+            action_ledger: EnvironmentActionLedger::new(event_capacity),
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -92,6 +94,30 @@ impl RoomEnvironment {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
         self.emit(EnvironmentEventKind::LifecycleChanged { lifecycle: next });
+        Ok(())
+    }
+
+    pub fn start_runtime(&mut self) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Stopped
+                | EnvironmentLifecycle::Failed
+                | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::InvalidLifecycleTransition {
+                from: self.lifecycle,
+                to: EnvironmentLifecycle::Starting,
+            });
+        }
+        if self.has_started {
+            self.invalidate_runtime();
+        } else {
+            self.has_started = true;
+            self.lifecycle = EnvironmentLifecycle::Starting;
+            self.emit(EnvironmentEventKind::LifecycleChanged {
+                lifecycle: EnvironmentLifecycle::Starting,
+            });
+        }
         Ok(())
     }
 
@@ -290,7 +316,18 @@ impl RoomEnvironment {
     }
 
     pub fn events_after(&self, cursor: u64) -> EnvironmentReplay {
-        self.event_log.replay(cursor, self.snapshot())
+        match self.event_log.replay(cursor) {
+            EnvironmentReplayPlan::Events {
+                events,
+                next_cursor,
+            } => EnvironmentReplay::Events {
+                events,
+                next_cursor,
+            },
+            EnvironmentReplayPlan::SnapshotRequired => EnvironmentReplay::SnapshotRequired {
+                snapshot: self.snapshot(),
+            },
+        }
     }
 
     pub fn validate_tab_reference(
@@ -308,6 +345,7 @@ impl RoomEnvironment {
     }
 
     fn invalidate_runtime(&mut self) {
+        self.has_started = true;
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
@@ -353,16 +391,12 @@ fn allows_transition(from: EnvironmentLifecycle, to: EnvironmentLifecycle) -> bo
     use EnvironmentLifecycle::*;
     matches!(
         (from, to),
-        (Stopped, Starting)
-            | (Starting, Ready | Degraded | Failed | Stopping)
+        (Starting, Ready | Degraded | Failed | Stopping)
             | (Ready, Degraded | Saving | Restoring | Stopping | Failed)
-            | (
-                Degraded,
-                Starting | Ready | Saving | Restoring | Stopping | Failed
-            )
+            | (Degraded, Ready | Saving | Restoring | Stopping | Failed)
             | (Saving, Ready | Degraded | Stopping | Failed)
             | (Restoring, Ready | Degraded | Stopping | Failed)
             | (Stopping, Stopped | Failed)
-            | (Failed, Starting | Stopped)
+            | (Failed, Stopped)
     )
 }

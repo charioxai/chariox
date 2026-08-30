@@ -126,6 +126,16 @@ impl EnvironmentActionRequest {
         self.idempotency_key = Some(idempotency_key.into());
         self
     }
+
+    pub(crate) fn matches_idempotent_operation(&self, other: &Self) -> bool {
+        self.idempotency_key == other.idempotency_key
+            && self.actor_id == other.actor_id
+            && self.mode == other.mode
+            && self.kind == other.kind
+            && self.mutates == other.mutates
+            && self.targets == other.targets
+            && self.tab_preconditions == other.tab_preconditions
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

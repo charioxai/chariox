@@ -25,10 +25,11 @@ pub(crate) struct EnvironmentActionLedger {
     input_owners: BTreeMap<InputTarget, String>,
     pending_takeovers: BTreeMap<InputTarget, String>,
     next_sequence: u64,
+    terminal_capacity: usize,
 }
 
 impl EnvironmentActionLedger {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(terminal_capacity: usize) -> Self {
         Self {
             actions: BTreeMap::new(),
             requests: BTreeMap::new(),
@@ -38,6 +39,7 @@ impl EnvironmentActionLedger {
             input_owners: BTreeMap::new(),
             pending_takeovers: BTreeMap::new(),
             next_sequence: 1,
+            terminal_capacity,
         }
     }
 
@@ -84,7 +86,7 @@ impl EnvironmentActionLedger {
                     .requests
                     .get(action_id)
                     .expect("idempotency index must reference an action request");
-                if original != &request {
+                if !original.matches_idempotent_operation(&request) {
                     return Err(EnvironmentError::IdempotencyConflict {
                         idempotency_key: idempotency_key.clone(),
                     });
@@ -165,8 +167,8 @@ impl EnvironmentActionLedger {
             }
         }
         self.actions.insert(action_id.clone(), action);
-        self.requests.insert(action_id.clone(), accepted_request);
         if let Some(idempotency_key) = request.idempotency_key {
+            self.requests.insert(action_id.clone(), accepted_request);
             self.idempotency_actions
                 .insert(idempotency_key, action_id.clone());
         }
@@ -196,6 +198,7 @@ impl EnvironmentActionLedger {
         self.reservations
             .retain(|_, reserved_action_id| reserved_action_id != action_id);
         let ownership_changed = self.finalize_takeovers();
+        self.compact_terminal_actions();
         Ok(ActionFinishEffect {
             state,
             ownership_changed,
@@ -287,6 +290,7 @@ impl EnvironmentActionLedger {
                 action.state = EnvironmentActionState::Failed;
             }
         }
+        self.compact_terminal_actions();
         running_ids
     }
 
@@ -329,6 +333,31 @@ impl EnvironmentActionLedger {
             }
         }
         changed
+    }
+
+    fn compact_terminal_actions(&mut self) {
+        let terminal_ids: Vec<_> = self
+            .order
+            .iter()
+            .filter(|action_id| {
+                self.actions
+                    .get(*action_id)
+                    .is_some_and(|action| action.state != EnvironmentActionState::Running)
+            })
+            .cloned()
+            .collect();
+        let evict_count = terminal_ids.len().saturating_sub(self.terminal_capacity);
+        for action_id in terminal_ids.into_iter().take(evict_count) {
+            if let Some(action) = self.actions.remove(&action_id) {
+                if let Some(idempotency_key) = action.idempotency_key {
+                    if self.idempotency_actions.get(&idempotency_key) == Some(&action_id) {
+                        self.idempotency_actions.remove(&idempotency_key);
+                    }
+                }
+            }
+            self.requests.remove(&action_id);
+            self.order.retain(|candidate| candidate != &action_id);
+        }
     }
 }
 
