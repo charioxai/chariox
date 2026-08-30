@@ -565,6 +565,183 @@ Recommended direction:
 
 This does not require all provider adapters to use the same wire transport internally.
 
+## 4.1.2 Shared Room environment protocol direction
+
+This section defines the logical contract for the Room-owned browser and graphical Environment. It is a design contract, not part of local daemon protocol v268. Adding any request, response, event, or serialized field below requires the normal protocol version bump, snapshot update, minimum-client decision, and focused cross-boundary drill.
+
+The current `session_id` is the wire identity for the product Room until a deliberate migration introduces `room_id`. New code must not create both identities for the same runtime domain. `environment_id` identifies the default shared Environment within that Room.
+
+### Environment snapshot
+
+A full Environment snapshot carries at least:
+
+- `session_id`
+- `environment_id`
+- `runtime_generation`
+- lifecycle and health state
+- current saved-state generation when present
+- Browser Controller, browser, desktop, and streamer health
+- canonical viewport dimensions, scale, revision, and current owner
+- ordered Room-visible tabs and the focused Tab
+- present Actors and current input ownership
+- active and recently terminal Actions
+- snapshot event cursor
+
+Health details may name a failed managed process and a safe diagnostic code. They must not contain environment variables, command lines with credentials, browser data, page content, clipboard content, or provider payloads.
+
+### Tab and document identity
+
+A Tab projection carries:
+
+- `tab_id`
+- optional controller-local target metadata restricted to diagnostics
+- URL, title, lifecycle, and focus state
+- `document_revision`
+- last activity Actor and timestamp
+- structured observation availability
+
+An element reference is opaque to clients. Its validation scope includes `environment_id`, `runtime_generation`, `tab_id`, and `document_revision`. An action using a stale reference fails with `stale_element_reference` and returns enough metadata to request a fresh observation. It must not retarget by text, selector, index, or coordinates without a new explicit Action.
+
+### Actor and presence projection
+
+An Actor projection carries:
+
+- `actor_id`
+- kind, either `human` or `agent`
+- safe display label and stable presentation color
+- presence state
+- current observed mode when useful
+- owned input targets
+- active Action IDs
+
+Attachment identity and Actor identity are distinct. A human may reconnect through another Attachment and retain the same Actor identity. An agent may change provider runs without becoming another Actor. Presence never grants permission or input ownership.
+
+### Action envelope
+
+Every Browser and Computer Action uses one kernel-owned envelope:
+
+- `action_id`
+- optional idempotency key
+- `session_id`, `environment_id`, and `runtime_generation`
+- `actor_id`
+- mode, either `browser` or `computer`
+- Action kind and redacted arguments
+- target kind and target identity
+- optional `tab_id`, `document_revision`, or viewport revision precondition
+- queued, started, and terminal timestamps
+- state, one of `queued`, `running`, `completed`, `failed`, or `cancelled`
+- redacted outcome or structured failure
+
+Action acceptance validates Room membership, Environment generation, capability grant, target existence, preconditions, ownership, and queue capacity before execution. The kernel assigns order. Provider tool completion, a browser event, or a returned screenshot does not by itself prove Action completion; the Action ledger does.
+
+Vault-backed input carries a credential reference and expected-target policy in the Action envelope. The resolved value travels only through the existing scoped secret-delivery path to the approved local input target. Keyboard text, clipboard content, and resolved secret values are never copied into Action history.
+
+### Input targets and concurrency
+
+Input target kinds are:
+
+- `browser_tab`, identified by `tab_id`
+- `desktop`, identified by `environment_id`
+
+Observations do not reserve a mutation target. Their results carry the generation and revision observed so callers can detect staleness.
+
+A structured browser mutation reserves its Tab. A Computer mutation reserves the desktop. If that mutation can affect the focused browser Tab, the kernel also reserves that Tab. A browser mutation that opens, closes, or focuses Tabs reserves the desktop and every affected Tab. Other mutations on separate Tabs may proceed concurrently. The kernel rejects or queues an Action when its required target is reserved; clients never implement their own lock queue.
+
+The initial queue outcomes are:
+
+- `accepted`, with the Action already running
+- `queued`, with stable queue position or ordering metadata
+- `rejected_busy`, when policy does not queue the Action
+- `rejected_saturated`, when bounded queue capacity is reached
+- `rejected_takeover`, when a human owns the target
+
+Queue and reservation waits have bounded deadlines. Cancellation and process loss must release every target reservation.
+
+### Human takeover
+
+Takeover requests identify Actor, Environment, and input target. A successful response is not sent until the active agent Action has reached `cancelled`, `failed`, or `completed` and the target belongs to the human Actor.
+
+Takeover emits ordered Action and ownership events. Every attached client projects the same transition. A takeover request is idempotent for the same Actor and target. A conflicting human request follows Room permission policy rather than last-writer-wins behavior.
+
+Release is explicit. Disconnect may start a bounded expiry policy, but reconnect during that interval retains ownership. Expiry emits an ownership event and leaves the target unowned. It never assigns an agent automatically.
+
+### Viewport contract
+
+The canonical viewport carries:
+
+- CSS width and height
+- device scale factor
+- desktop pixel width and height
+- revision
+- owner Actor when a user input owner controls resize
+
+Clients submit viewport requests with the revision they observed. The kernel accepts one transition or rejects it as stale, unauthorized, unsupported, or unsafe. An accepted response is complete only when browser layout, desktop resolution, streamer dimensions, screenshot coordinates, and input coordinates agree on the new revision.
+
+Viewer-only scaling is local presentation state and does not change the canonical viewport.
+
+### Planned requests
+
+The smallest planned request set is:
+
+- `environment.state.get`
+- `environment.start`
+- `environment.stop`
+- `environment.retry`
+- `environment.viewport.update`
+- `environment.input.takeover`
+- `environment.input.release`
+- `environment.action.submit`
+- `environment.action.cancel`
+- `environment.history.list`
+
+Browser and Computer tools submit through `environment.action.submit`; they do not add provider-specific action request types. Existing public runtime MCP tool names may remain as adapters over this request.
+
+Slice save, restore, reset, and backup remain the existing slice lifecycle requests. Their Environment effects appear through Environment lifecycle and generation events instead of a parallel save authority.
+
+### Planned events
+
+The smallest planned pushed-event set is:
+
+- `environment_snapshot`
+- `environment_lifecycle_changed`
+- `environment_health_changed`
+- `environment_tabs_changed`
+- `environment_viewport_changed`
+- `environment_presence_changed`
+- `environment_input_ownership_changed`
+- `environment_action_changed`
+
+Each event carries `session_id`, `environment_id`, `runtime_generation`, and the normal monotonic kernel `event_id`. Structural deltas carry a base revision. A mismatched base revision or replay gap forces a fresh Environment snapshot.
+
+### Recovery and history
+
+Action history is kernel-owned and append-only. History entries use the Action envelope plus safe diagnostic and artifact references. Raw display frames, screenshots, DOM snapshots, network bodies, clipboard values, and secrets are not embedded in the ledger. Their bounded artifacts follow Room permissions and retention policy.
+
+After reconnect, a client resumes from its last kernel event cursor. Replay preserves Action order and terminal state. After a replay gap, the client discards optimistic Actions and applies one full snapshot. It must not resubmit an Action unless the kernel reports that the original idempotency key is unknown or retryable.
+
+Process recovery follows these rules:
+
+- completed Actions are never repeated
+- queued Actions remain ordered only when their preconditions and target generation still hold
+- a running Action without durable completion proof becomes failed or cancelled
+- stale element references fail and require rediscovery
+- controller or browser recovery must not create duplicate Tabs
+- streamer recovery does not change Environment, Tab, Action, or input ownership identity
+- worker or kernel recovery reconciles ownership before admitting new mutations
+
+### Compatibility policy
+
+Protocol v268 clients know slice display endpoints and one-shot browser/computer tools but do not know the shared Environment contract. During migration:
+
+- the kernel keeps the old tool names behind a compatibility adapter
+- compatibility calls still enter the kernel-owned Action path once it exists
+- an old client may observe the display but cannot claim human takeover or canonical viewport ownership
+- the kernel rejects unsafe concurrent legacy mutations instead of allowing split authority
+- unknown Environment events remain ignorable only when the client's behavior stays safe
+- a client that needs takeover, Action history, stable Tabs, or canonical viewport requires the new minimum protocol version
+
+No minimum version changes until a released client depends on the serialized contract.
+
 ## 4.2 Planned Command-Dispatch Surface
 
 The current local API baseline does not yet expose slash-command discovery/invocation, but the protocol should reserve room for it.
