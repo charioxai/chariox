@@ -13,7 +13,24 @@ pub(crate) struct BrowserControllerStructuredSnapshot {
     pub(crate) document_id: String,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<BrowserControllerAccessibilityNode>,
+    #[serde(default)]
+    pub(crate) dom_documents: Vec<BrowserControllerDomDocument>,
+    #[serde(default)]
+    pub(crate) shadow_roots: Vec<BrowserControllerShadowRoot>,
     pub(crate) dom_nodes: Vec<BrowserControllerDomNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct BrowserControllerDomDocument {
+    pub(crate) document_index: usize,
+    pub(crate) url: String,
+    pub(crate) owner_node_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub(crate) struct BrowserControllerShadowRoot {
+    pub(crate) node_ref: String,
+    pub(crate) shadow_root_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -58,7 +75,22 @@ pub(crate) struct RoomBrowserStructuredSnapshot {
     pub(crate) document_revision: u64,
     pub(crate) snapshot_revision: u64,
     pub(crate) accessibility_nodes: Vec<RoomBrowserAccessibilityNode>,
+    pub(crate) dom_documents: Vec<RoomBrowserDomDocument>,
+    pub(crate) shadow_roots: Vec<RoomBrowserShadowRoot>,
     pub(crate) dom_nodes: Vec<RoomBrowserDomNode>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoomBrowserDomDocument {
+    pub(crate) document_index: usize,
+    pub(crate) url: String,
+    pub(crate) owner_element_ref: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RoomBrowserShadowRoot {
+    pub(crate) element_ref: String,
+    pub(crate) shadow_root_type: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -103,7 +135,8 @@ impl BrowserControllerStructuredSnapshot {
             );
         }
         validate_accessibility_nodes(&self.accessibility_nodes)?;
-        validate_dom_nodes(&self.dom_nodes)
+        validate_dom_nodes(&self.dom_nodes)?;
+        validate_dom_surfaces(&self.dom_documents, &self.shadow_roots, &self.dom_nodes)
     }
 
     pub(crate) fn controller_node_refs(&self) -> BTreeSet<String> {
@@ -160,6 +193,28 @@ impl BrowserControllerStructuredSnapshot {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
+        let dom_documents = self
+            .dom_documents
+            .into_iter()
+            .map(|document| RoomBrowserDomDocument {
+                document_index: document.document_index,
+                url: document.url,
+                owner_element_ref: optional_reference(
+                    references,
+                    document.owner_node_ref.as_deref(),
+                ),
+            })
+            .collect();
+        let shadow_roots = self
+            .shadow_roots
+            .into_iter()
+            .map(|root| {
+                Ok(RoomBrowserShadowRoot {
+                    element_ref: required_reference(references, &root.node_ref)?.to_string(),
+                    shadow_root_type: root.shadow_root_type,
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         Ok(RoomBrowserStructuredSnapshot {
             session_id,
             environment_id,
@@ -168,6 +223,8 @@ impl BrowserControllerStructuredSnapshot {
             document_revision,
             snapshot_revision: self.snapshot_revision,
             accessibility_nodes,
+            dom_documents,
+            shadow_roots,
             dom_nodes,
         })
     }
@@ -271,6 +328,45 @@ fn validate_dom_nodes(nodes: &[BrowserControllerDomNode]) -> Result<(), String> 
     Ok(())
 }
 
+fn validate_dom_surfaces(
+    documents: &[BrowserControllerDomDocument],
+    shadow_roots: &[BrowserControllerShadowRoot],
+    nodes: &[BrowserControllerDomNode],
+) -> Result<(), String> {
+    if documents.len() > MAX_SNAPSHOT_NODES || shadow_roots.len() > MAX_SNAPSHOT_NODES {
+        return Err("browser controller DOM surface metadata exceeded its bound".to_string());
+    }
+    let node_refs = nodes
+        .iter()
+        .map(|node| node.node_ref.as_str())
+        .collect::<BTreeSet<_>>();
+    for (expected_index, document) in documents.iter().enumerate() {
+        if document.document_index != expected_index {
+            return Err("browser controller DOM documents are not ordered".to_string());
+        }
+        validate_bounded_string(&document.url)?;
+        if let Some(reference) = document.owner_node_ref.as_deref() {
+            validate_node_reference(reference)?;
+            if !node_refs.contains(reference) {
+                return Err("browser controller DOM document owner is missing".to_string());
+            }
+        }
+    }
+    for root in shadow_roots {
+        validate_node_reference(&root.node_ref)?;
+        if !node_refs.contains(root.node_ref.as_str()) {
+            return Err("browser controller shadow root node is missing".to_string());
+        }
+        if !matches!(
+            root.shadow_root_type.as_str(),
+            "open" | "closed" | "user-agent"
+        ) {
+            return Err("browser controller returned an invalid shadow root type".to_string());
+        }
+    }
+    Ok(())
+}
+
 fn validate_optional_reference(reference: Option<&str>) -> Result<(), String> {
     match reference {
         Some(reference) => validate_node_reference(reference),
@@ -323,6 +419,56 @@ mod tests {
             height: 10.0,
         });
         assert!(snapshot.validate("target-a", "loader-a").is_err());
+
+        let mut snapshot = valid_snapshot();
+        snapshot.shadow_roots.push(BrowserControllerShadowRoot {
+            node_ref: "backend:1".to_string(),
+            shadow_root_type: "invalid".to_string(),
+        });
+        assert!(snapshot.validate("target-a", "loader-a").is_err());
+    }
+
+    #[test]
+    fn frame_and_shadow_metadata_maps_only_to_opaque_element_references() {
+        let mut snapshot = valid_snapshot();
+        snapshot.dom_documents = vec![
+            BrowserControllerDomDocument {
+                document_index: 0,
+                url: "https://a.test".to_string(),
+                owner_node_ref: None,
+            },
+            BrowserControllerDomDocument {
+                document_index: 1,
+                url: "https://frame.test".to_string(),
+                owner_node_ref: Some("backend:1".to_string()),
+            },
+        ];
+        snapshot.shadow_roots = vec![BrowserControllerShadowRoot {
+            node_ref: "backend:1".to_string(),
+            shadow_root_type: "open".to_string(),
+        }];
+        snapshot
+            .validate("target-a", "loader-a")
+            .expect("surface metadata validates");
+        let room = snapshot
+            .into_room_snapshot(
+                "room-1".to_string(),
+                "environment-1".to_string(),
+                1,
+                "tab-1".to_string(),
+                1,
+                &BTreeMap::from([("backend:1".to_string(), "element-1".to_string())]),
+            )
+            .expect("surface metadata maps");
+
+        assert_eq!(
+            room.dom_documents[1].owner_element_ref.as_deref(),
+            Some("element-1")
+        );
+        assert_eq!(room.dom_documents[1].document_index, 1);
+        assert_eq!(room.dom_documents[1].url, "https://frame.test");
+        assert_eq!(room.shadow_roots[0].element_ref, "element-1");
+        assert_eq!(room.shadow_roots[0].shadow_root_type, "open");
     }
 
     fn valid_snapshot() -> BrowserControllerStructuredSnapshot {
@@ -332,6 +478,8 @@ mod tests {
             document_id: "loader-a".to_string(),
             snapshot_revision: 1,
             accessibility_nodes: Vec::new(),
+            dom_documents: Vec::new(),
+            shadow_roots: Vec::new(),
             dom_nodes: vec![BrowserControllerDomNode {
                 node_ref: "backend:1".to_string(),
                 parent_ref: None,

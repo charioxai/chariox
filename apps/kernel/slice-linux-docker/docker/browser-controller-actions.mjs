@@ -184,7 +184,9 @@ async function inspectActionability(connection, sessionId, objectId) {
 function actionabilityFunction() {
   if (!this.isConnected) return { state: "detached" };
   this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
-  const style = window.getComputedStyle(this);
+  const ownerDocument = this.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  const style = ownerWindow.getComputedStyle(this);
   const rect = this.getBoundingClientRect();
   if (
     style.display === "none" ||
@@ -203,11 +205,27 @@ function actionabilityFunction() {
   ) {
     return { state: "disabled" };
   }
-  const x = rect.left + rect.width / 2;
-  const y = rect.top + rect.height / 2;
-  const hitTarget = document.elementFromPoint(x, y);
+  const localX = rect.left + rect.width / 2;
+  const localY = rect.top + rect.height / 2;
+  let hitTarget = ownerDocument.elementFromPoint(localX, localY);
+  while (hitTarget?.shadowRoot?.elementFromPoint) {
+    const nestedTarget = hitTarget.shadowRoot.elementFromPoint(localX, localY);
+    if (!nestedTarget || nestedTarget === hitTarget) break;
+    hitTarget = nestedTarget;
+  }
   if (!hitTarget || (hitTarget !== this && !this.contains?.(hitTarget))) {
     return { state: "obscured" };
+  }
+  let x = localX;
+  let y = localY;
+  let currentWindow = ownerWindow;
+  while (currentWindow && currentWindow !== currentWindow.top) {
+    const frameElement = currentWindow.frameElement;
+    if (!frameElement) return { state: "frame_unavailable" };
+    const frameRect = frameElement.getBoundingClientRect();
+    x += frameRect.left;
+    y += frameRect.top;
+    currentWindow = frameElement.ownerDocument.defaultView;
   }
   const inputType = this.matches?.("input")
     ? String(this.type || "text").toLowerCase()

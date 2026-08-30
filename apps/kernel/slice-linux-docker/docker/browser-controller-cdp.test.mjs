@@ -154,6 +154,13 @@ test("structured snapshots bind compact accessibility and DOM nodes to one docum
     { type: "password", value: "[redacted]" },
     "password values must never leave the controller snapshot",
   );
+  assert.deepEqual(first.dom_documents, [
+    { document_index: 0, url: "https://a.test/", owner_node_ref: null },
+    { document_index: 1, url: "https://frame.test/", owner_node_ref: "backend:103" },
+  ]);
+  assert.deepEqual(first.shadow_roots, [
+    { node_ref: "backend:102", shadow_root_type: "open" },
+  ]);
 
   connection.loaderId = "loader-a2";
   await assert.rejects(
@@ -330,6 +337,9 @@ class SnapshotConnection extends FakeConnection {
           "password",
           "value",
           "top-secret",
+          "https://a.test/",
+          "https://frame.test/",
+          "open",
         ],
         documents: [
           {
@@ -340,11 +350,26 @@ class SnapshotConnection extends FakeConnection {
               nodeValue: [0, 0, 0, 0, 5, 0],
               backendNodeId: [100, 101, 102, 103, 104, 105],
               attributes: [[], [], [], [6, 7, 8, 9], [], [8, 11, 12, 13]],
+              contentDocumentIndex: { index: [3], value: [1] },
+              shadowRootType: { index: [2], value: [16] },
             },
+            documentURL: 14,
             layout: {
               nodeIndex: [3],
               bounds: [[10, 20, 100, 30]],
             },
+          },
+          {
+            nodes: {
+              parentIndex: [-1],
+              nodeType: [9],
+              nodeName: [0],
+              nodeValue: [0],
+              backendNodeId: [200],
+              attributes: [[]],
+            },
+            documentURL: 15,
+            layout: { nodeIndex: [], bounds: [] },
           },
         ],
       };

@@ -34,13 +34,14 @@ export async function captureBrowserSnapshot({
     ),
   ]);
   await assertCurrentDocument(connection, sessionId, targetId, documentId);
+  const compactedDom = compactDomSnapshot(dom, options);
   return {
     browser_generation: browserGeneration,
     target_id: targetId,
     document_id: documentId,
     snapshot_revision: snapshotRevision,
     accessibility_nodes: compactAccessibilityNodes(accessibility?.nodes, options),
-    dom_nodes: compactDomSnapshot(dom, options),
+    ...compactedDom,
   };
 }
 
@@ -125,7 +126,11 @@ function compactDomSnapshot(rawSnapshot, options) {
     ? rawSnapshot.documents
     : [];
   const compacted = [];
-  for (const document of documents) {
+  const ownerByDocumentIndex = new Map();
+  const shadowRoots = [];
+  const documentCount = Math.min(documents.length, options.maxNodes);
+  for (let documentIndex = 0; documentIndex < documentCount; documentIndex += 1) {
+    const document = documents[documentIndex];
     if (compacted.length >= options.maxNodes) {
       break;
     }
@@ -134,6 +139,8 @@ function compactDomSnapshot(rawSnapshot, options) {
       ? nodes.backendNodeId
       : [];
     const layoutBounds = boundsByNodeIndex(document?.layout);
+    const contentDocuments = rareDataByIndex(nodes.contentDocumentIndex);
+    const shadowRootTypes = rareDataByIndex(nodes.shadowRootType);
     for (
       let nodeIndex = 0;
       nodeIndex < backendNodeIds.length && compacted.length < options.maxNodes;
@@ -161,6 +168,26 @@ function compactDomSnapshot(rawSnapshot, options) {
               options.maxStringLength,
             )
           : "";
+      const contentDocumentIndex = contentDocuments.get(nodeIndex);
+      if (
+        Number.isSafeInteger(contentDocumentIndex) &&
+        contentDocumentIndex >= 0 &&
+        contentDocumentIndex < documentCount
+      ) {
+        ownerByDocumentIndex.set(contentDocumentIndex, nodeRef);
+      }
+      const shadowRootTypeIndex = shadowRootTypes.get(nodeIndex);
+      const shadowRootType = snapshotString(
+        strings,
+        shadowRootTypeIndex,
+        options.maxStringLength,
+      );
+      if (shadowRootType) {
+        shadowRoots.push({
+          node_ref: nodeRef,
+          shadow_root_type: shadowRootType,
+        });
+      }
       compacted.push({
         node_ref: nodeRef,
         parent_ref: parentRef,
@@ -177,7 +204,32 @@ function compactDomSnapshot(rawSnapshot, options) {
       });
     }
   }
-  return compacted;
+  return {
+    dom_documents: documents.slice(0, documentCount).map((document, documentIndex) => ({
+      document_index: documentIndex,
+      url: snapshotString(
+        strings,
+        document?.documentURL,
+        options.maxStringLength,
+      ),
+      owner_node_ref: ownerByDocumentIndex.get(documentIndex) ?? null,
+    })),
+    shadow_roots: shadowRoots,
+    dom_nodes: compacted,
+  };
+}
+
+function rareDataByIndex(rawData) {
+  const indexes = Array.isArray(rawData?.index) ? rawData.index : [];
+  const values = Array.isArray(rawData?.value) ? rawData.value : [];
+  const result = new Map();
+  for (let offset = 0; offset < indexes.length && offset < values.length; offset += 1) {
+    const nodeIndex = indexes[offset];
+    if (Number.isSafeInteger(nodeIndex)) {
+      result.set(nodeIndex, values[offset]);
+    }
+  }
+  return result;
 }
 
 function boundsByNodeIndex(layout) {
