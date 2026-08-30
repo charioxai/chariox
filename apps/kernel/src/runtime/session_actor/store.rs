@@ -51,13 +51,19 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let viewport = crate::session::CanonicalViewport::new(
-            request.viewport.css_width,
-            request.viewport.css_height,
-            request.viewport.device_scale_factor,
-            request.viewport.desktop_pixel_width,
-            request.viewport.desktop_pixel_height,
-        )
+        let viewport = match self.state.room_environment_snapshot(&request.session_id) {
+            Ok(environment) => Ok(environment.viewport),
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => {
+                crate::session::CanonicalViewport::new(
+                    request.viewport.css_width,
+                    request.viewport.css_height,
+                    request.viewport.device_scale_factor,
+                    request.viewport.desktop_pixel_width,
+                    request.viewport.desktop_pixel_height,
+                )
+            }
+            Err(error) => Err(error),
+        }
         .map_err(|error| room_environment_control_error("environment.start", error));
         let result = viewport.and_then(|viewport| {
             self.state
@@ -480,7 +486,7 @@ fn room_environment_control_error(
         }
         other => DaemonError::LocalTransport {
             operation,
-            message: format!("room_environment_control_failed: {other:?}"),
+            message: format!("{}: {other:?}", other.code()),
         },
     }
 }

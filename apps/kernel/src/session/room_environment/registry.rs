@@ -71,11 +71,17 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         match environment.snapshot().lifecycle {
-            EnvironmentLifecycle::Stopped | EnvironmentLifecycle::Stopping => {}
+            EnvironmentLifecycle::Stopped => {}
+            EnvironmentLifecycle::Stopping => {
+                environment.transition_to(EnvironmentLifecycle::Stopped)?;
+            }
             EnvironmentLifecycle::Failed => {
                 environment.transition_to(EnvironmentLifecycle::Stopped)?;
             }
-            _ => environment.transition_to(EnvironmentLifecycle::Stopping)?,
+            _ => {
+                environment.transition_to(EnvironmentLifecycle::Stopping)?;
+                environment.transition_to(EnvironmentLifecycle::Stopped)?;
+            }
         }
         Ok(environment.snapshot())
     }
