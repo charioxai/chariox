@@ -16,8 +16,8 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 273", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 273)
+test("Room Environment state request matches protocol 274", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 274)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -68,6 +68,7 @@ test("Room Environment state request matches protocol 273", () => {
         actions: [
           {
             action_id: "action-1",
+            sequence: 1,
             idempotency_key: "idempotency-1",
             actor_id: "human-1",
             runtime_generation: 1,
@@ -78,6 +79,17 @@ test("Room Environment state request matches protocol 273", () => {
               { kind: "browser_tab", id: "tab-1" },
             ],
             state: "completed",
+          },
+          {
+            action_id: "action-2",
+            sequence: 2,
+            idempotency_key: null,
+            actor_id: "human-1",
+            runtime_generation: 1,
+            mode: "browser",
+            kind: "second-click",
+            targets: [{ kind: "browser_tab", id: "tab-1" }],
+            state: "queued",
           },
         ],
         input_ownership: [

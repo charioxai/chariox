@@ -4,7 +4,7 @@ use super::action::{
     ActionAdmission, EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal,
     InputTarget,
 };
-use super::action_ledger::EnvironmentActionLedger;
+use super::action_ledger::{ActionTakeoverEffect, EnvironmentActionLedger};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
@@ -14,6 +14,8 @@ use super::model::{
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
+
+const DEFAULT_ACTION_QUEUE_CAPACITY: usize = 128;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RoomEnvironment {
@@ -45,6 +47,22 @@ impl RoomEnvironment {
         viewport: CanonicalViewport,
         event_capacity: usize,
     ) -> Result<Self, EnvironmentError> {
+        Self::new_with_capacities(
+            session_id,
+            environment_id,
+            viewport,
+            event_capacity,
+            DEFAULT_ACTION_QUEUE_CAPACITY,
+        )
+    }
+
+    pub(crate) fn new_with_capacities(
+        session_id: impl Into<String>,
+        environment_id: impl Into<String>,
+        viewport: CanonicalViewport,
+        event_capacity: usize,
+        action_queue_capacity: usize,
+    ) -> Result<Self, EnvironmentError> {
         Ok(Self {
             session_id: session_id.into(),
             environment_id: environment_id.into(),
@@ -55,7 +73,7 @@ impl RoomEnvironment {
             health: default_component_health(),
             actors: BTreeMap::new(),
             tabs: TabRegistry::new(),
-            action_ledger: EnvironmentActionLedger::new(event_capacity),
+            action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -309,11 +327,20 @@ impl RoomEnvironment {
             &self.actors,
             &self.tabs,
         )?;
-        if let ActionAdmission::Accepted { action_id } = &admission {
-            self.emit(EnvironmentEventKind::ActionChanged {
-                action_id: action_id.clone(),
-                state: EnvironmentActionState::Running,
-            });
+        match &admission {
+            ActionAdmission::Accepted { action_id } => {
+                self.emit(EnvironmentEventKind::ActionChanged {
+                    action_id: action_id.clone(),
+                    state: EnvironmentActionState::Running,
+                });
+            }
+            ActionAdmission::Queued { action_id, .. } => {
+                self.emit(EnvironmentEventKind::ActionChanged {
+                    action_id: action_id.clone(),
+                    state: EnvironmentActionState::Queued,
+                });
+            }
+            _ => {}
         }
         Ok(admission)
     }
@@ -331,6 +358,12 @@ impl RoomEnvironment {
         if effect.ownership_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
+        for started_action_id in effect.started_action_ids {
+            self.emit(EnvironmentEventKind::ActionChanged {
+                action_id: started_action_id,
+                state: EnvironmentActionState::Running,
+            });
+        }
         Ok(())
     }
 
@@ -339,9 +372,26 @@ impl RoomEnvironment {
         actor_id: &str,
         target: InputTarget,
     ) -> Result<TakeoverOutcome, EnvironmentError> {
-        let (outcome, ownership_changed) =
-            self.action_ledger
-                .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
+        let ActionTakeoverEffect {
+            outcome,
+            ownership_changed,
+            cancelled_action_ids,
+            started_action_ids,
+        } = self
+            .action_ledger
+            .request_takeover(actor_id, target, &self.actors, &self.tabs)?;
+        for action_id in cancelled_action_ids {
+            self.emit(EnvironmentEventKind::ActionChanged {
+                action_id,
+                state: EnvironmentActionState::Cancelled,
+            });
+        }
+        for action_id in started_action_ids {
+            self.emit(EnvironmentEventKind::ActionChanged {
+                action_id,
+                state: EnvironmentActionState::Running,
+            });
+        }
         if ownership_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);
         }
@@ -373,14 +423,30 @@ impl RoomEnvironment {
         actors.insert(actor.actor_id.clone(), actor.clone());
 
         let mut action_ledger = self.action_ledger.clone();
-        let (outcome, _) =
-            action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
+        let ActionTakeoverEffect {
+            outcome,
+            cancelled_action_ids,
+            started_action_ids,
+            ..
+        } = action_ledger.request_takeover(&actor.actor_id, target, &actors, &self.tabs)?;
         let actors_changed = actors != self.actors;
         let input_state_changed = action_ledger != self.action_ledger;
         self.actors = actors;
         self.action_ledger = action_ledger;
         if actors_changed {
             self.emit(EnvironmentEventKind::ActorsChanged);
+        }
+        for action_id in cancelled_action_ids {
+            self.emit(EnvironmentEventKind::ActionChanged {
+                action_id,
+                state: EnvironmentActionState::Cancelled,
+            });
+        }
+        for action_id in started_action_ids {
+            self.emit(EnvironmentEventKind::ActionChanged {
+                action_id,
+                state: EnvironmentActionState::Running,
+            });
         }
         if input_state_changed {
             self.emit(EnvironmentEventKind::InputOwnershipChanged);

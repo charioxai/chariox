@@ -19,6 +19,7 @@ pub enum InputTarget {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum EnvironmentActionState {
+    Queued,
     Running,
     Completed,
     Failed,
@@ -45,6 +46,8 @@ impl From<EnvironmentActionTerminal> for EnvironmentActionState {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EnvironmentAction {
     pub action_id: String,
+    #[serde(default)]
+    pub sequence: u64,
     pub idempotency_key: Option<String>,
     pub actor_id: String,
     pub runtime_generation: u64,
@@ -155,6 +158,13 @@ pub enum ActionAdmission {
     Existing {
         action_id: String,
         state: EnvironmentActionState,
+    },
+    Queued {
+        action_id: String,
+        queue_sequence: u64,
+    },
+    RejectedSaturated {
+        capacity: usize,
     },
     RejectedBusy {
         target: InputTarget,

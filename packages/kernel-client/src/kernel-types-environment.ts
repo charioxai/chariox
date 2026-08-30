@@ -49,13 +49,14 @@ export type RoomEnvironmentInputTarget =
 
 export type RoomEnvironmentAction = {
   action_id: string
+  sequence: number
   idempotency_key: string | null
   actor_id: string
   runtime_generation: number
   mode: "browser" | "computer"
   kind: string
   targets: RoomEnvironmentInputTarget[]
-  state: "running" | "completed" | "failed" | "cancelled"
+  state: "queued" | "running" | "completed" | "failed" | "cancelled"
 }
 
 export type RoomEnvironmentInputOwnership = {

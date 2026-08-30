@@ -223,6 +223,10 @@ pub enum EnvironmentError {
         action_id: String,
         state: EnvironmentActionState,
     },
+    ActionNotRunning {
+        action_id: String,
+        state: EnvironmentActionState,
+    },
     ActorKindConflict {
         actor_id: String,
     },
@@ -249,6 +253,7 @@ impl EnvironmentError {
             Self::InvalidEventCapacity => "environment_invalid_event_capacity",
             Self::IdempotencyConflict { .. } => "environment_idempotency_conflict",
             Self::ActionAlreadyTerminal { .. } => "environment_action_terminal",
+            Self::ActionNotRunning { .. } => "environment_action_not_running",
             Self::ActorKindConflict { .. } => "environment_actor_kind_conflict",
         }
     }

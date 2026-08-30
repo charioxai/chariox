@@ -8,7 +8,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -58,19 +58,33 @@ fn room_environment_state_shape_is_versioned() {
                 focused: true,
             }],
             focused_tab_id: Some("tab-1".to_string()),
-            actions: vec![EnvironmentAction {
-                action_id: "action-1".to_string(),
-                idempotency_key: Some("idempotency-1".to_string()),
-                actor_id: "agent-1".to_string(),
-                runtime_generation: 1,
-                mode: EnvironmentMode::Browser,
-                kind: "click".to_string(),
-                targets: vec![
-                    InputTarget::Desktop,
-                    InputTarget::BrowserTab("tab-1".to_string()),
-                ],
-                state: EnvironmentActionState::Running,
-            }],
+            actions: vec![
+                EnvironmentAction {
+                    action_id: "action-1".to_string(),
+                    sequence: 1,
+                    idempotency_key: Some("idempotency-1".to_string()),
+                    actor_id: "agent-1".to_string(),
+                    runtime_generation: 1,
+                    mode: EnvironmentMode::Browser,
+                    kind: "click".to_string(),
+                    targets: vec![
+                        InputTarget::Desktop,
+                        InputTarget::BrowserTab("tab-1".to_string()),
+                    ],
+                    state: EnvironmentActionState::Running,
+                },
+                EnvironmentAction {
+                    action_id: "action-2".to_string(),
+                    sequence: 2,
+                    idempotency_key: None,
+                    actor_id: "agent-1".to_string(),
+                    runtime_generation: 1,
+                    mode: EnvironmentMode::Browser,
+                    kind: "second-click".to_string(),
+                    targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
+                    state: EnvironmentActionState::Queued,
+                },
+            ],
             input_ownership: vec![InputOwnership {
                 target: InputTarget::Desktop,
                 actor_id: "agent-1".to_string(),
@@ -116,24 +130,41 @@ fn room_environment_state_shape_is_versioned() {
                         "focused": true
                     }],
                     "focused_tab_id": "tab-1",
-                    "actions": [{
-                        "action_id": "action-1",
-                        "idempotency_key": "idempotency-1",
-                        "actor_id": "agent-1",
-                        "runtime_generation": 1,
-                        "mode": "browser",
-                        "kind": "click",
-                        "targets": [
-                            {
-                                "kind": "desktop"
-                            },
-                            {
+                    "actions": [
+                        {
+                            "action_id": "action-1",
+                            "sequence": 1,
+                            "idempotency_key": "idempotency-1",
+                            "actor_id": "agent-1",
+                            "runtime_generation": 1,
+                            "mode": "browser",
+                            "kind": "click",
+                            "targets": [
+                                {
+                                    "kind": "desktop"
+                                },
+                                {
+                                    "kind": "browser_tab",
+                                    "id": "tab-1"
+                                }
+                            ],
+                            "state": "running"
+                        },
+                        {
+                            "action_id": "action-2",
+                            "sequence": 2,
+                            "idempotency_key": null,
+                            "actor_id": "agent-1",
+                            "runtime_generation": 1,
+                            "mode": "browser",
+                            "kind": "second-click",
+                            "targets": [{
                                 "kind": "browser_tab",
                                 "id": "tab-1"
-                            }
-                        ],
-                        "state": "running"
-                    }],
+                            }],
+                            "state": "queued"
+                        }
+                    ],
                     "input_ownership": [{
                         "target": {
                             "kind": "desktop"
@@ -154,6 +185,11 @@ fn room_environment_state_shape_is_versioned() {
         .and_then(serde_json::Value::as_object_mut)
         .expect("Room Environment snapshot should be an object")
         .remove("pending_input_takeovers");
+    previous_protocol_value
+        .pointer_mut("/RoomEnvironmentState/environment/actions/0")
+        .and_then(serde_json::Value::as_object_mut)
+        .expect("Room Environment Action should be an object")
+        .remove("sequence");
     let LocalDaemonResponse::RoomEnvironmentState { environment } =
         serde_json::from_value(previous_protocol_value)
             .expect("pre-v272 snapshots should decode with no pending takeovers")
@@ -161,11 +197,12 @@ fn room_environment_state_shape_is_versioned() {
         panic!("expected Room Environment state response");
     };
     assert!(environment.pending_input_takeovers.is_empty());
+    assert_eq!(environment.actions[0].sequence, 0);
 }
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -251,7 +288,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -274,7 +311,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -297,7 +334,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -337,7 +374,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -419,7 +456,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 273);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 274);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {

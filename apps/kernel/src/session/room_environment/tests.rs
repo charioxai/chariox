@@ -215,31 +215,48 @@ fn observations_run_concurrently_and_mutations_serialize_per_target() {
             .unwrap(),
     );
     assert_ne!(action_a, action_b);
-    assert!(matches!(
+    let queued_action_id = queued_action_id(
         environment
             .submit_action(EnvironmentActionRequest::browser_mutation(
-                "agent-1", 1, "second-click", &tab_a, 1,
+                "agent-1",
+                1,
+                "second-click",
+                &tab_a,
+                1,
             ))
             .unwrap(),
-        ActionAdmission::RejectedBusy {
-            target: InputTarget::BrowserTab(ref tab_id),
-            ..
-        } if tab_id == &tab_a
-    ));
+    );
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Queued
+    );
+    assert_eq!(
+        environment.finish_action(&queued_action_id, EnvironmentActionTerminal::Completed),
+        Err(EnvironmentError::ActionNotRunning {
+            action_id: queued_action_id.clone(),
+            state: EnvironmentActionState::Queued,
+        })
+    );
 
     environment
         .finish_action(&action_a, EnvironmentActionTerminal::Completed)
         .unwrap();
-    assert!(matches!(
-        environment.submit_action(EnvironmentActionRequest::browser_mutation(
-            "agent-1",
-            1,
-            "second-click",
-            &tab_a,
-            1,
-        )),
-        Ok(ActionAdmission::Accepted { .. })
-    ));
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
 }
 
 #[test]
@@ -278,8 +295,132 @@ fn computer_mutation_reserves_desktop_before_the_focused_tab() {
                 "agent-1", 1, "click", &tab_id, 1,
             ))
             .unwrap(),
-        ActionAdmission::RejectedBusy { .. }
+        ActionAdmission::Queued { .. }
     ));
+}
+
+#[test]
+fn mutation_queue_preserves_order_across_overlapping_multi_target_actions() {
+    let mut environment = ready_environment_with_agent();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+    let running_tab_action_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "tab-click",
+                &tab_id,
+                1,
+            ))
+            .unwrap(),
+    );
+    let queued_computer_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "pointer-click",
+                Some(&tab_id),
+            ))
+            .unwrap(),
+    );
+    let queued_desktop_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "key-press",
+                None,
+            ))
+            .unwrap(),
+    );
+
+    environment
+        .finish_action(&running_tab_action_id, EnvironmentActionTerminal::Completed)
+        .unwrap();
+    let snapshot = environment.snapshot();
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_computer_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+    assert_eq!(
+        snapshot
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_desktop_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Queued
+    );
+
+    environment
+        .finish_action(
+            &queued_computer_action_id,
+            EnvironmentActionTerminal::Completed,
+        )
+        .unwrap();
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_desktop_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+}
+
+#[test]
+fn mutation_queue_rejects_new_work_at_its_bound() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_capacities("room-1", "environment-1", viewport, 128, 1).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+
+    accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "first", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+    queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "second", &tab_id, 1,
+            ))
+            .unwrap(),
+    );
+    assert_eq!(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1", 1, "third", &tab_id, 1,
+            ))
+            .unwrap(),
+        ActionAdmission::RejectedSaturated { capacity: 1 }
+    );
+    assert_eq!(environment.snapshot().actions.len(), 2);
 }
 
 #[test]
@@ -302,6 +443,26 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
             ))
             .unwrap(),
     );
+    let queued_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "pointer-click",
+                Some(&tab_id),
+            ))
+            .unwrap(),
+    );
+    let unblocked_desktop_action_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "key-press",
+                None,
+            ))
+            .unwrap(),
+    );
 
     assert_eq!(
         environment
@@ -312,6 +473,26 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }
     );
     assert!(environment.snapshot().input_ownership.is_empty());
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Cancelled
+    );
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == unblocked_desktop_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
     assert_eq!(
         environment.snapshot().pending_input_takeovers,
         vec![PendingInputTakeover {
@@ -343,6 +524,16 @@ fn human_takeover_waits_for_the_agent_action_to_be_terminal() {
         }]
     );
     assert!(environment.snapshot().pending_input_takeovers.is_empty());
+    assert_eq!(
+        environment
+            .snapshot()
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_action_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Cancelled
+    );
     assert_eq!(
         environment
             .request_takeover("user-1", InputTarget::BrowserTab(tab_id.clone()))
@@ -890,6 +1081,13 @@ fn accepted_action_id(admission: ActionAdmission) -> String {
     match admission {
         ActionAdmission::Accepted { action_id } => action_id,
         other => panic!("expected accepted action, got {other:?}"),
+    }
+}
+
+fn queued_action_id(admission: ActionAdmission) -> String {
+    match admission {
+        ActionAdmission::Queued { action_id, .. } => action_id,
+        other => panic!("expected queued action, got {other:?}"),
     }
 }
 
