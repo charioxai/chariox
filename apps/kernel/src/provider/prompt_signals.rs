@@ -128,11 +128,13 @@ pub(crate) fn classify_provider_substitutable_failure_text(
     adapter_key: &str,
     text: &str,
 ) -> Option<String> {
-    if !matches!(adapter_key, "codex" | "opencode") {
-        return None;
-    }
     let normalized = text.to_lowercase();
-    if !provider_normalized_text_reports_resource_limit(&normalized) {
+    let substitutable = match adapter_key {
+        "codex" | "opencode" => provider_normalized_text_reports_resource_limit(&normalized),
+        "claude" => claude_normalized_text_reports_resource_limit_dialog(&normalized),
+        _ => false,
+    };
+    if !substitutable {
         return None;
     }
     Some(format!(
@@ -321,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_classifier_detects_claude_usage_limit_without_marking_it_substitutable() {
+    fn substitute_classifier_detects_claude_usage_limit() {
         let failure = classify_provider_terminal_failure_text(
             "claude",
             "You've hit your usage limit. Your limit will reset later.",
@@ -330,11 +332,10 @@ mod tests {
 
         assert!(failure.contains("resource limit"));
         assert!(failure.contains("You've hit your usage limit"));
-        assert!(classify_provider_substitutable_failure_text(
-            "claude",
-            "You've hit your usage limit."
-        )
-        .is_none());
+        let substitute_failure =
+            classify_provider_substitutable_failure_text("claude", "You've hit your usage limit.")
+                .expect("Claude usage limit should activate an available substitute");
+        assert!(substitute_failure.contains("substitutable resource limit"));
     }
 
     #[test]
@@ -349,12 +350,29 @@ mod tests {
 
         assert!(failure.contains("resource limit"));
         assert!(failure.contains("don't have usage credits"));
+        assert!(classify_provider_substitutable_failure_text(
+            "claude",
+            "Fable 5 now uses usage credits. You don't have usage credits yet."
+        )
+        .is_some());
 
         assert!(classify_provider_terminal_failure_text(
             "claude",
             "Fable5nowusesusagecredits Youdon'thaveusagecreditsyet",
         )
         .is_some());
+    }
+
+    #[test]
+    fn substitute_classifier_ignores_non_usage_claude_failures() {
+        for text in [
+            "Claude error: connection refused",
+            "Claude error: unauthorized",
+            "Claude error: unsupported model",
+            "Claude error: HTTP 429 Too Many Requests",
+        ] {
+            assert!(classify_provider_substitutable_failure_text("claude", text).is_none());
+        }
     }
 
     #[test]
