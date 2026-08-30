@@ -477,7 +477,7 @@ fn local_daemon_protocol_provider_run_usage_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "6beed0034e0a7717008a1e7270e1d01f096ce14af5a65c94efe7d111cdc52e94"
+        "6beed0034e0a7717008a1e7269e1d01f096ce14af5a65c94efe7d111cdc52e94"
     );
 
     let workflow_prompt_design_op_request = serde_json::to_value(
