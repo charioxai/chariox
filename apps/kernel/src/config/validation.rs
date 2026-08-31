@@ -47,7 +47,7 @@ impl DaemonConfig {
                 message: "value must not be zero",
             });
         }
-        if self.session_history_root.as_os_str().is_empty() {
+        if self.session_history_root().as_os_str().is_empty() {
             return Err(DaemonError::InvalidConfig {
                 field: "session_history_root",
                 message: "value must not be empty",

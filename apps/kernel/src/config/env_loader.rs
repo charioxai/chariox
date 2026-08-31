@@ -107,7 +107,7 @@ impl DaemonConfig {
                 .ok()
                 .and_then(|value| value.parse::<u16>().ok())
                 .unwrap_or(43120),
-            session_history_root: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
+            session_history_root_default: env::var_os("CHARIOX_SESSION_HISTORY_DIR")
                 .map(PathBuf::from)
                 .unwrap_or_else(Self::default_session_history_root),
             session_history_read_delay_ms: env::var("CHARIOX_SESSION_HISTORY_READ_DELAY_MS")

@@ -1536,7 +1536,7 @@ mod tests {
         config.relay_public_key =
             relay_crypto::public_key_from_private_key_base64(relay_private_key)
                 .expect("test relay public key should derive");
-        config.session_history_root = root.join(format!("{daemon_id}-sessions"));
+        config = config.with_session_history_root(root.join(format!("{daemon_id}-sessions")));
         config.user_config.history.operational.path = Some(
             root.join(format!("{daemon_id}-operational.db"))
                 .display()

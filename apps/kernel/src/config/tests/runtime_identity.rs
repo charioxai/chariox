@@ -127,7 +127,7 @@ fn chariox_home_owns_config_identity_state_and_runtime_paths() {
         durable_state_path,
         temp_home.join("state").join("kernel.db")
     );
-    assert_eq!(config.session_history_root, temp_home.join("sessions"));
+    assert_eq!(config.session_history_root(), temp_home.join("sessions"));
     assert!(config.local_socket_path.starts_with(temp_home.join("run")));
 }
 

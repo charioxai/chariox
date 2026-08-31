@@ -169,10 +169,6 @@ pub(crate) fn cloud_kernel_presence_body(
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use crate::config::CharioxUserConfig;
-
     use super::*;
 
     fn profile() -> PersistedCloudRelayProfile {
@@ -197,47 +193,16 @@ mod tests {
     }
 
     fn config(profile: Option<PersistedCloudRelayProfile>) -> DaemonConfig {
-        DaemonConfig {
-            user_config_path: PathBuf::from("user.toml"),
-            user_config: CharioxUserConfig::default(),
-            publication_control_state_root: None,
-            daemon_id: "kernel-1".to_string(),
-            host_machine_id: "host-1".to_string(),
-            host_machine_alias: None,
-            os_name: "test-os".to_string(),
-            daemon_alias: Some("dev kernel".to_string()),
-            relay_url: Some("wss://relay.test".to_string()),
-            relay_token: Some(bound_token("public")),
-            managed_slice_relay_recovery_token: None,
-            managed_slice_relay_owner_public_key: None,
-            cloud_relay: profile,
-            relay_public_key: "public".to_string(),
-            relay_private_key: "private".to_string(),
-            relay_heartbeat_ms: 1_000,
-            relay_request_timeout_ms: 2_000,
-            accept_remote_leases: true,
-            event_delivery_url: None,
-            event_delivery_token: None,
-            event_delivery_environment_id: "kernel-1".to_string(),
-            event_registry_url: None,
-            event_generator_management_targets: std::collections::BTreeMap::new(),
-            os_user: "tester".to_string(),
-            local_socket_path: PathBuf::from("kernel.sock"),
-            kernel_websocket_host: "127.0.0.1".to_string(),
-            kernel_websocket_port: 43118,
-            kernel_websocket_queue_capacity: 128,
-            kernel_websocket_write_delay_ms: 0,
-            runtime_mcp_host: "127.0.0.1".to_string(),
-            runtime_mcp_port: 43119,
-            session_history_root: PathBuf::from("history"),
-            session_history_read_delay_ms: 0,
-            operational_history_read_delay_ms: 0,
-            provider_catalog_read_delay_ms: 0,
-            provider_process_list_delay_ms: 0,
-            provider_process_idle_ttl_ms: 300_000,
-            provider_process_orphan_ttl_ms: 30_000,
-            provider_runtime_init_delay_ms: 0,
-        }
+        let mut config = DaemonConfig::new("kernel-1", "host-1", "tester");
+        config.daemon_alias = Some("dev kernel".to_string());
+        config.relay_url = Some("wss://relay.test".to_string());
+        config.relay_token = Some(bound_token("public"));
+        config.cloud_relay = profile;
+        config.relay_public_key = "public".to_string();
+        config.relay_private_key = "private".to_string();
+        config.relay_heartbeat_ms = 1_000;
+        config.relay_request_timeout_ms = 2_000;
+        config
     }
 
     fn bound_token(public_key: &str) -> String {

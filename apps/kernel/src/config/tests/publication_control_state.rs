@@ -103,7 +103,7 @@ fn ordinary_kernel_state_paths_keep_the_existing_layout() {
     let mut config = root.config();
     config.publication_control_state_root = None;
     config.user_config.state.path = Some(root.0.join("existing/state.db").display().to_string());
-    config.session_history_root = root.0.join("existing/sessions");
+    config = config.with_session_history_root(root.0.join("existing/sessions"));
     assert_eq!(
         config.account_profile_registry_path(),
         root.0.join("existing/provider-accounts.json")

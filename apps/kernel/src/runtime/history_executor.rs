@@ -301,7 +301,7 @@ mod tests {
         let session = sessions
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should create");
-        let history_store = SessionHistoryStore::new(config.session_history_root.clone())
+        let history_store = SessionHistoryStore::new(config.session_history_root())
             .expect("legacy history should initialize");
         let operational_history_store =
             OperationalHistoryStore::open(config.operational_history_path())
@@ -338,7 +338,7 @@ mod tests {
         let session = sessions
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should create");
-        let history_store = SessionHistoryStore::new(config.session_history_root.clone())
+        let history_store = SessionHistoryStore::new(config.session_history_root())
             .expect("legacy history should initialize");
         let operational_history_store =
             OperationalHistoryStore::open(config.operational_history_path())
@@ -389,7 +389,7 @@ mod tests {
         let session = sessions
             .create_session(CreateSessionRequest::new("workspace-1", "worktree-1"))
             .expect("session should create");
-        let history_store = SessionHistoryStore::new(config.session_history_root.clone())
+        let history_store = SessionHistoryStore::new(config.session_history_root())
             .expect("legacy history should initialize");
         let operational_history_store =
             OperationalHistoryStore::open(config.operational_history_path())

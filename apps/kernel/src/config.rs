@@ -123,7 +123,7 @@ pub struct DaemonConfig {
     pub kernel_websocket_write_delay_ms: u64,
     pub runtime_mcp_host: String,
     pub runtime_mcp_port: u16,
-    pub session_history_root: PathBuf,
+    session_history_root_default: PathBuf,
     pub session_history_read_delay_ms: u64,
     pub operational_history_read_delay_ms: u64,
     pub provider_catalog_read_delay_ms: u64,
@@ -190,7 +190,7 @@ impl DaemonConfig {
             kernel_websocket_write_delay_ms: DEFAULT_KERNEL_WEBSOCKET_WRITE_DELAY_MS,
             runtime_mcp_host: "127.0.0.1".to_string(),
             runtime_mcp_port: 43120,
-            session_history_root: Self::default_session_history_root(),
+            session_history_root_default: Self::default_session_history_root(),
             session_history_read_delay_ms: 0,
             operational_history_read_delay_ms: 0,
             provider_catalog_read_delay_ms: 0,
@@ -233,11 +233,9 @@ impl DaemonConfig {
             std::process::id(),
             index
         ));
-        config.session_history_root = std::env::temp_dir().join("chariox-tests").join(format!(
-            "session-history-{}-{}",
-            std::process::id(),
-            index
-        ));
+        config.session_history_root_default = std::env::temp_dir()
+            .join("chariox-tests")
+            .join(format!("session-history-{}-{}", std::process::id(), index));
         config.user_config.history.operational.path = Some(
             std::env::temp_dir()
                 .join("chariox-tests")
@@ -293,7 +291,7 @@ impl DaemonConfig {
     }
 
     pub fn with_session_history_root(mut self, path: PathBuf) -> Self {
-        self.session_history_root = path;
+        self.session_history_root_default = path;
         self
     }
 

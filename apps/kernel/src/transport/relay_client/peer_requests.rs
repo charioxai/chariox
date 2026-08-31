@@ -1668,7 +1668,7 @@ mod tests {
             rand::random::<u64>(),
         ));
         let mut config = DaemonConfig::for_tests();
-        config.session_history_root = root.join("sessions");
+        config = config.with_session_history_root(root.join("sessions"));
         config.user_config.history.operational.path =
             Some(root.join("operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
@@ -1848,7 +1848,7 @@ mod tests {
             rand::random::<u64>()
         ));
         let mut config = DaemonConfig::for_tests();
-        config.session_history_root = root.join("sessions");
+        config = config.with_session_history_root(root.join("sessions"));
         config.user_config.history.operational.path =
             Some(root.join("operational.db").display().to_string());
         config.user_config.artifacts.operational.root =
@@ -2120,7 +2120,7 @@ mod tests {
             context_completion_fixture(transfer_state_path.clone());
 
         let mut config = DaemonConfig::for_tests();
-        config.session_history_root = root.join("sessions");
+        config = config.with_session_history_root(root.join("sessions"));
         config.user_config.history.operational.path =
             Some(root.join("operational.db").display().to_string());
         config.user_config.artifacts.operational.root =

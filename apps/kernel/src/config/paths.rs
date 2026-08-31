@@ -92,7 +92,7 @@ impl DaemonConfig {
         self.publication_control_state_root
             .as_ref()
             .map(|root| root.join("sessions"))
-            .unwrap_or_else(|| self.session_history_root.clone())
+            .unwrap_or_else(|| self.session_history_root_default.clone())
     }
 
     pub fn workflow_runtime_artifact_root(&self) -> PathBuf {
