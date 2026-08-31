@@ -25,6 +25,38 @@ The portable baseline uses Python 3.11 on Debian Bookworm, X11, WebSocket
 transport, and software H.264. Both `amd64` and `arm64` capture wheels are
 pinned. Hardware encoding and WebRTC are not required for this baseline.
 
+The Dockerfile has a `selkies-build` target and a small `selkies-runtime`
+target below the full Chariox slice. The build uses a digest-pinned Node image,
+the checked-in npm lockfiles, and serial web builds. The runtime uses the
+checked-in Python version constraints and rejects source-only dependency
+fallbacks. Build inputs are bind-mounted into the install layer, so the final
+image does not retain wheel archives, npm dependencies, or source-build tools.
+Runtime notices and the input pins live in `/usr/share/doc/chariox-selkies`.
+
+Each download has a unique temporary file. Normal failures remove that file;
+an uncatchable process or machine crash can leave it behind. Image builds put
+downloads in a disposable build layer. Standalone fetches should use a
+task-owned scratch directory and clean it after the run. The downloader does
+not sweep another invocation's `.part` files, which may still be in use.
+
+## Local packaging drill
+
+Build the `selkies-runtime` target, then run `validate-selkies.py` inside it
+using `/opt/chariox-selkies/bin/python`. Mount the script read-only and use an
+unprivileged numeric user, `--network none`, `--init`, `--cpus 1`,
+`--memory 768m --memory-swap 768m`, `--pids-limit 128`, and `--shm-size 128m`.
+No ports need publishing. The test starts its own Xvfb display and streamer,
+checks the packaged web assets and relative PWA manifest, receives a real
+640x480 software H.264 keyframe over the public WebSocket endpoint, and checks
+that TERM releases the HTTP listener and X11 socket. It removes its scratch
+directory and owned processes even on failure.
+
+For a negative control, set `CHARIOX_SLICE_SELKIES_BIN=/bin/false`; the drill
+must exit unsuccessfully rather than treating an open display as a working
+streamer. This is packaging coverage, not proof of browser decoding, relay
+transport, multi-actor input, or production readiness. Those require the
+later kernel and client drills.
+
 ## License inventory and distribution
 
 Selkies, pixelflux, and pcmflux source files use MPL-2.0. That is not a complete

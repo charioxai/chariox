@@ -20,7 +20,8 @@
     "source": {
       "url": "https://github.com/selkies-project/pixelflux/archive/6974a8c16a14dc0040d5ed937d633a6ceb4c926d.tar.gz",
       "filename": "pixelflux.tar.gz",
-      "sha256": "2560ec20d456ef06ee98a9c28e3e4ce491ee367dfab304753822aabddafa4367"
+      "sha256": "2560ec20d456ef06ee98a9c28e3e4ce491ee367dfab304753822aabddafa4367",
+      "size": 609857
     },
     "wheels": {
       "amd64": {
@@ -45,7 +46,8 @@
     "source": {
       "url": "https://github.com/selkies-project/pcmflux/archive/a8fac8d8ea89117a1c2480bdbefbb3b8b717d956.tar.gz",
       "filename": "pcmflux.tar.gz",
-      "sha256": "a32c9cac8332753831cad2916d9be73fabc172966cda7c86bb5e77a3d3535406"
+      "sha256": "a32c9cac8332753831cad2916d9be73fabc172966cda7c86bb5e77a3d3535406",
+      "size": 77454
     },
     "wheels": {
       "amd64": {
