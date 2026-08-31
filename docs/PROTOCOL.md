@@ -606,9 +606,33 @@ An already-running worker without this binding rejects controller access. It
 must be restarted through the provisioner after binding the Room; binding alone
 does not restart running agents. Older workers reject the new request variant
 and require an upgrade before this routing can be used. This checkpoint routes
-startup, reconciliation, and shutdown only. Structured actions, observations,
-events, file operations, agent MCP forwarding, and secure viewers still require
-the remaining routing work before product enablement. Existing clients' minimum
+startup, reconciliation, and shutdown. Protocol v284 and relay peer v20 extend
+the same authenticated route with structured snapshots. The worker validates
+the target/document and returns bounded physical observations; the home validates
+them again and assigns Room-owned opaque element references. Home agents in a
+bound Room can discover and call the existing status, find, text, and text-wait
+runtime tools without running inside the slice. Tool discovery and dispatch
+derive the slice from the provider run's Room, never from caller-supplied IDs.
+Unbound home agents do not gain access to local screen helpers.
+
+Protocol v285 and relay peer v21 add locator actions to the same physical route.
+Home-owned element resolution, stale-reference checks, actor admission, action
+serialization, and terminal history surround worker execution. The worker validates
+action parameters and timeout before sending input to its controller; the home
+validates the returned target/document and action kind before recording completion.
+Fill payloads are excluded from request debug formatting. This is not a vault or
+secret-insertion acceptance claim. Home MCP advertises click, fill and submit
+alongside the read tools. The public-path routing drill observes changed page
+state and the home action ledger, and verifies that human input ownership blocks
+agent mutations until explicit release. Browser-tab takeover uses the same
+browser-component readiness as browser actions while the desktop is starting;
+desktop takeover still requires desktop readiness, and controller recovery
+blocks new input admission. Navigation and the remaining tools are not yet enabled for
+home agents.
+
+Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
+secure viewers still require the remaining routing work before product enablement.
+Existing clients' minimum
 versions remain unchanged because their public request shapes have not changed.
 
 The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission also rejects shared worker identities, including collisions discovered after binding, for direct slice references as well as worker lookups. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice with an unambiguous worker keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.

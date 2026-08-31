@@ -125,6 +125,28 @@ async fn execute_local(
         Command::Reconcile { viewport } => processes
             .reconcile_browser(&session_id, &viewport)
             .map(|reconciliation| Response::Reconciled { reconciliation }),
+        Command::Snapshot {
+            target_id,
+            document_id,
+        } => processes
+            .capture_browser_snapshot(&session_id, &target_id, &document_id)
+            .map(|snapshot| Response::Snapshot { snapshot }),
+        Command::Action {
+            target_id,
+            document_id,
+            node_ref,
+            action,
+            timeout_ms,
+        } => processes
+            .perform_browser_action(
+                &session_id,
+                &target_id,
+                &document_id,
+                &node_ref,
+                &action,
+                timeout_ms,
+            )
+            .map(|result| Response::Action { result }),
     })
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?

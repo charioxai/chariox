@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const MAX_SNAPSHOT_NODES: usize = 5_000;
 const MAX_SNAPSHOT_STRING_BYTES: usize = 2_048;
 const MAX_NODE_ATTRIBUTES: usize = 32;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerStructuredSnapshot {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,
@@ -20,20 +20,20 @@ pub(crate) struct BrowserControllerStructuredSnapshot {
     pub(crate) dom_nodes: Vec<BrowserControllerDomNode>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDomDocument {
     pub(crate) document_index: usize,
     pub(crate) url: String,
     pub(crate) owner_node_ref: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerShadowRoot {
     pub(crate) node_ref: String,
     pub(crate) shadow_root_type: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerAccessibilityNode {
     pub(crate) node_ref: String,
     pub(crate) parent_ref: Option<String>,
@@ -47,7 +47,7 @@ pub(crate) struct BrowserControllerAccessibilityNode {
     pub(crate) focused: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDomNode {
     pub(crate) node_ref: String,
     pub(crate) parent_ref: Option<String>,
@@ -58,7 +58,7 @@ pub(crate) struct BrowserControllerDomNode {
     pub(crate) bounds: Option<BrowserControllerNodeBounds>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerNodeBounds {
     pub(crate) x: f64,
     pub(crate) y: f64,

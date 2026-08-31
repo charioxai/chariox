@@ -388,19 +388,7 @@ impl RoomEnvironment {
         &mut self,
         request: EnvironmentActionRequest,
     ) -> Result<ActionAdmission, EnvironmentError> {
-        if self.browser_controller_recovering {
-            return Err(EnvironmentError::EnvironmentNotReady {
-                lifecycle: EnvironmentLifecycle::Starting,
-            });
-        }
-        let admission_lifecycle = if self.lifecycle == EnvironmentLifecycle::Starting
-            && request.mode == EnvironmentMode::Browser
-            && self.browser_components_ready()
-        {
-            EnvironmentLifecycle::Ready
-        } else {
-            self.lifecycle
-        };
+        let admission_lifecycle = self.input_lifecycle(request.mode);
         let admission = self.action_ledger.submit(
             request,
             admission_lifecycle,
@@ -433,6 +421,20 @@ impl RoomEnvironment {
             .complete_controller_recovery(self.runtime_generation, &self.tabs);
         self.browser_controller_recovering = false;
         self.emit_action_recovery_effect(effect);
+    }
+
+    fn input_lifecycle(&self, mode: EnvironmentMode) -> EnvironmentLifecycle {
+        if self.browser_controller_recovering {
+            return EnvironmentLifecycle::Starting;
+        }
+        if self.lifecycle == EnvironmentLifecycle::Starting
+            && mode == EnvironmentMode::Browser
+            && self.browser_components_ready()
+        {
+            EnvironmentLifecycle::Ready
+        } else {
+            self.lifecycle
+        }
     }
 
     fn browser_components_ready(&self) -> bool {
@@ -576,13 +578,16 @@ impl RoomEnvironment {
         actor: EnvironmentActor,
         target: InputTarget,
     ) -> Result<TakeoverOutcome, EnvironmentError> {
+        let mode = match &target {
+            InputTarget::BrowserTab(_) => EnvironmentMode::Browser,
+            InputTarget::Desktop => EnvironmentMode::Computer,
+        };
+        let lifecycle = self.input_lifecycle(mode);
         if !matches!(
-            self.lifecycle,
+            lifecycle,
             EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
         ) {
-            return Err(EnvironmentError::EnvironmentNotReady {
-                lifecycle: self.lifecycle,
-            });
+            return Err(EnvironmentError::EnvironmentNotReady { lifecycle });
         }
 
         let mut actors = self.actors.clone();
