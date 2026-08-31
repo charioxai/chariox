@@ -333,3 +333,57 @@ async fn batch_preserves_mixed_target_attachments() {
         "mixed batch preserves target order and attaches both aliases of one slice"
     );
 }
+
+#[test]
+fn room_environment_worker_cleanup_failure_preserves_agent_and_slice() {
+    run_test(cleanup_failure_preserves_agent_and_slice);
+}
+
+async fn cleanup_failure_preserves_agent_and_slice() {
+    let mut fixture = LiveWorker::start().await;
+    fixture.create_slice().await;
+    let placement = fixture.placement();
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent":{
+            "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
+            "kernel_ref":"desktop-worker", "worktree_placement":placement
+        }}),
+    )
+    .await
+    .unwrap();
+    let agent_id = spawned["AgentSpawned"]["agent"]["id"].as_str().unwrap();
+    // Cut transport before cleanup. The home cannot prove the worker stopped.
+    fixture.stop().await;
+    let error = dispatch_json(
+        &fixture.home,
+        json!({"DestroyAgent":{
+            "session_id":fixture.rooms[0], "agent_id":agent_id
+        }}),
+    )
+    .await
+    .unwrap_err()
+    .to_string();
+    let listed = dispatch_json(
+        &fixture.home,
+        json!({"ListAgents":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    let attached = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
+        .await
+        .unwrap();
+    assert!(
+        listed["AgentsListed"]["agents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|agent| agent["id"] == agent_id),
+        "failed remote cleanup must not forget the home agent"
+    );
+    assert_eq!(attached["Slice"]["slice"]["agent_ids"], json!([agent_id]));
+    assert!(
+        error.contains("agent retained") && error.contains("retry"),
+        "failed cleanup must explain that the agent remains tracked and can be retried: {error}"
+    );
+}

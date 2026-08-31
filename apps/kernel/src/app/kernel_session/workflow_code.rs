@@ -678,6 +678,9 @@ impl<'a> KernelSessionService<'a> {
         Ok(())
     }
 
+    // Legacy app-only fixtures use this adapter. Production deletion is owned
+    // by KernelRuntimeState so prompt/run state and slice attachments agree.
+    #[cfg(test)]
     pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
         let agent = self.app.agents.get_agent(agent_id)?;
         self.destroy_agent_worker_execution(&agent)?;

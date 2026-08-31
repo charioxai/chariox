@@ -645,7 +645,13 @@ impl KernelRuntimeState {
             self.with_app_side_effect(|app| {
                 crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
             })
-            .await?;
+            .await
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "agent.destroy",
+                message: format!(
+                    "worker cleanup failed; agent retained. Restore worker connectivity and retry cleanup: {error}"
+                ),
+            })?;
         }
         // The app and runtime share the agent store. Delete once, after worker
         // cleanup, through the owner that also clears prompt and run state.

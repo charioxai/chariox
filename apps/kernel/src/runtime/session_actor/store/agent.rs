@@ -259,7 +259,17 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
-        let slice_ref_for_agent = slice_admission.slice_ids[0].clone();
+        let slice_ref_for_agent = match slice_admission.slice_ids.as_slice() {
+            [slice_ref] => slice_ref.clone(),
+            _ => {
+                return self
+                    .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                        operation: "agent.spawn",
+                        message: "slice admission target count mismatch".to_string(),
+                    }))
+                    .await;
+            }
+        };
         let slice_kernel_ref = match slice_ref_for_agent.as_deref() {
             Some(slice_ref) => {
                 let session = match self.state.session_snapshot(&request.session_id).await {
@@ -395,6 +405,14 @@ impl SessionRuntimeStore {
         let workspace_id = session.workspace_id().to_string();
         let default_worktree_id = session.worktree_id().to_string();
 
+        if slice_admission.slice_ids.len() != request.agents.len() {
+            return self
+                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    operation: "agents.spawn",
+                    message: "slice admission target count mismatch".to_string(),
+                }))
+                .await;
+        }
         let mut slice_kernel_refs = HashMap::<String, String>::new();
         let mut create_requests = Vec::with_capacity(request.agents.len());
         let mut slice_refs_for_agents = Vec::with_capacity(request.agents.len());

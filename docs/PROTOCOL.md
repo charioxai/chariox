@@ -589,6 +589,8 @@ The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgen
 
 `SpawnAgent` and successful `SpawnAgents` batches retain the canonical slice identity from admission through worktree-scope validation and attachment, including when the caller supplies a known worker alias or ID instead of `slice_ref`. Mixed batches preserve local target slots and share one guard across aliases of the same slice. Public deletion releases worker execution before deleting the shared home-agent record once and detaching it from its recorded slices. Session-creation alias attachment and partial-batch failure reconciliation remain outstanding; this checkpoint does not enable multi-Room browser execution.
 
+If worker cleanup cannot be confirmed, public deletion returns an explicit cleanup-retry error and retains the home agent and slice membership. An unreachable worker is not evidence that its agent stopped; deletion must not silently forget a potentially live execution. Reconciliation after a worker loses its lease state, and retries after partial worker cleanup, require separate failure-path validation.
+
 A full Environment snapshot carries at least:
 
 - `session_id`
