@@ -2,6 +2,36 @@ use super::*;
 use crate::local::{BindRoomEnvironmentSliceRequest, RoomEnvironmentSliceBinding};
 
 impl KernelRuntimeState {
+    pub(crate) fn guard_slice_execution<'a>(
+        &self,
+        session_id: Option<&str>,
+        targets: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
+        operation: &'static str,
+    ) -> Result<Vec<crate::slice::SliceOperationGuard>, DaemonError> {
+        let slices = &self.owned.slice_store;
+        let mut slice_ids = std::collections::BTreeSet::new();
+        for (slice_ref, kernel_ref) in targets {
+            let slice = match (slice_ref, kernel_ref) {
+                (Some(_), Some(_)) => {
+                    return Err(DaemonError::LocalTransport {
+                        operation,
+                        message: "use either kernel_ref or slice_ref, not both".to_string(),
+                    });
+                }
+                (Some(reference), None) => Some(slices.resolve(reference)?),
+                (None, Some(reference)) => slices.resolve_by_worker_kernel_ref(reference),
+                (None, None) => None,
+            };
+            if let Some(slice) = slice {
+                slice_ids.insert(slice.id);
+            }
+        }
+        slice_ids
+            .iter()
+            .map(|id| slices.guard_environment_use(id, session_id, operation))
+            .collect()
+    }
+
     pub(crate) fn room_environment_slice(
         &self,
         session_id: &str,

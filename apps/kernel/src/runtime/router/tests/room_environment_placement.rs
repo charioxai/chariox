@@ -1,6 +1,8 @@
 use super::*;
 use serde_json::{json, Value};
 
+mod execution;
+
 fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
     std::thread::Builder::new()
         .stack_size(64 * 1024 * 1024)

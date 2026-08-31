@@ -1,6 +1,33 @@
 use super::*;
 
 impl SliceStore {
+    pub(crate) fn guard_environment_use(
+        &self,
+        slice_ref: &str,
+        session_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        let guard = self.try_begin_operation(slice_ref, operation)?;
+        // Re-read under the operation marker: binding cannot change until admission ends.
+        let state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let slice = state
+            .records
+            .get(&guard.slice_id)
+            .ok_or_else(|| access_error("unknown slice"))?;
+        // Discovery may have changed identities since the Room was bound. Check
+        // direct slice references too, not only alias lookups.
+        if has_shared_worker(slice, &state) {
+            return Err(access_error(
+                "slice worker reference is shared by another slice",
+            ));
+        }
+        require_environment_session(slice, session_id)?;
+        Ok(guard)
+    }
+
     pub(crate) fn environment_slice(&self, session_id: &str) -> Option<SliceRecord> {
         self.inner
             .lock()
@@ -37,10 +64,7 @@ impl SliceStore {
         if slice.display_mode != super::super::SliceDisplayMode::Headed {
             return Err(binding_error("Room Environment requires a headed slice"));
         }
-        if state.records.values().any(|other| {
-            other.id != slice.id
-                && worker_refs(other).any(|left| worker_refs(slice).any(|right| left == right))
-        }) {
+        if has_shared_worker(slice, &state) {
             return Err(binding_error(
                 "slice worker reference is shared by another slice",
             ));
@@ -78,6 +102,34 @@ impl SliceStore {
         persist(&updated)?;
         state.records.insert(updated.id.clone(), updated.clone());
         Ok(updated)
+    }
+}
+
+fn require_environment_session(
+    slice: &SliceRecord,
+    session_id: Option<&str>,
+) -> Result<(), DaemonError> {
+    if slice
+        .environment_session_id
+        .as_deref()
+        .is_some_and(|owner| Some(owner) != session_id)
+    {
+        return Err(access_error("slice belongs to another Room"));
+    }
+    Ok(())
+}
+
+fn has_shared_worker(slice: &SliceRecord, state: &SliceStoreState) -> bool {
+    state.records.values().any(|other| {
+        other.id != slice.id
+            && worker_refs(other).any(|left| worker_refs(slice).any(|right| left == right))
+    })
+}
+
+fn access_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "environment.slice.access",
+        message: format!("environment_slice_access_denied: {message}"),
     }
 }
 

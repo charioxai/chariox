@@ -193,6 +193,14 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
+        let _slice_guards = match self.state.guard_slice_execution(
+            Some(&request.session_id),
+            [(request.slice_ref.as_deref(), request.kernel_ref.as_deref())],
+            "agent.spawn",
+        ) {
+            Ok(guards) => guards,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         let defaults = session.agent_defaults();
         let model = request.model.or_else(|| defaults.model.clone());
         let effort = request.effort.or_else(|| defaults.effort.clone());
@@ -251,14 +259,6 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
-        if request.kernel_ref.is_some() && request.slice_ref.is_some() {
-            return self
-                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
-                    operation: "agent.spawn",
-                    message: "use either kernel_ref or slice_ref, not both".to_string(),
-                }))
-                .await;
-        }
         let slice_ref_for_agent = request.slice_ref.clone();
         let slice_kernel_ref = match request.slice_ref {
             Some(slice_ref) => {
@@ -376,6 +376,17 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
+        let _slice_guards = match self.state.guard_slice_execution(
+            Some(&request.session_id),
+            request
+                .agents
+                .iter()
+                .map(|item| (item.slice_ref.as_deref(), item.kernel_ref.as_deref())),
+            "agents.spawn",
+        ) {
+            Ok(guards) => guards,
+            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+        };
         let defaults = session.agent_defaults();
         let default_provider = defaults.provider.clone();
         let default_model = defaults.model.clone();
@@ -398,15 +409,6 @@ impl SessionRuntimeStore {
                     }))
                     .await;
             }
-            if item.kernel_ref.is_some() && item.slice_ref.is_some() {
-                return self
-                    .with_session_projection_action_result(Err(DaemonError::LocalTransport {
-                        operation: "agents.spawn",
-                        message: "use either kernel_ref or slice_ref, not both".to_string(),
-                    }))
-                    .await;
-            }
-
             let model = item.model.or_else(|| default_model.clone());
             let effort = item.effort.or_else(|| default_effort.clone());
             let execution_mode = item.execution_mode.or(default_execution_mode);
