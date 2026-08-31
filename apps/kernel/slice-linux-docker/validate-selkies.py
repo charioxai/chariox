@@ -152,6 +152,9 @@ def check_lifecycle(script, environment):
             raise AssertionError("crashed streamer still reported available")
         recovered = command("start")
         assert recovered["pid"] != first["pid"]
+        os.kill(recovered["pid"], signal.SIGSTOP)
+        assert command("stop", 1)["forced"] is True, "state-capture stop must report forced shutdown"
+        command("start")
         assert command("stop")["forced"] is False
         assert command("stop")["stopped"] is True
         assert command("status", 1)["available"] is False

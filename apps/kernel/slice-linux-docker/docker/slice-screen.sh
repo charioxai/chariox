@@ -221,7 +221,7 @@ start_desktop() {
   fi
   # Stop an owned previous Selkies process even when switching to noVNC.
   if [[ -x /opt/chariox-selkies/bin/python ]]; then
-    slice_selkies stop >/dev/null
+    slice_selkies stop --allow-forced >/dev/null
   fi
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"

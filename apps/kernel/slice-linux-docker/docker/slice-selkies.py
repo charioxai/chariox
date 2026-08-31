@@ -163,8 +163,9 @@ def start(directory):
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1] not in ("start", "status", "stop"):
-        raise ValueError("usage: slice-selkies.py start|status|stop")
+    allow_forced = sys.argv[1:] == ["stop", "--allow-forced"]
+    if not allow_forced and (len(sys.argv) != 2 or sys.argv[1] not in ("start", "status", "stop")):
+        raise ValueError("usage: slice-selkies.py start|status|stop [--allow-forced for stop only]")
     directory = state_directory()
     descriptor = os.open(directory / "lifecycle.lock", os.O_RDWR | os.O_CREAT, 0o600)
     with os.fdopen(descriptor, "w") as lock:
@@ -177,7 +178,7 @@ def main():
         else:
             result = public_status(read_state(directory))
         print(json.dumps(result))
-        return 0 if result.get("available", True) and not result.get("forced", False) else 1
+        return 0 if result.get("available", True) and (allow_forced or not result.get("forced", False)) else 1
 
 
 if __name__ == "__main__":

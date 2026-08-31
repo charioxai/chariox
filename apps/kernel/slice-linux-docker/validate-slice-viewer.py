@@ -22,6 +22,7 @@ def main():
         environment = {
             **os.environ, "HOME": scratch, "XDG_RUNTIME_DIR": scratch,
             "CHARIOX_SLICE_ROOT": scratch, "CHARIOX_SLICE_DISPLAY": ":92",
+            "DISPLAY": ":92",
             "CHARIOX_SLICE_SCREEN_GEOMETRY": "640x480x24",
             "CHARIOX_SLICE_VIEWER_BACKEND": "selkies", "OMP_NUM_THREADS": "1",
             "CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS": "",
@@ -34,6 +35,20 @@ def main():
             return result.stdout
 
         try:
+            # Reproduce a wedged streamer whose display has already exited.
+            display = subprocess.Popen(["Xvfb", ":92", "-screen", "0", "640x480x24", "-ac"],
+                                       env=environment, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            try:
+                for _ in range(50):
+                    if subprocess.run(["xdpyinfo"], env=environment, capture_output=True).returncode == 0:
+                        break
+                    time.sleep(0.1)
+                started = subprocess.run([sys.executable, str(root / "slice-selkies.py"), "start"],
+                                         env=environment, capture_output=True, text=True, check=True)
+                os.kill(json.loads(started.stdout)["pid"], signal.SIGSTOP)
+            finally:
+                display.terminate()
+                display.wait(timeout=5)
             assert "available=true" in screen("start")
             assert "viewer=http://127.0.0.1:6080/\n" in screen("status")
             current = subprocess.run([sys.executable, str(root / "slice-selkies.py"), "status"],
@@ -70,6 +85,7 @@ def main():
                 with socket.socket() as probe:
                     assert probe.connect_ex(("127.0.0.1", port)) != 0, port
             print(json.dumps({"desktop_lifecycle": "pass", "browser_survives_streamer_crash": "pass",
+                              "wedged_streamer_restart": "pass",
                               "silent_fallback": "absent", "explicit_novnc_rollback": "pass",
                               "cleanup": "pass"}))
         except BaseException:

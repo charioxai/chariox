@@ -88,6 +88,9 @@ serializes lifecycle commands, records PID plus process creation time, refuses
 to signal a reused PID, and rotates its private control token on restart.
 Startup checks HTTP health and verifies the private control credential before
 reporting ready. Stop uses TERM, waits, and reports a forced stop as failure.
+Fresh-start cleanup uses `stop --allow-forced`, which permits recovery after
+confirmed forced termination. State-capture shutdown uses strict `stop` and
+continues to report forced termination as a failure.
 An empty viewer table denies anonymous input and video until the kernel
 provisions a scoped viewer. Tokens never appear in status output.
 
