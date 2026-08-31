@@ -641,17 +641,15 @@ impl KernelRuntimeState {
             .collect::<Vec<_>>();
         self.owned
             .ensure_agent_owner(agent.id(), caller_user_id, "destroy agent")?;
-        let destroyed = if agent.remote_execution().is_none() {
-            self.owned.destroy_agent(agent_id, caller_user_id)?
-        } else {
-            let destroyed = self
-                .with_app_side_effect(|app| {
-                    crate::app::KernelSessionService::new(app).destroy_agent(agent_id)
-                })
-                .await?;
-            self.owned.destroy_agent(agent_id, caller_user_id)?;
-            destroyed
-        };
+        if agent.remote_execution().is_some() {
+            self.with_app_side_effect(|app| {
+                crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
+            })
+            .await?;
+        }
+        // The app and runtime share the agent store. Delete once, after worker
+        // cleanup, through the owner that also clears prompt and run state.
+        let destroyed = self.owned.destroy_agent(agent_id, caller_user_id)?;
         for slice_ref in slice_refs {
             let slice = self.owned.slice_store.detach_agent(
                 &slice_ref,
@@ -664,10 +662,8 @@ impl KernelRuntimeState {
                 serde_json::json!({ "slice": &slice }),
             )?;
         }
-        if agent.remote_execution().is_none() {
-            self.append_agent_durable_event("agent.deleted", &destroyed, None)
-                .await?;
-        }
+        self.append_agent_durable_event("agent.deleted", &destroyed, None)
+            .await?;
         Ok(destroyed)
     }
 

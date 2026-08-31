@@ -2,6 +2,7 @@ use super::*;
 use serde_json::{json, Value};
 
 mod execution;
+mod live_worker;
 
 fn run_test<F: std::future::Future<Output = ()> + 'static>(test: fn() -> F) {
     std::thread::Builder::new()

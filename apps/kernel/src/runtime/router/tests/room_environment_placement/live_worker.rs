@@ -1,0 +1,197 @@
+use super::*;
+use chariox_relay::{RelayConfig, RelayServer};
+use tokio::sync::watch;
+use tokio::task::JoinHandle;
+use tokio::time::{timeout, Duration};
+
+struct LiveWorker {
+    home: Arc<CommandRouter>,
+    rooms: Vec<String>,
+    shutdown: watch::Sender<bool>,
+    tasks: Vec<JoinHandle<()>>,
+    address: std::net::SocketAddr,
+    worktree: std::path::PathBuf,
+    _home_state: TestState,
+    _worker_state: TestState,
+}
+
+impl LiveWorker {
+    async fn start() -> Self {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let relay = Arc::new(RelayServer::new(RelayConfig {
+            host: address.ip().to_string(),
+            port: address.port(),
+            shared_token: Some("environment-worker-fixture".to_string()),
+        }));
+        let registry = relay.registry();
+        let (shutdown, receiver) = watch::channel(false);
+        let mut relay_shutdown = receiver.clone();
+        let relay_task = tokio::spawn(async move {
+            relay
+                .run_listener_until(listener, async {
+                    let _ = relay_shutdown.changed().await;
+                })
+                .await
+                .unwrap();
+        });
+
+        let mut home_state = TestState::new();
+        let mut worker_state = TestState::new();
+        for state in [&mut home_state, &mut worker_state] {
+            state.config.relay_url = Some(format!("ws://{address}"));
+            state.config.relay_token = Some("environment-worker-fixture".to_string());
+            state.config.relay_heartbeat_ms = 50;
+        }
+        home_state.config.daemon_id = "environment-home".to_string();
+        worker_state.config.daemon_id = "environment-worker".to_string();
+        worker_state.config.daemon_alias = Some("desktop-worker".to_string());
+        worker_state.config.host_machine_id = "slice:slice-1".to_string();
+        let (home, rooms) = home_state.router();
+        let home = Arc::new(home);
+        let worker = Arc::new(CommandRouter::with_interactive_capacity(
+            Arc::new(Mutex::new(
+                DaemonApp::bootstrap(worker_state.config.clone()).unwrap(),
+            )),
+            2,
+        ));
+        let worktree = home_state.root.join("leased-worktree");
+        let mut fixture = Self {
+            home: Arc::clone(&home),
+            rooms,
+            shutdown,
+            tasks: vec![relay_task],
+            address,
+            worktree,
+            _home_state: home_state,
+            _worker_state: worker_state,
+        };
+        for router in [home, worker] {
+            let state = router.app.lock().await.relay_client_state();
+            fixture.tasks.push(tokio::spawn(
+                crate::transport::relay_client::run_daemon_relay_connector_with_router(
+                    router,
+                    state,
+                    receiver.clone(),
+                ),
+            ));
+        }
+        timeout(Duration::from_secs(10), async {
+            loop {
+                let registered = {
+                    let registry = registry.read().await;
+                    registry.daemon("environment-home").is_some()
+                        && registry.daemon("environment-worker").is_some()
+                };
+                if registered {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("both kernels register with the real relay");
+        fixture
+    }
+
+    async fn stop(&mut self) {
+        let _ = self.shutdown.send(true);
+        let mut failures = Vec::new();
+        for mut task in self.tasks.drain(..) {
+            match timeout(Duration::from_secs(5), &mut task).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => failures.push(error.to_string()),
+                Err(_) => {
+                    task.abort();
+                    let _ = task.await;
+                    failures.push("fixture task did not stop".to_string());
+                }
+            }
+        }
+        assert!(failures.is_empty(), "fixture shutdown: {failures:?}");
+        drop(
+            tokio::net::TcpListener::bind(self.address)
+                .await
+                .expect("relay port released"),
+        );
+    }
+}
+
+impl Drop for LiveWorker {
+    fn drop(&mut self) {
+        let _ = self.shutdown.send(true);
+        for task in &self.tasks {
+            task.abort();
+        }
+        if self.worktree.exists() {
+            let result = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&self.worktree)
+                .output()
+                .expect("remove drill worktree");
+            assert!(
+                result.status.success(),
+                "worktree cleanup: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
+    }
+}
+
+#[test]
+fn room_environment_worker_spawn_and_destroy_use_public_commands() {
+    run_test(spawn_and_destroy_use_public_commands);
+}
+
+async fn spawn_and_destroy_use_public_commands() {
+    let mut fixture = LiveWorker::start().await;
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent": {
+            "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
+            "kernel_ref":"desktop-worker", "worktree_placement":{
+                "target_directory":fixture.worktree, "from_ref":"HEAD"
+            }
+        }}),
+    )
+    .await
+    .expect("spawn a real leased agent through the home router and relay");
+    let agent = &spawned["AgentSpawned"]["agent"];
+    let agent_id = agent["id"].as_str().unwrap();
+    let before = dispatch_json(
+        &fixture.home,
+        json!({"ListAgents":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    assert!(before["AgentsListed"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|agent| agent["id"] == agent_id));
+    let destroyed = dispatch_json(
+        &fixture.home,
+        json!({"DestroyAgent": {
+            "session_id":fixture.rooms[0], "agent_id":agent_id
+        }}),
+    )
+    .await
+    .expect("destroy the leased agent through the public command");
+    let after = dispatch_json(
+        &fixture.home,
+        json!({"ListAgents":{"session_id":fixture.rooms[0]}}),
+    )
+    .await
+    .unwrap();
+    fixture.stop().await;
+    assert_eq!(
+        agent["remote_execution"]["worker_kernel_id"],
+        "environment-worker"
+    );
+    assert_eq!(destroyed["AgentDestroyed"]["agent"]["id"], agent_id);
+    assert!(after["AgentsListed"]["agents"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|agent| agent["id"] != agent_id));
+}

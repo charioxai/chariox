@@ -647,8 +647,10 @@ impl<'a> KernelSessionService<'a> {
         Ok(())
     }
 
-    pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
-        let agent = self.app.agents.get_agent(agent_id)?;
+    pub(crate) fn destroy_agent_worker_execution(
+        &mut self,
+        agent: &AgentInstance,
+    ) -> Result<(), DaemonError> {
         if let Some(remote) = agent.remote_execution().cloned() {
             let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(remote.worker_kernel_id.clone()),
@@ -673,6 +675,12 @@ impl<'a> KernelSessionService<'a> {
                 ),
             )?;
         }
+        Ok(())
+    }
+
+    pub(crate) fn destroy_agent(&mut self, agent_id: &str) -> Result<AgentInstance, DaemonError> {
+        let agent = self.app.agents.get_agent(agent_id)?;
+        self.destroy_agent_worker_execution(&agent)?;
         let session_id = agent.session_id().to_string();
         let session_store = self.app.session_state_store();
         let mut sessions = session_store.write();
