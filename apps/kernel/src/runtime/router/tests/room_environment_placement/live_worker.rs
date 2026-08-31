@@ -7,6 +7,7 @@ use tokio::time::{timeout, Duration};
 mod batch;
 mod cleanup;
 mod controller;
+mod controller_cancellation;
 mod controller_mutations;
 mod controller_observations;
 mod lease_release;

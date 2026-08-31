@@ -748,6 +748,13 @@ Takeover emits ordered Action and ownership events. Every attached client projec
 
 Explicit Action cancellation carries only the Room and Action IDs. The kernel derives the caller's Actor. An Actor may cancel its own work; a human may cancel an agent Action only while owning or awaiting takeover of at least one affected input target. Repeated cancellation is idempotent. Cancelling queued work may promote the next eligible Action, while cancelling running work only requests controller cancellation and retains all reservations until a terminal result arrives.
 
+Authenticated cancellation derives readiness from the recorded Action's mode,
+using the same browser-component readiness as action admission and takeover.
+It does not require the desktop to finish starting before accepting cancellation
+of an admitted browser Action. Actor and target-ownership checks still apply.
+The relay drill covers a pending human owner cancelling while a second Action
+is queued; physical interruption of running input remains separate validation.
+
 Release is explicit. Disconnect may start a bounded expiry policy, but reconnect during that interval retains ownership. Expiry emits an ownership event and leaves the target unowned. It never assigns an agent automatically.
 
 ### Viewport contract

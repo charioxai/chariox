@@ -499,13 +499,16 @@ impl RoomEnvironment {
         actor: EnvironmentActor,
         action_id: &str,
     ) -> Result<ActionCancellationOutcome, EnvironmentError> {
+        let lifecycle = self
+            .action_ledger
+            .action(action_id)
+            .map(|action| self.input_lifecycle(action.mode))
+            .unwrap_or(self.lifecycle);
         if !matches!(
-            self.lifecycle,
+            lifecycle,
             EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
         ) {
-            return Err(EnvironmentError::EnvironmentNotReady {
-                lifecycle: self.lifecycle,
-            });
+            return Err(EnvironmentError::EnvironmentNotReady { lifecycle });
         }
         let mut actors = self.actors.clone();
         if let Some(existing) = actors.get(&actor.actor_id) {

@@ -1,7 +1,7 @@
 // Run the production Chariox controller. Only external Chromium/CDP responses
 // are synthetic; kernel routing, relay encryption and controller stdio are real.
-import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [directory, pidFile] = process.argv.slice(2);
@@ -45,6 +45,11 @@ const chromium = {
       }
       case "Runtime.callFunctionOn": {
         if (!["worker-save", "worker-note"].includes(params.objectId)) throw new Error("wrong worker object");
+        // External page fault injection: keep the button disabled until the
+        // test releases it. No Chariox state or controller behavior is mocked.
+        if (params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) {
+          return { result: { value: { state: "disabled" } } };
+        }
         if (params.functionDeclaration.includes("requestSubmit")) {
           submitted = note;
           return { result: { value: { ok: true } } };
