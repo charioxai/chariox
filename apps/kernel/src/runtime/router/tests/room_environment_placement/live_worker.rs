@@ -438,6 +438,13 @@ async fn cleanup_failure_preserves_agent_and_slice() {
         std::error::Error::source(&error).is_some(),
         "cleanup diagnostics must retain the underlying failure: {error}"
     );
+    let websocket_error = crate::transport::kernel_protocol::map_kernel_error(&error);
+    assert_eq!(websocket_error.code, "local_transport_error");
+    assert!(
+        websocket_error.retryable,
+        "WebSocket clients must retain the transport retry classification"
+    );
+    assert!(websocket_error.message.contains("agent retained"));
     let error = error.to_string();
     assert!(
         error.contains("agent retained") && error.contains("retry"),

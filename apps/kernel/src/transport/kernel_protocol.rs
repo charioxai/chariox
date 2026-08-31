@@ -733,6 +733,11 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
+        DaemonError::AgentWorkerCleanup { source, .. } => {
+            let mut mapped = map_kernel_error(source);
+            mapped.message = error.to_string();
+            mapped
+        }
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)
