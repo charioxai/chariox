@@ -20,7 +20,10 @@ impl KernelRuntimeState {
         tool_name: &str,
         arguments: serde_json::Value,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let Some(slice_id) = self.slice_kernel_id() else {
+        let Some(slice_id) = self
+            .room_browser_slice_for_tool(provider_run.session_id(), tool_name)
+            .or_else(|| self.slice_kernel_id())
+        else {
             return Err(DaemonError::LocalTransport {
                 operation: "dispatch_slice_runtime_tool_call",
                 message: "slice runtime tools are only available inside Chariox slices".to_string(),
@@ -147,7 +150,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_paste_secret_to_slice",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_paste_secret_to_slice_tool_result(
                             provider_run,
@@ -222,7 +225,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_open_url",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_open_url_compatibility_tool_result(
                             provider_run,
@@ -235,7 +238,7 @@ impl KernelRuntimeState {
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
             }
             crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_status_tool_result(provider_run, &slice_id, agent_id)
                         .await;
@@ -251,7 +254,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_find",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_find_tool_result(
                             provider_run,
@@ -278,7 +281,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_fill",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_fill_tool_result(
                             provider_run,
@@ -306,7 +309,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_click",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_click_tool_result(
                             provider_run,
@@ -333,7 +336,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_submit",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_submit_tool_result(
                             provider_run,
@@ -360,7 +363,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_dialog",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_dialog_tool_result(
                             provider_run,
@@ -378,7 +381,7 @@ impl KernelRuntimeState {
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_text_tool_result(provider_run, &slice_id, agent_id)
                         .await;
@@ -399,7 +402,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_text",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_wait_for_text_tool_result(
                             provider_run,
@@ -426,7 +429,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_selector",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_wait_for_selector_compatibility_tool_result(
                             provider_run,
@@ -453,7 +456,7 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_idle",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_process_enabled() {
+                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
                     return self
                         .controller_browser_wait_for_idle_compatibility_tool_result(
                             provider_run,

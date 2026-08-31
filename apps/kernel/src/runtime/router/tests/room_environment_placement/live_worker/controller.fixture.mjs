@@ -18,6 +18,18 @@ const chromium = {
       case "Target.attachToTarget": return { sessionId: "worker-cdp-session" };
       case "Page.getFrameTree": return { frameTree: { frame: { id: "worker-frame", loaderId: "worker-document" } } };
       case "Runtime.evaluate": return { result: { value: true } };
+      case "Accessibility.getFullAXTree": return { nodes: [{
+        nodeId: "ax-save", backendDOMNodeId: 103, ignored: false,
+        role: { value: "button" }, name: { value: "Save on worker" },
+        properties: [{ name: "focused", value: { value: true } }],
+      }] };
+      case "DOMSnapshot.captureSnapshot": return {
+        strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/"],
+        documents: [{ documentURL: 4, nodes: {
+          parentIndex: [-1, 0], nodeType: [9, 1], nodeName: [0, 1],
+          nodeValue: [2, 3], backendNodeId: [100, 103], attributes: [[], []],
+        }, layout: { nodeIndex: [1], bounds: [[10, 20, 100, 30]] } }],
+      };
       case "Target.setDiscoverTargets":
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":

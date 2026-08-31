@@ -10,13 +10,24 @@ use crate::session::CanonicalViewport;
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerCommand {
     Acquire,
-    Reconcile { viewport: CanonicalViewport },
+    Reconcile {
+        viewport: CanonicalViewport,
+    },
+    Snapshot {
+        target_id: String,
+        document_id: String,
+    },
     Release,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    Snapshot {
+        snapshot: Option<
+            crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,
+        >,
+    },
     Process {
         snapshot: Option<BrowserControllerProcessSnapshot>,
     },

@@ -606,9 +606,18 @@ An already-running worker without this binding rejects controller access. It
 must be restarted through the provisioner after binding the Room; binding alone
 does not restart running agents. Older workers reject the new request variant
 and require an upgrade before this routing can be used. This checkpoint routes
-startup, reconciliation, and shutdown only. Structured actions, observations,
-events, file operations, agent MCP forwarding, and secure viewers still require
-the remaining routing work before product enablement. Existing clients' minimum
+startup, reconciliation, and shutdown. Protocol v284 and relay peer v20 extend
+the same authenticated route with structured snapshots. The worker validates
+the target/document and returns bounded physical observations; the home validates
+them again and assigns Room-owned opaque element references. Home agents in a
+bound Room can discover and call the existing status, find, text, and text-wait
+runtime tools without running inside the slice. Tool discovery and dispatch
+derive the slice from the provider run's Room, never from caller-supplied IDs.
+Unbound home agents do not gain access to local screen helpers.
+
+Structured actions, events, file operations, worker-agent MCP forwarding, and
+secure viewers still require the remaining routing work before product enablement.
+Existing clients' minimum
 versions remain unchanged because their public request shapes have not changed.
 
 The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission also rejects shared worker identities, including collisions discovered after binding, for direct slice references as well as worker lookups. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice with an unambiguous worker keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.

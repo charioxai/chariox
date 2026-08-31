@@ -468,7 +468,7 @@ The kernel owns:
 - save, restore, reset, reconnect, and recovery reconciliation
 - Browser mode and Computer mode projections
 
-The worker that hosts a slice owns its local browser, Browser Controller, streamer, desktop, and input processes. This is execution ownership only. The home kernel remains the Room and Environment authority and reconciles worker state through the existing leased-agent path.
+The worker that hosts a slice owns its local browser, Browser Controller, streamer, desktop, and input processes. This is execution ownership only. The home kernel remains the Room and Environment authority. Agent execution uses the existing leased-agent path; physical browser lifecycle and observations use the authenticated Room controller route over the same encrypted peer transport and do not require an agent lease.
 
 Cloud may authenticate the user, provision a machine, issue scoped relay credentials, and render the Environment projection. It must not proxy runtime display or input traffic, assign tab identity, order Actions, or store browser and desktop history. The relay transports encrypted runtime and display packets without inspecting them.
 
@@ -503,7 +503,7 @@ The opt-in local controller store currently enforces this binding for its own li
 
 The home kernel now records explicit physical placement in `SliceRecord.environment_session_id` through protocol v282. The slice store serializes competing claims and commits the reservation before publishing it. Reverse Room lookup is derived from those records, not a second mutable index. Bindings survive kernel replay and are not cleared by controller stop. Public single/batch agent spawn, session creation, and agent move requests preflight known slice reservations before worktree preparation, provider-run termination, or worker contact. They hold the existing slice operation guards through admission and attachment; batch requests acquire each canonical slice once. Creating a new Room cannot enter an already-reserved slice. Ordinary remote kernels and unassigned legacy slices retain their existing admission behavior.
 
-This home-side admission check is not the complete execution security boundary. Controller routing, worker-side authenticated enforcement, secure viewer admission, and complete Environment-state recovery remain unfinished. Other internal execution entry points and successful worker-alias attachment reconciliation still require the live worker validation pass. Existing controller paths must not be presented as placement-aware until those paths consume the binding.
+The Room controller route validates the provisioned home key/kernel/Room/slice tuple on the worker. Lifecycle and structured observations consume the persisted placement, while the home assigns stable tabs and opaque element references. Home-agent browser read tools use that same route. This is not the complete execution security boundary: mutation and file/event routing, worker-agent browser tool forwarding, secure viewer admission, and complete Environment-state recovery remain unfinished. The local relay fixtures prove routing and isolation, not real-provider, graphical-client, or managed-machine acceptance.
 
 Tab rules:
 

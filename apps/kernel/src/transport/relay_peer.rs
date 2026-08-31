@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 19 adds provisioner-scoped Room browser controller lifecycle over
-/// the existing encrypted home-worker channel, without an agent lease.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 19;
+/// Version 20 adds structured observations to the provisioner-scoped Room
+/// controller route, retaining home-owned tab and element identities.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 20;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -453,7 +453,7 @@ pub enum RelayPeerRequest {
     },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
     RoomBrowserController {

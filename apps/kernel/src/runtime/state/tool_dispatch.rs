@@ -69,9 +69,7 @@ impl KernelRuntimeState {
                     }),
             );
             specs.extend(crate::transport::runtime_tools::recall_runtime_tool_specs());
-            if self.slice_kernel_id().is_some() {
-                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
-            }
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
             return specs;
         }
         if matches!(provider_runs.as_slice(), [_]) {
@@ -86,9 +84,7 @@ impl KernelRuntimeState {
             specs.extend(self.script_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(self.connector_runtime_tool_specs_for_auth_token(auth_token));
             specs.extend(crate::transport::runtime_tools::credential_runtime_tool_specs());
-            if self.slice_kernel_id().is_some() {
-                specs.extend(crate::transport::runtime_tools::slice_runtime_tool_specs());
-            }
+            specs.extend(self.slice_tool_specs_for_provider_runs(&provider_runs));
         }
         // MCP discovery runs independently of the app mutex.  Leased-run identity is
         // projected into the lock-free provider projection when the lease launches or
@@ -175,7 +171,9 @@ impl KernelRuntimeState {
                 crate::transport::runtime_tools::canonical_meta_tool_name(tool_name).is_some();
             let is_metaagent_allowed_direct_tool = is_metaagent_direct_runtime_tool_allowed(
                 canonical_tool_name,
-                self.slice_kernel_id().is_some(),
+                self.slice_kernel_id().is_some()
+                    || matches!(provider_runs.as_slice(), [run]
+                    if self.room_browser_slice_for_tool(run.session_id(), canonical_tool_name).is_some()),
             );
             if is_metaagent_auth_token && !is_meta_tool && !is_metaagent_allowed_direct_tool {
                 return Ok(crate::transport::runtime_tools::RuntimeToolResult {
@@ -413,6 +411,41 @@ impl KernelRuntimeState {
             )
             .await
         }
+    }
+
+    fn slice_tool_specs_for_provider_runs(
+        &self,
+        runs: &[crate::provider::RuntimeProviderRun],
+    ) -> Vec<crate::transport::runtime_tools::RuntimeToolSpec> {
+        crate::transport::runtime_tools::slice_runtime_tool_specs()
+            .into_iter()
+            .filter(|spec| {
+                self.slice_kernel_id().is_some()
+                    || matches!(runs, [run]
+                if self.room_browser_slice_for_tool(run.session_id(), &spec.name).is_some())
+            })
+            .collect()
+    }
+
+    fn room_browser_slice_for_tool(&self, session_id: &str, tool_name: &str) -> Option<String> {
+        use crate::transport::runtime_tools::*;
+        // Advertise only operations whose physical worker path is implemented.
+        // Never run the legacy screen helper on a home machine as a fallback.
+        if !matches!(
+            canonical_slice_tool_name(tool_name),
+            Some(
+                SLICE_BROWSER_STATUS_TOOL
+                    | SLICE_BROWSER_FIND_TOOL
+                    | SLICE_BROWSER_TEXT_TOOL
+                    | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+            )
+        ) {
+            return None;
+        }
+        self.owned
+            .slice_store
+            .environment_slice(session_id)
+            .map(|slice| slice.id)
     }
 
     fn slice_kernel_id(&self) -> Option<String> {

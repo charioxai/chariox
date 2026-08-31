@@ -201,26 +201,25 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.snapshot", error))?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let target_id = binding.runtime_target_id.clone();
-        let document_id = binding.document_id.clone();
-        let controller_snapshot = tokio::task::spawn_blocking(move || {
-            processes.capture_browser_snapshot(&owned_session_id, &target_id, &document_id)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.snapshot",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.snapshot",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
-            operation: "browser_controller.snapshot",
-            message: "browser controller is not enabled".to_string(),
-        })?;
+        let RoomBrowserControllerResult::Snapshot {
+            snapshot: Some(controller_snapshot),
+        } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Snapshot {
+                    target_id: binding.runtime_target_id.clone(),
+                    document_id: binding.document_id.clone(),
+                },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "browser controller did not return a snapshot",
+            ));
+        };
+        controller_snapshot
+            .validate(&binding.runtime_target_id, &binding.document_id)
+            .map_err(|message| controller_route_error(&message))?;
         let references = self
             .register_room_environment_element_references(
                 session_id,

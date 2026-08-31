@@ -164,6 +164,37 @@ async fn check_slice_controller(fixture: &LiveWorker) {
         environment["tabs"][0]["url"], "https://worker.test/",
         "Room tabs must come from its bound worker controller, not an empty home store"
     );
+    let token = {
+        let mut app = fixture.home.app.lock().await;
+        let agent = spawn_test_agent(&mut app, room, "browser-reader", "dev-stub");
+        launch_test_provider(&mut app, room, agent.id(), "dev-stub", "dev-stub", "test")
+            .runtime_mcp_auth_token()
+            .unwrap()
+            .to_string()
+    };
+    let status = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(&token, "slice_browser_status", json!({}))
+        .await
+        .expect("home Room agent reads its bound worker browser through runtime MCP");
+    assert!(status.ok, "{:?}", status.payload);
+    assert_eq!(status.payload["session_id"], *room);
+    assert_eq!(status.payload["tab_id"], environment["tabs"][0]["tab_id"]);
+    assert_eq!(
+        status.payload["browser"]["buttons"][0]["label"],
+        "Save on worker"
+    );
+    assert!(status.payload["browser"]["buttons"][0]["field_id"]
+        .as_str()
+        .is_some_and(|reference| reference.starts_with("element-")));
+    assert!(fixture
+        .home
+        .runtime_state
+        .runtime_tool_specs_for_auth_token(&token)
+        .iter()
+        .any(|spec| spec.name == "slice_browser_status"));
+    super::controller_observations::check(fixture, &token, &status.payload).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {
