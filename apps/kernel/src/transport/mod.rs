@@ -7,6 +7,7 @@ pub(crate) mod relay_crypto;
 pub(crate) mod relay_discovery;
 pub(crate) mod relay_peer;
 pub(crate) mod runtime_tools;
+pub(crate) mod secure_display;
 
 use crate::app::provider_output::{ProviderOutputPump, ProviderOutputPumpRequest};
 use crate::app::DaemonApp;
