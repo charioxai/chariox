@@ -75,7 +75,7 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     pub(crate) fn destroy_execution_lease(&mut self, lease_id: &str) -> Result<(), DaemonError> {
-        let Some(_) = self.app.execution_leases.remove(lease_id) else {
+        if !self.app.execution_leases.contains_key(lease_id) {
             return if self
                 .app
                 .completed_execution_lease_deletions
@@ -88,10 +88,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
                     lease_id: lease_id.to_string(),
                 })
             };
-        };
-        self.app
+        }
+        let agent_ids = self
+            .app
             .leased_agents
-            .retain(|_, agent| agent.lease_id != lease_id);
+            .values()
+            .filter(|agent| agent.lease_id == lease_id)
+            .map(|agent| agent.id.clone())
+            .collect::<Vec<_>>();
+        for agent_id in agent_ids {
+            self.destroy_leased_agent(&agent_id)?;
+        }
+        self.app.execution_leases.remove(lease_id);
         remember_completed_cleanup(&mut self.app.completed_execution_lease_deletions, lease_id);
         Ok(())
     }

@@ -6,10 +6,12 @@ use tokio::time::{timeout, Duration};
 
 mod batch;
 mod cleanup;
+mod lease_release;
 mod session;
 
 struct LiveWorker {
     home: Arc<CommandRouter>,
+    worker: Arc<CommandRouter>,
     rooms: Vec<String>,
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
@@ -87,6 +89,7 @@ impl LiveWorker {
         ));
         let mut fixture = Self {
             home: Arc::clone(&home),
+            worker: Arc::clone(&worker),
             rooms,
             shutdown,
             tasks,
