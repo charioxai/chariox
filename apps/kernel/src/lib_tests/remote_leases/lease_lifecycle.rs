@@ -11,10 +11,9 @@ fn execution_leases_are_enabled_by_default_and_can_be_disabled() {
     assert_eq!(lease.machine_id, config.host_machine_id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 1);
 
-    let removed = RemoteLeaseRuntime::new(&mut app)
+    RemoteLeaseRuntime::new(&mut app)
         .destroy_execution_lease(&lease.id)
         .expect("execution lease should be removed");
-    assert_eq!(removed.id, lease.id);
     assert_eq!(RemoteLeaseRuntime::new(&mut app).execution_lease_count(), 0);
 
     let mut disabled_config = DaemonConfig::for_tests();

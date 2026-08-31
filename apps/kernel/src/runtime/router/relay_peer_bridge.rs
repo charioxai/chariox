@@ -92,7 +92,7 @@ impl CommandRouter {
     pub(crate) async fn relay_destroy_execution_lease(
         &self,
         lease_id: &str,
-    ) -> Result<crate::execution_lease::ExecutionLease, DaemonError> {
+    ) -> Result<(), DaemonError> {
         relay_peer_runtime::destroy_relay_execution_lease(&self.runtime_state, lease_id).await
     }
 

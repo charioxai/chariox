@@ -9,6 +9,19 @@ fn room_environment_worker_cleanup_retries_after_agent_acknowledgement_loss() {
 }
 
 async fn cleanup_retries_after_agent_acknowledgement_loss() {
+    cleanup_retries_after_acknowledgement_loss(false).await;
+}
+
+#[test]
+fn room_environment_worker_cleanup_retries_after_lease_acknowledgement_loss() {
+    run_test(cleanup_retries_after_lease_acknowledgement_loss);
+}
+
+async fn cleanup_retries_after_lease_acknowledgement_loss() {
+    cleanup_retries_after_acknowledgement_loss(true).await;
+}
+
+async fn cleanup_retries_after_acknowledgement_loss(lease_also_deleted: bool) {
     let mut fixture = LiveWorker::start().await;
     fixture.create_slice().await;
     let placement = fixture.placement();
@@ -47,6 +60,23 @@ async fn cleanup_retries_after_agent_acknowledgement_loss() {
             leased_agent_id: remote.leased_agent_id.clone(),
         }
     );
+    if lease_also_deleted {
+        let second = send_peer_request_via_temporary_connection(
+            &fixture.home_state.config,
+            target.clone(),
+            RelayPeerRequest::DestroyExecutionLease {
+                lease_id: remote.execution_lease_id.clone(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            second,
+            RelayPeerResponse::ExecutionLeaseDestroyed {
+                lease_id: remote.execution_lease_id.clone(),
+            }
+        );
+    }
     let destroyed = dispatch_json(
         &fixture.home,
         json!({"DestroyAgent":{
@@ -72,7 +102,21 @@ async fn cleanup_retries_after_agent_acknowledgement_loss() {
         },
     )
     .await;
-    if destroyed.is_err() {
+    if lease_also_deleted {
+        let unknown_lease = send_peer_request_via_temporary_connection(
+            &fixture.home_state.config,
+            target.clone(),
+            RelayPeerRequest::DestroyExecutionLease {
+                lease_id: "never-created-lease".to_string(),
+            },
+        )
+        .await;
+        assert!(
+            unknown_lease.is_err(),
+            "an unknown lease must not count as completed cleanup"
+        );
+    }
+    if destroyed.is_err() && !lease_also_deleted {
         send_peer_request_via_temporary_connection(
             &fixture.home_state.config,
             target,

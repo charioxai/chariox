@@ -139,7 +139,7 @@ impl KernelRuntimeState {
     pub(crate) async fn destroy_relay_execution_lease(
         &self,
         lease_id: &str,
-    ) -> Result<ExecutionLease, DaemonError> {
+    ) -> Result<(), DaemonError> {
         let lease_id = lease_id.to_string();
         self.with_app_side_effect(move |app| {
             RemoteLeaseRuntime::new(app).destroy_execution_lease(&lease_id)

@@ -77,7 +77,7 @@ pub(crate) async fn create_relay_execution_lease(
 pub(crate) async fn destroy_relay_execution_lease(
     runtime_state: &KernelRuntimeState,
     lease_id: &str,
-) -> Result<ExecutionLease, DaemonError> {
+) -> Result<(), DaemonError> {
     runtime_state.destroy_relay_execution_lease(lease_id).await
 }
 

@@ -165,6 +165,7 @@ pub struct DaemonApp {
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
     completed_leased_agent_deletions: VecDeque<String>,
+    completed_execution_lease_deletions: VecDeque<String>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -284,6 +285,7 @@ impl DaemonApp {
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
             completed_leased_agent_deletions: VecDeque::new(),
+            completed_execution_lease_deletions: VecDeque::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:
