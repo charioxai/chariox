@@ -52,7 +52,7 @@ impl KernelRuntimeOwnedState {
         }
         if publication.id() != publication_id {
             return Err(materialization_error(
-                "publication runtime key is already bound to a different publication or snapshot",
+                "publication runtime key is already bound to a different publication",
             ));
         }
         if !session.is_hidden()
