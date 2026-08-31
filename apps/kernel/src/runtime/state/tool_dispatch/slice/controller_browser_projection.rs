@@ -170,14 +170,19 @@ pub(super) fn controller_browser_element_ref(
 pub(super) fn controller_browser_action_tool_result(
     slice_id: &str,
     agent_id: &str,
-    result: crate::runtime::browser_controller_action::RoomBrowserActionResult,
+    execution: crate::runtime::state::BrowserControllerActionExecution<
+        crate::runtime::browser_controller_action::RoomBrowserActionResult,
+    >,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let result = execution.value;
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "source": "browser_controller",
             "slice_id": slice_id,
             "agent_id": agent_id,
+            "actor_id": execution.actor_id,
+            "action_id": execution.action_id,
             "session_id": result.session_id,
             "environment_id": result.environment_id,
             "runtime_generation": result.runtime_generation,
@@ -201,14 +206,19 @@ pub(super) fn controller_secret_paste_tool_result(
     agent_id: &str,
     credential_id: &str,
     submitted: bool,
-    result: crate::runtime::browser_controller_action::RoomBrowserActionResult,
+    execution: crate::runtime::state::BrowserControllerActionExecution<
+        crate::runtime::browser_controller_action::RoomBrowserActionResult,
+    >,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let result = execution.value;
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "source": "browser_controller",
             "slice_id": slice_id,
             "agent_id": agent_id,
+            "actor_id": execution.actor_id,
+            "action_id": execution.action_id,
             "credential_id": credential_id,
             "submitted": submitted,
             "session_id": result.session_id,
@@ -229,14 +239,19 @@ pub(super) fn controller_secret_paste_tool_result(
 pub(super) fn controller_browser_dialog_tool_result(
     slice_id: &str,
     agent_id: &str,
-    result: crate::runtime::browser_controller_action::RoomBrowserDialogResult,
+    execution: crate::runtime::state::BrowserControllerActionExecution<
+        crate::runtime::browser_controller_action::RoomBrowserDialogResult,
+    >,
 ) -> crate::transport::runtime_tools::RuntimeToolResult {
+    let result = execution.value;
     crate::transport::runtime_tools::RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "source": "browser_controller",
             "slice_id": slice_id,
             "agent_id": agent_id,
+            "actor_id": execution.actor_id,
+            "action_id": execution.action_id,
             "session_id": result.session_id,
             "environment_id": result.environment_id,
             "runtime_generation": result.runtime_generation,

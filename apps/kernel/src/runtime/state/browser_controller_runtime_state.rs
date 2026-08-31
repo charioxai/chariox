@@ -290,6 +290,39 @@ impl KernelRuntimeState {
         ))
     }
 
+    pub(crate) async fn perform_browser_environment_locator_action_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        element_ref: &str,
+        action: crate::runtime::browser_controller_action::BrowserLocatorAction,
+        timeout_ms: u64,
+    ) -> Result<
+        super::BrowserControllerActionExecution<
+            crate::runtime::browser_controller_action::RoomBrowserActionResult,
+        >,
+        DaemonError,
+    > {
+        let element = self
+            .resolve_room_environment_element_reference(session_id, element_ref)
+            .map_err(|error| environment_runtime_error("browser_controller.action", error))?;
+        let action_kind = action.kind();
+        self.execute_browser_mutation_as_agent(
+            session_id,
+            agent_id,
+            &element.tab_id,
+            element.document_revision,
+            action_kind,
+            self.perform_browser_environment_locator_action(
+                session_id,
+                element_ref,
+                action,
+                timeout_ms,
+            ),
+        )
+        .await
+    }
+
     pub(crate) async fn handle_browser_environment_dialog(
         &self,
         session_id: &str,
@@ -342,6 +375,40 @@ impl KernelRuntimeState {
             tab_id.to_string(),
             binding.document_revision,
         ))
+    }
+
+    pub(crate) async fn handle_browser_environment_dialog_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        tab_id: &str,
+        action: crate::runtime::browser_controller_action::BrowserDialogAction,
+    ) -> Result<
+        super::BrowserControllerActionExecution<
+            crate::runtime::browser_controller_action::RoomBrowserDialogResult,
+        >,
+        DaemonError,
+    > {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| environment_runtime_error("browser_controller.dialog", error))?;
+        let tab = environment
+            .tabs
+            .iter()
+            .find(|candidate| candidate.tab_id == tab_id)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.dialog",
+                message: format!("Room browser tab `{tab_id}` is not available"),
+            })?;
+        self.execute_browser_mutation_as_agent(
+            session_id,
+            agent_id,
+            tab_id,
+            tab.document_revision,
+            "dialog",
+            self.handle_browser_environment_dialog(session_id, tab_id, action),
+        )
+        .await
     }
 
     pub(crate) async fn configure_browser_environment_downloads(

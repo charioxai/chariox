@@ -75,8 +75,9 @@ impl KernelRuntimeState {
             }
         };
         let result = self
-            .perform_browser_environment_locator_action(
+            .perform_browser_environment_locator_action_as_agent(
                 provider_run.session_id(),
+                agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
                     text: secret,
@@ -156,8 +157,9 @@ impl KernelRuntimeState {
             "runtime_tool_slice_browser_fill",
         )?;
         let result = self
-            .perform_browser_environment_locator_action(
+            .perform_browser_environment_locator_action_as_agent(
                 provider_run.session_id(),
+                agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
                     text: args.text,
@@ -185,8 +187,9 @@ impl KernelRuntimeState {
             "runtime_tool_slice_browser_click",
         )?;
         let result = self
-            .perform_browser_environment_locator_action(
+            .perform_browser_environment_locator_action_as_agent(
                 provider_run.session_id(),
+                agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
                 crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
@@ -227,8 +230,9 @@ impl KernelRuntimeState {
             Err(error) => return Err(error),
         };
         let result = self
-            .perform_browser_environment_locator_action(
+            .perform_browser_environment_locator_action_as_agent(
                 provider_run.session_id(),
+                agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Submit,
                 crate::runtime::browser_controller_action::MAX_BROWSER_ACTION_TIMEOUT_MS,
@@ -271,7 +275,12 @@ impl KernelRuntimeState {
                 message: "the Room browser has no focused tab".to_string(),
             })?;
         let result = self
-            .handle_browser_environment_dialog(provider_run.session_id(), &tab_id, action)
+            .handle_browser_environment_dialog_as_agent(
+                provider_run.session_id(),
+                agent_id,
+                &tab_id,
+                action,
+            )
             .await?;
         Ok(controller_browser_dialog_tool_result(
             slice_id, agent_id, result,

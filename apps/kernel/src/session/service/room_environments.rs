@@ -1,6 +1,7 @@
 use super::*;
 use crate::session::{
-    ActionCancellationOutcome, EnvironmentActor, EnvironmentComponent,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionRequest,
+    EnvironmentActionTerminal, EnvironmentActor, EnvironmentComponent,
     EnvironmentComponentHealthState, EnvironmentLifecycle, EnvironmentTabObservation, InputTarget,
     TakeoverOutcome,
 };
@@ -249,6 +250,34 @@ impl SessionService {
         }
         self.room_environments
             .resolve_element_reference(session_id, reference_id)
+    }
+
+    pub(crate) fn submit_room_environment_action(
+        &mut self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+    ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.submit_action(session_id, request)
+    }
+
+    pub(crate) fn finish_room_environment_action(
+        &mut self,
+        session_id: &str,
+        action_id: &str,
+        terminal: EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .finish_action(session_id, action_id, terminal)
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(

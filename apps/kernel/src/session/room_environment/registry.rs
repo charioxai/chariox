@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState,
-    EnvironmentError, EnvironmentLifecycle, EnvironmentReplay, EnvironmentTabObservation,
-    RoomEnvironment, RoomEnvironmentSnapshot,
+    ActionAdmission, CanonicalViewport, EnvironmentActionRequest, EnvironmentActionTerminal,
+    EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentLifecycle, EnvironmentReplay, EnvironmentTabObservation, RoomEnvironment,
+    RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -263,6 +264,37 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?
             .resolve_element_reference(reference_id)
+    }
+
+    pub(crate) fn submit_action(
+        &mut self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+    ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let admission = environment.submit_action(request)?;
+        Ok((admission, environment.snapshot()))
+    }
+
+    pub(crate) fn finish_action(
+        &mut self,
+        session_id: &str,
+        action_id: &str,
+        terminal: EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.finish_action(action_id, terminal)?;
+        Ok(environment.snapshot())
     }
 
     pub(crate) fn request_takeover_as_actor(

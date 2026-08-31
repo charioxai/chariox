@@ -415,6 +415,51 @@ fn observations_run_concurrently_and_mutations_serialize_per_target() {
 }
 
 #[test]
+fn starting_environment_admits_browser_actions_only_when_browser_components_are_ready() {
+    let mut environment = starting_environment_with_agent();
+    let tab_id = environment
+        .register_or_reconcile_tab("target-a", "https://a.test", "A")
+        .unwrap();
+
+    environment.update_component_health(
+        EnvironmentComponent::BrowserController,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    assert_eq!(
+        environment.submit_action(EnvironmentActionRequest::browser_mutation(
+            "agent-1", 1, "click", &tab_id, 1,
+        )),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Starting,
+        })
+    );
+
+    environment.update_component_health(
+        EnvironmentComponent::Browser,
+        EnvironmentComponentHealthState::Ready,
+        None,
+    );
+    assert!(matches!(
+        environment.submit_action(EnvironmentActionRequest::browser_mutation(
+            "agent-1", 1, "click", &tab_id, 1,
+        )),
+        Ok(ActionAdmission::Accepted { .. })
+    ));
+    assert_eq!(
+        environment.submit_action(EnvironmentActionRequest::computer_mutation(
+            "agent-1",
+            1,
+            "pointer-click",
+            Some(&tab_id),
+        )),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Starting,
+        })
+    );
+}
+
+#[test]
 fn action_lifecycle_records_submission_start_finish_and_redacted_outcome() {
     let mut environment = ready_environment_with_agent();
     let tab_id = environment
@@ -1687,6 +1732,20 @@ fn queued_action_id(admission: ActionAdmission) -> String {
 
 fn ready_environment_with_agent() -> RoomEnvironment {
     let mut environment = ready_environment();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+    environment
+}
+
+fn starting_environment_with_agent() -> RoomEnvironment {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment = RoomEnvironment::new("room-1", "environment-1", viewport).unwrap();
+    environment.start_runtime().unwrap();
     environment
         .register_actor(EnvironmentActor::new(
             "agent-1",

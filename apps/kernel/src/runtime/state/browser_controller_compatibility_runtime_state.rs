@@ -7,6 +7,47 @@ use crate::runtime::browser_controller_compatibility::{
 use super::KernelRuntimeState;
 
 impl KernelRuntimeState {
+    pub(crate) async fn navigate_browser_environment_compatibility_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        url: &str,
+    ) -> Result<
+        super::BrowserControllerActionExecution<BrowserControllerNavigationResult>,
+        DaemonError,
+    > {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: format!("{}: {error:?}", error.code()),
+            })?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: "the Room browser has no focused tab for navigate".to_string(),
+            })?;
+        let document_revision = environment
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .map(|tab| tab.document_revision)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: format!("Room browser tab `{tab_id}` is not available"),
+            })?;
+        self.execute_browser_mutation_as_agent(
+            session_id,
+            agent_id,
+            &tab_id,
+            document_revision,
+            "navigate",
+            self.navigate_browser_environment_compatibility(session_id, url),
+        )
+        .await
+    }
+
     pub(crate) async fn navigate_browser_environment_compatibility(
         &self,
         session_id: &str,

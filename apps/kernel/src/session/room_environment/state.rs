@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use super::action::{
     ActionAdmission, ActionCancellationOutcome, EnvironmentActionHistoryPage,
-    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode,
+    InputTarget,
 };
 use super::action_ledger::{
     ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
@@ -385,9 +386,17 @@ impl RoomEnvironment {
         &mut self,
         request: EnvironmentActionRequest,
     ) -> Result<ActionAdmission, EnvironmentError> {
+        let admission_lifecycle = if self.lifecycle == EnvironmentLifecycle::Starting
+            && request.mode == EnvironmentMode::Browser
+            && self.browser_components_ready()
+        {
+            EnvironmentLifecycle::Ready
+        } else {
+            self.lifecycle
+        };
         let admission = self.action_ledger.submit(
             request,
-            self.lifecycle,
+            admission_lifecycle,
             self.runtime_generation,
             &self.actors,
             &self.tabs,
@@ -402,6 +411,19 @@ impl RoomEnvironment {
             _ => {}
         }
         Ok(admission)
+    }
+
+    fn browser_components_ready(&self) -> bool {
+        [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ]
+        .into_iter()
+        .all(|component| {
+            self.health
+                .get(&component)
+                .is_some_and(|health| health.state == EnvironmentComponentHealthState::Ready)
+        })
     }
 
     pub fn finish_action(

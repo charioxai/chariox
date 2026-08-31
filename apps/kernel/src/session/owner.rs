@@ -364,6 +364,25 @@ impl SessionStateStore {
             .resolve_room_environment_element_reference(session_id, reference_id)
     }
 
+    pub(crate) fn submit_room_environment_action(
+        &self,
+        session_id: &str,
+        request: super::EnvironmentActionRequest,
+    ) -> Result<(super::ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.write()
+            .submit_room_environment_action(session_id, request)
+    }
+
+    pub(crate) fn finish_room_environment_action(
+        &self,
+        session_id: &str,
+        action_id: &str,
+        terminal: super::EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .finish_room_environment_action(session_id, action_id, terminal)
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &self,
         session_id: &str,

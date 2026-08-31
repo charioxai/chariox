@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 
 use crate::session::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
-    ActionCancellationOutcome, CanonicalViewport, EnvironmentActionHistoryPage, EnvironmentActor,
-    EnvironmentActorKind, EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, EnvironmentReplay, RoomEnvironmentSnapshot,
+    ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentActionHistoryPage,
+    EnvironmentActionRequest, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
+    EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError, EnvironmentLifecycle,
+    EnvironmentReplay, RoomEnvironmentSnapshot,
 };
 
 use super::KernelRuntimeState;
@@ -219,6 +220,27 @@ impl KernelRuntimeState {
         self.owned
             .session_store
             .resolve_room_environment_element_reference(session_id, reference_id)
+    }
+
+    pub(crate) fn submit_room_environment_action(
+        &self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+    ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.owned
+            .session_store
+            .submit_room_environment_action(session_id, request)
+    }
+
+    pub(crate) fn finish_room_environment_action(
+        &self,
+        session_id: &str,
+        action_id: &str,
+        terminal: EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .finish_room_environment_action(session_id, action_id, terminal)
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(

@@ -642,6 +642,13 @@ done
             action_value["result"]["structuredContent"]["browser"]["action_kind"],
             action
         );
+        assert_eq!(
+            action_value["result"]["structuredContent"]["actor_id"],
+            crate::session::agent_environment_actor_id(&agent_id)
+        );
+        assert!(action_value["result"]["structuredContent"]["action_id"]
+            .as_str()
+            .is_some_and(|action_id| action_id.starts_with("action-")));
     }
     let text_response = handle_json_rpc_value(
         router.clone(),
@@ -757,6 +764,10 @@ done
         secret_value["result"]["structuredContent"]["submitted"],
         true
     );
+    assert_eq!(
+        secret_value["result"]["structuredContent"]["actor_id"],
+        crate::session::agent_environment_actor_id(&agent_id)
+    );
     assert!(
         !secret_value
             .to_string()
@@ -790,6 +801,10 @@ done
     assert_eq!(
         dialog_value["result"]["structuredContent"]["browser"]["action"],
         "dismiss"
+    );
+    assert_eq!(
+        dialog_value["result"]["structuredContent"]["actor_id"],
+        crate::session::agent_environment_actor_id(&agent_id)
     );
     for (id, name, arguments, expected_kind) in [
         (
@@ -843,7 +858,34 @@ done
             compatibility_value["result"]["structuredContent"]["browser"]["action_kind"],
             expected_kind
         );
+        if expected_kind == "navigate" {
+            assert_eq!(
+                compatibility_value["result"]["structuredContent"]["actor_id"],
+                crate::session::agent_environment_actor_id(&agent_id)
+            );
+            assert!(
+                compatibility_value["result"]["structuredContent"]["action_id"]
+                    .as_str()
+                    .is_some_and(|action_id| action_id.starts_with("action-"))
+            );
+        }
     }
+    let environment = router
+        .runtime_state()
+        .room_environment_snapshot(&session_id)
+        .expect("Room Environment should remain available");
+    assert_eq!(
+        environment
+            .actions
+            .iter()
+            .map(|action| action.kind.as_str())
+            .collect::<Vec<_>>(),
+        vec!["fill", "click", "submit", "fill", "dialog", "navigate"]
+    );
+    assert!(environment.actions.iter().all(|action| {
+        action.actor_id == crate::session::agent_environment_actor_id(&agent_id)
+            && action.state == crate::session::EnvironmentActionState::Completed
+    }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
         "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"

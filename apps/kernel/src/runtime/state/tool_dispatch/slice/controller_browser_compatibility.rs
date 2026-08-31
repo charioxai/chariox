@@ -18,20 +18,23 @@ impl KernelRuntimeState {
         ensure_controller_browser_environment(self, session_id, "runtime_tool_slice_open_url")
             .await?;
         let result = self
-            .navigate_browser_environment_compatibility(session_id, url)
+            .navigate_browser_environment_compatibility_as_agent(session_id, agent_id, url)
             .await?;
+        let navigation = result.value;
         Ok(crate::transport::runtime_tools::RuntimeToolResult {
             ok: true,
             payload: serde_json::json!({
                 "source": "browser_controller",
                 "slice_id": slice_id,
                 "agent_id": agent_id,
+                "actor_id": result.actor_id,
+                "action_id": result.action_id,
                 "session_id": session_id,
                 "browser": {
                     "action_kind": "navigate",
-                    "url": result.url,
-                    "document_id": result.document_id,
-                    "browser_generation": result.browser_generation,
+                    "url": navigation.url,
+                    "document_id": navigation.document_id,
+                    "browser_generation": navigation.browser_generation,
                 },
             }),
         })
