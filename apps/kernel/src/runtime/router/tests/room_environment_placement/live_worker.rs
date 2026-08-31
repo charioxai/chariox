@@ -94,6 +94,33 @@ impl LiveWorker {
         fixture
     }
 
+    async fn create_slice(&self) {
+        dispatch_json(
+            &self.home,
+            json!({"CreateSlice": {
+                "name":"desktop", "base":"clean", "display_mode":"headed",
+                "worker_kernel_ref":"desktop-worker"
+            }}),
+        )
+        .await
+        .unwrap();
+        // Fixture discovery metadata: use this test's relay instead of Docker.
+        self.home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_relay_endpoint(
+                "desktop",
+                Some(crate::slice::SliceRelayEndpoint {
+                    url: format!("ws://{}", self.address),
+                    private: false,
+                }),
+                1,
+            )
+            .unwrap();
+    }
+
     async fn stop(&mut self) {
         let _ = self.shutdown.send(true);
         let mut failures = Vec::new();
@@ -194,4 +221,57 @@ async fn spawn_and_destroy_use_public_commands() {
         .unwrap()
         .iter()
         .all(|agent| agent["id"] != agent_id));
+}
+
+#[test]
+fn room_environment_worker_alias_attaches_agent_to_slice() {
+    run_test(worker_alias_attaches_agent_to_slice);
+}
+
+async fn worker_alias_attaches_agent_to_slice() {
+    let mut fixture = LiveWorker::start().await;
+    fixture.create_slice().await;
+    let spawned = dispatch_json(
+        &fixture.home,
+        json!({"SpawnAgent": {
+            "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
+            "kernel_ref":"desktop-worker", "worktree_placement":{
+                "target_directory":fixture.worktree, "from_ref":"HEAD"
+            }
+        }}),
+    )
+    .await
+    .expect("spawn through a known slice worker alias");
+    let agent_id = spawned["AgentSpawned"]["agent"]["id"].as_str().unwrap();
+    let attached = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
+        .await
+        .unwrap();
+    let other_claim = dispatch_json(&fixture.home, bind(&fixture.rooms[1], "desktop")).await;
+    dispatch_json(
+        &fixture.home,
+        json!({"DestroyAgent": {
+            "session_id":fixture.rooms[0], "agent_id":agent_id
+        }}),
+    )
+    .await
+    .expect("delete and detach the worker agent");
+    let detached = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
+        .await
+        .unwrap();
+    fixture.stop().await;
+    assert_eq!(
+        attached["Slice"]["slice"]["agent_ids"],
+        json!([agent_id]),
+        "worker aliases must preserve the canonical slice attachment"
+    );
+    assert!(
+        other_claim.is_err(),
+        "a Room cannot claim a slice with another Room's agent"
+    );
+    let detached: crate::slice::SliceRecord =
+        serde_json::from_value(detached["Slice"]["slice"].clone()).unwrap();
+    assert!(
+        detached.agent_ids.is_empty(),
+        "deletion clears the slice's durable agent attachment"
+    );
 }

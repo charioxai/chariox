@@ -587,6 +587,8 @@ These requests configure placement only. They do not start a container, move a c
 
 The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission also rejects shared worker identities, including collisions discovered after binding, for direct slice references as well as worker lookups. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice with an unambiguous worker keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.
 
+Single-agent `SpawnAgent` retains the canonical slice identity from admission through worktree-scope validation and successful attachment, including when the caller supplies a known worker alias or ID instead of `slice_ref`. Public deletion releases worker execution before deleting the shared home-agent record once and detaching it from its recorded slices. Successful alias attachment in batch and session creation remains to be reconciled; this checkpoint does not enable multi-Room browser execution.
+
 A full Environment snapshot carries at least:
 
 - `session_id`

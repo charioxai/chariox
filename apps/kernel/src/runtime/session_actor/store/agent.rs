@@ -193,7 +193,7 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let _slice_guards = match self.state.guard_slice_execution(
+        let slice_admission = match self.state.guard_slice_execution(
             Some(&request.session_id),
             [(request.slice_ref.as_deref(), request.kernel_ref.as_deref())],
             "agent.spawn",
@@ -259,8 +259,8 @@ impl SessionRuntimeStore {
         } else {
             create_request
         };
-        let slice_ref_for_agent = request.slice_ref.clone();
-        let slice_kernel_ref = match request.slice_ref {
+        let slice_ref_for_agent = slice_admission.slice_ids[0].clone();
+        let slice_kernel_ref = match slice_ref_for_agent.as_deref() {
             Some(slice_ref) => {
                 let session = match self.state.session_snapshot(&request.session_id).await {
                     Ok(session) => session,
@@ -274,7 +274,7 @@ impl SessionRuntimeStore {
                 let scope_result = self
                     .state
                     .ensure_slice_worktree_scope(
-                        &slice_ref,
+                        slice_ref,
                         session.workspace_id(),
                         requested_worktree_id,
                     )
@@ -282,7 +282,7 @@ impl SessionRuntimeStore {
                 if let Err(error) = scope_result {
                     return self.with_session_projection_action_result(Err(error)).await;
                 }
-                match self.state.resolve_slice_worker_kernel_ref(&slice_ref).await {
+                match self.state.resolve_slice_worker_kernel_ref(slice_ref).await {
                     Ok(kernel_ref) => Some(kernel_ref),
                     Err(error) => {
                         return self.with_session_projection_action_result(Err(error)).await;
@@ -291,9 +291,7 @@ impl SessionRuntimeStore {
             }
             None => None,
         };
-        let create_request = if let Some(kernel_ref) = request.kernel_ref {
-            create_request.with_kernel(kernel_ref)
-        } else if let Some(kernel_ref) = slice_kernel_ref {
+        let create_request = if let Some(kernel_ref) = slice_kernel_ref.or(request.kernel_ref) {
             create_request.with_kernel(kernel_ref)
         } else {
             create_request

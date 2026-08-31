@@ -1,15 +1,23 @@
 use super::*;
 use crate::local::{BindRoomEnvironmentSliceRequest, RoomEnvironmentSliceBinding};
 
+pub(crate) struct SliceExecutionAdmission {
+    // Preserve target order, including non-slice workers and duplicate aliases.
+    // The guarded identity must also be used for the successful attachment.
+    pub(crate) slice_ids: Vec<Option<String>>,
+    _guards: Vec<crate::slice::SliceOperationGuard>,
+}
+
 impl KernelRuntimeState {
     pub(crate) fn guard_slice_execution<'a>(
         &self,
         session_id: Option<&str>,
         targets: impl IntoIterator<Item = (Option<&'a str>, Option<&'a str>)>,
         operation: &'static str,
-    ) -> Result<Vec<crate::slice::SliceOperationGuard>, DaemonError> {
+    ) -> Result<SliceExecutionAdmission, DaemonError> {
         let slices = &self.owned.slice_store;
-        let mut slice_ids = std::collections::BTreeSet::new();
+        let mut unique_ids = std::collections::BTreeSet::new();
+        let mut slice_ids = Vec::new();
         for (slice_ref, kernel_ref) in targets {
             let slice = match (slice_ref, kernel_ref) {
                 (Some(_), Some(_)) => {
@@ -22,14 +30,20 @@ impl KernelRuntimeState {
                 (None, Some(reference)) => slices.resolve_by_worker_kernel_ref(reference),
                 (None, None) => None,
             };
-            if let Some(slice) = slice {
-                slice_ids.insert(slice.id);
+            let slice_id = slice.map(|slice| slice.id);
+            if let Some(id) = &slice_id {
+                unique_ids.insert(id.clone());
             }
+            slice_ids.push(slice_id);
         }
-        slice_ids
+        let guards = unique_ids
             .iter()
             .map(|id| slices.guard_environment_use(id, session_id, operation))
-            .collect()
+            .collect::<Result<_, _>>()?;
+        Ok(SliceExecutionAdmission {
+            slice_ids,
+            _guards: guards,
+        })
     }
 
     pub(crate) fn room_environment_slice(
