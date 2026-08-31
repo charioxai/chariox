@@ -2,12 +2,13 @@ import assert from "node:assert/strict"
 import { execFile } from "node:child_process"
 import { chmod, copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises"
 import { join, resolve } from "node:path"
+import { tmpdir } from "node:os"
 import { promisify } from "node:util"
 import { test } from "node:test"
 
 const execFileAsync = promisify(execFile)
 const repositoryRoot = resolve(import.meta.dirname, "..")
-const baseImage = "node:22-bookworm-slim"
+const baseImage = "node:22-bookworm-slim@sha256:d649c27dae7ba0137b3cef5dd75baa422c08dc3d9e3fc0c23dfb172dc3cc6436"
 const dockerSkip = await cachedDockerImageSkipReason(baseImage)
 const CALLER_CLAIMS_SECRET = "caller-claims-bootstrap-secret-0123456789abcdef"
 
@@ -15,7 +16,7 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   skip: dockerSkip ?? false,
   timeout: 45_000,
 }, async () => {
-  const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-isolation-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-isolation-"))
   const publication = join(root, "publication")
   const profile = join(root, "profile")
   const fakeKernel = join(root, "chariox-kernel")
@@ -33,6 +34,9 @@ test("publication entrypoint isolates actions while the gateway authenticates to
   await writeFile(join(publication, "app", "actions.mjs"), actionProbeSource())
   await writeFile(fakeKernel, kernelProbeSource())
   await writeFile(fakeGateway, gatewayProbeSource())
+  await writeFile(join(root, "provider-cli"), '#!/bin/sh\nprintf "trusted-%s\\n" "${0##*/}"\n', { mode: 0o755 })
+  await mkdir(join(root, "untrusted-bin"))
+  await writeFile(join(root, "untrusted-bin", "codex"), '#!/bin/sh\necho untrusted-codex\n', { mode: 0o755 })
   await writeFile(auditBootstrap, "http://audit-bridge.invalid/capability-sentinel")
   await chmod(auditBootstrap, 0o600)
   await writeFile(callerClaimsBootstrap, JSON.stringify({
@@ -67,6 +71,12 @@ cp /test/wait-for-tcp.mjs /usr/local/bin/chariox-wait-for-tcp.mjs
 cp /test/chariox-kernel /usr/local/bin/chariox-kernel
 mkdir -p /opt/chariox/apps/server/dist
 cp /test/gateway.js /opt/chariox/apps/server/dist/index.js
+mkdir -p /opt/chariox-toolchain/node_modules/.bin
+for provider in codex opencode claude; do
+  cp /test/provider-cli "/opt/chariox-toolchain/node_modules/.bin/$provider"
+done
+chown -R root:root /opt/chariox-toolchain
+chmod -R go-w /opt/chariox-toolchain
 chmod 755 /usr/local/bin/chariox-publication-container /usr/local/bin/chariox-kernel
 cp -a /test/publication /publication
 cp -a /test/profile /home/chariox/.provider-credentials
@@ -96,6 +106,8 @@ exec /usr/local/bin/chariox-publication-container standalone
       "KILL",
       "--entrypoint",
       "/test/run.sh",
+      "-e",
+      "PATH=/test/untrusted-bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin",
       "-e",
       "HOME=/home/chariox",
       "-e",
@@ -158,6 +170,8 @@ exec /usr/local/bin/chariox-publication-container standalone
     assert.match(stdout, /provider readiness read credential-sentinel without inheriting kernel auth/)
     assert.match(stdout, /action uid 1002 denied credential, workspace, and unauthenticated kernel access/)
     assert.match(stdout, /gateway uid 1003 authenticated with isolated audit and caller claims capabilities/)
+    assert.match(stdout, /kernel resolves immutable provider CLIs/)
+    assert.match(stdout, /gateway resolves immutable provider CLIs/)
     assert.match(stdout, /capability symlinks replaced without modifying their target/)
     assert.match(String(failure.stderr), /publication standalone child exited: gateway \(status 0\)/)
   } finally {
@@ -169,7 +183,7 @@ test("publication entrypoint exits and cleans up when the kernel or action serve
   skip: dockerSkip ?? false,
   timeout: 45_000,
 }, async () => {
-  const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-supervision-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-supervision-"))
   const publication = join(root, "publication")
   const fakeKernel = join(root, "chariox-kernel")
   const fakeGateway = join(root, "gateway.js")
@@ -291,7 +305,7 @@ test("publication split kernel and gateway modes fail closed without local auth 
   skip: dockerSkip ?? false,
   timeout: 30_000,
 }, async () => {
-  const root = await mkdtemp(join(repositoryRoot, ".tmp-publication-split-auth-"))
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-split-auth-"))
   const wrapper = join(root, "run.sh")
   await copyFile(join(repositoryRoot, "docker/publication/entrypoint.sh"), join(root, "entrypoint.sh"))
   await writeFile(wrapper, `#!/usr/bin/env bash
@@ -359,6 +373,7 @@ const fs = require("node:fs")
 const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1001)
+${providerToolchainProbeSource("kernel")}
 assertUnprivilegedCapabilities()
 assertPrivateTempDirectory("/home/chariox/.tmp", 1001)
 assert.equal(process.env.CHARIOX_KERNEL_LOCAL_AUTH_TOKEN, undefined)
@@ -432,6 +447,7 @@ import { readFileSync } from "node:fs"
 import { readFile, readdir, stat, writeFile } from "node:fs/promises"
 import net from "node:net"
 assert.equal(process.getuid(), 1002)
+assert.equal(process.env.PATH, "/usr/local/bin:/usr/bin:/bin")
 assert.equal(process.env.HOME, "/home/chariox-action")
 assert.equal(process.cwd(), "/publication/app")
 assert.equal(process.env.TMPDIR, "/home/chariox-action/.tmp")
@@ -586,6 +602,7 @@ const fs = require("node:fs")
 const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1003)
+${providerToolchainProbeSource("gateway")}
 assert.equal(process.env.HOME, "/home/chariox-gateway")
 assert.equal(process.cwd(), "/publication")
 assert.equal(process.env.TMPDIR, "/home/chariox-gateway/.tmp")
@@ -661,4 +678,16 @@ socket.once("data", (chunk) => {
 socket.once("error", (error) => { throw error })
 setTimeout(() => { throw new Error("authenticated gateway timed out") }, 3000).unref()
 `
+}
+
+function providerToolchainProbeSource(role) {
+  return `for (const provider of ["codex", "opencode", "claude"]) {
+  const probe = spawnSync(provider, ["--version"], { encoding: "utf8", timeout: 2000 })
+  assert.equal(probe.status, 0, provider + " must resolve after publication environment isolation: " + (probe.error?.message ?? probe.stderr))
+  assert.equal(probe.stdout.trim(), "trusted-" + provider)
+  const binary = "/opt/chariox-toolchain/node_modules/.bin/" + provider
+  assert.equal(fs.statSync(binary).uid, 0)
+  assert.throws(() => fs.writeFileSync(binary, "untrusted replacement"), /EACCES|EPERM/)
+}
+console.log("${role} resolves immutable provider CLIs")`
 }

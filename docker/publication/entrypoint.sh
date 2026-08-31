@@ -257,7 +257,8 @@ launch_kernel_as_chariox() {
   export HOME=/home/chariox
   export USER=chariox
   export LOGNAME=chariox
-  export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+  # Include the immutable image toolchain, never the caller's inherited PATH.
+  export PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
   export CHARIOX_KERNEL_HOST="${CHARIOX_KERNEL_HOST:-127.0.0.1}"
   export CHARIOX_KERNEL_PORT="${CHARIOX_KERNEL_PORT:-43118}"
   export XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
@@ -583,7 +584,7 @@ gateway() {
   export HOME="$CHARIOX_GATEWAY_HOME"
   export USER=chariox-gateway
   export LOGNAME=chariox-gateway
-  export PATH=/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+  export PATH=/opt/chariox-toolchain/node_modules/.bin:/usr/local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
   export HOST="${HOST:-0.0.0.0}"
   export PORT="${PORT:-3000}"
   export CHARIOX_KERNEL_HOST="${CHARIOX_KERNEL_HOST:-127.0.0.1}"
