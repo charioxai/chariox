@@ -38,6 +38,51 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { readConnectedPublicationOperationalStatus } from "../publication-cloud-operational-status.js"
+
+test("connected backend refresh reads only its publication runs and never pumps the workflow", async () => {
+  const publication = { ...baseConfig, workflow_ref: "workflow-1", endpoint_ref: "endpoint-1" }
+  const requests: string[] = []
+  const client = {
+    async send<T>(request: unknown): Promise<T> {
+      const kind = Object.keys(request as object)[0]!
+      requests.push(kind)
+      const responses: Record<string, unknown> = {
+        ListWorkflowRuns: { WorkflowRunsListed: { workflow_runs: [
+          { id: "ours", workflow_id: "workflow-1", endpoint_id: "endpoint-1", status: "Completed", created_at_ms: 10,
+            publication_invocation: { publication_id: publication.publication_id, invocation_id: "our-invocation" }, final_output: "private" },
+          { id: "other-publication", workflow_id: "workflow-1", endpoint_id: "endpoint-1", publication_invocation: { publication_id: "other" } },
+          { id: "manual", workflow_id: "workflow-1", endpoint_id: "endpoint-1" },
+          { id: "other-endpoint", workflow_id: "workflow-1", endpoint_id: "endpoint-2", publication_invocation: { publication_id: publication.publication_id } },
+        ] } },
+        ListQueuedWorkflowPrompts: { QueuedWorkflowPromptsListed: { queued_prompts: [] } },
+        ListWorkflowPromptQueues: { WorkflowPromptQueuesListed: { queues: [{ id: "queue-1", alias: "default" }] } },
+      }
+      assert.ok(kind in responses, `Unexpected mutating or detailed-history request: ${kind}`)
+      return responses[kind] as T
+    },
+  }
+  const operationalStatus = await readConnectedPublicationOperationalStatus(client, publication)
+  let payload: Record<string, unknown> | undefined
+  await registerCloudPublicationDeploymentBackend({
+    deploymentId: "connected",
+    publication,
+    operationalStatus,
+    localUrl: "http://127.0.0.1:4567/",
+    profile: { apiUrl: "https://cloud.test", accountId: "account" },
+    now: () => 100,
+    fetch: async (_url, init) => {
+      payload = JSON.parse(String(init?.body))
+      return new Response(null, { status: 200 })
+    },
+  })
+  assert.deepEqual(payload?.backendTarget, {
+    kind: "local_runtime", url: "http://127.0.0.1:4567/", updated_at_ms: 100,
+    queueDepth: 0,
+    runs: [{ id: "ours", status: "Completed", created_at_ms: 10, publication_invocation: { invocation_id: "our-invocation" } }],
+  })
+  assert.equal(requests.length, 3)
+})
 
 test("publication gateway registers local runtime backend with Cloud deployment", async () => {
   const calls: Array<{ url: string; init: RequestInit }> = []
@@ -45,6 +90,19 @@ test("publication gateway registers local runtime backend with Cloud deployment"
     deploymentId: "deployment-1",
     publication: baseConfig,
     localUrl: "http://127.0.0.1:4567/",
+    operationalStatus: {
+      queue_depth: 2,
+      recent_runs: [{
+        id: "run-connected",
+        status: "Completed",
+        created_at_ms: 1_699_999_999_000,
+        completed_at_ms: 1_699_999_999_900,
+        publication_invocation: { invocation_id: "invocation-connected", caller: { token: "private-caller" } },
+        final_output: { message: "private-output" },
+        prompt: "private-prompt",
+      }],
+      latest_output: { message: "private-output" },
+    },
     now: () => 1_700_000_000_000,
     profile: {
       apiUrl: "https://cloud.example.test/",
@@ -68,6 +126,14 @@ test("publication gateway registers local runtime backend with Cloud deployment"
       kind: "local_runtime",
       url: "http://127.0.0.1:4567/",
       updated_at_ms: 1_700_000_000_000,
+      queueDepth: 2,
+      runs: [{
+        id: "run-connected",
+        status: "Completed",
+        created_at_ms: 1_699_999_999_000,
+        completed_at_ms: 1_699_999_999_900,
+        publication_invocation: { invocation_id: "invocation-connected" },
+      }],
     },
   })
 })

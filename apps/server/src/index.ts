@@ -51,6 +51,7 @@ import { installRawBodyParsers } from "./publication-raw-body-parsers.js"
 import { pumpPublicationRuntime } from "./publication-runtime-pump.js"
 import { publicationHealthDetails } from "./publication-provider-readiness.js"
 import { publicationStatusPayload } from "./publication-status.js"
+import { readConnectedPublicationOperationalStatus } from "./publication-cloud-operational-status.js"
 import { installPublicationViewerRoutes, publicationViewerPage } from "./publication-viewer.js"
 import type {
   GatewayDeps,
@@ -373,7 +374,11 @@ async function registerServedPublicationEndpoint(
       })
       return
     }
-    await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger)
+    if (ingress.kind === "no_cloud_deployment") return
+    const operationalStatus = publication.agent_app?.enabled
+      ? undefined
+      : await readConnectedPublicationOperationalStatus(client, publication)
+    await registerCloudDeploymentBackendIfConfigured(publication, openUrl, logger, { operationalStatus })
   } catch (error) {
     logger.warn("failed to register workflow publication endpoint", {
       publication_id: publication.publication_id,
@@ -389,7 +394,7 @@ async function registerCloudDeploymentBackendIfConfigured(
   publication: WorkflowPublicationConfig,
   localUrl: string,
   logger: CharioxLogger,
-  options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null } = {},
+  options: { status?: "ready" | "unavailable" | "failed"; lastError?: string | null; operationalStatus?: unknown } = {},
 ) {
   const deploymentId = process.env.CHARIOX_PUBLICATION_CLOUD_DEPLOYMENT_ID?.trim()
   if (!deploymentId) return
