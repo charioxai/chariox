@@ -59,6 +59,8 @@ async fn partial_batch_failure_rolls_back_created_agents() {
     );
     let slice: crate::slice::SliceRecord =
         serde_json::from_value(slice["Slice"]["slice"].clone()).unwrap();
+    // Retained-agent absence above proves rollback. This additionally guards
+    // future reordering that might attach agents before the batch completes.
     assert!(
         slice.agent_ids.is_empty(),
         "rolled-back agents must not remain attached"

@@ -593,6 +593,8 @@ If a later spawn fails in a worker-backed batch, the home rolls back successfull
 
 If worker cleanup cannot be confirmed, public deletion returns an explicit cleanup-retry error and retains the home agent and slice membership. An unreachable worker is not evidence that its agent stopped; deletion must not silently forget a potentially live execution. Reconciliation after a worker loses its lease state, and retries after partial worker cleanup, require separate failure-path validation.
 
+Worker cleanup uses the relay URL and token retained in the remote execution binding, including a slice-private relay distinct from the home's default relay. The local live drill uses separate relay servers and tokens to verify creation and deletion without relying on the worker being visible on the home relay.
+
 The internal cleanup error retains its source rather than converting every cause into a transport failure. Relay errors preserve the source's existing code and retryability while adding the retained-agent explanation. Admission cardinality failures are internal invariant errors, not retryable transport failures. These internal Rust error types add no serialized request, response or event fields.
 
 A full Environment snapshot carries at least:

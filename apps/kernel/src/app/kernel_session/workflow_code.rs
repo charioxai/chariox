@@ -652,13 +652,14 @@ impl<'a> KernelSessionService<'a> {
         agent: &AgentInstance,
     ) -> Result<(), DaemonError> {
         if let Some(remote) = agent.remote_execution().cloned() {
+            let relay_config = self.app.relay_config_for_remote_execution(&remote);
             let target = chariox_relay::protocol::ClientTarget {
                 daemon_id: Some(remote.worker_kernel_id.clone()),
                 daemon_alias: None,
             };
             self.app.block_on_relay_future(
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
+                    &relay_config,
                     target.clone(),
                     crate::transport::relay_peer::RelayPeerRequest::DestroyLeasedAgent {
                         leased_agent_id: remote.leased_agent_id.clone(),
@@ -667,7 +668,7 @@ impl<'a> KernelSessionService<'a> {
             )?;
             self.app.block_on_relay_future(
                 crate::transport::relay_client::send_peer_request_via_temporary_connection(
-                    &self.app.config,
+                    &relay_config,
                     target,
                     crate::transport::relay_peer::RelayPeerRequest::DestroyExecutionLease {
                         lease_id: remote.execution_lease_id.clone(),

@@ -5,6 +5,7 @@ use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
 mod batch;
+mod cleanup;
 mod session;
 
 struct LiveWorker {
@@ -13,6 +14,8 @@ struct LiveWorker {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     address: std::net::SocketAddr,
+    relay_addresses: Vec<std::net::SocketAddr>,
+    private_relay: bool,
     worktrees: Vec<std::path::PathBuf>,
     home_state: TestState,
     _worker_state: TestState,
@@ -20,24 +23,44 @@ struct LiveWorker {
 
 impl LiveWorker {
     async fn start() -> Self {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let relay = Arc::new(RelayServer::new(RelayConfig {
-            host: address.ip().to_string(),
-            port: address.port(),
-            shared_token: Some("environment-worker-fixture".to_string()),
-        }));
-        let registry = relay.registry();
+        Self::start_with_private_relay(false).await
+    }
+
+    async fn start_with_private_relay(private_relay: bool) -> Self {
+        const HOME_TOKEN: &str = "environment-worker-fixture";
+        // This isolated fixture's first slice is slice-1, owned by environment-home.
+        const SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
         let (shutdown, receiver) = watch::channel(false);
-        let mut relay_shutdown = receiver.clone();
-        let relay_task = tokio::spawn(async move {
-            relay
-                .run_listener_until(listener, async {
-                    let _ = relay_shutdown.changed().await;
-                })
-                .await
-                .unwrap();
-        });
+        let tokens = if private_relay {
+            vec![SLICE_TOKEN, HOME_TOKEN]
+        } else {
+            vec![HOME_TOKEN]
+        };
+        let mut relays = Vec::new();
+        let mut tasks = Vec::new();
+        for token in tokens {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let relay = Arc::new(RelayServer::new(RelayConfig {
+                host: address.ip().to_string(),
+                port: address.port(),
+                shared_token: Some(token.to_string()),
+            }));
+            relays.push((Arc::clone(&relay), address));
+            let mut relay_shutdown = receiver.clone();
+            tasks.push(tokio::spawn(async move {
+                relay
+                    .run_listener_until(listener, async {
+                        let _ = relay_shutdown.changed().await;
+                    })
+                    .await
+                    .unwrap();
+            }));
+        }
+        let address = relays[0].1;
+        let worker_registry = relays[0].0.registry();
+        let (home_relay, home_address) = relays.last().unwrap();
+        let home_registry = home_relay.registry();
 
         let mut home_state = TestState::new();
         let mut worker_state = TestState::new();
@@ -45,6 +68,10 @@ impl LiveWorker {
             state.config.relay_url = Some(format!("ws://{address}"));
             state.config.relay_token = Some("environment-worker-fixture".to_string());
             state.config.relay_heartbeat_ms = 50;
+        }
+        home_state.config.relay_url = Some(format!("ws://{home_address}"));
+        if private_relay {
+            worker_state.config.relay_token = Some(SLICE_TOKEN.to_string());
         }
         home_state.config.daemon_id = "environment-home".to_string();
         worker_state.config.daemon_id = "environment-worker".to_string();
@@ -62,8 +89,10 @@ impl LiveWorker {
             home: Arc::clone(&home),
             rooms,
             shutdown,
-            tasks: vec![relay_task],
+            tasks,
             address,
+            relay_addresses: relays.iter().map(|(_, address)| *address).collect(),
+            private_relay,
             worktrees: Vec::new(),
             home_state,
             _worker_state: worker_state,
@@ -80,11 +109,17 @@ impl LiveWorker {
         }
         timeout(Duration::from_secs(10), async {
             loop {
-                let registered = {
-                    let registry = registry.read().await;
-                    registry.daemon("environment-home").is_some()
-                        && registry.daemon("environment-worker").is_some()
-                };
+                let home_registered = home_registry
+                    .read()
+                    .await
+                    .daemon("environment-home")
+                    .is_some();
+                let registered = home_registered
+                    && worker_registry
+                        .read()
+                        .await
+                        .daemon("environment-worker")
+                        .is_some();
                 if registered {
                     break;
                 }
@@ -125,7 +160,7 @@ impl LiveWorker {
                 "desktop",
                 Some(crate::slice::SliceRelayEndpoint {
                     url: format!("ws://{}", self.address),
-                    private: false,
+                    private: self.private_relay,
                 }),
                 1,
             )
@@ -160,11 +195,13 @@ impl LiveWorker {
             }
         }
         assert!(failures.is_empty(), "fixture shutdown: {failures:?}");
-        drop(
-            tokio::net::TcpListener::bind(self.address)
-                .await
-                .expect("relay port released"),
-        );
+        for address in &self.relay_addresses {
+            drop(
+                tokio::net::TcpListener::bind(address)
+                    .await
+                    .expect("relay port released"),
+            );
+        }
     }
 }
 

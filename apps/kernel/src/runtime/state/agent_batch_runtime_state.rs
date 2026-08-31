@@ -90,8 +90,10 @@ impl KernelRuntimeState {
                 }
             }
         }
-        if let Err(error) = self.attach_slice_agents(retained_attachments).await {
-            failures.push(format!("retained slice attachment: {error}"));
+        if !retained_attachments.is_empty() {
+            if let Err(error) = self.attach_slice_agents(retained_attachments).await {
+                failures.push(format!("retained slice attachment: {error}"));
+            }
         }
         if failures.is_empty() {
             cause
