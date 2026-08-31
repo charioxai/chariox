@@ -8,6 +8,7 @@ mod batch;
 mod cleanup;
 mod controller;
 mod controller_cancellation;
+mod controller_integrations;
 mod controller_mutations;
 mod controller_observations;
 mod controller_response_loss;

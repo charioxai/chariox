@@ -680,11 +680,27 @@ Protocol v288 also removes the worker's advisory restart result. After
 a fence, the home is the only authority that starts and reconciles the
 controller.
 
+Protocol v289 and relay peer v25 route dialogs, download-directory setup,
+uploads, and permission decisions through the same authenticated Room worker
+controller. The home still resolves stable Tab and opaque element identities,
+checks document revisions, and owns agent input admission; the worker validates
+the decrypted home ID/key plus Room/slice tuple before touching the physical
+browser. Dialog prompt text and upload paths are redacted from request debug
+formatting. Upload path bounds are validated during relay deserialization as
+well as at the home API, and controller responses never return filesystem paths.
+The existing dialog runtime tool is advertised to a home agent only after this
+physical route is available. The real encrypted-relay drill covers nested frame
+and shadow-root references, a shadow-root click that opens a popup, stable popup
+Tab reconciliation, public dialog handling, download setup, file upload,
+permission changes, caller isolation for every new command, and process cleanup.
+Existing clients' minimum versions remain unchanged because these are
+home-worker transport additions, not new public local-daemon request shapes.
+
 Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.
 
-Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
+Navigation, events, public file/permission tool adapters, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.
 Existing clients' minimum
 versions remain unchanged because their public request shapes have not changed.

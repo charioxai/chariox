@@ -446,29 +446,24 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.dialog", error))?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
         let target_id = binding.runtime_target_id.clone();
         let document_id = binding.document_id.clone();
-        let controller_action = action.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            processes.handle_browser_dialog(
-                &owned_session_id,
-                &target_id,
-                &document_id,
-                &controller_action,
+        let RoomBrowserControllerResult::Dialog { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Dialog {
+                    target_id,
+                    document_id,
+                    action,
+                },
             )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.dialog",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.dialog",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller dialog response",
+            ));
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.dialog",
             message: "browser controller is not enabled".to_string(),
         })?;
@@ -530,23 +525,23 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.downloads", error))?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
         let target_id = binding.runtime_target_id.clone();
         let document_id = binding.document_id.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            processes.configure_browser_downloads(&owned_session_id, &target_id, &document_id)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.downloads",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.downloads",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+        let RoomBrowserControllerResult::Downloads { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::ConfigureDownloads {
+                    target_id,
+                    document_id,
+                },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller downloads response",
+            ));
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.downloads",
             message: "browser controller is not enabled".to_string(),
         })?;
@@ -591,30 +586,26 @@ impl KernelRuntimeState {
                 message: "browser element reference became stale before upload".to_string(),
             });
         }
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
         let target_id = binding.runtime_target_id.clone();
         let document_id = binding.document_id.clone();
         let controller_node_ref = element.controller_node_ref.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            processes.upload_browser_files(
-                &owned_session_id,
-                &target_id,
-                &document_id,
-                &controller_node_ref,
-                &files,
+        let RoomBrowserControllerResult::Upload { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Upload {
+                    target_id,
+                    document_id,
+                    node_ref: controller_node_ref,
+                    files,
+                },
             )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.upload",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.upload",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller upload response",
+            ));
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.upload",
             message: "browser controller is not enabled".to_string(),
         })?;
@@ -644,29 +635,25 @@ impl KernelRuntimeState {
         let binding = self
             .room_environment_controller_tab_binding(session_id, tab_id)
             .map_err(|error| environment_runtime_error("browser_controller.permission", error))?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
         let target_id = binding.runtime_target_id.clone();
         let document_id = binding.document_id.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            processes.set_browser_permission(
-                &owned_session_id,
-                &target_id,
-                &document_id,
-                permission,
-                setting,
+        let RoomBrowserControllerResult::Permission { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Permission {
+                    target_id,
+                    document_id,
+                    permission,
+                    setting,
+                },
             )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.permission",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.permission",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller permission response",
+            ));
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.permission",
             message: "browser controller is not enabled".to_string(),
         })?;

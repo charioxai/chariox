@@ -438,6 +438,7 @@ impl KernelRuntimeState {
                     | SLICE_BROWSER_CLICK_TOOL
                     | SLICE_BROWSER_FILL_TOOL
                     | SLICE_BROWSER_SUBMIT_TOOL
+                    | SLICE_BROWSER_DIALOG_TOOL
                     | SLICE_BROWSER_FIND_TOOL
                     | SLICE_BROWSER_TEXT_TOOL
                     | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL

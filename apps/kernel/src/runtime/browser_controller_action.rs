@@ -142,10 +142,23 @@ pub(crate) struct RoomBrowserActionResult {
     pub(crate) elapsed_ms: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum BrowserDialogAction {
     Accept { prompt_text: Option<String> },
     Dismiss,
+}
+
+impl std::fmt::Debug for BrowserDialogAction {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Accept { prompt_text } => formatter
+                .debug_struct("Accept")
+                .field("prompt_text", &prompt_text.as_ref().map(|_| "[redacted]"))
+                .finish(),
+            Self::Dismiss => formatter.write_str("Dismiss"),
+        }
+    }
 }
 
 impl BrowserDialogAction {
@@ -175,7 +188,7 @@ impl BrowserDialogAction {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDialogResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,

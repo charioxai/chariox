@@ -44,6 +44,18 @@ impl KernelRuntimeState {
             )
             .await;
         };
+        // Keep the relay client's large future off callers' async stacks. Local
+        // controller operations stay allocation-free; only the remote boundary
+        // owns this boxed transport future.
+        Box::pin(self.route_room_browser_controller_command(session_id, slice, command)).await
+    }
+
+    async fn route_room_browser_controller_command(
+        &self,
+        session_id: &str,
+        slice: crate::slice::SliceRecord,
+        command: Command,
+    ) -> Result<Response, DaemonError> {
         // The original action retains its operation guard until terminal proof.
         // Cancellation must not wait for that very action to release the guard.
         let _guard = if matches!(&command, Command::CancelAction { .. }) {
@@ -181,6 +193,35 @@ async fn execute_local(
         } => processes
             .capture_browser_snapshot(&session_id, &target_id, &document_id)
             .map(|snapshot| Response::Snapshot { snapshot }),
+        Command::Dialog {
+            target_id,
+            document_id,
+            action,
+        } => processes
+            .handle_browser_dialog(&session_id, &target_id, &document_id, &action)
+            .map(|result| Response::Dialog { result }),
+        Command::ConfigureDownloads {
+            target_id,
+            document_id,
+        } => processes
+            .configure_browser_downloads(&session_id, &target_id, &document_id)
+            .map(|result| Response::Downloads { result }),
+        Command::Upload {
+            target_id,
+            document_id,
+            node_ref,
+            files,
+        } => processes
+            .upload_browser_files(&session_id, &target_id, &document_id, &node_ref, &files)
+            .map(|result| Response::Upload { result }),
+        Command::Permission {
+            target_id,
+            document_id,
+            permission,
+            setting,
+        } => processes
+            .set_browser_permission(&session_id, &target_id, &document_id, permission, setting)
+            .map(|result| Response::Permission { result }),
         Command::Action {
             execution_id,
             target_id,
