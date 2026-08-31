@@ -15,6 +15,7 @@ mod paths;
 mod persisted_daemon;
 mod private_file;
 mod provider;
+mod publication_state;
 mod relay_profile;
 mod slices;
 mod storage;
@@ -91,6 +92,9 @@ pub struct EventGeneratorManagementTarget {
 pub struct DaemonConfig {
     pub user_config_path: PathBuf,
     pub user_config: CharioxUserConfig,
+    /// Publication control state survives container replacement. Provider homes,
+    /// account registries and managed-context transfers must not use this root.
+    pub publication_control_state_root: Option<PathBuf>,
     pub daemon_id: String,
     pub host_machine_id: String,
     pub host_machine_alias: Option<String>,
@@ -178,6 +182,7 @@ impl DaemonConfig {
         Self {
             user_config_path: Self::default_user_config_path(),
             user_config: CharioxUserConfig::default(),
+            publication_control_state_root: None,
             local_socket_path: Self::default_local_socket_path(&daemon_id),
             kernel_websocket_host: "127.0.0.1".to_string(),
             kernel_websocket_port: 43118,

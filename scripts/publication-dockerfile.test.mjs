@@ -85,6 +85,8 @@ test("publication image reserves isolated credential, action, and gateway identi
   assert.doesNotMatch(dockerfile, /chown -R chariox:chariox \/opt\/chariox/)
   assert.match(dockerfile, /chmod 700 \/home\/chariox \/home\/chariox-action \/home\/chariox-gateway/)
   assert.match(dockerfile, /WORKDIR \/workspace/)
+  assert.match(dockerfile, /mkdir -p \/var\/lib\/chariox/)
+  assert.match(dockerfile, /chmod 755 \/var\/lib\/chariox/)
   assert.match(dockerfile, /ENTRYPOINT \["tini", "--", "chariox-publication-container"\]/)
   assert.doesNotMatch(dockerfile, /^USER\s+/m, "PID 1 must retain only the root bootstrap needed to prepare isolated role state")
 })

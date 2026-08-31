@@ -52,6 +52,8 @@ useradd --create-home --uid 1001 --shell /bin/bash chariox
 useradd --create-home --uid 1002 --shell /usr/sbin/nologin chariox-action
 useradd --create-home --uid 1003 --shell /usr/sbin/nologin chariox-gateway
 mkdir -p /workspace/private /run/chariox-publication-capabilities/{.staging,kernel,gateway}
+mkdir -p /var/lib/chariox
+chmod 755 /var/lib/chariox
 printf 'workspace-sentinel' > /workspace/private/kernel-work
 chown -R chariox:chariox /workspace
 chmod -R a+rwX /workspace
@@ -118,6 +120,16 @@ exec /usr/local/bin/chariox-publication-container standalone
       "CHARIOX_RUNTIME_DIR=/home/chariox/.cache/chariox/runtime",
       "-e",
       "CHARIOX_SESSION_HISTORY_DIR=/home/chariox/.local/share/chariox/sessions",
+      "-e",
+      "CHARIOX_PUBLICATION_CONTROL_STATE_DIR=/var/lib/chariox/publication-control",
+      "-e",
+      "CHARIOX_DAEMON_ID=kernel-publication-test",
+      "-e",
+      "CHARIOX_MACHINE_ID=machine-publication-test",
+      "-e",
+      "CHARIOX_PUBLICATION_RUNTIME_KEY=deployment-test",
+      "-e",
+      "CHARIOX_PUBLICATION_RUNTIME_WORKSPACE=/workspace",
       "-e",
       "CHARIOX_PROVIDER_CREDENTIALS_DIR=/home/chariox/.provider-credentials",
       "-e",
@@ -373,6 +385,11 @@ const fs = require("node:fs")
 const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1001)
+assert.equal(process.env.CHARIOX_PUBLICATION_CONTROL_STATE_DIR, "/var/lib/chariox/publication-control")
+const controlStat = fs.statSync(process.env.CHARIOX_PUBLICATION_CONTROL_STATE_DIR)
+assert.equal(controlStat.uid, 1001)
+assert.equal(controlStat.mode & 0o777, 0o700)
+fs.writeFileSync(process.env.CHARIOX_PUBLICATION_CONTROL_STATE_DIR + "/sentinel", "retained-control-state")
 ${providerToolchainProbeSource("kernel")}
 assertUnprivilegedCapabilities()
 assertPrivateTempDirectory("/home/chariox/.tmp", 1001)
@@ -469,6 +486,7 @@ for (const name of [
   "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL",
   "CHARIOX_PUBLICATION_AGENT_APP_AUDIT_URL_FILE",
   "CHARIOX_PUBLICATION_CALLER_CLAIMS_CONFIG_FILE",
+  "CHARIOX_PUBLICATION_CONTROL_STATE_DIR",
   "OPENAI_API_KEY",
   "CHARIOX_RELAY_URL",
   "CHARIOX_RELAY_TOKEN",
@@ -484,6 +502,7 @@ assert.equal(Object.values(process.env).some((value) => value.includes("capabili
 assert.equal(Object.values(process.env).some((value) => value.includes("${CALLER_CLAIMS_SECRET}")), false)
 for (const path of [
   "/home/chariox/.codex/credential-sentinel",
+  "/var/lib/chariox/publication-control/sentinel",
   "/home/chariox/.provider-credentials/home/.codex/credential-sentinel",
 ]) await assert.rejects(readFile(path, "utf8"), /EACCES|EPERM/)
 await assert.rejects(readFile("/workspace/private/kernel-work", "utf8"), /EACCES|EPERM/)
@@ -602,6 +621,9 @@ const fs = require("node:fs")
 const net = require("node:net")
 const { spawnSync } = require("node:child_process")
 assert.equal(process.getuid(), 1003)
+assert.equal(process.env.CHARIOX_PUBLICATION_CONTROL_STATE_DIR, undefined)
+assert.equal(process.env.CHARIOX_PUBLICATION_RUNTIME_KEY, "deployment-test")
+assert.throws(() => fs.readFileSync("/var/lib/chariox/publication-control/sentinel"), /EACCES|EPERM/)
 ${providerToolchainProbeSource("gateway")}
 assert.equal(process.env.HOME, "/home/chariox-gateway")
 assert.equal(process.cwd(), "/publication")

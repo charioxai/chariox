@@ -5,6 +5,7 @@ impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        self.validate_publication_control_state_root()?;
         if self
             .relay_url
             .as_deref()

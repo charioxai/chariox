@@ -13,6 +13,9 @@ impl DaemonConfig {
     }
 
     pub fn operational_history_path(&self) -> PathBuf {
+        if let Some(root) = &self.publication_control_state_root {
+            return root.join("history").join("operational.db");
+        }
         self.user_config
             .history
             .operational
@@ -23,6 +26,9 @@ impl DaemonConfig {
     }
 
     pub fn operational_artifact_root(&self) -> PathBuf {
+        if let Some(root) = &self.publication_control_state_root {
+            return root.join("artifacts");
+        }
         self.user_config
             .artifacts
             .operational
@@ -33,6 +39,9 @@ impl DaemonConfig {
     }
 
     pub fn operational_artifact_index_path(&self) -> PathBuf {
+        if self.publication_control_state_root.is_some() {
+            return self.operational_artifact_root().join("index.db");
+        }
         self.user_config
             .artifacts
             .operational
@@ -43,6 +52,9 @@ impl DaemonConfig {
     }
 
     pub fn durable_state_path(&self) -> PathBuf {
+        if let Some(root) = &self.publication_control_state_root {
+            return root.join("state.db");
+        }
         self.user_config
             .state
             .path
@@ -57,10 +69,30 @@ impl DaemonConfig {
     }
 
     pub fn account_profile_registry_path(&self) -> PathBuf {
+        self.private_runtime_state_root()
+            .join("provider-accounts.json")
+    }
+
+    pub fn private_runtime_state_root(&self) -> PathBuf {
+        if self.publication_control_state_root.is_some() {
+            return self
+                .user_config_path
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("kernels")
+                .join(&self.daemon_id);
+        }
         self.durable_state_path()
             .parent()
-            .map(|root| root.join("provider-accounts.json"))
-            .unwrap_or_else(|| default_config_dir().join("provider-accounts.json"))
+            .map(Path::to_path_buf)
+            .unwrap_or_else(default_config_dir)
+    }
+
+    pub fn session_history_root(&self) -> PathBuf {
+        self.publication_control_state_root
+            .as_ref()
+            .map(|root| root.join("sessions"))
+            .unwrap_or_else(|| self.session_history_root.clone())
     }
 
     pub fn workflow_runtime_artifact_root(&self) -> PathBuf {
@@ -119,6 +151,9 @@ impl DaemonConfig {
     }
 
     fn event_counter_root(&self) -> PathBuf {
+        if let Some(root) = &self.publication_control_state_root {
+            return root.join("kernel-events");
+        }
         self.user_config
             .state
             .path

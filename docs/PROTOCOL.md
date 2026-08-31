@@ -751,6 +751,20 @@ Workflow trigger and deployment direction:
   session and agents. Subsequent queues, schedules, and runs use the ordinary
   kernel durable-state path. Recovery requires the same kernel identity, durable
   state and workspace mapping; a key alone is not a persistence mechanism.
+- `CHARIOX_PUBLICATION_CONTROL_STATE_DIR` separates a publication kernel's
+  retained state from its disposable private configuration. It selects the
+  durable database, workflow definitions/code/artifacts, session and operational
+  history, and monotonic event counters. Provider-account registry/home paths,
+  managed-context transfer stores, relay credentials, and runtime capability
+  files remain outside that root and are reconstructed from current authorized
+  bindings. This is process configuration, not an additional protocol field.
+  Ordinary kernels retain their existing storage layout when it is unset.
+  The publication image accepts only `/var/lib/chariox/publication-control`,
+  owned by the kernel identity with mode 0700, and requires explicit stable
+  kernel, machine, materialization-key and workspace identities. Neither app
+  actions nor the HTTP gateway can access this directory. The runner must
+  mount and lifecycle-manage the matching deployment-owned volume; this
+  environment setting does not create a persistent volume by itself.
 - a kernel holds an exclusive process-lifetime lease on its durable store.
   Deployment replacement must stop the previous state owner before starting its
   successor. The lease is released only after the last owned store reference

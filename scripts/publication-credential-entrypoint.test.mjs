@@ -262,6 +262,29 @@ test("publication entrypoint rejects unsafe credential profile and destination p
   }
 })
 
+test("publication control state rejects an arbitrary mount or missing stable identities", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-control-guard-"))
+  const home = join(root, "home")
+  try {
+    for (const [control, expected] of [
+      [join(home, "retained"), /publication control state must use the dedicated mount/],
+      ["", /publication control state must use the dedicated mount/],
+      ["/var/lib/chariox/publication-control", /requires stable kernel, machine, runtime key and workspace/],
+    ]) {
+      await assert.rejects(execFileAsync("bash", [join(repositoryRoot, "docker/publication/entrypoint.sh"), "true"], {
+        env: {
+          ...publicationEntrypointEnvironment({ root, home, bindings: join(root, "bindings") }),
+          CHARIOX_PUBLICATION_CONTROL_STATE_DIR: control,
+          CHARIOX_DAEMON_ID: "",
+          CHARIOX_MACHINE_ID: "",
+          CHARIOX_PUBLICATION_RUNTIME_KEY: "",
+          CHARIOX_PUBLICATION_RUNTIME_WORKSPACE: "",
+        },
+      }), (error) => error.code === 70 && expected.test(error.stderr))
+    }
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 function publicationEntrypointEnvironment({ root, home, bindings }) {
   return {
     ...process.env,

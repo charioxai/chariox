@@ -8,6 +8,7 @@ unsafe fn restore_env_var(key: &str, value: Option<std::ffi::OsString>) {
     }
 }
 
+mod publication_control_state;
 mod runtime_identity;
 mod user_config_policy;
 mod workflow_history_state;

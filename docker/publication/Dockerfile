@@ -92,6 +92,8 @@ COPY --from=rust-builder /opt/chariox/target/release/chariox-kernel /usr/local/b
 COPY docker/publication/entrypoint.sh /usr/local/bin/chariox-publication-container
 COPY docker/publication/wait-for-tcp.mjs /usr/local/bin/chariox-wait-for-tcp.mjs
 RUN chmod +x /usr/local/bin/chariox-publication-container /usr/local/bin/chariox-wait-for-tcp.mjs \
+  && mkdir -p /var/lib/chariox \
+  && chmod 755 /var/lib/chariox \
   && chown -R root:root /opt/chariox \
   && chmod -R go-w /opt/chariox \
   && chown -R chariox:chariox /home/chariox \

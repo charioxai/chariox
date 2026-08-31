@@ -200,6 +200,7 @@ mod tests {
         DaemonConfig {
             user_config_path: PathBuf::from("user.toml"),
             user_config: CharioxUserConfig::default(),
+            publication_control_state_root: None,
             daemon_id: "kernel-1".to_string(),
             host_machine_id: "host-1".to_string(),
             host_machine_alias: None,

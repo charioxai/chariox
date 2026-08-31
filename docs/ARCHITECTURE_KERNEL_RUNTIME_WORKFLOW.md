@@ -211,6 +211,12 @@ Rules:
   and scheduling the same work. The router owns the native permission bridge;
   the provider store keeps a weak reference so teardown cannot retain its own
   runtime and state lease through a reference cycle.
+- publication control state may survive container replacement independently of
+  the temporary kernel/provider home. Account registries, managed-context
+  transfers, provider credentials and transport capabilities remain private
+  ephemeral state. Retained workflow state and history are kernel-only, with
+  no direct gateway or app-action filesystem access. The runner still owns
+  volume retention, stop-before-start replacement, rollback and deletion.
 - the kernel remains the authority for source and deployed workflow
   sessions, workflow queues, workflow runs, provider runs, artifacts, and
   outputs

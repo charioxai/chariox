@@ -1,5 +1,4 @@
 use std::collections::BTreeMap;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -213,7 +212,7 @@ impl DaemonApp {
 
         let history_started = Instant::now();
         let history = SessionHistoryStore::new_with_read_delay(
-            config.session_history_root.clone(),
+            config.session_history_root(),
             config.session_history_read_delay_ms,
         )?;
         crate::logging::info_with_fields(
@@ -222,7 +221,7 @@ impl DaemonApp {
             serde_json::json!({
                 "open_ms": history_started.elapsed().as_millis(),
                 "bootstrap_elapsed_ms": bootstrap_started.elapsed().as_millis(),
-                "session_history_root": config.session_history_root.display().to_string(),
+                "session_history_root": config.session_history_root().display().to_string(),
             }),
         );
 
@@ -244,14 +243,7 @@ impl DaemonApp {
 
         let durable_state_started = Instant::now();
         let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
-        let managed_context_root = config
-            .durable_state_path()
-            .parent()
-            .map(Path::to_path_buf)
-            .ok_or_else(|| DaemonError::LocalTransport {
-                operation: "open managed context transfer store",
-                message: "durable state path has no parent directory".to_string(),
-            })?;
+        let managed_context_root = config.private_runtime_state_root();
         let managed_kernel_registration =
             crate::managed_bootstrap::confirmed_managed_kernel_registration_from_env()?;
         let managed_context_launch_recovery =

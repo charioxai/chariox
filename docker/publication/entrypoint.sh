@@ -33,6 +33,40 @@ generate_kernel_local_auth_token() {
   node -e 'process.stdout.write(require("node:crypto").randomBytes(32).toString("hex"))'
 }
 
+prepare_publication_control_state() {
+  if [[ -z "${CHARIOX_PUBLICATION_CONTROL_STATE_DIR+x}" ]]; then
+    return
+  fi
+  if [[ "$CHARIOX_PUBLICATION_CONTROL_STATE_DIR" != /var/lib/chariox/publication-control ]]; then
+    echo "publication control state must use the dedicated mount /var/lib/chariox/publication-control" >&2
+    return 70
+  fi
+  if [[ -z "${CHARIOX_DAEMON_ID:-}" || -z "${CHARIOX_MACHINE_ID:-}" || -z "${CHARIOX_PUBLICATION_RUNTIME_KEY:-}" || -z "${CHARIOX_PUBLICATION_RUNTIME_WORKSPACE:-}" ]]; then
+    echo "publication control state requires stable kernel, machine, runtime key and workspace identities" >&2
+    return 70
+  fi
+  node -e '
+    const fs = require("node:fs")
+    const [root, uid, gid] = process.argv.slice(1)
+    const parent = "/var/lib/chariox"
+    const parentStat = fs.statSync(parent)
+    if (fs.realpathSync(parent) !== parent || !parentStat.isDirectory()
+        || parentStat.uid !== 0 || (parentStat.mode & 0o022) !== 0) {
+      throw new Error("publication control state parent must be an immutable root-owned directory")
+    }
+    try { fs.mkdirSync(root, { mode: 0o700 }) }
+    catch (error) { if (error.code !== "EEXIST") throw error }
+    if (fs.realpathSync(root) !== root || fs.lstatSync(root).isSymbolicLink()) {
+      throw new Error("publication control state must not traverse a symlink")
+    }
+    const fd = fs.openSync(root, fs.constants.O_RDONLY | fs.constants.O_DIRECTORY | fs.constants.O_NOFOLLOW)
+    try {
+      fs.fchownSync(fd, Number(uid), Number(gid))
+      fs.fchmodSync(fd, 0o700)
+    } finally { fs.closeSync(fd) }
+  ' "$CHARIOX_PUBLICATION_CONTROL_STATE_DIR" "$(id -u chariox)" "$(id -g chariox)"
+}
+
 prepare_capability_directories() {
   if [[ "$(id -u)" -ne 0 ]]; then
     echo "publication standalone mode must start as root to provision capabilities" >&2
@@ -214,6 +248,7 @@ launch_kernel_as_chariox() {
       CHARIOX_SESSION_HISTORY_READ_DELAY_MS \
       CHARIOX_WORKSPACE_DIR \
       CHARIOX_PUBLICATION_RUNTIME_STATE_DIR \
+      CHARIOX_PUBLICATION_CONTROL_STATE_DIR \
       CHARIOX_PUBLICATION_PROVIDER_ACCOUNT_BINDINGS \
       CHARIOX_PUBLICATION_RUNTIME_ROOT \
       CHARIOX_PUBLICATION_PACKAGE \
@@ -468,6 +503,7 @@ should_import_credential_binding_to_home() {
   ' "$profile_dir"
 }
 
+prepare_publication_control_state
 validate_credential_destination
 import_provider_credentials
 materialize_credential_bindings

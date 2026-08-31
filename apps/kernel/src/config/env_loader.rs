@@ -85,6 +85,8 @@ impl DaemonConfig {
         Self {
             user_config_path,
             user_config,
+            publication_control_state_root: env::var_os("CHARIOX_PUBLICATION_CONTROL_STATE_DIR")
+                .map(PathBuf::from),
             local_socket_path: env::var_os("CHARIOX_DAEMON_SOCKET")
                 .map(PathBuf::from)
                 .unwrap_or_else(|| Self::default_local_socket_path(&daemon_id)),

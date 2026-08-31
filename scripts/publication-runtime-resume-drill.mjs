@@ -3,7 +3,7 @@
 import assert from "node:assert/strict"
 import { spawn } from "node:child_process"
 import { once } from "node:events"
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { mkdir, mkdtemp, readdir, rm, stat } from "node:fs/promises"
 import { createServer } from "node:net"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
@@ -11,8 +11,10 @@ import { setTimeout as delay } from "node:timers/promises"
 import { LocalIpcClient } from "../packages/kernel-client/dist/ipc.js"
 
 const binary = resolve(process.argv[2] ?? "target/debug/chariox-kernel")
+const replaceEphemeralHome = process.argv.includes("--replace-ephemeral-home")
 const root = await mkdtemp(join(tmpdir(), "chariox-publication-resume-"))
 const workspace = join(root, "workspace")
+const ephemeralHome = join(root, "home")
 await mkdir(workspace)
 async function reservePorts() {
   const reservations = [createServer(), createServer()]
@@ -35,11 +37,13 @@ function kernelEnv(kernelPort, kernelMcpPort) {
       HOME: process.env.HOME,
       USER: process.env.USER,
       LANG: "en_US.UTF-8",
-      CHARIOX_HOME: join(root, "home"),
+      CHARIOX_HOME: ephemeralHome,
+      ...(replaceEphemeralHome ? { CHARIOX_PUBLICATION_CONTROL_STATE_DIR: join(root, "control") } : {}),
       CHARIOX_KERNEL_HOST: "127.0.0.1",
       CHARIOX_KERNEL_PORT: String(kernelPort),
       CHARIOX_MCP_PORT: String(kernelMcpPort),
       CHARIOX_DAEMON_ID: "kernel-publication-resume-drill",
+      CHARIOX_MACHINE_ID: "machine-publication-resume-drill",
       CHARIOX_PROVIDER_DEV_STUB: "1",
   }
 }
@@ -62,13 +66,26 @@ async function start() {
     })
     try {
       await client.send({ ListSessions: {} })
-      return
     } catch {
       await client.close().catch(() => {})
       await delay(100)
+      continue
     }
+    if (replaceEphemeralHome) await assertPrivateStateIsEphemeral()
+    return
   }
   throw new Error("disposable kernel did not become ready")
+}
+
+async function assertPrivateStateIsEphemeral() {
+  const retained = await readdir(join(root, "control"))
+  for (const name of ["provider-accounts.json", "provider-accounts", "managed-context-transfers", "managed-context-outbound"]) {
+    assert.ok(!retained.includes(name), `private state retained in publication control volume: ${name}`)
+  }
+  const privateRoot = join(ephemeralHome, "kernels", "kernel-publication-resume-drill")
+  assert.ok((await stat(join(privateRoot, "provider-accounts.json"))).isFile(), "account registry must be rebuilt outside the retained volume")
+  assert.ok((await stat(join(privateRoot, "managed-context-transfers"))).isDirectory(), "incoming context must remain ephemeral")
+  assert.ok((await stat(join(privateRoot, "managed-context-outbound"))).isDirectory(), "outgoing context must remain ephemeral")
 }
 
 async function assertWriterFenced() {
@@ -157,6 +174,7 @@ try {
   }, "WorkflowPromptEnqueued")
 
   await stop()
+  if (replaceEphemeralHome) await rm(ephemeralHome, { recursive: true, force: true })
   await start()
   const restored = await send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized")
   assert.equal(restored.session.id, first.session.id, "kernel restart lost the serving publication session")
@@ -165,6 +183,7 @@ try {
   assert.deepEqual(restored.session.workflow_queued_prompts, [queuedPrompt], "restart lost or duplicated the queued workflow invocation")
 
   await stop("SIGKILL")
+  if (replaceEphemeralHome) await rm(ephemeralHome, { recursive: true, force: true })
   await start()
   const recovered = await send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized")
   assert.equal(recovered.session.id, first.session.id, "abrupt kernel death lost the runtime binding")
@@ -191,7 +210,7 @@ try {
   }, "WorkflowPublicationDisabled")
   await assert.rejects(() => send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized"),
     /no longer resumable|publication|MaterializeWorkflowPublication/i)
-  console.log(JSON.stringify({ passed: true, concurrentCreation: true, retry: true, restart: true, crashRecovery: true,
+  console.log(JSON.stringify({ passed: true, replacedEphemeralHome: replaceEphemeralHome, concurrentCreation: true, retry: true, restart: true, crashRecovery: true,
     scheduleStatePreserved: true, queuedInvocationPreserved: true, exclusiveWriter: true, independentReplicas: true, unkeyedIndependent: true,
     conflictingPublicationRejected: true, conflictingSnapshotRejected: true, disabledNotResurrected: true }))
 } finally {
