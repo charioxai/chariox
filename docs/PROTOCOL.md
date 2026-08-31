@@ -595,6 +595,8 @@ If worker cleanup cannot be confirmed, public deletion returns an explicit clean
 
 Worker cleanup uses the relay URL and token retained in the remote execution binding, including a slice-private relay distinct from the home's default relay. The local live drill uses separate relay servers and tokens to verify creation and deletion without relying on the worker being visible on the home relay.
 
+The worker remembers its last 256 completed leased-agent deletions by ID so a repeated `DestroyLeasedAgent` can return the same encrypted acknowledgement after response loss. It does not retain deleted prompt history. Unknown IDs, evicted receipts and worker restarts still fail closed; a missing record alone does not prove deletion. The real-relay drill covers agent deletion completed before the home receives its acknowledgement, followed by successful public deletion and slice detachment. Lease-deletion acknowledgement loss and restart reconciliation remain separate validation work.
+
 The internal cleanup error retains its source rather than converting every cause into a transport failure. Relay errors preserve the source's existing code and retryability while adding the retained-agent explanation. Admission cardinality failures are internal invariant errors, not retryable transport failures. These internal Rust error types add no serialized request, response or event fields.
 
 A full Environment snapshot carries at least:

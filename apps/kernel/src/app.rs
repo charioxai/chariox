@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -164,6 +164,7 @@ pub struct DaemonApp {
     pending_structured_output_records: provider_output::StructuredOutputRecordStore,
     execution_leases: BTreeMap<String, ExecutionLease>,
     leased_agents: BTreeMap<String, LeasedAgent>,
+    completed_leased_agent_deletions: VecDeque<String>,
     /// Workflow bindings are keyed by backing/home prompt, not provider run.
     /// A provider run can have one active turn plus queued turns, each with a
     /// different workflow context and capability snapshot.
@@ -282,6 +283,7 @@ impl DaemonApp {
                 provider_output::StructuredOutputRecordStore::default(),
             execution_leases: BTreeMap::new(),
             leased_agents: BTreeMap::new(),
+            completed_leased_agent_deletions: VecDeque::new(),
             leased_workflow_turns: BTreeMap::new(),
             remote_git_turn_snapshots: crate::git_observer::GitTurnSnapshotStore::default(),
             completed_git_turn_snapshots:

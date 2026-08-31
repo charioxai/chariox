@@ -113,7 +113,7 @@ pub(crate) async fn create_relay_leased_agent(
 pub(crate) async fn destroy_relay_leased_agent(
     runtime_state: &KernelRuntimeState,
     leased_agent_id: &str,
-) -> Result<LeasedAgent, DaemonError> {
+) -> Result<(), DaemonError> {
     runtime_state
         .destroy_relay_leased_agent(leased_agent_id)
         .await

@@ -22,6 +22,10 @@ mod skill_sync;
 
 pub(crate) use prompt_lifecycle::PreparedLeasedProviderRun;
 
+// Keep only small worker-generated IDs, not completed agents or prompt history.
+// Expiry or a worker restart must fail closed rather than infer successful cleanup.
+const COMPLETED_LEASED_AGENT_DELETION_LIMIT: usize = 256;
+
 pub(crate) struct RemoteLeaseRuntime<'a> {
     app: &'a mut DaemonApp,
 }
@@ -274,14 +278,21 @@ impl<'a> RemoteLeaseRuntime<'a> {
     pub(crate) fn destroy_leased_agent(
         &mut self,
         leased_agent_id: &str,
-    ) -> Result<LeasedAgent, DaemonError> {
-        let agent = self
-            .app
-            .leased_agents
-            .remove(leased_agent_id)
-            .ok_or_else(|| DaemonError::LeasedAgentNotFound {
-                leased_agent_id: leased_agent_id.to_string(),
-            })?;
+    ) -> Result<(), DaemonError> {
+        let Some(agent) = self.app.leased_agents.remove(leased_agent_id) else {
+            return if self
+                .app
+                .completed_leased_agent_deletions
+                .iter()
+                .any(|id| id == leased_agent_id)
+            {
+                Ok(())
+            } else {
+                Err(DaemonError::LeasedAgentNotFound {
+                    leased_agent_id: leased_agent_id.to_string(),
+                })
+            };
+        };
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
@@ -334,7 +345,12 @@ impl<'a> RemoteLeaseRuntime<'a> {
             let _ = self.app.sessions.end_session(&agent.backing_session_id);
             let _ = self.app.sessions.delete_session(&agent.backing_session_id);
         }
-        Ok(agent)
+        let completed = &mut self.app.completed_leased_agent_deletions;
+        if completed.len() == COMPLETED_LEASED_AGENT_DELETION_LIMIT {
+            completed.pop_front();
+        }
+        completed.push_back(leased_agent_id.to_string());
+        Ok(())
     }
 
     pub(crate) fn leased_workflow_event_capabilities_for_backing_prompt(
