@@ -205,9 +205,11 @@ fn diagnostic_suffix(path: &Path) -> String {
         bytes.drain(..bytes.len() - CLAUDE_USAGE_PROBE_DIAGNOSTIC_BYTES);
     }
     let diagnostic = terminal_diagnostic(&bytes);
-    (!diagnostic.is_empty())
-        .then(|| format!("; Claude stderr: {diagnostic}"))
-        .unwrap_or_default()
+    if diagnostic.is_empty() {
+        String::new()
+    } else {
+        format!("; Claude stderr: {diagnostic}")
+    }
 }
 
 fn validate_claude_probe_environment(
