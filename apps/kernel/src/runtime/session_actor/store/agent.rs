@@ -263,7 +263,7 @@ impl SessionRuntimeStore {
             [slice_ref] => slice_ref.clone(),
             _ => {
                 return self
-                    .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                    .with_session_projection_action_result(Err(DaemonError::InternalInvariant {
                         operation: "agent.spawn",
                         message: "slice admission target count mismatch".to_string(),
                     }))
@@ -407,7 +407,7 @@ impl SessionRuntimeStore {
 
         if slice_admission.slice_ids.len() != request.agents.len() {
             return self
-                .with_session_projection_action_result(Err(DaemonError::LocalTransport {
+                .with_session_projection_action_result(Err(DaemonError::InternalInvariant {
                     operation: "agents.spawn",
                     message: "slice admission target count mismatch".to_string(),
                 }))

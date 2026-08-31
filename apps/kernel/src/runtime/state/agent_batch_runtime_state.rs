@@ -9,7 +9,7 @@ impl KernelRuntimeState {
         slice_refs: &[Option<String>],
     ) -> Result<Vec<AgentInstance>, DaemonError> {
         if requests.len() != slice_refs.len() {
-            return Err(DaemonError::LocalTransport {
+            return Err(DaemonError::InternalInvariant {
                 operation: "agents.spawn",
                 message: "slice admission target count mismatch".to_string(),
             });
@@ -47,7 +47,7 @@ impl KernelRuntimeState {
                 .iter()
                 .cloned()
                 .collect::<Option<Vec<_>>>()
-                .ok_or_else(|| DaemonError::LocalTransport {
+                .ok_or_else(|| DaemonError::InternalInvariant {
                     operation: "agents.spawn",
                     message: "batch spawn returned incomplete results".to_string(),
                 })?;

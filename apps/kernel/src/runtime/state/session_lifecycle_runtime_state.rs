@@ -24,7 +24,7 @@ impl KernelRuntimeState {
             "session.create",
         )?;
         let [slice_ref] = slice_admission.slice_ids.as_slice() else {
-            return Err(DaemonError::LocalTransport {
+            return Err(DaemonError::InternalInvariant {
                 operation: "session.create",
                 message: "slice admission target count mismatch".to_string(),
             });
@@ -609,11 +609,9 @@ impl KernelRuntimeState {
                 crate::app::KernelSessionService::new(app).destroy_agent_worker_execution(&agent)
             })
             .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "agent.destroy",
-                message: format!(
-                    "worker cleanup failed; agent retained. Restore worker connectivity and retry cleanup: {error}"
-                ),
+            .map_err(|error| DaemonError::AgentWorkerCleanup {
+                agent_id: agent_id.to_string(),
+                source: Box::new(error),
             })?;
         }
         // The app and runtime share the agent store. Delete once, after worker

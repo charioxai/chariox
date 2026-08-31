@@ -378,8 +378,7 @@ async fn cleanup_failure_preserves_agent_and_slice() {
         }}),
     )
     .await
-    .unwrap_err()
-    .to_string();
+    .unwrap_err();
     let listed = dispatch_json(
         &fixture.home,
         json!({"ListAgents":{"session_id":fixture.rooms[0]}}),
@@ -398,6 +397,11 @@ async fn cleanup_failure_preserves_agent_and_slice() {
         "failed remote cleanup must not forget the home agent"
     );
     assert_eq!(attached["Slice"]["slice"]["agent_ids"], json!([agent_id]));
+    assert!(
+        std::error::Error::source(&error).is_some(),
+        "cleanup diagnostics must retain the underlying failure: {error}"
+    );
+    let error = error.to_string();
     assert!(
         error.contains("agent retained") && error.contains("retry"),
         "failed cleanup must explain that the agent remains tracked and can be retried: {error}"
