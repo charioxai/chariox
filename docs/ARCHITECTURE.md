@@ -556,6 +556,13 @@ Clients reconnect by event cursor. A retained cursor replays missing Environment
 
 Controller, browser, streamer, worker, kernel, and relay recovery must reconcile Environment identity, generation, tabs, viewport, input ownership, in-flight Actions, and saved-state generation before reporting ready. Completed Actions are never repeated. An Action without durable completion evidence fails or resumes under an explicit idempotency rule.
 
+For live slice browser mutations, the worker's bounded in-memory completion
+receipts provide that idempotency rule across an encrypted relay response loss.
+The receipt binds the Room and execution identity to a non-plaintext request
+fingerprint and terminal result. The home may retry only the identical request;
+worker restart or receipt eviction removes this proof and must not trigger a
+blind physical replay.
+
 #### Client obligations
 
 Web, local TUI, remote TUI, iOS, and planned Android clients render kernel projections. A TUI may open the graphical viewer rather than embed it, but it must show the same Environment health, current Tab, viewport, Actor, ownership, Action, and recovery state. Provider-native TUIs remain clients of the normal Room path and do not gain another browser or input authority.

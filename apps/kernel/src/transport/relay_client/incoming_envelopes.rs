@@ -73,6 +73,22 @@ pub(super) async fn handle_incoming_envelope(
                     encrypted_request,
                 )
                 .await;
+                #[cfg(test)]
+                let relay_response = {
+                    let mut relay_response = relay_response;
+                    if let Some(forget_receipts) =
+                        state.write().await.test_take_lost_peer_response_payload()
+                    {
+                        if forget_receipts {
+                            router
+                                .runtime_state()
+                                .test_forget_completed_browser_action_receipts();
+                        }
+                        relay_response.encrypted_response = None;
+                        relay_response.error = None;
+                    }
+                    relay_response
+                };
                 if let Err(error) = send_outgoing_envelope(
                     &outgoing_tx,
                     RelayEnvelope::DaemonIncomingPeerResponse {

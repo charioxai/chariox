@@ -221,6 +221,7 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
         .perform_browser_environment_locator_action(
             &session_id,
             &first_snapshot.dom_nodes[0].element_ref,
+            "11111111111111111111111111111111",
             crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
             500,
         )

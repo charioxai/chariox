@@ -33,6 +33,8 @@ pub struct RelayClientState {
     pub(super) pending_display_tunnel_registrations:
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
+    #[cfg(test)]
+    lose_next_peer_response_payload: Option<bool>,
 }
 
 impl RelayClientState {
@@ -171,6 +173,21 @@ impl RelayClientState {
         self.connected_relay_url = Some(relay_url.into());
         self.outgoing_tx = Some(outgoing_tx);
     }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_peer_response_payload(&mut self) {
+        self.lose_next_peer_response_payload = Some(false);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_lose_next_peer_response_payload_and_forget_action_receipts(&mut self) {
+        self.lose_next_peer_response_payload = Some(true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn test_take_lost_peer_response_payload(&mut self) -> Option<bool> {
+        self.lose_next_peer_response_payload.take()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -210,6 +227,8 @@ impl Default for RelayClientState {
             display_tunnels: BTreeMap::new(),
             pending_display_tunnel_registrations: BTreeMap::new(),
             display_streams: BTreeMap::new(),
+            #[cfg(test)]
+            lose_next_peer_response_payload: None,
         }
     }
 }

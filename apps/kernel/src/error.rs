@@ -17,6 +17,8 @@ pub enum DaemonError {
         operation: &'static str,
         message: String,
     },
+    #[error("browser controller action was cancelled (controller fenced: {controller_fenced})")]
+    BrowserControllerActionCancelled { controller_fenced: bool },
     #[error("internal invariant `{operation}` failed: {message}")]
     InternalInvariant {
         operation: &'static str,

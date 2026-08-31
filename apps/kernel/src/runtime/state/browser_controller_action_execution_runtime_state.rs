@@ -27,6 +27,7 @@ impl KernelRuntimeState {
         tab_id: &str,
         document_revision: u64,
         action_kind: &str,
+        execution_id: Option<&str>,
         execution: F,
     ) -> Result<BrowserControllerActionExecution<T>, DaemonError>
     where
@@ -92,14 +93,50 @@ impl KernelRuntimeState {
             return Err(action_environment_error(error));
         }
 
-        let result = execution.await;
-        let terminal = if result.is_ok() {
+        let result = match execution_id {
+            Some(execution_id) => {
+                self.await_cancellable_browser_action(
+                    session_id,
+                    &action_id,
+                    execution_id,
+                    execution,
+                )
+                .await
+            }
+            None => execution.await,
+        };
+        let controller_fenced = matches!(
+            &result,
+            Err(DaemonError::BrowserControllerActionCancelled {
+                controller_fenced: true,
+            })
+        );
+        let terminal = if controller_fenced
+            || matches!(
+                &result,
+                Err(DaemonError::BrowserControllerActionCancelled { .. })
+            ) {
+            EnvironmentActionTerminal::Cancelled
+        } else if result.is_ok() {
             EnvironmentActionTerminal::Completed
         } else {
             EnvironmentActionTerminal::Failed
         };
         self.finish_room_environment_action(session_id, &action_id, terminal)
             .map_err(action_environment_error)?;
+        if controller_fenced {
+            if let Err(recovery_error) = self
+                .recover_browser_controller_after_fence(session_id)
+                .await
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "browser_controller.recovery_failed",
+                    message: format!(
+                        "browser action was cancelled, but controller recovery failed: {recovery_error}"
+                    ),
+                });
+            }
+        }
         Ok(BrowserControllerActionExecution {
             action_id,
             actor_id,
@@ -273,6 +310,7 @@ mod tests {
                     "tab-1",
                     1,
                     "first-click",
+                    None,
                     async move {
                         first_started_tx.send(()).ok();
                         release_first_rx.await.expect("first action should release");
@@ -292,6 +330,7 @@ mod tests {
                 "tab-2",
                 1,
                 "other-tab-click",
+                None,
                 async { Ok::<_, DaemonError>("other") },
             )
             .await
@@ -310,6 +349,7 @@ mod tests {
                     "tab-1",
                     1,
                     "second-click",
+                    None,
                     async move {
                         second_started_tx.send(()).ok();
                         Ok::<_, DaemonError>("second")
@@ -360,6 +400,7 @@ mod tests {
                 "tab-2",
                 1,
                 "failed-click",
+                None,
                 async { Err::<(), _>(action_dispatch_error("expected failure".to_string())) },
             )
             .await
@@ -394,6 +435,7 @@ mod tests {
                     "tab-1",
                     1,
                     "blocking-click",
+                    None,
                     async move {
                         blocker_started_tx.send(()).ok();
                         release_blocker_rx
@@ -419,6 +461,7 @@ mod tests {
                     "tab-1",
                     1,
                     "stale-click",
+                    None,
                     async move {
                         stale_executed_tx.send(()).ok();
                         Ok::<_, DaemonError>(())

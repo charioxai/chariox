@@ -204,6 +204,7 @@ mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
+mod browser_controller_action_cancellation_runtime_state;
 mod browser_controller_action_execution_runtime_state;
 mod browser_controller_compatibility_runtime_state;
 pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;

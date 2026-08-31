@@ -117,9 +117,11 @@ pub(super) async fn controller_scenario(private_relay: bool) {
     let result = std::panic::AssertUnwindSafe(check_slice_controller(&fixture))
         .catch_unwind()
         .await;
-    let pid = std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
-        .ok()
-        .map(|pid| pid.trim().parse::<u32>().expect("controller PID"));
+    let pids = std::fs::read_to_string(fixture._worker_state.root.join("controller.pids"))
+        .unwrap_or_default()
+        .lines()
+        .map(|pid| pid.parse::<u32>().expect("controller PID"))
+        .collect::<Vec<_>>();
     let cleanup = fixture
         .worker
         .runtime_state
@@ -127,7 +129,7 @@ pub(super) async fn controller_scenario(private_relay: bool) {
         .await;
     fixture.stop().await;
     cleanup.expect("stop fixture controller on success and failure");
-    if let Some(pid) = pid {
+    for pid in pids {
         eprintln!("relay controller fixture PID: {pid}");
         assert!(
             !crate::runtime::process_health::process_running(pid),
@@ -196,6 +198,9 @@ async fn check_slice_controller(fixture: &LiveWorker) {
         .any(|spec| spec.name == "slice_browser_status"));
     super::controller_observations::check(fixture, &token, &status.payload).await;
     super::controller_mutations::check(fixture, &token, &status.payload).await;
+    super::controller_cancellation::check(fixture, &token, &status.payload).await;
+    super::controller_cancellation::check_running(fixture, &token, &status.payload).await;
+    super::controller_response_loss::check(fixture, &token).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {
@@ -253,22 +258,29 @@ async fn check_slice_controller(fixture: &LiveWorker) {
                 )
                 .unwrap();
         }
-        let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        for command in [
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelAction {
+                execution_id: "00000000000000000000000000000000".into(),
+            },
+        ] {
+            let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
             &sender,
             chariox_relay::protocol::ClientTarget { daemon_id: Some("environment-worker".into()), daemon_alias: None },
             crate::transport::relay_peer::RelayPeerRequest::RoomBrowserController {
                 session_id: if mismatch == "room" { fixture.rooms[1].clone() } else { room.clone() },
                 slice_id: if mismatch == "slice" { "other-slice".into() } else { slice.id.clone() },
-                command: crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
+                command,
             },
             Duration::from_secs(3),
         ).await.expect_err("mismatched caller must not stop the owner's browser");
-        assert!(
-            denied
-                .to_string()
-                .contains("browser_controller_scope_denied"),
-            "{mismatch}: {denied}"
-        );
+            assert!(
+                denied
+                    .to_string()
+                    .contains("browser_controller_scope_denied"),
+                "{mismatch}: {denied}"
+            );
+        }
     }
     let again = dispatch_json(&fixture.home, request).await.unwrap();
     assert_eq!(

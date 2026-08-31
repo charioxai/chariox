@@ -630,6 +630,60 @@ desktop takeover still requires desktop readiness, and controller recovery
 blocks new input admission. Navigation and the remaining tools are not yet enabled for
 home agents.
 
+Protocol v286 and relay peer v22 carry a fresh 128-bit execution identity with
+each locator action and add `CancelAction` on the same bound-worker route.
+Cancellation still requires the provisioned home ID/key, Room and slice tuple.
+The worker tracks only live physical executions by Room and execution identity;
+it does not create another action ledger or decide input ownership. A stale or
+unknown identity is a no-op. The home retries cancellation with the same identity
+if it races worker registration, retaining the original execution future.
+Cancellation delivery bypasses the original action's slice operation guard and
+supervisor lock so it can reach a busy controller. The original action keeps
+its guard until its response. The controller reads `browser.cancel` alongside
+its bounded serial operation queue, using the original stdio request ID.
+`CancellationRequested` is only a delivery acknowledgement. Only the original
+operation's `ActionCancelled` response confirms physical cancellation and lets
+the home finish the action as cancelled and grant pending human ownership.
+The controller checks cancellation before input and between pointer movement
+and button press, while keeping the browser available for subsequent actions.
+
+Protocol v287 and relay peer v23 distinguish graceful cancellation from a
+forced physical fence. If controller cleanup does not complete inside the
+combined command and action timeout, the worker kills and reaps the controller,
+then reports the fence to the home. The home finishes the Action as cancelled,
+starts the controller against the surviving browser, and reconciles its new
+generation. Reconciliation invalidates old element references while preserving
+stable Room tabs, external browser state, and the single human input owner. The
+cancelled call does not return until recovery either succeeds or fails visibly;
+failure leaves Browser and Browser Controller health unavailable with a
+recovery diagnostic.
+
+Protocol v288 and relay peer v24 add non-mutating locator-action receipt
+recovery. The worker retains the last 256 terminal receipts in memory, keyed by
+Room and execution identity. A receipt stores the terminal result and a SHA-256
+request fingerprint, not the fill payload. If the encrypted terminal response
+is lost, the home sends `RecoverAction` with the identical request envelope. An
+identical completed request replays its receipt, and an identical in-flight
+request waits for the original execution; neither sends physical input again.
+Reusing an execution identity with a different target, document, node, action,
+or timeout fails closed. An evicted receipt or worker restart makes recovery
+return explicit loss of completion proof and never turns the recovery request
+into a new physical Action. Existing clients' minimum versions remain unchanged
+because this is a home-worker transport contract. The real-relay drill discards
+one encrypted response after the external browser records its mutation, then
+proves that the public Room tool succeeds, the Action ledger completes, and the
+physical click count increases exactly once. A second fault removes the receipt
+before recovery and proves a clear failure, one physical click, and subsequent
+fresh-action availability.
+
+Protocol v288 also removes the worker's advisory restart result. After
+a fence, the home is the only authority that starts and reconciles the
+controller.
+
+Cancellation during other operations and physical input-device reset after a
+mid-sequence controller loss still require further resiliency validation; this
+is not full cancellation acceptance for every Browser and Computer operation.
+
 Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.
 Existing clients' minimum
@@ -747,6 +801,13 @@ Takeover requests identify the Room and input target. The kernel derives the hum
 Takeover emits ordered Action and ownership events. Every attached client projects the same transition. A takeover request is idempotent for the same Actor and target. A conflicting human request follows Room permission policy rather than last-writer-wins behavior.
 
 Explicit Action cancellation carries only the Room and Action IDs. The kernel derives the caller's Actor. An Actor may cancel its own work; a human may cancel an agent Action only while owning or awaiting takeover of at least one affected input target. Repeated cancellation is idempotent. Cancelling queued work may promote the next eligible Action, while cancelling running work only requests controller cancellation and retains all reservations until a terminal result arrives.
+
+Authenticated cancellation derives readiness from the recorded Action's mode,
+using the same browser-component readiness as action admission and takeover.
+It does not require the desktop to finish starting before accepting cancellation
+of an admitted browser Action. Actor and target-ownership checks still apply.
+The relay drill covers a pending human owner cancelling while a second Action
+is queued; physical interruption of running input remains separate validation.
 
 Release is explicit. Disconnect may start a bounded expiry policy, but reconnect during that interval retains ownership. Expiry emits an ownership event and leaves the target unowned. It never assigns an agent automatically.
 

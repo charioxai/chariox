@@ -22,6 +22,7 @@ export async function performBrowserAction({
   nodeRef,
   action,
   timeoutMs,
+  signal,
   now = Date.now,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }) {
@@ -35,6 +36,7 @@ export async function performBrowserAction({
   let releaseInBackground = false;
 
   while (true) {
+    assertNotCancelled(signal);
     if (attempts > 0 && now() - startedAt >= boundedTimeoutMs) {
       throw new BrowserActionError(
         "browser_action_timeout",
@@ -50,12 +52,14 @@ export async function performBrowserAction({
       const geometry = readyGeometry(actionability, normalizedAction);
       lastReason = actionability.state;
       if (geometry && sameGeometry(previousGeometry, geometry)) {
+        assertNotCancelled(signal);
         const actionResult = await executeAction(
           connection,
           sessionId,
           objectId,
           geometry,
           normalizedAction,
+          signal,
         );
         releaseInBackground = actionResult.dialogOpened;
         return {
@@ -76,6 +80,12 @@ export async function performBrowserAction({
       }
     }
     await sleep(ACTION_POLL_INTERVAL_MS);
+  }
+}
+
+function assertNotCancelled(signal) {
+  if (signal?.aborted) {
+    throw new BrowserActionError("browser_action_cancelled", "browser action was cancelled");
   }
 }
 
@@ -307,10 +317,12 @@ async function executeAction(
   objectId,
   geometry,
   action,
+  signal,
 ) {
+  assertNotCancelled(signal);
   if (action.kind === "click") {
     return {
-      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y),
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y, signal),
     };
   }
   if (action.kind === "submit") {
@@ -318,12 +330,14 @@ async function executeAction(
     return { dialogOpened: false };
   }
   await focusElement(connection, sessionId, objectId, !action.append);
+  assertNotCancelled(signal);
   if (action.text) {
     await connection.send("Input.insertText", { text: action.text }, sessionId);
   } else if (!action.append) {
     await dispatchBackspace(connection, sessionId);
   }
   if (action.submit) {
+    assertNotCancelled(signal);
     await submitNearestForm(connection, sessionId, objectId);
   }
   return { dialogOpened: false };
@@ -354,10 +368,11 @@ async function submitNearestForm(connection, sessionId, objectId) {
   }
 }
 
-async function dispatchClick(connection, sessionId, x, y) {
+async function dispatchClick(connection, sessionId, x, y, signal) {
   if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
     return true;
   }
+  assertNotCancelled(signal);
   if (await dispatchMouseEvent(connection, sessionId, {
     type: "mousePressed",
     x,
@@ -367,13 +382,17 @@ async function dispatchClick(connection, sessionId, x, y) {
   })) {
     return true;
   }
-  return dispatchMouseEvent(connection, sessionId, {
+  const dialogOpened = await dispatchMouseEvent(connection, sessionId, {
     type: "mouseReleased",
     x,
     y,
     button: "left",
     clickCount: 1,
   });
+  // Once pressed, finish the release even if cancellation arrives. Reporting
+  // cancellation before this point would hand over a stuck mouse button.
+  assertNotCancelled(signal);
+  return dialogOpened;
 }
 
 async function dispatchMouseEvent(connection, sessionId, params) {
