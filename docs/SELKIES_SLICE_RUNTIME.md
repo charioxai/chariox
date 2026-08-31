@@ -139,6 +139,32 @@ authorizing the Room, attachment, and viewer key. The encrypted relay channel,
 Room-level admission/revocation, and released Web/TUI clients must still be
 connected and validated before enabling Selkies viewing.
 
+### Encrypted kernel adapter
+
+`transport/selkies_stream.rs` connects a kernel-selected private adapter process
+to `SecureDisplayChannel`. It verifies the ready protocol and read-only flag,
+limits JSON records before allocation, checks video and text records, and sends
+only encrypted display fragments to its caller. Each channel accepts at most
+16 queued fragments; writes time out after two seconds. No video enters the
+terminal event log. Viewer messages can request video or acknowledge frames,
+but cannot renew their own viewing permission or send keyboard, mouse, settings,
+or clipboard input.
+
+The caller retains Room authorization and supplies a monotonic viewing deadline.
+Revocation, expiry, or loss of that authority cancels blocked I/O too. Cleanup
+closes private stdin, drains output, and reaps the owned process within a bounded
+wait. Kernel-side permission renewal is separate from keeping the private pipe
+alive. This module does not accept a command or target from a viewer.
+
+The ignored `transport::selkies_stream` tests use an explicitly selected local
+image and Docker context. Run them serially with `--ignored --test-threads=1`.
+They receive real Xvfb H.264 through the kernel adapter and a real local relay's
+WebSocket display route, send an encrypted stop command back, reject encrypted
+keyboard input, and prove kernel permission expiry, renewal, and revocation.
+They create and remove one bounded desktop container per test. Their relay
+registration is test setup, not evidence that released Room viewer admission or
+Web video decoding is already connected.
+
 `CHARIOX_SLICE_VIEWER_BACKEND=selkies` selects it in `slice-screen.sh`.
 `novnc` selects the rollback launcher. During this staged implementation the
 existing noVNC default is unchanged; switching the product default requires
