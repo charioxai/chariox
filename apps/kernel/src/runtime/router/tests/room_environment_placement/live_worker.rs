@@ -4,6 +4,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
+mod session;
+
 struct LiveWorker {
     home: Arc<CommandRouter>,
     rooms: Vec<String>,
@@ -125,6 +127,19 @@ impl LiveWorker {
                     private: false,
                 }),
                 1,
+            )
+            .unwrap();
+        self.home
+            .app
+            .lock()
+            .await
+            .slices()
+            .set_worker_presence(
+                "desktop",
+                Some("environment-worker".to_string()),
+                Some("slice:slice-1".to_string()),
+                vec!["managed-dev-stub".to_string()],
+                crate::session::unix_epoch_ms(),
             )
             .unwrap();
     }

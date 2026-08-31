@@ -18,11 +18,18 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
-        let _slice_guards = self.guard_slice_execution(
+        let slice_admission = self.guard_slice_execution(
             None,
             [(slice_ref.as_deref(), kernel_ref.as_deref())],
             "session.create",
         )?;
+        let [slice_ref] = slice_admission.slice_ids.as_slice() else {
+            return Err(DaemonError::LocalTransport {
+                operation: "session.create",
+                message: "slice admission target count mismatch".to_string(),
+            });
+        };
+        let slice_ref = slice_ref.clone();
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
         }
