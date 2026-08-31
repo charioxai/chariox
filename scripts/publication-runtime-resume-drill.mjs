@@ -13,6 +13,7 @@ import { LocalIpcClient } from "../packages/kernel-client/dist/ipc.js"
 const binary = resolve(process.argv[2] ?? "target/debug/chariox-kernel")
 const replaceEphemeralHome = process.argv.includes("--replace-ephemeral-home")
 const activationBarrier = process.argv.includes("--activation-barrier")
+const reconfigureProfile = process.argv.includes("--reconfigure-profile")
 const root = await mkdtemp(join(tmpdir(), "chariox-publication-resume-"))
 const workspace = join(root, "workspace")
 const ephemeralHome = join(root, "home")
@@ -155,7 +156,9 @@ try {
     source_session: { id: session.id, workspace_id: workspace, worktree_id: workspace },
     workflow: endpointResult.workflow, endpoint: endpointResult.endpoint,
     queues: source.session.workflow_prompt_queues,
-    schedules: [], agents: [agent],
+    // Match the gateway's destination workspace resolution, not a raw agent
+    // projection whose optional workspace_id can be absent.
+    schedules: [], agents: [{ ...agent, workspace_id: workspace, worktree_id: workspace }],
   }
   const request = { publication_id: "resume-publication", runtime_key: "deployment-a:replica-0", snapshot }
   const initial = await Promise.all(Array.from({ length: 4 }, () =>
@@ -250,19 +253,60 @@ try {
   assert.deepEqual(restored.session.workflow_schedules, [pausedSchedule], "restart reinstalled captured schedules instead of current schedule state")
   assert.deepEqual(restored.session.workflow_queued_prompts, [queuedPrompt], "restart lost or duplicated the queued workflow invocation")
 
+  let recoveryRequest = request
+  if (reconfigureProfile) {
+    assert.ok(replaceEphemeralHome, "profile reconfiguration drill requires retained control state")
+    recoveryRequest = { ...request, snapshot: { ...snapshot, agents: snapshot.agents.map((agent) => ({
+      ...agent, model: "terminal-echo-a", effort: "low", account_profile: "destination-account",
+    })) } }
+    const { DatabaseSync } = await import("node:sqlite")
+    const database = new DatabaseSync(join(root, "control", "state.db"))
+    database.exec(`CREATE TRIGGER fail_profile_reconfiguration BEFORE INSERT ON durable_state_events
+      WHEN NEW.kind = 'workflow.publication.reconfigured'
+      BEGIN SELECT RAISE(FAIL, 'injected profile reconfiguration failure'); END;`)
+    await assert.rejects(() => send("MaterializeWorkflowPublication", recoveryRequest, "WorkflowPublicationMaterialized"),
+      /injected profile reconfiguration failure/)
+    database.exec("DROP TRIGGER fail_profile_reconfiguration")
+    database.close()
+    const unchanged = await send("GetSessionState", { session_id: first.session.id }, "SessionState")
+    assert.ok(unchanged.session.agents.every((agent) => agent.account_profile !== "destination-account"),
+      "failed durable write leaked a partial profile change")
+    assert.deepEqual(unchanged.session.workflow_schedules, [pausedSchedule], "failed profile write changed the schedule")
+    assert.deepEqual(unchanged.session.workflow_queued_prompts, [queuedPrompt], "failed profile write changed queued work")
+    const changed = await send("MaterializeWorkflowPublication", recoveryRequest, "WorkflowPublicationMaterialized")
+    assert.equal(changed.session.id, first.session.id, "profile change replaced the serving session")
+    assert.deepEqual(changed.agent_id_map, first.agent_id_map, "profile change replaced the serving agents")
+    assert.deepEqual(changed.session.workflow_schedules, [pausedSchedule], "profile change reset the schedule")
+    assert.deepEqual(changed.session.workflow_queued_prompts, [queuedPrompt], "profile change lost queued work")
+    assert.ok(changed.session.agents.every((agent) => agent.model === "terminal-echo-a"
+      && agent.effort === "low" && agent.account_profile === "destination-account"), "profile change was ignored")
+  }
+
   await stop("SIGKILL")
   if (replaceEphemeralHome) await rm(ephemeralHome, { recursive: true, force: true })
   await start()
-  const recovered = await send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized")
+  const recovered = await send("MaterializeWorkflowPublication", recoveryRequest, "WorkflowPublicationMaterialized")
   assert.equal(recovered.session.id, first.session.id, "abrupt kernel death lost the runtime binding")
   assert.deepEqual(recovered.session.workflow_schedules, [pausedSchedule], "abrupt kernel death lost schedule state")
   assert.deepEqual(recovered.session.workflow_queued_prompts, [queuedPrompt], "abrupt kernel death lost queue identity/attribution")
+  if (reconfigureProfile) {
+    assert.ok(recovered.session.agents.every((agent) => agent.model === "terminal-echo-a"
+      && agent.effort === "low" && agent.account_profile === "destination-account"), "restart lost the accepted profile change")
+  }
 
   const other = await send("MaterializeWorkflowPublication", {
     ...request, runtime_key: "deployment-a:replica-1",
   }, "WorkflowPublicationMaterialized")
   assert.notEqual(other.session.id, first.session.id, "independent replicas shared a runtime session")
   assert.notDeepEqual(other.agent_id_map, first.agent_id_map, "independent replicas shared agents")
+  if (reconfigureProfile) {
+    await send("ActivateWorkflowPublicationRuntime", {
+      publication_id: request.publication_id,
+      runtime_keys: [request.runtime_key, "deployment-a:replica-1"],
+    }, "WorkflowPublicationRuntimeActivated")
+    await assert.rejects(() => send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized"),
+      /restart|profile|activation|MaterializeWorkflowPublication/i)
+  }
   await assert.rejects(() => send("MaterializeWorkflowPublication", {
     ...request, publication_id: "different-publication",
   }, "WorkflowPublicationMaterialized"), /runtime key|publication|MaterializeWorkflowPublication/i)
@@ -278,9 +322,9 @@ try {
   }, "WorkflowPublicationDisabled")
   await assert.rejects(() => send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized"),
     /no longer resumable|publication|MaterializeWorkflowPublication/i)
-  console.log(JSON.stringify({ passed: true, replacedEphemeralHome: replaceEphemeralHome, concurrentCreation: true, retry: true, restart: true, crashRecovery: true,
+  console.log(JSON.stringify({ passed: true, replacedEphemeralHome: replaceEphemeralHome, profileReconfiguration: reconfigureProfile, concurrentCreation: true, retry: true, restart: true, crashRecovery: true,
     scheduleStatePreserved: true, queuedInvocationPreserved: true, exclusiveWriter: true, independentReplicas: true, unkeyedIndependent: true,
-    conflictingPublicationRejected: true, conflictingSnapshotRejected: true, disabledNotResurrected: true }))
+    profileWriteAtomic: reconfigureProfile, conflictingPublicationRejected: true, conflictingSnapshotRejected: true, disabledNotResurrected: true }))
   }
 } finally {
   await stop()

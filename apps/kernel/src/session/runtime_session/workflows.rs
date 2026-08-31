@@ -258,6 +258,22 @@ impl RuntimeSession {
             .find(|publication| publication.id() == publication_id)
     }
 
+    pub(crate) fn replace_publication_runtime_configuration(
+        &mut self,
+        publication_id: &str,
+        snapshot: WorkflowPublicationSnapshot,
+    ) -> Result<(), String> {
+        let digest = snapshot.digest().map_err(|error| error.to_string())?;
+        let publication = self
+            .workflow_publication_mut(publication_id)
+            .ok_or_else(|| "publication runtime is missing".to_string())?;
+        publication.set_runtime_snapshot_digest(digest)?;
+        self.workflow_publication_state
+            .workflow_publication_snapshots
+            .insert(publication_id.to_string(), snapshot);
+        Ok(())
+    }
+
     pub fn create_workflow_event_binding(
         &mut self,
         binding: WorkflowEventBinding,

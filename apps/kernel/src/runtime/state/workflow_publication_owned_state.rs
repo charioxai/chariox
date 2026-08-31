@@ -7,6 +7,7 @@ use super::*;
 
 mod materialization;
 mod package;
+mod reconfiguration;
 
 use package::{
     workflow_publication_package_archive_base64, workflow_publication_package_digest,
@@ -534,6 +535,7 @@ impl KernelRuntimeOwnedState {
                 key,
                 &request.publication_id,
                 &source_snapshot_digest,
+                &source_snapshot,
                 caller_user_id,
             )? {
                 return Ok(restored);

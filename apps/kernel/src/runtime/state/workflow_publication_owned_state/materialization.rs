@@ -18,6 +18,7 @@ impl KernelRuntimeOwnedState {
         runtime_key: &str,
         publication_id: &str,
         snapshot_digest: &str,
+        snapshot: &crate::session::WorkflowPublicationSnapshot,
         owner_user_id: &str,
     ) -> Result<Option<LocalDaemonResponse>, DaemonError> {
         let mut matching = self
@@ -49,9 +50,7 @@ impl KernelRuntimeOwnedState {
                 "publication runtime key has multiple owners",
             ));
         }
-        if publication.id() != publication_id
-            || publication.source_snapshot_digest() != Some(snapshot_digest)
-        {
+        if publication.id() != publication_id {
             return Err(materialization_error(
                 "publication runtime key is already bound to a different publication or snapshot",
             ));
@@ -75,6 +74,9 @@ impl KernelRuntimeOwnedState {
                 ));
             }
         }
+        if publication.source_snapshot_digest() != Some(snapshot_digest) {
+            self.workflow_reconfigure_publication_runtime(session.id(), &publication, snapshot)?;
+        }
         Ok(Some(LocalDaemonResponse::WorkflowPublicationMaterialized {
             publication_id: publication_id.to_string(),
             session: self.workflow_session(session.id())?,
@@ -83,7 +85,7 @@ impl KernelRuntimeOwnedState {
     }
 }
 
-fn materialization_error(message: &str) -> DaemonError {
+pub(super) fn materialization_error(message: &str) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "materialize workflow publication",
         message: message.to_string(),

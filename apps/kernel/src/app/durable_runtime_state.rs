@@ -192,7 +192,7 @@ impl RestoredExternalProviderAttachmentState {
                     self.live_session_ids.insert(session.id().to_string());
                 }
             }
-            "workflow.publication.materialized" => {
+            "workflow.publication.materialized" | "workflow.publication.reconfigured" => {
                 if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
                     event,
                     "session",
@@ -958,21 +958,24 @@ impl DaemonApp {
 
     #[allow(dead_code)]
     pub(crate) fn save_durable_state_snapshot(&self) -> Result<(), DaemonError> {
-        let sequence = self.durable_state.latest_event_sequence()?;
-        let payload = DurableKernelSnapshotPayload::capture(
-            &self.sessions,
-            &self.agents,
-            &self.slices,
-            &self.metaagent_events,
-        );
-        self.durable_state.save_snapshot(
-            sequence,
-            serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
-                operation: "durable_state.encode_snapshot_payload",
-                message: error.to_string(),
-            })?,
-        )?;
-        Ok(())
+        self.durable_state
+            .with_workflow_runtime_transition_lock(|| {
+                let sequence = self.durable_state.latest_event_sequence()?;
+                let payload = DurableKernelSnapshotPayload::capture(
+                    &self.sessions,
+                    &self.agents,
+                    &self.slices,
+                    &self.metaagent_events,
+                );
+                self.durable_state.save_snapshot(
+                    sequence,
+                    serde_json::to_value(payload).map_err(|error| DaemonError::LocalTransport {
+                        operation: "durable_state.encode_snapshot_payload",
+                        message: error.to_string(),
+                    })?,
+                )?;
+                Ok(())
+            })
     }
 
     pub(crate) fn durable_snapshot_scheduler(&self) -> Option<DurableSnapshotScheduler> {
@@ -1080,7 +1083,7 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "workflow.runtime.updated" => {}
-            "workflow.publication.materialized" => {
+            "workflow.publication.materialized" | "workflow.publication.reconfigured" => {
                 let session: RuntimeSession = decode_durable_payload_field(
                     &event,
                     "session",

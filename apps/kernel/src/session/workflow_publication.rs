@@ -428,6 +428,16 @@ impl WorkflowPublicationDefinition {
         self.source_snapshot_digest.as_deref()
     }
 
+    pub(crate) fn set_runtime_snapshot_digest(&mut self, digest: String) -> Result<(), String> {
+        if self.runtime_materialization.is_none() {
+            return Err(
+                "only a materialized runtime can change its resolved configuration".to_string(),
+            );
+        }
+        self.source_snapshot_digest = Some(digest);
+        Ok(())
+    }
+
     pub fn validate_source_snapshot(
         &self,
         snapshot: &WorkflowPublicationSnapshot,

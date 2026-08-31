@@ -185,6 +185,14 @@ impl SessionStateStore {
         self.write().restore_session(session)
     }
 
+    pub(crate) fn commit_publication_runtime_configuration(
+        &self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        self.write()
+            .commit_publication_runtime_configuration(session)
+    }
+
     pub(crate) fn restore_session_with_default_project_name_hint(
         &self,
         session: RuntimeSession,

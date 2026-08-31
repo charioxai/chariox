@@ -43,21 +43,50 @@ impl DurableKernelStateStore {
         session: &RuntimeSession,
         reason: &str,
     ) -> Result<u64, DaemonError> {
+        self.persist_workflow_runtime_event(
+            session,
+            "workflow.runtime.updated",
+            serde_json::json!({
+                "owner_id": session.host_daemon_id(),
+                "session_id": session.id(),
+                "reason": reason,
+            }),
+        )
+    }
+
+    // Agent configuration and normalized workflow state must advance in the
+    // same transaction. A plain event would leave the hot-state snapshot stale.
+    pub(crate) fn persist_publication_runtime_configuration(
+        &self,
+        session: &RuntimeSession,
+    ) -> Result<u64, DaemonError> {
+        self.persist_workflow_runtime_event(
+            session,
+            "workflow.publication.reconfigured",
+            serde_json::json!({
+                "session": session,
+            }),
+        )
+    }
+
+    fn persist_workflow_runtime_event(
+        &self,
+        session: &RuntimeSession,
+        event_kind: &'static str,
+        payload: serde_json::Value,
+    ) -> Result<u64, DaemonError> {
         let timestamp_ms = unix_epoch_ms();
         let event_id = format!("state_evt_{timestamp_ms}_{}", super::rand_suffix());
-        let payload_json = serde_json::to_string(&serde_json::json!({
-            "owner_id": session.host_daemon_id(),
-            "session_id": session.id(),
-            "reason": reason,
-        }))
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "durable_state.encode_workflow_runtime_transition",
-            message: error.to_string(),
-        })?;
+        let payload_json =
+            serde_json::to_string(&payload).map_err(|error| DaemonError::LocalTransport {
+                operation: "durable_state.encode_workflow_runtime_transition",
+                message: error.to_string(),
+            })?;
         let encoded = encode_workflow_session(session)?;
         self.writer
             .execute(DurableWriteOperation::WorkflowRuntimeTransition {
                 event_id,
+                event_kind,
                 timestamp_ms,
                 payload_json,
                 owner_id: session.host_daemon_id().to_string(),
@@ -397,6 +426,7 @@ impl DurableKernelStateStore {
 
 pub(super) struct WorkflowRuntimeTransitionWrite<'a> {
     pub(super) event_id: &'a str,
+    pub(super) event_kind: &'a str,
     pub(super) timestamp_ms: u64,
     pub(super) payload_json: &'a str,
     pub(super) owner_id: &'a str,
@@ -413,12 +443,13 @@ pub(super) fn write_workflow_runtime_transition(
     transaction.execute(
         "INSERT INTO durable_state_events (
             event_id, kind, subject_id, timestamp_ms, payload_json
-         ) VALUES (?1, 'workflow.runtime.updated', ?2, ?3, ?4)",
+         ) VALUES (?1, ?5, ?2, ?3, ?4)",
         params![
             write.event_id,
             write.session_id,
             write.timestamp_ms as i64,
-            write.payload_json
+            write.payload_json,
+            write.event_kind
         ],
     )?;
     let sequence = transaction.last_insert_rowid().max(0) as u64;

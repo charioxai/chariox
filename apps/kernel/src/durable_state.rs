@@ -137,6 +137,7 @@ enum DurableWriteOperation {
     },
     WorkflowRuntimeTransition {
         event_id: String,
+        event_kind: &'static str,
         timestamp_ms: u64,
         payload_json: String,
         owner_id: String,
@@ -1344,6 +1345,7 @@ fn commit_durable_write_batch(
             }
             DurableWriteOperation::WorkflowRuntimeTransition {
                 event_id,
+                event_kind,
                 timestamp_ms,
                 payload_json,
                 owner_id,
@@ -1355,6 +1357,7 @@ fn commit_durable_write_batch(
                 &transaction,
                 workflow_runtime::WorkflowRuntimeTransitionWrite {
                     event_id,
+                    event_kind,
                     timestamp_ms: *timestamp_ms,
                     payload_json,
                     owner_id,

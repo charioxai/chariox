@@ -208,6 +208,28 @@ impl SessionService {
         self.restore_session_with_default_project_name_hint(session, None)
     }
 
+    pub(crate) fn commit_publication_runtime_configuration(
+        &mut self,
+        session: RuntimeSession,
+    ) -> Result<RuntimeSession, DaemonError> {
+        let current = self
+            .store
+            .get(session.id())
+            .ok_or_else(|| DaemonError::SessionNotFound {
+                session_id: session.id().to_string(),
+            })?;
+        if !current.is_hidden()
+            || current.owner_user_id() != session.owner_user_id()
+            || current.host_daemon_id() != session.host_daemon_id()
+        {
+            return Err(DaemonError::LocalTransport {
+                operation: "commit publication runtime configuration",
+                message: "publication runtime session ownership changed".to_string(),
+            });
+        }
+        Ok(self.store.insert(session))
+    }
+
     pub(crate) fn restore_session_with_default_project_name_hint(
         &mut self,
         mut session: RuntimeSession,
