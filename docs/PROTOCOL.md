@@ -630,6 +630,26 @@ desktop takeover still requires desktop readiness, and controller recovery
 blocks new input admission. Navigation and the remaining tools are not yet enabled for
 home agents.
 
+Protocol v286 and relay peer v22 carry a fresh 128-bit execution identity with
+each locator action and add `CancelAction` on the same bound-worker route.
+Cancellation still requires the provisioned home ID/key, Room and slice tuple.
+The worker tracks only live physical executions by Room and execution identity;
+it does not create another action ledger or decide input ownership. A stale or
+unknown identity is a no-op. The home retries cancellation with the same identity
+if it races worker registration, retaining the original execution future.
+Cancellation delivery bypasses the original action's slice operation guard and
+supervisor lock so it can reach a busy controller. The original action keeps
+its guard until its response. The controller reads `browser.cancel` alongside
+its bounded serial operation queue, using the original stdio request ID.
+`CancellationRequested` is only a delivery acknowledgement. Only the original
+operation's `ActionCancelled` response confirms physical cancellation and lets
+the home finish the action as cancelled and grant pending human ownership.
+The controller checks cancellation before input and between pointer movement
+and button press, while keeping the browser available for subsequent actions.
+Lost execution responses, controller recovery, and cancellation during other
+operations require further resiliency validation; this is not full cancellation
+acceptance for every Browser and Computer operation.
+
 Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.
 Existing clients' minimum

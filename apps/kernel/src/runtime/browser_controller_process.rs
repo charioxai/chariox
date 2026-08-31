@@ -27,6 +27,8 @@ use super::browser_controller_permission::{
 use super::browser_controller_snapshot::BrowserControllerStructuredSnapshot;
 use crate::session::CanonicalViewport;
 
+mod cancellation;
+
 const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
 const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
 const CONTROLLER_NODE_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_NODE";
@@ -184,6 +186,7 @@ pub(crate) struct BrowserControllerProcessStdioBackend {
     timeout: Duration,
     process: Option<BrowserControllerChild>,
     next_request_id: u64,
+    action_cancellation: Option<Arc<cancellation::CancellationSignal>>,
 }
 
 impl BrowserControllerProcessStdioBackend {
@@ -194,6 +197,7 @@ impl BrowserControllerProcessStdioBackend {
             timeout,
             process: None,
             next_request_id: 1,
+            action_cancellation: None,
         }
     }
 
@@ -273,6 +277,16 @@ impl BrowserControllerProcessStdioBackend {
         method: &str,
         params: serde_json::Value,
     ) -> Result<BrowserControllerRpcResponse, String> {
+        let cancellation = (method == "browser.action")
+            .then(|| self.action_cancellation.clone())
+            .flatten();
+        if cancellation
+            .as_ref()
+            .is_some_and(|signal| signal.requested())
+        {
+            cancellation.as_ref().unwrap().confirm_stop();
+            return Err("browser action cancelled before dispatch".into());
+        }
         let request_id = self.next_request_id;
         self.next_request_id = self.next_request_id.saturating_add(1);
         let process = self
@@ -290,7 +304,29 @@ impl BrowserControllerProcessStdioBackend {
             .and_then(|()| process.stdin.flush())
             .map_err(|error| format!("failed to send browser controller `{method}`: {error}"))?;
         let started = Instant::now();
+        let mut cancellation_sent = false;
         loop {
+            if !cancellation_sent
+                && cancellation
+                    .as_ref()
+                    .is_some_and(|signal| signal.requested())
+            {
+                let cancel_id = self.next_request_id;
+                self.next_request_id = self.next_request_id.saturating_add(1);
+                serde_json::to_writer(
+                    &mut process.stdin,
+                    &serde_json::json!({
+                        "id":cancel_id,"method":"browser.cancel","params":{"request_id":request_id}
+                    }),
+                )
+                .map_err(|error| error.to_string())?;
+                process
+                    .stdin
+                    .write_all(b"\n")
+                    .and_then(|()| process.stdin.flush())
+                    .map_err(|error| error.to_string())?;
+                cancellation_sent = true;
+            }
             let remaining = self.timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
                 return Err(format!(
@@ -298,20 +334,29 @@ impl BrowserControllerProcessStdioBackend {
                     self.timeout.as_millis()
                 ));
             }
-            let response =
-                process
-                    .responses
-                    .recv_timeout(remaining)
-                    .map_err(|error| match error {
-                        mpsc::RecvTimeoutError::Timeout => format!(
-                            "browser controller `{method}` timed out after {}ms",
-                            self.timeout.as_millis()
-                        ),
-                        mpsc::RecvTimeoutError::Disconnected => {
-                            format!("browser controller exited during `{method}`")
-                        }
-                    })??;
+            let poll = if cancellation.is_some() {
+                remaining.min(Duration::from_millis(20))
+            } else {
+                remaining
+            };
+            let response = match process.responses.recv_timeout(poll) {
+                Ok(response) => response?,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Err(format!("browser controller exited during `{method}`"))
+                }
+            };
             if response.id == Some(request_id) {
+                if !response.ok
+                    && response
+                        .error
+                        .as_ref()
+                        .is_some_and(|error| error.code == "browser_action_cancelled")
+                {
+                    if let Some(signal) = &cancellation {
+                        signal.confirm_stop();
+                    }
+                }
                 return Ok(response);
             }
         }
@@ -967,6 +1012,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
 #[derive(Clone, Default)]
 pub(crate) struct BrowserControllerProcessStore {
     ownership: Option<Arc<Mutex<StdioOwnership>>>,
+    cancellations: cancellation::BrowserActionCancellations,
 }
 
 impl BrowserControllerProcessStore {
@@ -977,6 +1023,7 @@ impl BrowserControllerProcessStore {
                     command, args, timeout,
                 )),
             ))),
+            ..Self::default()
         }
     }
 
@@ -987,6 +1034,7 @@ impl BrowserControllerProcessStore {
                     BrowserControllerProcessStdioBackend::from_script(script_path, timeout),
                 ),
             ))),
+            ..Self::default()
         }
     }
 

@@ -44,11 +44,17 @@ impl KernelRuntimeState {
             )
             .await;
         };
-        let _guard = self.owned.slice_store.guard_environment_use(
-            &slice.id,
-            Some(session_id),
-            "browser_controller.route",
-        )?;
+        // The original action retains its operation guard until terminal proof.
+        // Cancellation must not wait for that very action to release the guard.
+        let _guard = if matches!(&command, Command::CancelAction { .. }) {
+            None
+        } else {
+            Some(self.owned.slice_store.guard_environment_use(
+                &slice.id,
+                Some(session_id),
+                "browser_controller.route",
+            )?)
+        };
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
         let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
@@ -116,6 +122,9 @@ async fn execute_local(
 ) -> Result<Response, DaemonError> {
     let session_id = session_id.to_string();
     tokio::task::spawn_blocking(move || match command {
+        Command::CancelAction { execution_id } => Ok(Response::CancellationRequested {
+            accepted: processes.cancel_browser_action(&session_id, &execution_id),
+        }),
         Command::Acquire => processes
             .acquire(&session_id)
             .map(|snapshot| Response::Process { snapshot }),
@@ -132,21 +141,21 @@ async fn execute_local(
             .capture_browser_snapshot(&session_id, &target_id, &document_id)
             .map(|snapshot| Response::Snapshot { snapshot }),
         Command::Action {
+            execution_id,
             target_id,
             document_id,
             node_ref,
             action,
             timeout_ms,
-        } => processes
-            .perform_browser_action(
-                &session_id,
-                &target_id,
-                &document_id,
-                &node_ref,
-                &action,
-                timeout_ms,
-            )
-            .map(|result| Response::Action { result }),
+        } => processes.perform_cancellable_browser_action(
+            &session_id,
+            &execution_id,
+            &target_id,
+            &document_id,
+            &node_ref,
+            &action,
+            timeout_ms,
+        ),
     })
     .await
     .map_err(|error| controller_route_error(&error.to_string()))?

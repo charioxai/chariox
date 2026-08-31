@@ -6,11 +6,12 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 285);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 21);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 286);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 22);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
+                execution_id: "11111111111111111111111111111111".into(),
                 target_id: "target-1".into(),
                 document_id: "doc-1".into(),
                 node_ref: "backend:1".into(),
@@ -21,9 +22,15 @@ fn room_controller_protocol_shapes_are_versioned() {
                 },
                 timeout_ms: 500,
             },
-            serde_json::json!({"kind":"action","target_id":"target-1","document_id":"doc-1",
+            serde_json::json!({"kind":"action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false},"timeout_ms":500}),
+        ),
+        (
+            RoomBrowserControllerCommand::CancelAction {
+                execution_id: "11111111111111111111111111111111".into(),
+            },
+            serde_json::json!({"kind":"cancel_action","execution_id":"11111111111111111111111111111111"}),
         ),
         (
             RoomBrowserControllerCommand::Snapshot {
@@ -69,6 +76,9 @@ fn room_controller_protocol_shapes_are_versioned() {
         );
     }
     for result in [
+        serde_json::json!({"kind":"cancellation_requested","accepted":true}),
+        serde_json::json!({"kind":"cancellation_requested","accepted":false}),
+        serde_json::json!({"kind":"action_cancelled"}),
         serde_json::json!({"kind":"action","result":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50

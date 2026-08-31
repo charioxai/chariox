@@ -197,6 +197,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
     super::controller_observations::check(fixture, &token, &status.payload).await;
     super::controller_mutations::check(fixture, &token, &status.payload).await;
     super::controller_cancellation::check(fixture, &token, &status.payload).await;
+    super::controller_cancellation::check_running(fixture, &token, &status.payload).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {
@@ -254,22 +255,29 @@ async fn check_slice_controller(fixture: &LiveWorker) {
                 )
                 .unwrap();
         }
-        let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        for command in [
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelAction {
+                execution_id: "00000000000000000000000000000000".into(),
+            },
+        ] {
+            let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
             &sender,
             chariox_relay::protocol::ClientTarget { daemon_id: Some("environment-worker".into()), daemon_alias: None },
             crate::transport::relay_peer::RelayPeerRequest::RoomBrowserController {
                 session_id: if mismatch == "room" { fixture.rooms[1].clone() } else { room.clone() },
                 slice_id: if mismatch == "slice" { "other-slice".into() } else { slice.id.clone() },
-                command: crate::transport::room_browser_controller::RoomBrowserControllerCommand::Release,
+                command,
             },
             Duration::from_secs(3),
         ).await.expect_err("mismatched caller must not stop the owner's browser");
-        assert!(
-            denied
-                .to_string()
-                .contains("browser_controller_scope_denied"),
-            "{mismatch}: {denied}"
-        );
+            assert!(
+                denied
+                    .to_string()
+                    .contains("browser_controller_scope_denied"),
+                "{mismatch}: {denied}"
+            );
+        }
     }
     let again = dispatch_json(&fixture.home, request).await.unwrap();
     assert_eq!(

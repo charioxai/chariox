@@ -258,7 +258,7 @@ export class BrowserCdpClient {
     }
   }
 
-  async performAction(rawRequest) {
+  async performAction(rawRequest, { signal } = {}) {
     const targetId = requiredIdentity(rawRequest?.target_id, "target_id");
     const documentId = requiredIdentity(rawRequest?.document_id, "document_id");
     const connection = await this.ensureConnection();
@@ -283,6 +283,7 @@ export class BrowserCdpClient {
         nodeRef: rawRequest?.node_ref,
         action: rawRequest?.action,
         timeoutMs: rawRequest?.timeout_ms,
+        signal,
       });
       return {
         browser_generation: this.browserGeneration,

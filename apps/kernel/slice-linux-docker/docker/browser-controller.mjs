@@ -10,7 +10,7 @@ import { BrowserCdpClient, BrowserControllerError } from "./browser-controller-c
 
 export async function handleBrowserControllerRequest(
   request,
-  { processId = process.pid, browser = new BrowserCdpClient() } = {},
+  { processId = process.pid, browser = new BrowserCdpClient(), signal } = {},
 ) {
   if (!request || !Number.isSafeInteger(request.id) || request.id <= 0) {
     return errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer");
@@ -38,7 +38,7 @@ export async function handleBrowserControllerRequest(
     if (request.method === "browser.action") {
       return successResponse(
         request.id,
-        await browser.performAction(request.params),
+        await browser.performAction(request.params, { signal }),
       );
     }
     if (request.method === "browser.navigate") {
@@ -123,6 +123,9 @@ export class BrowserControllerStdioServer {
   }
 
   async run() {
+    const actions = new Map();
+    let pending = Promise.resolve();
+    let queued = 0;
     const lines = readline.createInterface({
       input: this.input,
       crlfDelay: Infinity,
@@ -145,16 +148,48 @@ export class BrowserControllerStdioServer {
         );
         continue;
       }
-      const response = await handleBrowserControllerRequest(request, {
-        processId: this.processId,
-        browser: this.browser,
+      if (!Number.isSafeInteger(request?.id) || request.id <= 0) {
+        this.write(errorResponse(request?.id ?? null, "invalid_request", "request id must be a positive integer"));
+        continue;
+      }
+      // Cancellation must be read while the serial browser operation is
+      // pending. Its acknowledgement is not the action's terminal response.
+      if (request.method === "browser.cancel") {
+        const target = request.params?.request_id;
+        if (!Number.isSafeInteger(target) || target <= 0) {
+          this.write(errorResponse(request.id, "invalid_request", "cancellation requires a positive request_id"));
+          continue;
+        }
+        const action = actions.get(target);
+        action?.abort();
+        this.write(successResponse(request.id, { accepted: Boolean(action) }));
+        continue;
+      }
+      if (queued >= 64 || actions.has(request.id)) {
+        this.write(errorResponse(request.id, "controller_busy", "controller queue is full or request id is already pending"));
+        continue;
+      }
+      const action = request.method === "browser.action" ? new AbortController() : null;
+      if (action) actions.set(request.id, action);
+      queued += 1;
+      pending = pending.then(async () => {
+        try {
+          this.write(await handleBrowserControllerRequest(request, {
+            processId: this.processId,
+            browser: this.browser,
+            signal: action?.signal,
+          }));
+        } finally {
+          actions.delete(request.id);
+          queued -= 1;
+        }
       });
-      this.write(response);
-      if (request.method === "shutdown" && response.ok) {
+      if (request.method === "shutdown") {
         lines.close();
-        return;
+        break;
       }
     }
+    await pending;
   }
 
   write(response) {

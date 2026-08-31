@@ -47,7 +47,8 @@ const chromium = {
         if (!["worker-save", "worker-note"].includes(params.objectId)) throw new Error("wrong worker object");
         // External page fault injection: keep the button disabled until the
         // test releases it. No Chariox state or controller behavior is mocked.
-        if (params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) {
+        if ((params.objectId === "worker-save" && existsSync(join(dirname(pidFile), "hold-click"))) ||
+            (params.objectId === "worker-note" && existsSync(join(dirname(pidFile), "hold-fill")))) {
           return { result: { value: { state: "disabled" } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
@@ -66,7 +67,14 @@ const chromium = {
         note += params.text;
         return {};
       }
-      case "Runtime.releaseObject": return {};
+      case "Runtime.releaseObject":
+        if (existsSync(join(dirname(pidFile), "hold-release"))) {
+          writeFileSync(join(dirname(pidFile), "release-pending"), "external browser cleanup pending");
+        }
+        while (existsSync(join(dirname(pidFile), "hold-release"))) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        return {};
       case "Input.dispatchMouseEvent": {
         if (params.x !== 60 || params.y !== 35) throw new Error("wrong click coordinates");
         if (params.type === "mousePressed") pressed = true;

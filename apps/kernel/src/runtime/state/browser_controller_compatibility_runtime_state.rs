@@ -43,6 +43,7 @@ impl KernelRuntimeState {
             &tab_id,
             document_revision,
             "navigate",
+            None,
             self.navigate_browser_environment_compatibility(session_id, url),
         )
         .await

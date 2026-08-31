@@ -11,7 +11,7 @@ use crate::terminal::TerminalOutputKind;
 
 /// Version 21 adds locator mutations to the provisioner-scoped Room controller
 /// route, retaining home-owned element lookup, action admission, and history.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 21;
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 22;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {

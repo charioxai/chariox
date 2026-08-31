@@ -18,11 +18,15 @@ pub(crate) enum RoomBrowserControllerCommand {
         document_id: String,
     },
     Action {
+        execution_id: String,
         target_id: String,
         document_id: String,
         node_ref: String,
         action: crate::runtime::browser_controller_action::BrowserLocatorAction,
         timeout_ms: u64,
+    },
+    CancelAction {
+        execution_id: String,
     },
     Release,
 }
@@ -30,6 +34,10 @@ pub(crate) enum RoomBrowserControllerCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    ActionCancelled,
+    CancellationRequested {
+        accepted: bool,
+    },
     Action {
         result: Option<crate::runtime::browser_controller_action::BrowserControllerActionResult>,
     },

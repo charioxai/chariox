@@ -248,6 +248,7 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
         element_ref: &str,
+        execution_id: &str,
         action: crate::runtime::browser_controller_action::BrowserLocatorAction,
         timeout_ms: u64,
     ) -> Result<crate::runtime::browser_controller_action::RoomBrowserActionResult, DaemonError>
@@ -282,12 +283,11 @@ impl KernelRuntimeState {
         }
 
         let action_kind = action.kind();
-        let RoomBrowserControllerResult::Action {
-            result: Some(result),
-        } = self
+        let response = self
             .room_browser_controller_command(
                 session_id,
                 RoomBrowserControllerCommand::Action {
+                    execution_id: execution_id.to_string(),
                     target_id: binding.runtime_target_id.clone(),
                     document_id: binding.document_id.clone(),
                     node_ref: element.controller_node_ref.clone(),
@@ -295,11 +295,22 @@ impl KernelRuntimeState {
                     timeout_ms,
                 },
             )
-            .await?
-        else {
-            return Err(controller_route_error(
-                "browser controller did not return an action result",
-            ));
+            .await?;
+        let result = match response {
+            RoomBrowserControllerResult::Action {
+                result: Some(result),
+            } => result,
+            RoomBrowserControllerResult::ActionCancelled => {
+                return Err(DaemonError::LocalTransport {
+                    operation: "browser_controller.cancelled",
+                    message: "browser action cancelled by the controller".into(),
+                })
+            }
+            _ => {
+                return Err(controller_route_error(
+                    "browser controller did not return an action result",
+                ))
+            }
         };
         result
             .validate(
@@ -336,15 +347,18 @@ impl KernelRuntimeState {
             .resolve_room_environment_element_reference(session_id, element_ref)
             .map_err(|error| environment_runtime_error("browser_controller.action", error))?;
         let action_kind = action.kind();
+        let execution_id = format!("{:032x}", rand::random::<u128>());
         self.execute_browser_mutation_as_agent(
             session_id,
             agent_id,
             &element.tab_id,
             element.document_revision,
             action_kind,
+            Some(&execution_id),
             self.perform_browser_environment_locator_action(
                 session_id,
                 element_ref,
+                &execution_id,
                 action,
                 timeout_ms,
             ),
@@ -435,6 +449,7 @@ impl KernelRuntimeState {
             tab_id,
             tab.document_revision,
             "dialog",
+            None,
             self.handle_browser_environment_dialog(session_id, tab_id, action),
         )
         .await
