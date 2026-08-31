@@ -1,13 +1,37 @@
 use std::path::PathBuf;
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 const MAX_UPLOAD_FILES: usize = 20;
 const MAX_UPLOAD_PATH_BYTES: usize = 4_096;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<PathBuf>", into = "Vec<PathBuf>")]
 pub(crate) struct BrowserUploadFiles {
     paths: Vec<PathBuf>,
+}
+
+impl std::fmt::Debug for BrowserUploadFiles {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserUploadFiles")
+            .field("file_count", &self.paths.len())
+            .finish()
+    }
+}
+
+impl TryFrom<Vec<PathBuf>> for BrowserUploadFiles {
+    type Error = String;
+
+    fn try_from(paths: Vec<PathBuf>) -> Result<Self, Self::Error> {
+        Self::new(paths)
+    }
+}
+
+impl From<BrowserUploadFiles> for Vec<PathBuf> {
+    fn from(files: BrowserUploadFiles) -> Self {
+        files.paths
+    }
 }
 
 impl BrowserUploadFiles {
@@ -33,7 +57,7 @@ impl BrowserUploadFiles {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerDownloadsResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,
@@ -78,7 +102,7 @@ pub(crate) struct RoomBrowserDownloadsResult {
     pub(crate) enabled: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerUploadResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,

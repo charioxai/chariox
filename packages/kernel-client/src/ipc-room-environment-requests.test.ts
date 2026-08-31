@@ -33,8 +33,8 @@ test("Room Environment placement uses shared requests", () => {
   })
 })
 
-test("Room Environment state request matches protocol 288", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 288)
+test("Room Environment state request matches protocol 289", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 289)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -133,8 +133,8 @@ test("Room Environment state request matches protocol 288", () => {
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
 })
 
-test("Room Environment event replay request matches protocol 288", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 288)
+test("Room Environment event replay request matches protocol 289", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 289)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -174,7 +174,7 @@ test("Room Environment event replay request matches protocol 288", () => {
   })
 })
 
-test("Room Environment Action history request matches protocol 288", () => {
+test("Room Environment Action history request matches protocol 289", () => {
   assert.deepEqual(listRoomEnvironmentActionHistoryRequest("session-1", 42, 25), {
     ListRoomEnvironmentActionHistory: {
       session_id: "session-1",

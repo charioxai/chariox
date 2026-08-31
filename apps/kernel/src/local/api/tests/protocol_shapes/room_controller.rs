@@ -6,8 +6,8 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 288);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 24);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 289);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 25);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -57,6 +57,47 @@ fn room_controller_protocol_shapes_are_versioned() {
             serde_json::json!({"kind":"snapshot","target_id":"target-1","document_id":"doc-1"}),
         ),
         (
+            RoomBrowserControllerCommand::Dialog {
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                action: crate::runtime::browser_controller_action::BrowserDialogAction::Accept {
+                    prompt_text: Some("sensitive-dialog-fixture".into()),
+                },
+            },
+            serde_json::json!({"kind":"dialog","target_id":"target-1","document_id":"doc-1",
+                "action":{"kind":"accept","prompt_text":"sensitive-dialog-fixture"}}),
+        ),
+        (
+            RoomBrowserControllerCommand::ConfigureDownloads {
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+            },
+            serde_json::json!({"kind":"configure_downloads","target_id":"target-1","document_id":"doc-1"}),
+        ),
+        (
+            RoomBrowserControllerCommand::Upload {
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                node_ref: "backend:1".into(),
+                files: crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(
+                    vec!["/workspace/sensitive-upload-fixture".into()],
+                )
+                .unwrap(),
+            },
+            serde_json::json!({"kind":"upload","target_id":"target-1","document_id":"doc-1",
+                "node_ref":"backend:1","files":["/workspace/sensitive-upload-fixture"]}),
+        ),
+        (
+            RoomBrowserControllerCommand::Permission {
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                permission: crate::runtime::browser_controller_permission::BrowserPermissionName::Geolocation,
+                setting: crate::runtime::browser_controller_permission::BrowserPermissionSetting::Denied,
+            },
+            serde_json::json!({"kind":"permission","target_id":"target-1","document_id":"doc-1",
+                "permission":"geolocation","setting":"denied"}),
+        ),
+        (
             RoomBrowserControllerCommand::Acquire,
             serde_json::json!({"kind":"acquire"}),
         ),
@@ -86,6 +127,14 @@ fn room_controller_protocol_shapes_are_versioned() {
             !format!("{request:?}").contains("sensitive-fill-fixture"),
             "relay diagnostics must not print fill payloads"
         );
+        assert!(
+            !format!("{request:?}").contains("sensitive-dialog-fixture"),
+            "relay diagnostics must not print dialog prompt payloads"
+        );
+        assert!(
+            !format!("{request:?}").contains("sensitive-upload-fixture"),
+            "relay diagnostics must not print upload paths"
+        );
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
         assert_eq!(
             serde_json::from_value::<RelayPeerRequest>(wire).unwrap(),
@@ -107,6 +156,19 @@ fn room_controller_protocol_shapes_are_versioned() {
             "dom_nodes":[{"node_ref":"backend:1","parent_ref":null,"node_type":1,"node_name":"BUTTON",
                 "text":"","attributes":{},"bounds":{"x":1.5,"y":2.0,"width":3.0,"height":4.0}}]
         }}),
+        serde_json::json!({"kind":"dialog","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1","action":"dismiss"
+        }}),
+        serde_json::json!({"kind":"downloads","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1","enabled":true
+        }}),
+        serde_json::json!({"kind":"upload","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1","file_count":1,"total_bytes":12
+        }}),
+        serde_json::json!({"kind":"permission","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
+            "permission":"geolocation","setting":"denied"
+        }}),
         serde_json::json!({"kind":"process","snapshot":{
             "state":"ready","process_id":123,"diagnostic_code":null,
             "runtime_generation":2,"restart_count":1
@@ -127,4 +189,12 @@ fn room_controller_protocol_shapes_are_versioned() {
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
         assert_eq!(serde_json::to_value(response).unwrap(), wire);
     }
+    assert!(
+        serde_json::from_value::<RelayPeerRequest>(serde_json::json!({
+            "kind":"room_browser_controller", "session_id":"room-1", "slice_id":"slice-1",
+            "command":{"kind":"upload","target_id":"target-1","document_id":"doc-1",
+                "node_ref":"backend:1","files":["relative-path"]}
+        }))
+        .is_err()
+    );
 }

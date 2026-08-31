@@ -201,6 +201,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
     super::controller_cancellation::check(fixture, &token, &status.payload).await;
     super::controller_cancellation::check_running(fixture, &token, &status.payload).await;
     super::controller_response_loss::check(fixture, &token).await;
+    super::controller_integrations::check(fixture, &token, &status.payload).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {
@@ -263,6 +264,30 @@ async fn check_slice_controller(fixture: &LiveWorker) {
             crate::transport::room_browser_controller::RoomBrowserControllerCommand::CancelAction {
                 execution_id: "00000000000000000000000000000000".into(),
             },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Dialog {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                action: crate::runtime::browser_controller_action::BrowserDialogAction::Dismiss,
+            },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::ConfigureDownloads {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+            },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Upload {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                node_ref: "backend:104".into(),
+                files: crate::runtime::browser_controller_file_transfer::BrowserUploadFiles::new(
+                    vec![fixture._worker_state.root.join("denied-upload.txt")],
+                )
+                .unwrap(),
+            },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Permission {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                permission: crate::runtime::browser_controller_permission::BrowserPermissionName::Geolocation,
+                setting: crate::runtime::browser_controller_permission::BrowserPermissionSetting::Denied,
+            },
         ] {
             let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
             &sender,
@@ -287,10 +312,16 @@ async fn check_slice_controller(fixture: &LiveWorker) {
         again["RoomEnvironmentUpdated"]["environment"]["environment_id"],
         environment["environment_id"]
     );
+    let again_tabs = again["RoomEnvironmentUpdated"]["environment"]["tabs"]
+        .as_array()
+        .expect("reconciled Room tabs");
     assert_eq!(
-        again["RoomEnvironmentUpdated"]["environment"]["tabs"],
-        environment["tabs"]
+        again_tabs.first(),
+        environment["tabs"].as_array().unwrap().first()
     );
+    assert!(again_tabs.iter().any(|tab| {
+        tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
+    }));
     dispatch_json(
         &fixture.home,
         json!({"StopRoomEnvironment":{"session_id":room}}),

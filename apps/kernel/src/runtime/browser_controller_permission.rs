@@ -1,6 +1,7 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum BrowserPermissionName {
     Camera,
     ClipboardReadWrite,
@@ -31,7 +32,8 @@ impl BrowserPermissionName {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum BrowserPermissionSetting {
     Granted,
     Denied,
@@ -48,7 +50,7 @@ impl BrowserPermissionSetting {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerPermissionResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,
