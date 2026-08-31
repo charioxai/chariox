@@ -259,6 +259,10 @@ refresh_slice_support_files() {
     || log "screen script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies.py" \
     || log "Selkies lifecycle overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py" "$SLICE_NAME:/opt/chariox-slice/slice-selkies-stream.py" \
+    || log "Selkies stream overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/selkies_viewers.py" "$SLICE_NAME:/opt/chariox-slice/selkies_viewers.py" \
+    || log "Selkies private viewer module overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-controller-actions.mjs" \

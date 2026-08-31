@@ -30,6 +30,9 @@ RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package
   && cp -a /tmp/selkies-package/licenses/. /usr/share/doc/chariox-selkies/ \
   && cp /tmp/selkies-requirements.txt /usr/share/doc/chariox-selkies/python-requirements.txt
 ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
+COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
+     apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py \
+     apps/kernel/slice-linux-docker/docker/selkies_viewers.py /opt/chariox-slice/
 
 FROM selkies-runtime AS slice-runtime-deps
 ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
@@ -109,7 +112,6 @@ COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controlle
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller.mjs /opt/chariox-slice/browser-controller.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh
-COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-selkies.py /opt/chariox-slice/slice-selkies.py
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh

@@ -99,6 +99,46 @@ State lives under `$XDG_RUNTIME_DIR/selkies` or the slice user's private
 and is removed on stop. The streamer binds container loopback only. This
 private endpoint is not a directly published browser URL.
 
+### Private viewer adapter
+
+`/opt/chariox-selkies/bin/python /opt/chariox-slice/slice-selkies-stream.py`
+provides the kernel's private stdin/stdout connection to the loopback streamer.
+It provisions a random read-only token, confirms `AUTH_SUCCESS` with viewer role
+and `MK_ACCESS,0`, then emits a `selkies-stdio-v1` ready record. Only H.264 video
+packets and the pipeline-reset/video-start/video-stop signals leave the slice.
+The token, master credential, server configuration, clipboard, audio, and device
+messages do not enter the pipe. Error diagnostics never print token-bearing URLs.
+
+The pipe uses bounded JSON lines. Output binary messages use `data_base64` and
+are limited to 4 MiB before encoding. Input accepts only `control` with an exact
+`START_VIDEO`, `STOP_VIDEO`, `REQUEST_KEYFRAME`, or uint16 `CLIENT_FRAME_ACK`
+command, plus `renew` and `close`. No viewer settings, pointer, keyboard,
+clipboard, or command execution pass this interface. Writes time out after two
+seconds rather than accumulating an unbounded queue.
+
+The adapter expires after `--lease-ms`, between 200 and 60000 milliseconds,
+unless the kernel renews it. EOF, close, expiry, failure, and handled termination
+close the private socket and revoke its token. An uncatchable crash leaves a
+dead-owner entry that the next token-table update prunes. Tokens never leave the
+slice. Token-table updates share the lifecycle
+lock, preserve other live viewers, discard dead-owner entries, and check the
+streamer PID plus creation time. Cleanup from an old generation cannot revoke
+a replacement streamer's viewers. The private adapter admits at most eight
+concurrent connections; this is an upper bound, not a claim that every machine
+has capacity for eight. Kernel admission must apply the host's resource budget.
+
+Run `validate-selkies-stream.py` in the `selkies-runtime` image with
+`CHARIOX_TEST_SELKIES_ROOT=/opt/chariox-slice` to test the packaged adapter. It
+checks actual software H.264, simultaneous viewers, lease expiry/renewal,
+forbidden input rejection, dead-owner cleanup, streamer-generation isolation,
+stalled-reader termination, and complete records when closing during a frame.
+Use the same unprivileged, network-disabled limits as the packaging drill.
+
+This pipe is not public viewer admission. Only the kernel may launch it after
+authorizing the Room, attachment, and viewer key. The encrypted relay channel,
+Room-level admission/revocation, and released Web/TUI clients must still be
+connected and validated before enabling Selkies viewing.
+
 `CHARIOX_SLICE_VIEWER_BACKEND=selkies` selects it in `slice-screen.sh`.
 `novnc` selects the rollback launcher. During this staged implementation the
 existing noVNC default is unchanged; switching the product default requires
