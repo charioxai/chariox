@@ -2,8 +2,6 @@ import { access, statfs } from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
 
-const DEFAULT_MIN_MEMORY_HEADROOM = 0.2
-const DEFAULT_MIN_DISK_HEADROOM = 0.15
 const SLICE_CONTAINER_PREFIX = "chariox-slice-"
 
 export function defaultBrowserComputerEvidenceDir(runId, homeDir = os.homedir()) {
@@ -59,23 +57,31 @@ export async function collectBrowserComputerResourceSnapshot({
 }
 
 export function evaluateBrowserComputerPreflight(snapshot, options = {}) {
-  const minMemoryHeadroom = options.minMemoryHeadroom ?? DEFAULT_MIN_MEMORY_HEADROOM
-  const minDiskHeadroom = options.minDiskHeadroom ?? DEFAULT_MIN_DISK_HEADROOM
+  // Budgets describe the next operation's estimated peak plus its recovery
+  // reserve. Free percentages are evidence, never a global execution gate.
+  const requiredMemoryBytes = options.requiredMemoryBytes ?? 0
+  const requiredDiskBytes = options.requiredDiskBytes ?? 0
   const allowExistingHeadedSlices = options.allowExistingHeadedSlices === true
-  assertFraction(minMemoryHeadroom, "minMemoryHeadroom")
-  assertFraction(minDiskHeadroom, "minDiskHeadroom")
+  assertByteBudget(requiredMemoryBytes, "requiredMemoryBytes")
+  assertByteBudget(requiredDiskBytes, "requiredDiskBytes")
 
   const memoryHeadroom = ratio(snapshot?.memory?.availableBytes, snapshot?.memory?.totalBytes)
   const diskHeadroom = ratio(snapshot?.disk?.availableBytes, snapshot?.disk?.totalBytes)
   const existingSliceContainers = names(snapshot?.docker?.containers)
     .filter((name) => name.startsWith(SLICE_CONTAINER_PREFIX))
   const violations = []
+  const warnings = []
+  const availableMemoryBytes = numeric(snapshot?.memory?.availableBytes)
+  const availableDiskBytes = numeric(snapshot?.disk?.availableBytes)
 
-  if (memoryHeadroom < minMemoryHeadroom) {
-    violations.push(`available memory headroom ${(memoryHeadroom * 100).toFixed(1)}% is below ${(minMemoryHeadroom * 100).toFixed(1)}%`)
+  if (availableMemoryBytes <= 0 || availableMemoryBytes < requiredMemoryBytes) {
+    violations.push(`available memory ${availableMemoryBytes} bytes cannot cover the operation budget ${requiredMemoryBytes} bytes`)
   }
-  if (diskHeadroom < minDiskHeadroom) {
-    violations.push(`available disk headroom ${(diskHeadroom * 100).toFixed(1)}% is below ${(minDiskHeadroom * 100).toFixed(1)}%`)
+  if (availableDiskBytes <= 0 || availableDiskBytes < requiredDiskBytes) {
+    violations.push(`available disk ${availableDiskBytes} bytes cannot cover the operation budget ${requiredDiskBytes} bytes`)
+  }
+  if (options.requiredMemoryBytes === undefined || options.requiredDiskBytes === undefined) {
+    warnings.push("operation budget not fully specified; resource percentages are observational, not proof that the next operation fits")
   }
   if (!allowExistingHeadedSlices && existingSliceContainers.length > 0) {
     violations.push(`existing slice containers make a single-slice developer run unsafe: ${existingSliceContainers.join(", ")}`)
@@ -85,8 +91,11 @@ export function evaluateBrowserComputerPreflight(snapshot, options = {}) {
     ok: violations.length === 0,
     memoryHeadroom,
     diskHeadroom,
+    requiredMemoryBytes,
+    requiredDiskBytes,
     existingSliceContainers,
     violations,
+    warnings,
   }
 }
 
@@ -213,9 +222,9 @@ function names(values) {
   return values.map((value) => String(value).trim()).filter(Boolean)
 }
 
-function assertFraction(value, label) {
-  if (!Number.isFinite(value) || value < 0 || value > 1) {
-    throw new Error(`${label} must be between 0 and 1`)
+function assertByteBudget(value, label) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`${label} must be a non-negative safe integer byte count`)
   }
 }
 

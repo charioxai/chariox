@@ -58,14 +58,19 @@ await mkdir(tempRoot, { recursive: true })
 try {
   log("checking Docker")
   await assertDockerReady()
-  log("checking local resource headroom")
+  log("recording local resources and checking the operation budget")
   resourceBefore = await collectBrowserComputerResourceSnapshot({
     runCommand,
     filesystemPath: artifactDir,
   })
   resourcePreflight = assertBrowserComputerPreflight(resourceBefore, {
     allowExistingHeadedSlices: process.env.M20_ALLOW_EXISTING_SLICES === "1",
+    requiredMemoryBytes: process.env.M20_REQUIRED_MEMORY_BYTES === undefined
+      ? undefined : Number(process.env.M20_REQUIRED_MEMORY_BYTES),
+    requiredDiskBytes: process.env.M20_REQUIRED_DISK_BYTES === undefined
+      ? undefined : Number(process.env.M20_REQUIRED_DISK_BYTES),
   })
+  for (const warning of resourcePreflight.warnings) log(warning)
   await writeFile(path.join(artifactDir, "resources-before.json"), `${JSON.stringify({
     snapshot: resourceBefore,
     preflight: resourcePreflight,

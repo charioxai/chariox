@@ -69,34 +69,63 @@ test("resource collection uses Docker inventory and macOS available pages", asyn
   }
 })
 
-test("resource preflight enforces memory, disk, and one-slice developer safety", () => {
+test("resource preflight compares the next operation's byte budget and limits concurrency", () => {
   const result = evaluateBrowserComputerPreflight(snapshot({
     memoryAvailableBytes: 19,
     diskAvailableBytes: 14,
     containers: ["chariox-slice-existing"],
-  }))
+  }), { requiredMemoryBytes: 20, requiredDiskBytes: 15 })
 
   assert.equal(result.ok, false)
   assert.deepEqual(result.existingSliceContainers, ["chariox-slice-existing"])
-  assert.match(result.violations.join("\n"), /memory headroom 19.0%/)
-  assert.match(result.violations.join("\n"), /disk headroom 14.0%/)
+  assert.match(result.violations.join("\n"), /available memory 19 bytes.*20 bytes/)
+  assert.match(result.violations.join("\n"), /available disk 14 bytes.*15 bytes/)
   assert.match(result.violations.join("\n"), /single-slice developer run unsafe/)
   assert.throws(
-    () => assertBrowserComputerPreflight(snapshot({ memoryAvailableBytes: 19 })),
+    () => assertBrowserComputerPreflight(snapshot({ memoryAvailableBytes: 19 }), { requiredMemoryBytes: 20 }),
     /resource preflight failed/,
   )
 })
 
-test("resource preflight accepts threshold headroom and explicit concurrency", () => {
+test("resource preflight accepts an exact-fit byte budget and explicit concurrency", () => {
   const result = evaluateBrowserComputerPreflight(snapshot({
     memoryAvailableBytes: 20,
     diskAvailableBytes: 15,
     containers: ["chariox-slice-explicit-concurrency"],
-  }), { allowExistingHeadedSlices: true })
+  }), { allowExistingHeadedSlices: true, requiredMemoryBytes: 20, requiredDiskBytes: 15 })
 
   assert.equal(result.ok, true)
   assert.equal(result.memoryHeadroom, 0.2)
   assert.equal(result.diskHeadroom, 0.15)
+})
+
+test("low free percentages alone do not prevent safe work", () => {
+  const gib = 1024 ** 3
+  const resources = {
+    memory: { totalBytes: 16 * gib, availableBytes: 2 * gib },
+    disk: { totalBytes: 1024 * gib, availableBytes: 52 * gib },
+    docker: { containers: [], volumes: [] },
+  }
+  assert.equal(evaluateBrowserComputerPreflight(resources, {
+    requiredMemoryBytes: gib, requiredDiskBytes: 8 * gib,
+  }).ok, true)
+  assert.equal(evaluateBrowserComputerPreflight(resources).ok, true)
+  assert.equal(evaluateBrowserComputerPreflight(snapshot({ memoryAvailableBytes: 90 }), {
+    requiredMemoryBytes: 91,
+  }).ok, false, "a high free percentage cannot excuse an operation that does not fit")
+})
+
+test("resource byte budgets must be valid and actual exhaustion still fails", () => {
+  for (const invalid of [-1, NaN, Infinity, 1.5]) {
+    assert.throws(() => evaluateBrowserComputerPreflight(snapshot(), {
+      requiredMemoryBytes: invalid,
+    }), /non-negative.*integer/)
+    assert.throws(() => evaluateBrowserComputerPreflight(snapshot(), {
+      requiredDiskBytes: invalid,
+    }), /non-negative.*integer/)
+  }
+  assert.equal(evaluateBrowserComputerPreflight(snapshot({ diskAvailableBytes: 0 })).ok, false)
+  assert.equal(evaluateBrowserComputerPreflight(snapshot({ memoryAvailableBytes: 0 })).ok, false)
 })
 
 test("cleanup rejects owned and newly-created slice resources", async () => {
