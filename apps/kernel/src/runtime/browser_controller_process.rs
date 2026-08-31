@@ -780,14 +780,18 @@ type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcess
 
 pub(crate) struct BrowserControllerProcessOwnership<B> {
     supervisor: BrowserControllerProcessSupervisor<B>,
-    owner_session_ids: BTreeSet<String>,
+    // One backend addresses one physical browser/profile. Stopping the
+    // controller does not reset that profile or make it safe for another Room.
+    owner_session_id: Option<String>,
+    leased: bool,
 }
 
 impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
     pub(crate) fn new(backend: B) -> Self {
         Self {
             supervisor: BrowserControllerProcessSupervisor::new(backend),
-            owner_session_ids: BTreeSet::new(),
+            owner_session_id: None,
+            leased: false,
         }
     }
 
@@ -795,8 +799,20 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         &mut self,
         session_id: &str,
     ) -> Result<BrowserControllerProcessSnapshot, String> {
+        if session_id.trim().is_empty() {
+            return Err("browser controller requires a Room identity".to_string());
+        }
+        if let Some(owner) = &self.owner_session_id {
+            if owner != session_id {
+                return Err("browser controller is bound to another Room".to_string());
+            }
+        } else {
+            // Reserve before startup: a failed health check can still leave a
+            // browser/profile behind, so it must not permit reassignment.
+            self.owner_session_id = Some(session_id.to_string());
+        }
         let snapshot = self.supervisor.ensure_started()?.clone();
-        self.owner_session_ids.insert(session_id.to_string());
+        self.leased = true;
         Ok(snapshot)
     }
 
@@ -804,9 +820,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         &mut self,
         session_id: &str,
     ) -> Result<BrowserControllerProcessSnapshot, String> {
-        self.owner_session_ids.remove(session_id);
-        if self.owner_session_ids.is_empty() {
+        if self.owner_session_id.as_deref() == Some(session_id) {
             self.supervisor.stop()?;
+            self.leased = false;
         }
         Ok(self.supervisor.snapshot().clone())
     }
@@ -816,11 +832,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         session_id: &str,
         viewport: &CanonicalViewport,
     ) -> Result<BrowserControllerReconciliation, String> {
-        if !self.owner_session_ids.contains(session_id) {
-            return Err(format!(
-                "browser controller is not leased by Room `{session_id}`"
-            ));
-        }
+        self.require_lease(session_id)?;
         self.supervisor.reconcile_browser(viewport)
     }
 
@@ -830,11 +842,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         target_id: &str,
         document_id: &str,
     ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        if !self.owner_session_ids.contains(session_id) {
-            return Err(format!(
-                "browser controller is not leased by Room {session_id}"
-            ));
-        }
+        self.require_lease(session_id)?;
         self.supervisor
             .capture_browser_snapshot(target_id, document_id)
     }
@@ -848,11 +856,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         action: &BrowserLocatorAction,
         timeout_ms: u64,
     ) -> Result<BrowserControllerActionResult, String> {
-        if !self.owner_session_ids.contains(session_id) {
-            return Err(format!(
-                "browser controller is not leased by Room {session_id}"
-            ));
-        }
+        self.require_lease(session_id)?;
         self.supervisor
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
@@ -889,11 +893,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
         document_id: &str,
         action: &BrowserDialogAction,
     ) -> Result<BrowserControllerDialogResult, String> {
-        if !self.owner_session_ids.contains(session_id) {
-            return Err(format!(
-                "browser controller is not leased by Room {session_id}"
-            ));
-        }
+        self.require_lease(session_id)?;
         self.supervisor
             .handle_browser_dialog(target_id, document_id, action)
     }
@@ -948,7 +948,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
     }
 
     fn require_lease(&self, session_id: &str) -> Result<(), String> {
-        if !self.owner_session_ids.contains(session_id) {
+        if !self.leased || self.owner_session_id.as_deref() != Some(session_id) {
             return Err(format!(
                 "browser controller is not leased by Room {session_id}"
             ));
@@ -957,13 +957,9 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
     }
 
     pub(crate) fn shutdown(&mut self) -> Result<BrowserControllerProcessSnapshot, String> {
-        self.owner_session_ids.clear();
-        self.supervisor.stop().cloned()
-    }
-
-    #[cfg(test)]
-    fn owners(&self) -> &BTreeSet<String> {
-        &self.owner_session_ids
+        let snapshot = self.supervisor.stop()?.clone();
+        self.leased = false;
+        Ok(snapshot)
     }
 }
 
@@ -1472,9 +1468,8 @@ mod tests {
 
     use super::{
         BrowserControllerProcessBackend, BrowserControllerProcessHealth,
-        BrowserControllerProcessOwnership, BrowserControllerProcessState,
-        BrowserControllerProcessStdioBackend, BrowserControllerProcessStore,
-        BrowserControllerProcessSupervisor,
+        BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
+        BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -1652,32 +1647,100 @@ mod tests {
     }
 
     #[test]
-    fn room_leases_stop_the_controller_only_after_the_last_release() {
-        let mut backend = FakeBackend::default();
-        backend
-            .health
-            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(46))));
-        backend
-            .health
-            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(46))));
-        let mut ownership = BrowserControllerProcessOwnership::new(backend);
-
-        ownership.acquire("room-1").expect("first Room acquires");
-        ownership.acquire("room-2").expect("second Room acquires");
-        let still_running = ownership.release("room-1").expect("first Room releases");
-
-        assert_eq!(still_running.state, BrowserControllerProcessState::Ready);
-        assert_eq!(ownership.supervisor.backend().stop_count, 0);
-        assert_eq!(
-            ownership.owners(),
-            &std::collections::BTreeSet::from(["room-2".to_string()])
+    fn physical_browser_binding_survives_release_and_shutdown() {
+        let tool = TestTool::new(responsive_controller_script());
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
         );
+        assert!(store.acquire(" ").is_err());
+        let first = store.acquire("room-1").unwrap().unwrap();
+        assert_eq!(
+            store.acquire("room-1").unwrap().unwrap().process_id,
+            first.process_id
+        );
+        assert!(store.acquire("room-2").is_err());
+        assert_eq!(
+            store.release("room-2").unwrap().unwrap().process_id,
+            first.process_id
+        );
+        assert_eq!(
+            store.release("room-1").unwrap().unwrap().state,
+            BrowserControllerProcessState::Stopped
+        );
+        assert!(store.acquire("room-2").is_err());
+        store.acquire("room-1").expect("owner restarts");
+        store.shutdown().expect("controller shuts down");
+        assert!(store.acquire("room-2").is_err());
+        store
+            .acquire("room-1")
+            .expect("shutdown retains owner binding");
+        store.shutdown().expect("clean up controller");
+    }
 
-        let stopped = ownership.release("room-2").expect("last Room releases");
+    #[test]
+    fn concurrent_rooms_admit_only_one_physical_browser_owner() {
+        let tool = TestTool::new(responsive_controller_script());
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+        let barrier = std::sync::Barrier::new(2);
+        let (first, second) = std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                barrier.wait();
+                store.acquire("room-1")
+            });
+            let second = scope.spawn(|| {
+                barrier.wait();
+                store.acquire("room-2")
+            });
+            (first.join().unwrap(), second.join().unwrap())
+        });
+        assert_ne!(
+            first.is_ok(),
+            second.is_ok(),
+            "exactly one Room must be admitted"
+        );
+        let (owner, rejected, snapshot) = match (first, second) {
+            (Ok(Some(snapshot)), Err(_)) => ("room-1", "room-2", snapshot),
+            (Err(_), Ok(Some(snapshot))) => ("room-2", "room-1", snapshot),
+            results => panic!("unexpected admission results: {results:?}"),
+        };
+        store
+            .release(rejected)
+            .expect("rejected Room release is harmless");
+        assert_eq!(
+            store.acquire(owner).unwrap().unwrap().process_id,
+            snapshot.process_id
+        );
+        store.shutdown().expect("clean up controller");
+    }
 
-        assert_eq!(stopped.state, BrowserControllerProcessState::Stopped);
-        assert_eq!(ownership.supervisor.backend().stop_count, 1);
-        assert!(ownership.owners().is_empty());
+    #[test]
+    fn failed_controller_start_keeps_the_physical_browser_owner() {
+        let tool = TestTool::new("#!/bin/sh\nexit 1\n");
+        let store = BrowserControllerProcessStore::new(
+            tool.path(),
+            Vec::new(),
+            HEALTHY_TEST_CONTROLLER_TIMEOUT,
+        );
+        assert!(store.acquire("room-1").is_err());
+        assert_eq!(
+            store.acquire("room-2").unwrap_err(),
+            "browser controller is bound to another Room"
+        );
+        assert_eq!(
+            store.release("room-1").unwrap().unwrap().state,
+            BrowserControllerProcessState::Stopped
+        );
+        assert_eq!(
+            store.acquire("room-2").unwrap_err(),
+            "browser controller is bound to another Room"
+        );
+        store.shutdown().expect("clean up failed controller");
     }
 
     struct TestTool {
