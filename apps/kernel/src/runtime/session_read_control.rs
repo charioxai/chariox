@@ -411,6 +411,9 @@ pub(crate) async fn execute_session_read_request(
         LocalDaemonRequest::GetRoomEnvironmentState(request) => {
             execute_get_room_environment_state_request(runtime_state, request).await
         }
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => runtime_state
+            .room_environment_slice(&request.session_id)
+            .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice { binding }),
         LocalDaemonRequest::GetRoomEnvironmentEvents(request) => {
             execute_get_room_environment_events_request(runtime_state, request).await
         }

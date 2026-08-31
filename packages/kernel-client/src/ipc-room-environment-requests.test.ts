@@ -2,6 +2,8 @@ import assert from "node:assert/strict"
 import test from "node:test"
 
 import {
+  bindRoomEnvironmentSliceRequest,
+  getRoomEnvironmentSliceRequest,
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentEventsRequest,
   getRoomEnvironmentStateRequest,
@@ -22,8 +24,17 @@ import type {
 } from "./kernel-types-environment.js"
 import { LOCAL_DAEMON_PROTOCOL_VERSION } from "./kernel-types.js"
 
-test("Room Environment state request matches protocol 279", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 279)
+test("Room Environment placement uses shared requests", () => {
+  assert.deepEqual(bindRoomEnvironmentSliceRequest("session-1", "desktop"), {
+    BindRoomEnvironmentSlice: { session_id: "session-1", slice_ref: "desktop" },
+  })
+  assert.deepEqual(getRoomEnvironmentSliceRequest("session-1"), {
+    GetRoomEnvironmentSlice: { session_id: "session-1" },
+  })
+})
+
+test("Room Environment state request matches protocol 282", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 282)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -122,8 +133,8 @@ test("Room Environment state request matches protocol 279", () => {
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
 })
 
-test("Room Environment event replay request matches protocol 279", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 279)
+test("Room Environment event replay request matches protocol 282", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 282)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -163,7 +174,7 @@ test("Room Environment event replay request matches protocol 279", () => {
   })
 })
 
-test("Room Environment Action history request matches protocol 279", () => {
+test("Room Environment Action history request matches protocol 282", () => {
   assert.deepEqual(listRoomEnvironmentActionHistoryRequest("session-1", 42, 25), {
     ListRoomEnvironmentActionHistory: {
       session_id: "session-1",

@@ -36,6 +36,7 @@ impl SessionActor {
                 | LocalDaemonRequest::RespondToInteraction(_)
                 | LocalDaemonRequest::UpdateSessionConfig(_)
                 | LocalDaemonRequest::StartRoomEnvironment(_)
+                | LocalDaemonRequest::BindRoomEnvironmentSlice(_)
                 | LocalDaemonRequest::StopRoomEnvironment(_)
                 | LocalDaemonRequest::RetryRoomEnvironment(_)
                 | LocalDaemonRequest::UpdateRoomEnvironmentViewport(_)

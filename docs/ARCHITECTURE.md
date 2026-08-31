@@ -501,6 +501,8 @@ On Linux slices, the Browser Controller is a long-lived child process owned dire
 
 The opt-in local controller store currently enforces this binding for its own lifetime. Durable Room-to-slice/worker placement and recovery after kernel replacement remain required before multi-Room product enablement. Creating another store pointed at the same CDP endpoint is not isolation. The home kernel must bind distinct Rooms to distinct physical Environments and restore those bindings before admitting browser or viewer requests.
 
+The home kernel now records explicit physical placement in `SliceRecord.environment_session_id` through protocol v282. The slice store serializes competing claims and commits the reservation before publishing it. Reverse Room lookup is derived from those records, not a second mutable index. Bindings survive kernel replay and are not cleared by controller stop. This is the durable configuration contract; execution routing, worker-side enforcement, secure viewer admission, and complete Environment-state recovery remain unfinished. Existing controller paths must not be presented as placement-aware until those paths consume the binding.
+
 Tab rules:
 
 - a recoverable controller reconnect must not duplicate a Tab

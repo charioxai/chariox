@@ -11,6 +11,7 @@ use super::model::{
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
+mod environment;
 mod invariants;
 
 use invariants::{
@@ -122,6 +123,7 @@ impl SliceStore {
             name: input.name,
             owner_kernel_id: owner_kernel_id.to_string(),
             owner_machine_id: owner_machine_id.to_string(),
+            environment_session_id: None,
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),

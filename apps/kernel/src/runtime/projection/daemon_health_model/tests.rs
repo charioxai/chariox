@@ -810,6 +810,7 @@ fn slice_record(
         name: name.to_string(),
         owner_kernel_id: "kernel-home".to_string(),
         owner_machine_id: "machine-home".to_string(),
+        environment_session_id: None,
         session_id: Some("session-1".to_string()),
         session_ids: vec!["session-1".to_string()],
         agent_ids: vec!["agent-1".to_string()],

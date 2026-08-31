@@ -576,6 +576,15 @@ The current `session_id` is the wire identity for the product Room until a delib
 
 ### Environment snapshot
 
+Protocol v282 adds durable physical placement through two shared requests:
+
+- `BindRoomEnvironmentSlice { session_id, slice_ref }` is membership-scoped and requires the Room owner. It reserves a headed slice for the Room and returns its canonical slice ID. Repeating the same assignment is idempotent. Assigning a second slice to the Room, assigning another Room's slice, ambiguous references, and conflicting worker references are rejected.
+- `GetRoomEnvironmentSlice { session_id }` is readable by Room members. Both requests return `RoomEnvironmentSlice { binding }`; `binding` is null when unassigned, otherwise it contains `session_id`, `slice_id`, `owner_kernel_id`, and `worker_kernel_ref`. No provider account data, endpoints, or credentials are included.
+
+The reservation is the optional `environment_session_id` in the durable slice record. Old records decode as unassigned and retain their prior JSON shape. A successful bind is committed through `slice.updated` before it is published in memory. Stop and Room deletion do not erase the physical reservation. There is no implicit reassignment or unbind request that could expose a retained browser profile to another Room.
+
+These requests configure placement only. They do not start a container, move a controller, admit a viewer, or persist the full Environment action ledger. Binding must be consumed and revalidated by the worker/controller and secure viewer routes before multi-Room product enablement. Clients invoking placement require v282; clients using only earlier Environment controls keep their existing minimum versions. Rollback to a kernel that does not understand the reservation is not safe for multi-Room use.
+
 A full Environment snapshot carries at least:
 
 - `session_id`

@@ -1029,6 +1029,7 @@ mod tests {
             name: "linux-slice".to_string(),
             owner_kernel_id: "kernel-home".to_string(),
             owner_machine_id: "machine-home".to_string(),
+            environment_session_id: None,
             session_id: None,
             session_ids: Vec::new(),
             agent_ids: Vec::new(),

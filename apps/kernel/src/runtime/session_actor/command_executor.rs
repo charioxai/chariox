@@ -201,6 +201,9 @@ impl SessionRuntimeCommandExecutor {
                     .start_room_environment(request, caller_user_id)
                     .await
             }
+            LocalDaemonRequest::BindRoomEnvironmentSlice(request) => self
+                .store
+                .bind_room_environment_slice(request, caller_user_id),
             LocalDaemonRequest::StopRoomEnvironment(request) => {
                 self.store.stop_room_environment(request).await
             }

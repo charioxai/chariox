@@ -1,6 +1,20 @@
 use super::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BindRoomEnvironmentSliceRequest {
+    pub session_id: String,
+    pub slice_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomEnvironmentSliceBinding {
+    pub session_id: String,
+    pub slice_id: String,
+    pub owner_kernel_id: String,
+    pub worker_kernel_ref: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetRoomEnvironmentStateRequest {
     pub session_id: String,
 }
