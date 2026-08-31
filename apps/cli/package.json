@@ -31,6 +31,7 @@
     "runtime-resilience:chaos-matrix-drill": "node scripts/live-runtime-resilience-chaos-matrix-drill.mjs",
     "runtime-resilience:deterministic-chaos-drill": "node scripts/deterministic-runtime-chaos-drill.mjs",
     "slice:lifecycle-drill": "pnpm run build && node scripts/live-slice-lifecycle-drill.mjs",
+    "browser-computer:fixture": "node scripts/live-browser-computer-fixture.mjs",
     "script-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-drill.mjs",
     "script-extension-agent:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-script-extension-agent-drill.mjs",
     "connector-extension:drill": "pnpm --workspace-root run build:kernel-client && node scripts/live-connector-extension-drill.mjs",

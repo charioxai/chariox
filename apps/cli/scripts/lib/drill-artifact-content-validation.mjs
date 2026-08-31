@@ -13,6 +13,10 @@ import {
 } from "./drill-runtime-signals.mjs"
 import { validateDrillRuntimeAuthorityManifest } from "./drill-runtime-authority-invariants.mjs"
 import { validateCloudCompatibleDrillRuntimeAuthorityManifest } from "./drill-runtime-authority-registry-parity.mjs"
+import {
+  BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA,
+  validateBrowserComputerFunctionalEvidence,
+} from "./browser-computer-functional-contract.mjs"
 
 export function validateKnownArtifactContents(contents, artifactPath, metadata = {}) {
   let parsed
@@ -116,6 +120,9 @@ export function validateKnownArtifactContents(contents, artifactPath, metadata =
   if (parsed?.schema === "chariox.drill.focused_runtime_gate.v1") {
     validateDrillFocusedRuntimeGateReport(parsed, artifactPath)
     validateFocusedRuntimeGateArtifactMetadata(parsed, artifactPath, metadata)
+  }
+  if (parsed?.schema === BROWSER_COMPUTER_FUNCTIONAL_EVIDENCE_SCHEMA) {
+    validateBrowserComputerFunctionalEvidence(parsed)
   }
 }
 
