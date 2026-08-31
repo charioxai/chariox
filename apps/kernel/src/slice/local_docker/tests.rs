@@ -29,6 +29,7 @@ fn test_record() -> SliceRecord {
 fn test_options() -> LocalDockerSliceOptions {
     LocalDockerSliceOptions {
         root: std::env::temp_dir(),
+        home_public_key: DaemonConfig::for_tests().relay_public_key,
         docker_image: "chariox-slice-linux:test".to_string(),
         build_image: SliceImageBuildPolicy::Never,
         extension_dockerfile: None,

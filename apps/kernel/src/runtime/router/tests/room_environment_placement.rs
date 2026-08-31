@@ -298,42 +298,7 @@ fn room_environment_placement_survives_stop_and_retains_deleted_room_reservation
 }
 
 async fn survives_stop_and_retains_deleted_room_reservation() {
-    let state = TestState::new();
-    let (router, rooms) = state.router();
-    create_desktop(&router, "retained").await;
-    let original = dispatch_json(&router, bind(&rooms[0], "retained"))
-        .await
-        .unwrap();
-    dispatch_json(
-        &router,
-        json!({"StartRoomEnvironment":{
-            "session_id":rooms[0],"viewport":{
-                "css_width":1280,"css_height":800,"device_scale_factor":1,
-                "desktop_pixel_width":1280,"desktop_pixel_height":800
-            }
-        }}),
-    )
-    .await
-    .unwrap();
-    dispatch_json(
-        &router,
-        json!({"StopRoomEnvironment":{"session_id":rooms[0]}}),
-    )
-    .await
-    .unwrap();
-    assert_eq!(
-        dispatch_json(&router, get(&rooms[0])).await.unwrap(),
-        original
-    );
-    dispatch_json(&router, json!({"DeleteSession":{"session_ref":rooms[0]}}))
-        .await
-        .unwrap();
-    assert!(
-        dispatch_json(&router, bind(&rooms[1], "retained"))
-            .await
-            .is_err(),
-        "deleting a Room does not erase its physical browser profile"
-    );
+    live_worker::controller_placement_lifecycle().await;
 }
 
 #[test]

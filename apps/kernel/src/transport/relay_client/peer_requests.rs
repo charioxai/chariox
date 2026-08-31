@@ -70,6 +70,34 @@ pub(super) async fn handle_daemon_peer_request(
     }
 
     let response = match request {
+        RelayPeerRequest::RoomBrowserController {
+            session_id,
+            slice_id,
+            command,
+        } => {
+            match router
+                .relay_room_browser_controller(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                    command,
+                )
+                .await
+            {
+                Ok(result) => RelayPeerResponse::RoomBrowserController {
+                    session_id,
+                    slice_id,
+                    result,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,

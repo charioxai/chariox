@@ -433,6 +433,7 @@ mod tests {
         let _ = fs::remove_dir_all(&root);
         let options = LocalDockerSliceOptions {
             root: root.clone(),
+            home_public_key: crate::config::DaemonConfig::for_tests().relay_public_key,
             docker_image: "chariox-slice-linux:test".to_string(),
             build_image: SliceImageBuildPolicy::Never,
             extension_dockerfile: None,

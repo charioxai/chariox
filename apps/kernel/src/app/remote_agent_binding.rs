@@ -872,22 +872,7 @@ impl DaemonApp {
 
     fn slice_relay_config_for_kernel_ref(&self, kernel_ref: &str) -> Option<DaemonConfig> {
         let slice = self.slices.resolve_by_worker_kernel_ref(kernel_ref)?;
-        let mut config = self.config.clone();
-        if let Some(endpoint) = slice.relay_endpoint.as_ref() {
-            if !endpoint.private && self.config.relay_url_uses_cloud_profile(&endpoint.url) {
-                return None;
-            }
-            config.relay_url = Some(endpoint.url.clone());
-            if endpoint.private {
-                config.relay_token = Some(crate::slice::local_docker_private_relay_token(&slice));
-            }
-        } else {
-            let relay = crate::slice::local_docker_private_relay(&slice);
-            config.relay_url = Some(relay.relay_url);
-            config.relay_token = Some(relay.relay_token);
-        }
-        config.cloud_relay = None;
-        Some(config)
+        self.config.slice_relay_override(&slice)
     }
 
     fn worker_worktree_id_for_kernel_ref(

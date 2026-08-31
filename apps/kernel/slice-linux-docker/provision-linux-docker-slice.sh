@@ -559,6 +559,18 @@ exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  # Forward a provisioner-supplied binding, including partial values so kernel
+  # boot validation rejects incomplete identities rather than running unbound.
+  local binding_name
+  for binding_name in \
+    CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID \
+    CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY \
+    CHARIOX_ROOM_ENVIRONMENT_SESSION_ID \
+    CHARIOX_ROOM_ENVIRONMENT_SLICE_ID; do
+    if [[ -n "${!binding_name+x}" ]]; then
+      relay_env_args+=(-e "$binding_name=${!binding_name}")
+    fi
+  done
   if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" || -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
     local cloud_relay_config_path="/tmp/chariox-slice-state/cloud-relay-config.json"
     if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" && -f "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" ]]; then

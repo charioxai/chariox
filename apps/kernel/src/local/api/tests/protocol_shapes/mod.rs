@@ -13,6 +13,7 @@ mod prompt_settings;
 mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
+mod room_controller;
 mod room_environment;
 mod room_environment_placement;
 mod slice_display;

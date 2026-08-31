@@ -531,6 +531,20 @@ pub async fn send_peer_request_via_temporary_connection_with_timeout(
                                 return Err(error);
                             }
                         };
+                        if from_daemon_id != kernel.kernel_id
+                            || decrypted.sender_public_key != kernel.public_key
+                        {
+                            let message = "peer response identity mismatch".to_string();
+                            trace.log_completed(
+                                "identity_mismatch",
+                                Some(&message),
+                                Some(&from_daemon_id),
+                            );
+                            return Err(DaemonError::LocalTransport {
+                                operation: "authenticate temporary relay peer response",
+                                message,
+                            });
+                        }
                         let response =
                             serde_json::from_slice::<RelayPeerResponse>(&decrypted.plaintext);
                         return match response {
@@ -615,6 +629,10 @@ pub(super) async fn resolve_pending_peer_response(
         let _ = sender.send(response);
     }
 }
+
+#[cfg(test)]
+#[path = "peer_client_identity_tests.rs"]
+mod identity_tests;
 
 #[cfg(test)]
 mod relay_rtt_tests {

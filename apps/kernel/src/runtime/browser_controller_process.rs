@@ -6,7 +6,7 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use wait_timeout::ChildExt;
 
 use super::browser_controller_action::{
@@ -32,7 +32,8 @@ const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
 const CONTROLLER_NODE_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_NODE";
 const CONTROLLER_COMMAND_TIMEOUT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_COMMAND_TIMEOUT_MS";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum BrowserControllerProcessState {
     Stopped,
     Starting,
@@ -48,7 +49,7 @@ pub(crate) struct BrowserControllerProcessHealth {
     pub(crate) diagnostic_code: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerProcessSnapshot {
     pub(crate) state: BrowserControllerProcessState,
     pub(crate) process_id: Option<u32>,
@@ -57,13 +58,13 @@ pub(crate) struct BrowserControllerProcessSnapshot {
     pub(crate) restart_count: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerReconciliation {
     pub(crate) process: BrowserControllerProcessSnapshot,
     pub(crate) browser: BrowserControllerBrowserSnapshot,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerBrowserSnapshot {
     pub(crate) browser_generation: u64,
     #[serde(default)]
@@ -73,7 +74,7 @@ pub(crate) struct BrowserControllerBrowserSnapshot {
     viewport: BrowserControllerViewport,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerTabSnapshot {
     pub(crate) target_id: String,
     pub(crate) document_id: String,
@@ -81,7 +82,7 @@ pub(crate) struct BrowserControllerTabSnapshot {
     pub(crate) title: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct BrowserControllerViewport {
     css_width: u32,
     css_height: u32,

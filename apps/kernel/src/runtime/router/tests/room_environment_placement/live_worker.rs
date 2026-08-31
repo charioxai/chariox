@@ -6,8 +6,13 @@ use tokio::time::{timeout, Duration};
 
 mod batch;
 mod cleanup;
+mod controller;
 mod lease_release;
 mod session;
+
+pub(super) async fn controller_placement_lifecycle() {
+    controller::controller_scenario(false).await;
+}
 
 struct LiveWorker {
     home: Arc<CommandRouter>,
@@ -29,6 +34,10 @@ impl LiveWorker {
     }
 
     async fn start_with_private_relay(private_relay: bool) -> Self {
+        Self::start_configured(private_relay, false).await
+    }
+
+    async fn start_configured(private_relay: bool, browser_controller: bool) -> Self {
         const HOME_TOKEN: &str = "environment-worker-fixture";
         // This isolated fixture's first slice is slice-1, owned by environment-home.
         const SLICE_TOKEN: &str = "slice-local-environment-home-slice-1";
@@ -81,12 +90,29 @@ impl LiveWorker {
         worker_state.config.host_machine_id = "slice:slice-1".to_string();
         let (home, rooms) = home_state.router();
         let home = Arc::new(home);
-        let worker = Arc::new(CommandRouter::with_interactive_capacity(
+        if browser_controller {
+            worker_state.config.room_environment_worker_binding =
+                Some(crate::config::RoomEnvironmentWorkerBinding {
+                    home_kernel_id: home_state.config.daemon_id.clone(),
+                    home_public_key: home_state.config.relay_public_key.clone(),
+                    session_id: rooms[0].clone(),
+                    slice_id: "slice-1".to_string(),
+                });
+        }
+        let mut worker = CommandRouter::with_interactive_capacity(
             Arc::new(Mutex::new(
                 DaemonApp::bootstrap(worker_state.config.clone()).unwrap(),
             )),
             2,
-        ));
+        );
+        if browser_controller {
+            worker
+                .runtime_state
+                .set_browser_controller_process_store_for_test(controller::process_store(
+                    &worker_state.root,
+                ));
+        }
+        let worker = Arc::new(worker);
         let mut fixture = Self {
             home: Arc::clone(&home),
             worker: Arc::clone(&worker),
