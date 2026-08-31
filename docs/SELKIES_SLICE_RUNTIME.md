@@ -80,6 +80,34 @@ driver is bundled or required for software mode.
 
 ## Integration boundary
 
+`docker/slice-selkies.py start|status|stop` owns one streamer process. It
+serializes lifecycle commands, records PID plus process creation time, refuses
+to signal a reused PID, and rotates its private control token on restart.
+Startup checks HTTP health and verifies the private control credential before
+reporting ready. Stop uses TERM, waits, and reports a forced stop as failure.
+An empty viewer table denies anonymous input and video until the kernel
+provisions a scoped viewer. Tokens never appear in status output.
+
+State lives under `$XDG_RUNTIME_DIR/selkies` or the slice user's private
+`/tmp/chariox-slice-<uid>/selkies` directory. The process record has mode 0600
+and is removed on stop. The streamer binds container loopback only. This
+private endpoint is not a directly published browser URL.
+
+`CHARIOX_SLICE_VIEWER_BACKEND=selkies` selects it in `slice-screen.sh`.
+`novnc` selects the rollback launcher. During this staged implementation the
+existing noVNC default is unchanged; switching the product default requires
+the shared transport, client validation, and rollout sign-off in the plan.
+A selected Selkies failure never falls back silently. Browser tools do not
+require a healthy viewer process.
+
+The `slice-runtime-deps` image target contains the real browser and desktop
+dependencies without building provider CLIs or the Rust kernel. Run
+`validate-slice-viewer.py` inside it to exercise the actual desktop launcher,
+streamer crash with continuing Browser tools/screenshots, failed startup,
+explicit noVNC rollback, and final listener cleanup. Use one CPU and 1 GiB
+memory for this drill. The full kernel image and shared transport still need
+their separate end-to-end validation.
+
 The slice owns Selkies as a display process. The kernel retains Room, actor,
 input-ownership, and action authority. The relay forwards scoped display
 traffic without decoding it. Selkies command execution, independent file

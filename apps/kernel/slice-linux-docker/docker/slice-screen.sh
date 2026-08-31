@@ -9,11 +9,21 @@ SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}"
 SCREEN_SIZE="${SCREEN_GEOMETRY%x*}"
 VNC_PORT="${CHARIOX_SLICE_VNC_PORT:-5900}"
 NOVNC_PORT="${CHARIOX_SLICE_NOVNC_PORT:-6080}"
+VIEWER_BACKEND="${CHARIOX_SLICE_VIEWER_BACKEND:-novnc}"
 CHROME_URL="${CHARIOX_SLICE_CHROME_URL:-about:blank}"
 CHROME_PROFILE="${CHARIOX_SLICE_CHROME_PROFILE:-$HOME/.config/chariox-slice-chromium}"
 CHROME_TRUSTED_INSECURE_ORIGINS="${CHARIOX_SLICE_CHROME_TRUSTED_INSECURE_ORIGINS:-http://host.docker.internal:4321}"
 
 export DISPLAY="$DISPLAY_ID"
+
+case "$VIEWER_BACKEND" in
+  novnc|selkies) ;;
+  *) printf 'Unsupported slice viewer backend: %s\n' "$VIEWER_BACKEND" >&2; exit 2 ;;
+esac
+
+slice_selkies() {
+  /opt/chariox-selkies/bin/python "$ROOT/slice-selkies.py" "$@"
+}
 
 mkdir -p "$LOGS" "$CHROME_PROFILE"
 
@@ -151,11 +161,17 @@ screen_missing_components() {
   if ! process_running "Xvfb $DISPLAY_ID"; then
     missing+=("xvfb")
   fi
-  if ! process_running "x11vnc.*$DISPLAY_ID"; then
-    missing+=("x11vnc")
-  fi
-  if ! novnc_running; then
-    missing+=("novnc")
+  if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
+    if ! slice_selkies status >/dev/null; then
+      missing+=("selkies")
+    fi
+  else
+    if ! process_running "x11vnc.*$DISPLAY_ID"; then
+      missing+=("x11vnc")
+    fi
+    if ! novnc_running; then
+      missing+=("novnc")
+    fi
   fi
   if ! process_running "chromium.*$CHROME_PROFILE"; then
     missing+=("chromium")
@@ -203,6 +219,10 @@ start_desktop() {
   if process_running "chromium.*$CHROME_PROFILE" || process_running "Xvfb $DISPLAY_ID" || process_running "x11vnc.*$DISPLAY_ID" || novnc_running; then
     stop_desktop || true
   fi
+  # Stop an owned previous Selkies process even when switching to noVNC.
+  if [[ -x /opt/chariox-selkies/bin/python ]]; then
+    slice_selkies stop >/dev/null
+  fi
   stop_process_pattern "websockify.*127\\.0\\.0\\.1:$VNC_PORT"
   stop_process_pattern "websockify.*$NOVNC_PORT"
   stop_process_pattern "x11vnc.*$DISPLAY_ID"
@@ -219,8 +239,15 @@ start_desktop() {
   wait_for_display
 
   nohup openbox >"$LOGS/openbox.log" 2>&1 &
-  nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
-  nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
+  if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
+    if ! slice_selkies start >/dev/null; then
+      stop_desktop
+      return 1
+    fi
+  else
+    nohup x11vnc -display "$DISPLAY_ID" -localhost -nopw -forever -shared -rfbport "$VNC_PORT" >"$LOGS/x11vnc.log" 2>&1 &
+    nohup websockify --web=/usr/share/novnc/ "0.0.0.0:$NOVNC_PORT" "127.0.0.1:$VNC_PORT" >"$LOGS/novnc.log" 2>&1 &
+  fi
 
   nohup chromium \
     --user-data-dir="$CHROME_PROFILE" \
@@ -238,8 +265,12 @@ start_desktop() {
 
   sleep 2
   require_process "Xvfb $DISPLAY_ID" "Xvfb" "$LOGS/xvfb.log"
-  require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
-  require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
+  if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
+    slice_selkies status >/dev/null
+  else
+    require_process "x11vnc.*$DISPLAY_ID" "x11vnc" "$LOGS/x11vnc.log"
+    require_process "websockify.*$NOVNC_PORT" "noVNC websockify" "$LOGS/novnc.log"
+  fi
   require_process "chromium.*$CHROME_PROFILE" "Chromium" "$LOGS/chromium-gui.log"
   status
 }
@@ -252,6 +283,10 @@ status() {
   printf 'mode=%s\n' "$DISPLAY_MODE"
   if [[ -z "$missing" ]]; then
     printf 'available=true\n'
+    if [[ "$VIEWER_BACKEND" == "selkies" ]]; then
+      printf 'viewer=http://127.0.0.1:%s/\n' "$NOVNC_PORT"
+      return 0
+    fi
     local viewer_port="$NOVNC_PORT"
     local discovered_port
     discovered_port="$(running_novnc_port)"
@@ -271,6 +306,10 @@ status() {
 }
 
 stop_desktop() {
+  local streamer_exit=0
+  if [[ -x /opt/chariox-selkies/bin/python ]]; then
+    slice_selkies stop >/dev/null || streamer_exit=$?
+  fi
   if process_running "chromium.*$CHROME_PROFILE"; then
     node "$ROOT/browser-cdp.mjs" close-browser >/dev/null 2>&1 || true
   fi
@@ -297,6 +336,7 @@ stop_desktop() {
   stop_process_pattern "openbox"
   stop_process_pattern "Xvfb $DISPLAY_ID"
   clear_chromium_profile_locks
+  return "$streamer_exit"
 }
 
 screenshot() {

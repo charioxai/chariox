@@ -13,6 +13,7 @@ import signal
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -99,6 +100,68 @@ def terminate(process):
         raise AssertionError(f"Process {process.pid} required forced shutdown")
 
 
+def check_lifecycle(script, environment):
+    """Public lifecycle commands, including idempotence and crash recovery."""
+    def command(action, expected=0, extra=None):
+        result = subprocess.run(
+            [sys.executable, script, action], env={**environment, **(extra or {})},
+            capture_output=True, text=True, timeout=30,
+        )
+        assert result.returncode == expected, (action, result.stdout, result.stderr)
+        return json.loads(result.stdout)
+
+    try:
+        assert command("status", 1)["available"] is False
+        starters = [subprocess.Popen([sys.executable, script, "start"], env=environment,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                    for _ in range(2)]
+        started = []
+        for starter in starters:
+            output, error = starter.communicate(timeout=30)
+            assert starter.returncode == 0, error
+            started.append(json.loads(output))
+        first = started[0]
+        assert started[1]["pid"] == first["pid"], "concurrent start duplicated the streamer"
+        assert first["available"] is True
+        assert first["kind"] == "selkies"
+        assert command("start")["pid"] == first["pid"], "start duplicated the streamer"
+        assert command("status")["pid"] == first["pid"]
+        assert "token" not in json.dumps(first), "private credential leaked in status"
+        # An unprovisioned viewer must not bypass kernel admission.
+        async def refused_viewer():
+            async with aiohttp.ClientSession() as client:
+                try:
+                    async with client.ws_connect(BASE + "/api/websockets", origin=BASE) as ws:
+                        async with asyncio.timeout(3):
+                            while True:
+                                reply = await ws.receive()
+                                assert reply.type != aiohttp.WSMsgType.BINARY, "anonymous viewer received video"
+                                if reply.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
+                                    return
+                except aiohttp.WSServerHandshakeError as error:
+                    assert error.status in (401, 403), error
+        asyncio.run(refused_viewer())
+        os.kill(first["pid"], signal.SIGKILL)
+        for _ in range(50):
+            dead = subprocess.run([sys.executable, script, "status"], env=environment,
+                                  capture_output=True, timeout=5)
+            if dead.returncode == 1:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("crashed streamer still reported available")
+        recovered = command("start")
+        assert recovered["pid"] != first["pid"]
+        assert command("stop")["forced"] is False
+        assert command("stop")["stopped"] is True
+        assert command("status", 1)["available"] is False
+        print(json.dumps({"lifecycle": "pass", "restart_after_crash": "pass",
+                          "anonymous_viewer": "denied", "idempotent_start_stop": "pass"}))
+    finally:
+        subprocess.run([sys.executable, script, "stop"], env=environment,
+                       capture_output=True, timeout=30)
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="chariox-selkies-drill-") as scratch:
         environment = {**os.environ, "DISPLAY": ":91", "HOME": scratch,
@@ -140,6 +203,9 @@ def main():
                     assert server.returncode in (0, -signal.SIGTERM), server.returncode
                     with socket.socket() as probe:
                         assert probe.connect_ex(("127.0.0.1", 6080)) != 0, "Listener survived shutdown"
+                    lifecycle = os.environ.get("CHARIOX_TEST_SELKIES_LIFECYCLE")
+                    if lifecycle:
+                        check_lifecycle(lifecycle, environment)
                     terminate(xvfb)
                     assert not Path("/tmp/.X11-unix/X91").exists(), "X11 socket survived shutdown"
                     print(json.dumps({"result": "pass", "software_h264": frame,
