@@ -26,7 +26,7 @@ A successful native `claude auth status` does not prove that a directory-linked 
 
 Legacy registries did not record whether `$HOME/.claude` was an ambient default or an explicit `CLAUDE_CONFIG_DIR`. Migration preserves explicit scope for those ambiguous records rather than silently switching accounts. Refreshing status or choosing that profile as the default does not change its scope. Linking `$HOME/.claude` also creates an explicit directory scope, not an ambient-native account.
 
-The current account-management commands do not provide an explicit ambient-native re-import or scope-rebinding operation for an existing registry. Treat that as a recovery limitation when an ambiguous legacy profile cannot use the native login. Do not edit a running kernel's registry file or remove/recreate profiles that existing agents depend on. Registration removal preserves provider files but does not preserve references to the removed profile ID.
+Use `/provider accounts import-native <provider>` to register the kernel host's current native scope explicitly. Import is idempotent for a scope already registered. When the native scope differs from an ambiguous legacy profile, it creates a separate stable profile and does not replace the old registration, change the default, start login, or copy provider files. Select or mark the imported profile as default only after its native status is refreshed. Do not edit a running kernel's registry file or remove/recreate profiles that existing agents depend on. Registration removal preserves provider files but does not preserve references to the removed profile ID.
 
 ## Workers and slices
 

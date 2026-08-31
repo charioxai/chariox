@@ -279,6 +279,12 @@ pub struct LinkProviderAccountProfileRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ImportNativeProviderAccountProfileRequest {
+    pub provider: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RenameProviderAccountProfileRequest {
     pub provider: String,
     pub account_profile: String,

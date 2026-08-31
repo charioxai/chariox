@@ -3,6 +3,33 @@ import test from "node:test"
 
 import { handleProviderSlashCommand, resolveProviderAccountAlias, type ProviderCommandHandlerDeps } from "./provider-command-handlers.js"
 
+test("native account import exposes the registered account without login or default changes", async () => {
+  const notices: string[] = []
+  const imported: string[] = []
+  const deps: ProviderCommandHandlerDeps = {
+    currentProviderId: () => "codex",
+    flashFooter: () => {},
+    appendNotice: (message) => notices.push(message),
+    importNativeProviderAccountProfile: async (provider) => {
+      imported.push(provider)
+      return {
+        owner_user_id: "owner-a", provider: "claude", profile_id: "opaque-native-id",
+        label: "claude-2", origin: "default", is_default: false,
+        auth_state: "not_configured", materializations: [],
+        usage: { provider: "claude", profile_id: "opaque-native-id", availability: "unavailable", meters: [], source: "provider_not_observed" },
+      }
+    },
+    startProviderLogin: async () => { throw new Error("Import must not start login") },
+    setDefaultProviderAccountProfile: async () => { throw new Error("Import must preserve the default") },
+  }
+  await handleProviderSlashCommand(deps, {
+    kind: "provider", raw: "/provider accounts import-native claude", value: "accounts import-native claude",
+  })
+  assert.deepEqual(imported, ["claude"])
+  assert.match(notices.join("\n"), /import-native: claude claude-2/)
+  assert.doesNotMatch(notices.join("\n"), /opaque-native-id/)
+})
+
 test("provider account list explains unavailable usage and exhausted limits", async () => {
   const notices: string[] = []
   const deps: ProviderCommandHandlerDeps = {

@@ -1103,6 +1103,59 @@ impl ProviderAccountProfileRegistry {
         Ok(profile)
     }
 
+    /// Register the kernel host's current provider-native scope without copying
+    /// credentials, rewriting provider settings, or redirecting existing profiles.
+    pub fn import_native_default(
+        &self,
+        owner_user_id: &str,
+        provider: &str,
+        home: &Path,
+    ) -> Result<ProviderAccountProfile, DaemonError> {
+        let provider = normalize_provider(provider)?;
+        if crate::provider::managed_provider_isolation_required() {
+            return Err(registry_error(
+                "import native account profile",
+                "managed kernels cannot import host-native accounts; transfer the account instead",
+            ));
+        }
+        let locator = ProviderAccountLocator::effective_default(provider, home)?;
+        if locator.roots().iter().any(|root| !root.is_absolute()) {
+            return Err(registry_error(
+                "import native account profile",
+                "native provider account roots must be absolute",
+            ));
+        }
+        let mut document = self.write_document()?;
+        if let Some(existing) = document.profiles.iter().find(|entry| {
+            entry.public.owner_user_id == owner_user_id
+                && entry.public.provider == provider
+                && entry.locator == locator
+        }) {
+            return Ok(project_usage_freshness(existing.public.clone()));
+        }
+        let label = next_automatic_label(&document, owner_user_id, provider);
+        let profile_id = unique_profile_id(&document, owner_user_id, provider, &label);
+        let is_first = !document.profiles.iter().any(|entry| {
+            entry.public.owner_user_id == owner_user_id && entry.public.provider == provider
+        });
+        let profile = new_public_profile(
+            owner_user_id,
+            provider,
+            &profile_id,
+            &label,
+            ProviderAccountProfileOrigin::Default,
+            is_first,
+        );
+        document.profiles.push(StoredProviderAccountProfile {
+            public: profile.clone(),
+            locator,
+            materialized_replica: false,
+            managed_context_replica: None,
+        });
+        self.persist_locked(&document)?;
+        Ok(profile)
+    }
+
     pub fn rename(
         &self,
         owner_user_id: &str,
@@ -4502,6 +4555,104 @@ mod tests {
             None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
         }
         assert!(!environment.contains_key("CLAUDE_CONFIG_DIR"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn explicit_native_import_preserves_existing_claude_scope_and_default() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let (root, registry) = fixture();
+        let home = root.join("home");
+        let native_root = home.join(".claude");
+        fs::create_dir_all(&native_root).unwrap();
+        set_private_dir_permissions(&native_root).unwrap();
+        let native_file = native_root.join("settings.json");
+        fs::write(&native_file, b"{\"provider_owned\":true}\n").unwrap();
+        let existing = registry
+            .link_existing("owner-a", "claude", "Legacy", &native_root)
+            .unwrap();
+        let canonical_native_root = native_root.canonicalize().unwrap();
+        let existing = registry
+            .set_default("owner-a", "claude", &existing.profile_id)
+            .unwrap();
+
+        let imported = registry.import_native_default("owner-a", "claude", &home);
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+        let imported = imported.unwrap();
+        assert_ne!(imported.profile_id, existing.profile_id);
+        assert!(!imported.is_default);
+        assert_eq!(
+            registry.get("owner-a", "claude", "default").unwrap(),
+            existing
+        );
+        assert!(!registry
+            .resolve_environment("owner-a", "claude", &imported.profile_id)
+            .unwrap()
+            .contains_key("CLAUDE_CONFIG_DIR"));
+        assert_eq!(
+            registry
+                .resolve_environment("owner-a", "claude", &existing.profile_id)
+                .unwrap()
+                .get("CLAUDE_CONFIG_DIR"),
+            Some(&canonical_native_root.display().to_string())
+        );
+        assert_eq!(
+            fs::read(&native_file).unwrap(),
+            b"{\"provider_owned\":true}\n"
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn native_import_is_idempotent_and_does_not_materialize_provider_state() {
+        let _guard = crate::env_lock::lock();
+        let previous = std::env::var_os("CLAUDE_CONFIG_DIR");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let (root, registry) = fixture();
+        let home = root.join("home");
+
+        let first = registry
+            .import_native_default("owner-a", "claude", &home)
+            .unwrap();
+        let repeated = registry
+            .import_native_default("owner-a", "claude", &home)
+            .unwrap();
+        match previous {
+            Some(value) => std::env::set_var("CLAUDE_CONFIG_DIR", value),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
+
+        assert_eq!(repeated, first);
+        assert!(first.is_default);
+        assert_eq!(registry.list("owner-a", Some("claude")).unwrap().len(), 1);
+        assert!(!home.join(".claude").exists());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn managed_kernel_rejects_native_account_import() {
+        let _guard = crate::env_lock::lock();
+        let isolation_name = crate::provider::MANAGED_PROVIDER_ISOLATION_ENV;
+        let previous = std::env::var_os(isolation_name);
+        std::env::set_var(isolation_name, "1");
+        let (root, registry) = fixture();
+
+        let result = registry.import_native_default("owner-a", "claude", &root.join("home"));
+        match previous {
+            Some(value) => std::env::set_var(isolation_name, value),
+            None => std::env::remove_var(isolation_name),
+        }
+
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("managed kernels cannot import host-native accounts"));
+        assert!(registry.list("owner-a", Some("claude")).unwrap().is_empty());
         let _ = fs::remove_dir_all(root);
     }
 

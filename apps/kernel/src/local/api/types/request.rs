@@ -47,6 +47,7 @@ pub enum LocalDaemonRequest {
     GetProviderAccountProfile(GetProviderAccountProfileRequest),
     CreateProviderAccountProfile(CreateProviderAccountProfileRequest),
     LinkProviderAccountProfile(LinkProviderAccountProfileRequest),
+    ImportNativeProviderAccountProfile(ImportNativeProviderAccountProfileRequest),
     RenameProviderAccountProfile(RenameProviderAccountProfileRequest),
     SetDefaultProviderAccountProfile(SetDefaultProviderAccountProfileRequest),
     RefreshProviderAccountProfile(RefreshProviderAccountProfileRequest),

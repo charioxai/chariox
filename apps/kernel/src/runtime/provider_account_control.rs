@@ -52,6 +52,33 @@ pub(crate) async fn execute_provider_account_request(
                 )?,
             })
         }
+        LocalDaemonRequest::ImportNativeProviderAccountProfile(request) => {
+            let native_owner = runtime_for_checks
+                .provider_account_authority_owner_user_id(crate::session::DEFAULT_LOCAL_USER_ID);
+            if owner_user_id != native_owner {
+                return Err(DaemonError::LocalTransport {
+                    operation: "import native account profile",
+                    message:
+                        "only the provider-account authority owner may import a host-native account"
+                            .to_string(),
+                });
+            }
+            let home = std::env::var_os("HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute())
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "import native account profile",
+                    message: "the kernel host HOME must be an absolute path".to_string(),
+                })?;
+            Ok(LocalDaemonResponse::ProviderAccountProfile {
+                profile: registry.import_native_default(
+                    &owner_user_id,
+                    &request.provider,
+                    &home,
+                )?,
+            })
+        }
         LocalDaemonRequest::RenameProviderAccountProfile(request) => {
             Ok(LocalDaemonResponse::ProviderAccountProfile {
                 profile: registry.rename(

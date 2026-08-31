@@ -35,6 +35,7 @@ export type ProviderCommandHandlerDeps = {
   listProviderAccountProfiles?: (provider?: string | null) => Promise<ProviderAccountProfile[]>
   createProviderAccountProfile?: (provider: string, label: string) => Promise<ProviderAccountProfile>
   linkProviderAccountProfile?: (provider: string, label: string, path: string) => Promise<ProviderAccountProfile>
+  importNativeProviderAccountProfile?: (provider: string) => Promise<ProviderAccountProfile>
   renameProviderAccountProfile?: (provider: string, profile: string, label: string) => Promise<ProviderAccountProfile>
   setDefaultProviderAccountProfile?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
   refreshProviderAccountProfile?: (provider: string, profile: string) => Promise<ProviderAccountProfile>
@@ -309,7 +310,7 @@ async function handleProviderAccountsCommand(
     return
   }
   if (!provider) {
-    deps.flashFooter("usage: /provider accounts <add|link|refresh|rename|default|remove|delete> <provider> ...", "error")
+    deps.flashFooter("usage: /provider accounts <add|link|import-native|refresh|rename|default|remove|delete> <provider> ...", "error")
     return
   }
   let result: ProviderAccountProfile | null = null
@@ -336,6 +337,8 @@ async function handleProviderAccountsCommand(
       deps.flashFooter(message, "info")
       return
     }
+  } else if (action === "import-native" && !profile && deps.importNativeProviderAccountProfile) {
+    result = await deps.importNativeProviderAccountProfile(provider)
   } else if (action === "link" && profile && deps.linkProviderAccountProfile) {
     const operands = [profile, ...rest]
     const path = operands.at(-1)!

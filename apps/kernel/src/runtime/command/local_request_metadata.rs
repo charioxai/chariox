@@ -463,6 +463,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetProviderAccountProfile(_) => "provider_account.get",
         LocalDaemonRequest::CreateProviderAccountProfile(_) => "provider_account.create",
         LocalDaemonRequest::LinkProviderAccountProfile(_) => "provider_account.link",
+        LocalDaemonRequest::ImportNativeProviderAccountProfile(_) => {
+            "provider_account.native.import"
+        }
         LocalDaemonRequest::RenameProviderAccountProfile(_) => "provider_account.rename",
         LocalDaemonRequest::SetDefaultProviderAccountProfile(_) => "provider_account.default.set",
         LocalDaemonRequest::RefreshProviderAccountProfile(_) => "provider_account.refresh",

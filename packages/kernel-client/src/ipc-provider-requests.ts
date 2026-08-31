@@ -125,6 +125,10 @@ export function linkProviderAccountProfileRequest(provider: string, label: strin
   return { LinkProviderAccountProfile: { provider, label, path } }
 }
 
+export function importNativeProviderAccountProfileRequest(provider: string) {
+  return { ImportNativeProviderAccountProfile: { provider } }
+}
+
 export function renameProviderAccountProfileRequest(provider: string, accountProfile: string, label: string) {
   return { RenameProviderAccountProfile: { provider, account_profile: accountProfile, label } }
 }

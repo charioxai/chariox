@@ -782,6 +782,9 @@ Workflow trigger and deployment direction:
   replaces the speculative startup grace period only in these prepared kernels.
   Ordinary kernels retain automatic startup recovery. Stopping the listener
   cancels pending recovery even if publication activation never occurs.
+- protocol 284 adds `ImportNativeProviderAccountProfile`. The authority owner
+  can explicitly register the kernel host's provider-native scope without a
+  client-supplied path, changing an existing profile, or copying credentials.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic
