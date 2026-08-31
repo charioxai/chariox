@@ -13,6 +13,7 @@ import {
   collectBrowserComputerResourceSnapshot,
   defaultBrowserComputerEvidenceDir,
   evaluateBrowserComputerCleanup,
+  parseBrowserComputerByteBudget,
 } from "./lib/browser-computer-drill-guard.mjs"
 import { finalizeDrillArtifacts } from "./lib/drill-artifacts.mjs"
 import { resolveBuiltBinary } from "./lib/drill-runtime-helpers.mjs"
@@ -65,10 +66,8 @@ try {
   })
   resourcePreflight = assertBrowserComputerPreflight(resourceBefore, {
     allowExistingHeadedSlices: process.env.M20_ALLOW_EXISTING_SLICES === "1",
-    requiredMemoryBytes: process.env.M20_REQUIRED_MEMORY_BYTES === undefined
-      ? undefined : Number(process.env.M20_REQUIRED_MEMORY_BYTES),
-    requiredDiskBytes: process.env.M20_REQUIRED_DISK_BYTES === undefined
-      ? undefined : Number(process.env.M20_REQUIRED_DISK_BYTES),
+    requiredMemoryBytes: parseBrowserComputerByteBudget(process.env.M20_REQUIRED_MEMORY_BYTES),
+    requiredDiskBytes: parseBrowserComputerByteBudget(process.env.M20_REQUIRED_DISK_BYTES),
   })
   for (const warning of resourcePreflight.warnings) log(warning)
   await writeFile(path.join(artifactDir, "resources-before.json"), `${JSON.stringify({

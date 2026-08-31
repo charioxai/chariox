@@ -10,6 +10,7 @@ import {
   defaultBrowserComputerEvidenceDir,
   evaluateBrowserComputerCleanup,
   evaluateBrowserComputerPreflight,
+  parseBrowserComputerByteBudget,
 } from "./browser-computer-drill-guard.mjs"
 
 test("browser/computer evidence defaults outside repositories", () => {
@@ -126,6 +127,32 @@ test("resource byte budgets must be valid and actual exhaustion still fails", ()
   }
   assert.equal(evaluateBrowserComputerPreflight(snapshot({ diskAvailableBytes: 0 })).ok, false)
   assert.equal(evaluateBrowserComputerPreflight(snapshot({ memoryAvailableBytes: 0 })).ok, false)
+})
+
+test("blank environment budgets preserve the missing-budget warning", () => {
+  for (const value of [undefined, "", " ", "\t\n"]) {
+    const budget = parseBrowserComputerByteBudget(value)
+    assert.equal(budget, undefined)
+    const result = evaluateBrowserComputerPreflight(snapshot(), {
+      requiredMemoryBytes: budget,
+      requiredDiskBytes: budget,
+    })
+    assert.equal(result.ok, true)
+    assert.match(result.warnings.join("\n"), /budget not fully specified/)
+  }
+  for (const [value, expected] of [["0", 0], [" 20 ", 20]]) {
+    const budget = parseBrowserComputerByteBudget(value)
+    assert.equal(budget, expected)
+    assert.deepEqual(evaluateBrowserComputerPreflight(snapshot(), {
+      requiredMemoryBytes: budget,
+      requiredDiskBytes: budget,
+    }).warnings, [])
+  }
+  for (const value of ["-1", "1.5", "NaN", "Infinity", "not-a-budget"]) {
+    assert.throws(() => evaluateBrowserComputerPreflight(snapshot(), {
+      requiredMemoryBytes: parseBrowserComputerByteBudget(value),
+    }), /non-negative.*integer/)
+  }
 })
 
 test("cleanup rejects owned and newly-created slice resources", async () => {

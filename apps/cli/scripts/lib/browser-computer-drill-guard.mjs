@@ -4,6 +4,10 @@ import path from "node:path"
 
 const SLICE_CONTAINER_PREFIX = "chariox-slice-"
 
+export function parseBrowserComputerByteBudget(value) {
+  return value === undefined || value.trim() === "" ? undefined : Number(value)
+}
+
 export function defaultBrowserComputerEvidenceDir(runId, homeDir = os.homedir()) {
   if (!nonEmptyString(runId)) throw new Error("browser/computer drill run id is required")
   return path.join(homeDir, ".codex", "evidence", "browser-computer-use", "m0", runId)
