@@ -5,6 +5,7 @@ import process from "node:process"
 
 import { LocalIpcClient } from "@chariox/kernel-client/ipc"
 import {
+  activateWorkflowPublicationRuntimeRequest,
   getSessionStateRequest,
   getWorkflowPublicationRequest,
   materializeWorkflowPublicationRequest,
@@ -163,6 +164,15 @@ export async function loadPublicationPackageConfig(
     } as WorkflowPublicationConfig
     for (const candidate of materializedConfigs) {
       await ensurePublicationRuntimeAttached(ownedClient, candidate)
+    }
+    if (options.runtimeKey !== undefined) {
+      const runtimeKeys = materializedConfigs.map((_, index) => `${options.runtimeKey}:replica-${index}`)
+      const response = await ownedClient.send(activateWorkflowPublicationRuntimeRequest(config.publication_id, runtimeKeys))
+      const activated = response.WorkflowPublicationRuntimeActivated as { publication_id?: string; runtime_keys?: string[] } | undefined
+      if (activated?.publication_id !== config.publication_id
+        || JSON.stringify(activated.runtime_keys) !== JSON.stringify(runtimeKeys)) {
+        throw new Error("kernel did not acknowledge publication runtime activation; protocol 283 or newer is required")
+      }
     }
     return materializedConfig
   } finally {

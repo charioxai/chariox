@@ -443,6 +443,7 @@ pub enum LocalDaemonResponse {
         expires_at_ms: Option<u64>,
     },
     WorkflowPublicationMaterialized { publication_id: String, session: RuntimeSession, agent_id_map: BTreeMap<String, String>, },
+    WorkflowPublicationRuntimeActivated { publication_id: String, runtime_keys: Vec<String>, },
     WorkflowDesignOpAccepted { session: RuntimeSession, event: WorkflowDesignOpForwarded, },
     WorkflowDesignOpRejected {
         session_id: String,

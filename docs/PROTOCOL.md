@@ -769,6 +769,19 @@ Workflow trigger and deployment direction:
   Deployment replacement must stop the previous state owner before starting its
   successor. The lease is released only after the last owned store reference
   and durable writer are gone; database observers do not become schedulers.
+- protocol 283 adds `ActivateWorkflowPublicationRuntime` with `publication_id`
+  and the complete distinct `runtime_keys` set. A kernel using retained publication
+  control storage starts with autonomous work held. Restoring state or attaching
+  a client does not activate it. The gateway validates this boot's
+  provider/credential/extension bindings, prepares every replica, installs event bindings and
+  attaches, then requests activation. The kernel requires every enabled retained
+  runtime to match a successful materialization by its owner in this process.
+  `WorkflowPublicationRuntimeActivated` acknowledges that exact set. Invalid or
+  incomplete preparation leaves schedules and restart recovery held without
+  advancing occurrence state. Activation is process-local, never restored, and
+  replaces the speculative startup grace period only in these prepared kernels.
+  Ordinary kernels retain automatic startup recovery. Stopping the listener
+  cancels pending recovery even if publication activation never occurs.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

@@ -284,10 +284,18 @@ impl KernelRuntimeState {
                 (result, session)
             }
             LocalDaemonRequest::MaterializeWorkflowPublication(request) => {
+                owned.invalidate_publication_preparation(&request, &caller_user_id);
                 let result = owned.workflow_materialize_publication(*request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);
+                if let Some(session) = session.as_ref() {
+                    owned.record_prepared_publication(session);
+                }
                 (result, session)
             }
+            LocalDaemonRequest::ActivateWorkflowPublicationRuntime(request) => (
+                owned.activate_workflow_publication_runtime(request, &caller_user_id),
+                None,
+            ),
             LocalDaemonRequest::CreateWorkflowEndpoint(request) => {
                 let result = owned.workflow_create_endpoint(request, &caller_user_id);
                 let session = result.as_ref().ok().and_then(workflow_response_session);

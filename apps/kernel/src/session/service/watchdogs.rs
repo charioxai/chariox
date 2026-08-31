@@ -266,6 +266,21 @@ impl SessionService {
         &mut self,
         now_ms: u64,
     ) -> Result<WorkflowWatchdogCollection, DaemonError> {
+        self.collect_due_workflow_watchdogs(now_ms, false)
+    }
+
+    pub(crate) fn collect_due_workflow_watchdogs_after_publication_activation(
+        &mut self,
+        now_ms: u64,
+    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
+        self.collect_due_workflow_watchdogs(now_ms, true)
+    }
+
+    fn collect_due_workflow_watchdogs(
+        &mut self,
+        now_ms: u64,
+        publication_runtime_prepared: bool,
+    ) -> Result<WorkflowWatchdogCollection, DaemonError> {
         let mut plans = Vec::new();
         let mut changed_session_ids = BTreeSet::new();
         let session_ids = self
@@ -387,6 +402,7 @@ impl SessionService {
                         continue;
                     }
                     if session_hidden
+                        && !publication_runtime_prepared
                         && watchdog.wakeups_executed() == 0
                         && now_ms
                             < session_created_at_ms

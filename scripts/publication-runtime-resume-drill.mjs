@@ -12,6 +12,7 @@ import { LocalIpcClient } from "../packages/kernel-client/dist/ipc.js"
 
 const binary = resolve(process.argv[2] ?? "target/debug/chariox-kernel")
 const replaceEphemeralHome = process.argv.includes("--replace-ephemeral-home")
+const activationBarrier = process.argv.includes("--activation-barrier")
 const root = await mkdtemp(join(tmpdir(), "chariox-publication-resume-"))
 const workspace = join(root, "workspace")
 const ephemeralHome = join(root, "home")
@@ -38,7 +39,7 @@ function kernelEnv(kernelPort, kernelMcpPort) {
       USER: process.env.USER,
       LANG: "en_US.UTF-8",
       CHARIOX_HOME: ephemeralHome,
-      ...(replaceEphemeralHome ? { CHARIOX_PUBLICATION_CONTROL_STATE_DIR: join(root, "control") } : {}),
+      ...(replaceEphemeralHome || activationBarrier ? { CHARIOX_PUBLICATION_CONTROL_STATE_DIR: join(root, "control") } : {}),
       CHARIOX_KERNEL_HOST: "127.0.0.1",
       CHARIOX_KERNEL_PORT: String(kernelPort),
       CHARIOX_MCP_PORT: String(kernelMcpPort),
@@ -115,11 +116,20 @@ async function stop(signal = "SIGTERM") {
   const exited = once(child, "exit")
   child.kill(signal)
   const deadline = setTimeout(() => child.kill("SIGKILL"), 5_000)
-  try { await exited } finally { clearTimeout(deadline) }
+  try {
+    const [, actualSignal] = await exited
+    if (signal === "SIGTERM") {
+      assert.notEqual(actualSignal, "SIGKILL", "disposable kernel could not shut down and release its state lease")
+    }
+  } finally { clearTimeout(deadline) }
 }
 
 async function send(kind, body, responseKind) {
-  const response = await client.send({ [kind]: body })
+  let timeout
+  const response = await Promise.race([
+    client.send({ [kind]: body }),
+    new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error(`${kind} timed out`)), 15_000) }),
+  ]).finally(() => clearTimeout(timeout))
   assert.ok(response[responseKind], `${kind} did not return ${responseKind}`)
   return response[responseKind]
 }
@@ -157,6 +167,64 @@ try {
   assert.deepEqual(retry.agent_id_map, first.agent_id_map, "retry replaced publication agents")
   await assertWriterFenced()
 
+  if (activationBarrier) {
+    const replicaRequest = { ...request, runtime_key: "deployment-a:replica-1" }
+    const activation = { publication_id: request.publication_id, runtime_keys: [request.runtime_key, replicaRequest.runtime_key] }
+    await send("MaterializeWorkflowPublication", replicaRequest, "WorkflowPublicationMaterialized")
+    await assert.rejects(() => send("MaterializeWorkflowPublication", {
+      ...request, snapshot: { ...snapshot, captured_at_ms: 43 },
+    }, "WorkflowPublicationMaterialized"), /publication|snapshot/i)
+    await assert.rejects(() => send("ActivateWorkflowPublicationRuntime", activation, "WorkflowPublicationRuntimeActivated"), /prepar|activation/i)
+    await send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized")
+    const { attachment } = await send("AttachToSession", { session_id: first.session.id, client_id: "activation-drill", capability_level: "FullTerminal" }, "SessionAttached")
+    const { schedule } = await send("CreateWorkflowSchedule", {
+      session_id: first.session.id, workflow_ref: workflow.id, endpoint_ref: endpointResult.endpoint.id,
+      trigger: { kind: "interval", every_seconds: 1 }, invocation_prompt: "activation barrier",
+      overlap_policy: "queue", max_runs_configured: true, max_runs: 2,
+    }, "WorkflowScheduleCreated")
+    const current = async () => (await send("GetSessionState", { session_id: first.session.id }, "SessionState")).session
+    await delay(1600)
+    assert.deepEqual((await current()).workflow_schedules, [schedule], "schedule advanced before runtime activation")
+    await assert.rejects(() => send("ActivateWorkflowPublicationRuntime", {
+      ...activation, runtime_keys: [request.runtime_key],
+    }, "WorkflowPublicationRuntimeActivated"), /prepar|activation/i)
+    await send("ActivateWorkflowPublicationRuntime", activation, "WorkflowPublicationRuntimeActivated")
+    // A live projection may show admission before its durable transaction has
+    // completed. Provider output proves dispatch crossed that transaction;
+    // crash that externally observed occurrence rather than an in-flight read.
+    let providerObserved = false
+    for (let i = 0; i < 50 && !providerObserved; i++) {
+      const { records } = await send("PumpTerminalOutput", {
+        session_id: first.session.id, attachment_id: attachment.id,
+      }, "TerminalOutput")
+      providerObserved = records.some((record) => record.kind === "provider_output"
+        && Buffer.from(record.bytes).toString("utf8").includes("activation barrier"))
+      if (!providerObserved) await delay(100)
+    }
+    assert.ok(providerObserved, "activation did not dispatch the scheduled prompt to the provider")
+    const active = await current()
+    assert.equal(active.workflow_runs.length, 1, "activation did not admit the first schedule occurrence")
+    await stop("SIGKILL")
+    await rm(ephemeralHome, { recursive: true, force: true })
+    await start()
+    await send("AttachToSession", { session_id: first.session.id, client_id: "activation-drill", capability_level: "FullTerminal" }, "SessionAttached")
+    await delay(1600)
+    const held = await current()
+    assert.deepEqual(held.workflow_schedules, active.workflow_schedules, "restart consumed a schedule before reactivation")
+    assert.deepEqual(held.workflow_runs.map((run) => run.id), active.workflow_runs.map((run) => run.id))
+    await assert.rejects(() => send("ActivateWorkflowPublicationRuntime", activation, "WorkflowPublicationRuntimeActivated"), /prepar|activation/i)
+    await send("MaterializeWorkflowPublication", request, "WorkflowPublicationMaterialized")
+    await assert.rejects(() => send("ActivateWorkflowPublicationRuntime", activation, "WorkflowPublicationRuntimeActivated"), /prepar|activation/i)
+    await send("MaterializeWorkflowPublication", replicaRequest, "WorkflowPublicationMaterialized")
+    await assert.rejects(() => send("ActivateWorkflowPublicationRuntime", {
+      ...activation, runtime_keys: ["wrong-runtime"],
+    }, "WorkflowPublicationRuntimeActivated"), /prepar|activation/i)
+    await delay(1100)
+    assert.deepEqual((await current()).workflow_schedules, active.workflow_schedules)
+    await send("ActivateWorkflowPublicationRuntime", activation, "WorkflowPublicationRuntimeActivated")
+    console.log(JSON.stringify({ passed: true, startupActivationHeld: true, restartActivationHeld: true,
+      exactPreparationRequired: true, failedPreparationInvalidated: true, completeReplicaSetRequired: true, unknownRuntimeRejected: true, firstOccurrencePreserved: true }))
+  } else {
   const { schedule } = await send("CreateWorkflowSchedule", {
     session_id: first.session.id, workflow_ref: workflow.id, endpoint_ref: endpointResult.endpoint.id,
     trigger: { kind: "interval", every_seconds: 3600 }, invocation_prompt: "resume schedule",
@@ -213,6 +281,7 @@ try {
   console.log(JSON.stringify({ passed: true, replacedEphemeralHome: replaceEphemeralHome, concurrentCreation: true, retry: true, restart: true, crashRecovery: true,
     scheduleStatePreserved: true, queuedInvocationPreserved: true, exclusiveWriter: true, independentReplicas: true, unkeyedIndependent: true,
     conflictingPublicationRejected: true, conflictingSnapshotRejected: true, disabledNotResurrected: true }))
+  }
 } finally {
   await stop()
   await rm(root, { recursive: true, force: true })

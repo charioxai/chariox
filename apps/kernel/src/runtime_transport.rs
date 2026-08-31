@@ -678,11 +678,12 @@ where
             crate::transport::mcp_server::run_mcp_http_server_on_listener(mcp_router, mcp_listener)
                 .await;
     });
-    router.runtime_state().spawn_durable_restart_recovery();
+    let _restart_recovery_task = router.runtime_state().spawn_durable_restart_recovery();
 
     loop {
         tokio::select! {
             _ = &mut shutdown => {
+                drop(_restart_recovery_task);
                 pump_task.abort();
                 if let Some(task) = durable_snapshot_task.take() {
                     task.abort();

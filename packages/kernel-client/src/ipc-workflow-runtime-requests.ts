@@ -183,6 +183,10 @@ export function materializeWorkflowPublicationRequest(
   }
 }
 
+export function activateWorkflowPublicationRuntimeRequest(publicationId: string, runtimeKeys: string[]) {
+  return { ActivateWorkflowPublicationRuntime: { publication_id: publicationId, runtime_keys: runtimeKeys } }
+}
+
 export function createWorkflowWatchdogRequest(
   sessionId: string,
   workflowRef: string,

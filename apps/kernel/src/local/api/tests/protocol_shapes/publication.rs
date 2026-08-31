@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 282);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 283);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -380,6 +380,12 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
             process_id: Some(4242),
             replayed: false,
         },
+        LocalDaemonRequest::ActivateWorkflowPublicationRuntime(crate::local::ActivateWorkflowPublicationRuntimeRequest {
+            publication_id: "publication-1".to_string(), runtime_keys: vec!["deployment-1:replica-0".to_string()],
+        }),
+        LocalDaemonResponse::WorkflowPublicationRuntimeActivated {
+            publication_id: "publication-1".to_string(), runtime_keys: vec!["deployment-1:replica-0".to_string()],
+        },
     ]);
     let mut snapshot = snapshot;
     for path in [
@@ -626,16 +632,24 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     );
     let serialized =
         serde_json::to_string(&snapshot).expect("workflow publication shape should encode");
+    assert_eq!(
+        snapshot.pointer("/20/ActivateWorkflowPublicationRuntime/runtime_keys"),
+        Some(&serde_json::json!(["deployment-1:replica-0"]))
+    );
+    assert_eq!(
+        snapshot.pointer("/21/WorkflowPublicationRuntimeActivated/publication_id"),
+        Some(&serde_json::json!("publication-1"))
+    );
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "f72ff182e8d3a2485d2e94a139809f464896ec166f30064ff74218df9730d552"
+        "017fbcd592319e79f1167104b7d39dec8562e3e86ed006b252ef783081c63c96"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 282);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 283);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

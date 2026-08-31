@@ -730,6 +730,9 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
             "workflow_publication.endpoint.register"
         }
         LocalDaemonRequest::MaterializeWorkflowPublication(_) => "workflow_publication.materialize",
+        LocalDaemonRequest::ActivateWorkflowPublicationRuntime(_) => {
+            "workflow_publication.runtime.activate"
+        }
         LocalDaemonRequest::CreateWorkflowEndpoint(_) => "workflow_endpoint.create",
         LocalDaemonRequest::AliasWorkflowEndpoint(_) => "workflow_endpoint.alias",
         LocalDaemonRequest::BindWorkflowEndpoint(_) => "workflow_endpoint.bind",

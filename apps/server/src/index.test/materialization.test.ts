@@ -46,6 +46,48 @@ test("gateway refuses a kernel that ignores the publication resume key", async (
   }, "deployment-a:replica-0"), /did not acknowledge.*protocol 282/)
 })
 
+test("gateway refuses missing or mismatched runtime activation acknowledgements", async () => {
+  const root = await mkdtemp(join(tmpdir(), "chariox-publication-activation-"))
+  try {
+    await writeFile(join(root, "publication.json"), JSON.stringify({
+      schema_version: 1, package_version: 4, publication_id: "activation-publication",
+      source_session_id: "session-1", workflow_id: "workflow-1",
+      deployment_contract: { path: "deployment-contract.json", schema_version: 1 },
+      hooks: [{ id: "hook", transport: "human_http", endpoint_id: "endpoint-1", route: "/*", methods: ["GET"] }],
+    }))
+    await writeDeploymentContractFixture(root, "activation-publication", "hook")
+    await writeFile(join(root, "requirements.json"), JSON.stringify({ schema_version: 1 }))
+    await writeFile(join(root, "workflow.snapshot.json"), JSON.stringify({
+      schema_version: 1, source_session: { id: "session-1", workspace_id: "/repo", worktree_id: "/repo" },
+      workflow: { id: "workflow-1", nodes: [], edges: [], endpoints: [] },
+      endpoint: { id: "endpoint-1", entry_node_id: "node" }, agents: [], queues: [],
+    }))
+    for (const acknowledgement of [undefined,
+      { publication_id: "wrong", runtime_keys: ["deployment:replica-0"] },
+      { publication_id: "activation-publication", runtime_keys: ["wrong"] },
+    ]) {
+      await assert.rejects(loadPublicationPackageConfig(root, {
+        materialize: true, runtimeKey: "deployment", runtimeWorkspace: root,
+        validateRequirements: false, validateProviderBindings: false,
+        client: { send: async (request) => {
+          if ("ActivateWorkflowPublicationRuntime" in request) {
+            return { WorkflowPublicationRuntimeActivated: acknowledgement }
+          }
+          if ("AttachToSession" in request) return { SessionAttached: { attachment: { id: "attachment" } } }
+          return { WorkflowPublicationMaterialized: {
+            publication_id: "activation-publication", agent_id_map: {},
+            session: { id: "runtime", workflow_publications: [{
+              id: "activation-publication", runtime_materialization: { key: "deployment:replica-0", agent_id_map: {} },
+            }] },
+          } }
+        } },
+      }), /did not acknowledge publication runtime activation; protocol 283/)
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
 test("gateway materializes exported publication packages through the kernel", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-materialize-"))
   const runtimeWorkspace = `${root}.runtime`
@@ -175,6 +217,9 @@ test("gateway materializes exported publication packages through the kernel", as
           if ("CreateWorkflowEventBinding" in request) {
             return { WorkflowEventBindingCreated: { binding: { id: "runtime-binding-1" } } }
           }
+          if ("ActivateWorkflowPublicationRuntime" in request) {
+            return { WorkflowPublicationRuntimeActivated: { publication_id: "pub-1", runtime_keys: ["deployment-a:replica-0"] } }
+          }
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
@@ -198,6 +243,7 @@ test("gateway materializes exported publication packages through the kernel", as
       "MaterializeWorkflowPublication",
       "CreateWorkflowEventBinding",
       "AttachToSession",
+      "ActivateWorkflowPublicationRuntime",
     ])
     assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: runtimeWorkspace } })
     const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {

@@ -664,6 +664,26 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         .iter()
         .all(|agent| agent.owner_user_id() == "different-owner"));
 
+    // Ordinary shared kernels retain owner-scoped preparation even when two
+    // owners intentionally choose the same runtime key.
+    for owner in [runtime_owner_user_id, "different-owner"] {
+        let activation = || {
+            LocalDaemonRequest::ActivateWorkflowPublicationRuntime(
+                crate::local::ActivateWorkflowPublicationRuntimeRequest {
+                    publication_id: "publication-1".to_string(),
+                    runtime_keys: vec!["deployment-a:replica-0".to_string()],
+                },
+            )
+        };
+        assert!(matches!(
+            harness.dispatch_as_user(owner, activation()).unwrap(),
+            LocalDaemonResponse::WorkflowPublicationRuntimeActivated { .. }
+        ));
+        harness
+            .dispatch_as_user("unprepared-owner", activation())
+            .expect_err("activation cannot borrow another owner's preparation");
+    }
+
     // A rejected creation write must not leave an in-memory binding which a
     // retry can mistake for an acknowledged, recoverable materialization.
     let database = rusqlite::Connection::open(state_path).unwrap();

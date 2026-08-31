@@ -307,6 +307,7 @@ pub enum LocalDaemonRequest {
     BindWorkflowPublicationDeployment(BindWorkflowPublicationDeploymentRequest),
     RegisterWorkflowPublicationEndpoint(RegisterWorkflowPublicationEndpointRequest),
     MaterializeWorkflowPublication(Box<MaterializeWorkflowPublicationRequest>),
+    ActivateWorkflowPublicationRuntime(ActivateWorkflowPublicationRuntimeRequest),
     CreateWorkflowEndpoint(CreateWorkflowEndpointRequest),
     AliasWorkflowEndpoint(AliasWorkflowEndpointRequest),
     BindWorkflowEndpoint(BindWorkflowEndpointRequest),

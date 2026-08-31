@@ -421,6 +421,12 @@ pub struct MaterializeWorkflowPublicationRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ActivateWorkflowPublicationRuntimeRequest {
+    pub publication_id: String,
+    pub runtime_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CreateWorkflowEndpointRequest {
     pub session_id: String,
     pub workflow_ref: String,

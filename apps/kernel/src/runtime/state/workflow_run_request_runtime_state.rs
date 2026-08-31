@@ -313,6 +313,9 @@ impl KernelRuntimeState {
     ) {
         let owned = &self.owned;
         let session_id = request.session_id.clone();
+        if let Err(error) = owned.require_publication_activation() {
+            return (Err(error), owned.session_snapshot(&session_id).ok());
+        }
         if let Err(error) = self
             .wait_for_workflow_prompt_cancellation_settlement(
                 &request.session_id,

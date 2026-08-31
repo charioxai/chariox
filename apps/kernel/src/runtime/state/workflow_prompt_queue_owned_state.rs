@@ -549,11 +549,24 @@ impl KernelRuntimeOwnedState {
         &self,
         now_ms: u64,
     ) -> WorkflowPromptDispatches {
-        let collection = match self
-            .session_store
-            .write()
-            .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
+        let collection = if self
+            .config_projection
+            .snapshot()
+            .publication_control_state_root
+            .is_some()
         {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdogs_after_publication_activation(now_ms)
+        } else {
+            self.session_store
+                .write()
+                .collect_due_workflow_watchdog_invocations_with_changes(now_ms)
+        };
+        let collection = match collection {
             Ok(collection) => collection,
             Err(error) => {
                 crate::logging::warn_with_fields(
@@ -844,6 +857,9 @@ impl KernelRuntimeOwnedState {
         ),
         DaemonError,
     > {
+        if !self.publication_activation.is_active() {
+            return Ok((None, WorkflowPromptDispatches::default()));
+        }
         self.workflow_reconcile_live_orphans(session_id);
         let mut accumulated = WorkflowPromptDispatches::default();
         loop {
@@ -882,6 +898,9 @@ impl KernelRuntimeOwnedState {
         &self,
         session_id: &str,
     ) -> WorkflowPromptDispatches {
+        if !self.publication_activation.is_active() {
+            return WorkflowPromptDispatches::default();
+        }
         self.workflow_reconcile_live_orphans(session_id);
         let mut accumulated = WorkflowPromptDispatches::default();
         loop {

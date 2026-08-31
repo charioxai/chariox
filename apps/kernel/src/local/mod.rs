@@ -13,11 +13,12 @@ pub use api::{
 };
 pub use api::{
     AbortMetaagentTaskRequest, AcceptCloudSessionInviteRequest, AckMetaagentEventsRequest,
-    AckWorkflowTurnRequest, AcknowledgeAgentOutputSeenRequest, AddWorkflowEdgeRequest,
-    AddWorkflowNodeRequest, AddWorkflowRegistryEntryFromWorkflowRequest,
-    AddWorkflowRegistryEntryRequest, AgentSubstituteAction, AgentUtilityInput, AgentUtilityKind,
-    AgentUtilityOutput, AgentUtilityResult, AliasAgentRequest, AliasSessionRequest,
-    AliasWorkflowEndpointRequest, AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
+    AckWorkflowTurnRequest, AcknowledgeAgentOutputSeenRequest,
+    ActivateWorkflowPublicationRuntimeRequest, AddWorkflowEdgeRequest, AddWorkflowNodeRequest,
+    AddWorkflowRegistryEntryFromWorkflowRequest, AddWorkflowRegistryEntryRequest,
+    AgentSubstituteAction, AgentUtilityInput, AgentUtilityKind, AgentUtilityOutput,
+    AgentUtilityResult, AliasAgentRequest, AliasSessionRequest, AliasWorkflowEndpointRequest,
+    AliasWorkflowRequest, AppendNativeProviderOutputBatchItem,
     AppendNativeProviderOutputBatchRequest, AppendNativeProviderOutputRequest,
     ApplyWorkflowCodeArtifactRequest, ApplyWorkflowCodeRequest, ApplyWorkflowDesignOpRequest,
     ApproveRemoteMachineRequest, ArchiveProjectRequest, ArmDeploymentCredentialEnrollmentRequest,

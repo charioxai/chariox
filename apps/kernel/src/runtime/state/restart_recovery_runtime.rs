@@ -44,6 +44,16 @@ type DurableRestartRecoveryTarget = (String, String, String);
 type DurableRestartDispatchTarget = (String, String, String, String);
 const TRANSCRIPT_OBSERVATION_ATTEMPTS_BEFORE_REDISPATCH: u32 = 9;
 
+pub(crate) struct DurableRestartRecoveryTask(tokio::task::JoinHandle<()>);
+
+impl Drop for DurableRestartRecoveryTask {
+    fn drop(&mut self) {
+        // In particular, a publication which never activates must not retain
+        // its runtime and exclusive state lease after the listener stops.
+        self.0.abort();
+    }
+}
+
 fn should_rearm_unobserved_dispatches(
     attempt: u32,
     transcript_recovery_pending: usize,
@@ -55,7 +65,7 @@ fn should_rearm_unobserved_dispatches(
 }
 
 impl KernelRuntimeState {
-    pub(crate) fn spawn_durable_restart_recovery(&self) {
+    pub(crate) fn spawn_durable_restart_recovery(&self) -> DurableRestartRecoveryTask {
         // Recovery belongs only to work that survived this kernel restart.
         // Keep that identity set fixed across the retry window so prompts
         // accepted after startup can never be mistaken for orphaned work.
@@ -72,7 +82,8 @@ impl KernelRuntimeState {
             }),
         );
         let state = self.clone();
-        tokio::spawn(async move {
+        DurableRestartRecoveryTask(tokio::spawn(async move {
+            state.owned.publication_activation.wait().await;
             tokio::time::sleep(std::time::Duration::from_millis(250)).await;
             let mut attempt = 0_u32;
             let mut pending_dispatch_targets = dispatch_targets;
@@ -140,7 +151,7 @@ impl KernelRuntimeState {
                     "failed_reconciliations": summary.failed_reconciliations,
                 }),
             );
-        });
+        }))
     }
 
     fn rearm_unobserved_restart_recovery_dispatches(
@@ -265,6 +276,9 @@ impl KernelRuntimeState {
         queued_recovery_targets: &BTreeSet<DurableRestartRecoveryTarget>,
     ) -> DurableRestartRecoverySummary {
         let mut summary = DurableRestartRecoverySummary::default();
+        if !self.owned.publication_activation.is_active() {
+            return summary;
+        }
         let sessions = self.owned.session_store.list_all_sessions();
         // Publication work is autonomous and already durably admitted. Resume it before
         // transcript reconciliation for unrelated interactive sessions, which may require slow

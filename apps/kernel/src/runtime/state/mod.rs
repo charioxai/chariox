@@ -47,6 +47,7 @@ mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
 mod provider_run_read_state;
+mod publication_activation;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {
@@ -65,6 +66,7 @@ struct KernelRuntimeOwnedState {
     provider_store: ProviderProcessServiceStore,
     workflow_provider_launch_lock: Arc<std::sync::Mutex<()>>,
     workflow_instance_provision_lock: Arc<std::sync::Mutex<()>>,
+    publication_activation: Arc<publication_activation::PublicationActivation>,
     provider_process_tracking: ProviderProcessTrackingStore,
     provider_launch_failure_retries: ProviderLaunchFailureRetryStore,
     external_provider_sessions: ExternalProviderSessionIndexStore,
@@ -461,6 +463,12 @@ impl KernelRuntimeState {
                     crate::git_observer::WorkspaceLiveSyncJournal::default()
                 }
             };
+        let publication_activation = Arc::new(publication_activation::PublicationActivation::new(
+            config_projection
+                .snapshot()
+                .publication_control_state_root
+                .is_some(),
+        ));
         Self {
             app,
             provider_runtime_lanes,
@@ -473,6 +481,7 @@ impl KernelRuntimeState {
                 provider_store,
                 workflow_provider_launch_lock: Arc::new(std::sync::Mutex::new(())),
                 workflow_instance_provision_lock: Arc::new(std::sync::Mutex::new(())),
+                publication_activation,
                 provider_process_tracking,
                 provider_launch_failure_retries,
                 external_provider_sessions,

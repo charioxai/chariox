@@ -10,6 +10,7 @@ impl KernelRuntimeState {
         &self,
         prepared: crate::app::KernelPreparedPromptSubmission,
     ) -> Result<crate::app::KernelPromptSubmission, DaemonError> {
+        self.owned.require_publication_activation()?;
         {
             let owned = &self.owned;
             let session = owned.session_store.get_session(&prepared.session_id)?;

@@ -42,6 +42,9 @@ impl KernelRuntimeState {
     }
 
     pub(crate) async fn pump_transport_runtime(&self) {
+        if !self.owned.publication_activation.is_active() {
+            return;
+        }
         let now_ms = crate::session::unix_epoch_ms();
         self.sweep_stale_terminal_attachments(now_ms).await;
         super::workflow_publication_runtime_lifecycle::reconcile_bound_workflow_publication_runtimes(
