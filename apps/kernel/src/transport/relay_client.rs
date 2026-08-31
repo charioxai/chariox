@@ -26,9 +26,9 @@ use crate::runtime_transport::{
 use crate::transport::kernel_protocol::{
     agent_activity_changed_event, event_is_relevant_to_attachment, provider_run_changed_event,
     runtime_interactions_changed_event, session_metadata_changed_event,
-    subscription_event_stream_id, terminal_output_event_batches, waiting_room_rows_changed_event,
-    workflow_run_only_changed, workflow_run_updated_events, KernelEvent,
-    WAITING_ROOM_INVENTORY_SENTINEL_ID, WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
+    subscription_event_stream_id, terminal_output_event_batches, workflow_run_only_changed,
+    workflow_run_updated_events, KernelEvent, WAITING_ROOM_INVENTORY_SENTINEL_ID,
+    WAITING_ROOM_INVENTORY_SUBSCRIPTION_SCOPE,
 };
 use crate::transport::relay_crypto;
 use crate::transport::relay_discovery;
@@ -47,6 +47,7 @@ mod peer_events;
 mod peer_requests;
 mod remote_inventory;
 mod request_errors;
+mod sender_identity;
 mod subscriptions;
 use connection_config::{relay_config_continuity, RelayConfigContinuity};
 use connection_state::{
@@ -59,7 +60,8 @@ use envelope_io::{
     send_outgoing_event_envelope,
 };
 use events::{emit_relay_event, replay_recent_relay_events, RelayEventRuntime};
-use incoming_envelopes::handle_incoming_envelope;
+use incoming_envelopes::{handle_incoming_envelope, IncomingEnvelopeContext};
+pub(crate) use peer_client::send_peer_request_to_known_kernel_via_relay;
 #[cfg(test)]
 pub use peer_client::send_peer_request_via_relay;
 use peer_client::{resolve_pending_peer_response, RelayPeerResponseEnvelope};

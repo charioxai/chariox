@@ -486,12 +486,6 @@ fn script_definition_hash(
 }
 
 fn capability_root_for(kind: &str, workspace: &Path) -> PathBuf {
-    if let Some(root) = managed_capability_root() {
-        return root
-            .join("project")
-            .join(workspace_registry_hash(workspace))
-            .join(kind);
-    }
     workspace.join(".chariox").join(kind)
 }
 
@@ -510,11 +504,6 @@ fn managed_capability_root() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-fn workspace_registry_hash(workspace: &Path) -> String {
-    let digest = Sha256::digest(workspace.to_string_lossy().as_bytes());
-    digest.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
 fn io_error(operation: &'static str) -> impl Fn(std::io::Error) -> DaemonError {
     move |error| DaemonError::LocalTransport {
         operation,
@@ -526,6 +515,32 @@ fn io_error(operation: &'static str) -> impl Fn(std::io::Error) -> DaemonError {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn managed_user_isolation_preserves_repository_scoped_scripts_and_environments() {
+        let _guard = crate::env_lock::lock();
+        let isolation_root = temp_root("chariox-script-managed-isolation");
+        std::env::set_var("CHARIOX_CAPABILITY_ISOLATION_ROOT", &isolation_root);
+
+        assert_eq!(
+            CharioxScriptRegistry::project_root("/workspace"),
+            PathBuf::from("/workspace/.chariox/scripts")
+        );
+        assert_eq!(
+            CharioxEnvironmentRegistry::project_root("/workspace"),
+            PathBuf::from("/workspace/.chariox/envs")
+        );
+        assert_eq!(
+            CharioxScriptRegistry::user_root(),
+            Some(isolation_root.join("user/scripts"))
+        );
+        assert_eq!(
+            CharioxEnvironmentRegistry::user_root(),
+            Some(isolation_root.join("user/envs"))
+        );
+
+        std::env::remove_var("CHARIOX_CAPABILITY_ISOLATION_ROOT");
+    }
 
     #[test]
     fn python_script_validates_installs_and_executes() {

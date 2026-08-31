@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -10,10 +10,13 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use base64::Engine;
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use zeroize::Zeroizing;
 
 use crate::config::{CredentialVaultBackend, UserCredentialVaultConfig};
 use crate::error::DaemonError;
+use crate::runtime::terminal_pairings::public_key_thumbprint;
+use crate::transport::relay_crypto;
 
 const VAULT_FILE_VERSION: u32 = 1;
 const VAULT_CIPHER: &str = "aes-256-gcm";
@@ -24,6 +27,66 @@ const DEFAULT_ARGON2_PARALLELISM: u32 = 1;
 const KEY_LEN: usize = 32;
 const SALT_LEN: usize = 16;
 const NONCE_LEN: usize = 12;
+const AUTH_TAG_LEN: usize = 16;
+const MAX_VAULT_KDF_MEMORY_KIB: u32 = 256 * 1024;
+const MAX_VAULT_KDF_ITERATIONS: u32 = 10;
+const MAX_VAULT_KDF_PARALLELISM: u32 = 16;
+const TRANSFERRED_VAULT_SCHEMA_VERSION: u32 = 1;
+const TRANSFERRED_VAULT_KEY_PURPOSE: &[u8] = b"managed-context-vault-key-v1";
+const STORED_VAULT_KEY_PURPOSE: &[u8] = b"managed-context-vault-key-at-rest-v1";
+const MAX_TRANSFERRED_VAULT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES: u64 = 1024 * 1024;
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransferredVaultSnapshot {
+    pub schema_version: u32,
+    pub context_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+    pub target_kernel_id: String,
+    pub target_key_thumbprint: String,
+    pub vault_sha256: String,
+    pub vault_size_bytes: u64,
+    pub vault_file_base64: String,
+    pub sealed_unlock_key: chariox_relay::protocol::EncryptedRelayPayload,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransferredVaultSourceBinding {
+    pub context_id: String,
+    pub source_kernel_id: String,
+    pub source_key_thumbprint: String,
+}
+
+impl std::fmt::Debug for TransferredVaultSnapshot {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("TransferredVaultSnapshot")
+            .field("schema_version", &self.schema_version)
+            .field("context_id", &self.context_id)
+            .field("source_kernel_id", &self.source_kernel_id)
+            .field("source_key_thumbprint", &self.source_key_thumbprint)
+            .field("target_kernel_id", &self.target_kernel_id)
+            .field("target_key_thumbprint", &self.target_key_thumbprint)
+            .field("vault_sha256", &self.vault_sha256)
+            .field("vault_size_bytes", &self.vault_size_bytes)
+            .field("vault_file_base64", &"[redacted encrypted vault]")
+            .field("sealed_unlock_key", &"[redacted sealed key]")
+            .finish()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct TransferredVaultKeyEnvelope {
+    schema_version: u32,
+    context_id: String,
+    source_kernel_id: String,
+    source_key_thumbprint: String,
+    target_kernel_id: String,
+    target_key_thumbprint: String,
+    vault_sha256: String,
+    target_sealed_unlock_key: chariox_relay::protocol::EncryptedRelayPayload,
+}
 
 pub trait CredentialVaultStore: Send + Sync + std::fmt::Debug {
     fn get_secret(&self, service: &str, key: &str) -> Result<String, DaemonError>;
@@ -282,6 +345,347 @@ pub fn clear_all_chariox_encrypted_vault_unlocks() -> Result<(), DaemonError> {
     Ok(())
 }
 
+pub fn export_transferred_vault_snapshot(
+    path: impl AsRef<Path>,
+    context_id: &str,
+    source_kernel_id: &str,
+    source_private_key: &str,
+    target_kernel_id: &str,
+    target_public_key: &str,
+) -> Result<TransferredVaultSnapshot, DaemonError> {
+    validate_transfer_binding(context_id, "context id")?;
+    validate_transfer_binding(source_kernel_id, "source kernel id")?;
+    validate_transfer_binding(target_kernel_id, "target kernel id")?;
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let vault_bytes = read_bounded_regular_file(&path, MAX_TRANSFERRED_VAULT_BYTES)?;
+    let vault_file = serde_json::from_slice::<EncryptedVaultFile>(&vault_bytes)
+        .map_err(|error| secret_error(format!("failed to parse Chariox vault: {error}")))?;
+    validate_vault_file(&vault_file)?;
+    let vault_key = unlocked_vault_key(&path)?;
+    decrypt_vault_payload(&vault_file, vault_key.as_ref())?;
+
+    let source_public_key = relay_crypto::public_key_from_private_key_base64(source_private_key)?;
+    let source_key_thumbprint = public_key_thumbprint(&source_public_key);
+    let target_key_thumbprint = public_key_thumbprint(target_public_key);
+    let vault_sha256 = sha256_hex(&vault_bytes);
+    let aad = transferred_vault_aad(
+        context_id,
+        source_kernel_id,
+        &source_key_thumbprint,
+        target_kernel_id,
+        &target_key_thumbprint,
+        &vault_sha256,
+    );
+    let sealed_unlock_key = relay_crypto::encrypt_payload_for_peer_bound(
+        source_private_key,
+        target_public_key,
+        TRANSFERRED_VAULT_KEY_PURPOSE,
+        &aad,
+        vault_key.as_ref(),
+    )?;
+    Ok(TransferredVaultSnapshot {
+        schema_version: TRANSFERRED_VAULT_SCHEMA_VERSION,
+        context_id: context_id.to_string(),
+        source_kernel_id: source_kernel_id.to_string(),
+        source_key_thumbprint,
+        target_kernel_id: target_kernel_id.to_string(),
+        target_key_thumbprint,
+        vault_sha256,
+        vault_size_bytes: vault_bytes.len() as u64,
+        vault_file_base64: base64_encode(&vault_bytes),
+        sealed_unlock_key,
+    })
+}
+
+pub fn install_transferred_vault_snapshot(
+    path: impl AsRef<Path>,
+    snapshot: &TransferredVaultSnapshot,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    validate_transferred_vault_snapshot(
+        snapshot,
+        Some(expected_source),
+        target_kernel_id,
+        target_private_key,
+    )?;
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let vault_bytes = decode_transferred_vault_bytes(snapshot)?;
+    let key = unseal_transferred_vault_key(
+        snapshot.schema_version,
+        &snapshot.context_id,
+        &snapshot.source_kernel_id,
+        &snapshot.source_key_thumbprint,
+        &snapshot.target_kernel_id,
+        &snapshot.target_key_thumbprint,
+        &snapshot.vault_sha256,
+        &snapshot.sealed_unlock_key,
+        target_private_key,
+        TRANSFERRED_VAULT_KEY_PURPOSE,
+    )?;
+    validate_transferred_vault_plaintext(&vault_bytes, key.as_ref())?;
+    let target_public_key = relay_crypto::public_key_from_private_key_base64(target_private_key)?;
+    let target_sealed_unlock_key = relay_crypto::encrypt_payload_for_peer_bound(
+        target_private_key,
+        &target_public_key,
+        STORED_VAULT_KEY_PURPOSE,
+        &transferred_vault_aad(
+            &snapshot.context_id,
+            &snapshot.source_kernel_id,
+            &snapshot.source_key_thumbprint,
+            &snapshot.target_kernel_id,
+            &snapshot.target_key_thumbprint,
+            &snapshot.vault_sha256,
+        ),
+        key.as_ref(),
+    )?;
+    let envelope = TransferredVaultKeyEnvelope {
+        schema_version: snapshot.schema_version,
+        context_id: snapshot.context_id.clone(),
+        source_kernel_id: snapshot.source_kernel_id.clone(),
+        source_key_thumbprint: snapshot.source_key_thumbprint.clone(),
+        target_kernel_id: snapshot.target_kernel_id.clone(),
+        target_key_thumbprint: snapshot.target_key_thumbprint.clone(),
+        vault_sha256: snapshot.vault_sha256.clone(),
+        target_sealed_unlock_key,
+    };
+    let envelope_bytes = serde_json::to_vec(&envelope).map_err(|error| {
+        secret_error(format!(
+            "failed to serialize transferred Vault key envelope: {error}"
+        ))
+    })?;
+    if envelope_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES {
+        return Err(secret_error(
+            "transferred Vault key envelope exceeds its size limit".to_string(),
+        ));
+    }
+    let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
+    cleanup_private_staging(&path, target_kernel_id)?;
+    cleanup_private_staging(&envelope_path, target_kernel_id)?;
+    ensure_vault_destination_compatible(&path, &vault_bytes, &snapshot.vault_sha256)?;
+    ensure_envelope_destination_compatible(&envelope_path, &envelope_bytes)?;
+    install_vault_bytes_no_clobber(
+        &path,
+        &vault_bytes,
+        &snapshot.vault_sha256,
+        target_kernel_id,
+    )?;
+    install_envelope_no_clobber(&envelope_path, &envelope_bytes, target_kernel_id)?;
+    remember_transferred_vault_key(path, key)
+}
+
+pub fn validate_transferred_vault_snapshot_for_export(
+    snapshot: &TransferredVaultSnapshot,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+) -> Result<(), DaemonError> {
+    if snapshot.schema_version != TRANSFERRED_VAULT_SCHEMA_VERSION {
+        return Err(secret_error(format!(
+            "unsupported transferred Vault snapshot version {}",
+            snapshot.schema_version
+        )));
+    }
+    validate_transfer_binding(&snapshot.context_id, "context id")?;
+    validate_transfer_binding(&snapshot.source_kernel_id, "source kernel id")?;
+    validate_transfer_binding(&snapshot.target_kernel_id, "target kernel id")?;
+    validate_transfer_binding(&expected_source.context_id, "expected context id")?;
+    validate_transfer_binding(
+        &expected_source.source_kernel_id,
+        "expected source kernel id",
+    )?;
+    validate_sha256(
+        &expected_source.source_key_thumbprint,
+        "expected source key thumbprint",
+    )?;
+    validate_sha256(target_key_thumbprint, "expected target key thumbprint")?;
+    if snapshot.context_id != expected_source.context_id
+        || snapshot.source_kernel_id != expected_source.source_kernel_id
+        || snapshot.source_key_thumbprint != expected_source.source_key_thumbprint
+    {
+        return Err(secret_error(
+            "transferred Vault source or context binding does not match".to_string(),
+        ));
+    }
+    if snapshot.target_kernel_id != target_kernel_id {
+        return Err(secret_error(
+            "transferred Vault target kernel does not match".to_string(),
+        ));
+    }
+    if snapshot.target_key_thumbprint != target_key_thumbprint {
+        return Err(secret_error(
+            "transferred Vault target key does not match".to_string(),
+        ));
+    }
+    validate_sha256(&snapshot.source_key_thumbprint, "source key thumbprint")?;
+    validate_sha256(&snapshot.target_key_thumbprint, "target key thumbprint")?;
+    validate_sha256(&snapshot.vault_sha256, "Vault digest")?;
+    relay_crypto::validate_encrypted_payload_shape(
+        &snapshot.sealed_unlock_key,
+        MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES
+            .saturating_mul(3)
+            .saturating_div(4) as usize,
+    )?;
+    let sealed_bytes = serde_json::to_vec(&snapshot.sealed_unlock_key).map_err(|error| {
+        secret_error(format!(
+            "failed to validate transferred Vault key envelope: {error}"
+        ))
+    })?;
+    if sealed_bytes.len() as u64 > MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES {
+        return Err(secret_error(
+            "transferred Vault key envelope exceeds its size limit".to_string(),
+        ));
+    }
+    if public_key_thumbprint(&snapshot.sealed_unlock_key.sender_public_key)
+        != snapshot.source_key_thumbprint
+    {
+        return Err(secret_error(
+            "transferred Vault source key does not match its sealed key".to_string(),
+        ));
+    }
+    if snapshot.vault_size_bytes == 0 || snapshot.vault_size_bytes > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "transferred Vault size is invalid".to_string(),
+        ));
+    }
+    let vault_bytes = decode_transferred_vault_bytes(snapshot)?;
+    let vault_file =
+        serde_json::from_slice::<EncryptedVaultFile>(&vault_bytes).map_err(|error| {
+            secret_error(format!(
+                "failed to parse transferred Chariox Vault file: {error}"
+            ))
+        })?;
+    validate_vault_file(&vault_file)
+}
+
+pub fn restore_transferred_vault_unlock(
+    path: impl AsRef<Path>,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<bool, DaemonError> {
+    restore_transferred_vault_unlock_bound(
+        path.as_ref(),
+        None,
+        target_kernel_id,
+        target_private_key,
+    )
+}
+
+pub fn validate_installed_transferred_vault(
+    path: impl AsRef<Path>,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    if !restore_transferred_vault_unlock_bound(
+        path.as_ref(),
+        Some(expected_source),
+        target_kernel_id,
+        target_private_key,
+    )? {
+        return Err(secret_error(
+            "transferred Vault key envelope is missing".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+pub(crate) fn remove_installed_transferred_vault(
+    path: impl AsRef<Path>,
+    expected_source: &TransferredVaultSourceBinding,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    let path = normalize_vault_path(path.as_ref().to_path_buf());
+    let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
+    let vault_exists = path.try_exists().map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred Vault during rollback: {error}"
+        ))
+    })?;
+    let envelope_exists = envelope_path.try_exists().map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred Vault envelope during rollback: {error}"
+        ))
+    })?;
+    if !vault_exists && !envelope_exists {
+        unlocked_vaults()
+            .lock()
+            .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+            .remove(&path);
+        return Ok(());
+    }
+    if !vault_exists || !envelope_exists {
+        return Err(secret_error(
+            "transferred Vault rollback found incomplete installed material".to_string(),
+        ));
+    }
+    validate_installed_transferred_vault(
+        &path,
+        expected_source,
+        target_kernel_id,
+        target_private_key,
+    )?;
+    remove_transferred_vault_file(&envelope_path, "Vault key envelope")?;
+    remove_transferred_vault_file(&path, "Vault")?;
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+        .remove(&path);
+    sync_vault_parent_dir(&path)
+}
+
+fn restore_transferred_vault_unlock_bound(
+    path: &Path,
+    expected_source: Option<&TransferredVaultSourceBinding>,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<bool, DaemonError> {
+    let path = normalize_vault_path(path.to_path_buf());
+    let envelope_path = transferred_vault_envelope_path(&path, target_kernel_id);
+    cleanup_private_staging(&path, target_kernel_id)?;
+    cleanup_private_staging(&envelope_path, target_kernel_id)?;
+    if !envelope_path.exists() {
+        return Ok(false);
+    }
+    let envelope_bytes =
+        read_bounded_regular_file(&envelope_path, MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES)?;
+    let envelope = serde_json::from_slice::<TransferredVaultKeyEnvelope>(&envelope_bytes).map_err(
+        |error| {
+            secret_error(format!(
+                "failed to parse transferred Vault key envelope: {error}"
+            ))
+        },
+    )?;
+    if expected_source.is_some_and(|expected| {
+        envelope.context_id != expected.context_id
+            || envelope.source_kernel_id != expected.source_kernel_id
+            || envelope.source_key_thumbprint != expected.source_key_thumbprint
+    }) {
+        return Err(secret_error(
+            "stored transferred Vault source or context binding does not match".to_string(),
+        ));
+    }
+    validate_transfer_envelope(&envelope, target_kernel_id, target_private_key)?;
+    let vault_bytes = read_bounded_regular_file(&path, MAX_TRANSFERRED_VAULT_BYTES)?;
+    let key = unseal_transferred_vault_key(
+        envelope.schema_version,
+        &envelope.context_id,
+        &envelope.source_kernel_id,
+        &envelope.source_key_thumbprint,
+        &envelope.target_kernel_id,
+        &envelope.target_key_thumbprint,
+        &envelope.vault_sha256,
+        &envelope.target_sealed_unlock_key,
+        target_private_key,
+        STORED_VAULT_KEY_PURPOSE,
+    )?;
+    validate_transferred_vault_plaintext(&vault_bytes, key.as_ref())?;
+    remember_transferred_vault_key(path, key)?;
+    Ok(true)
+}
+
 pub fn is_chariox_vault_locked_error(error: &DaemonError) -> bool {
     matches!(
         error,
@@ -451,6 +855,41 @@ fn validate_vault_file(file: &EncryptedVaultFile) -> Result<(), DaemonError> {
             file.kdf.algorithm
         )));
     }
+    base64_decode_fixed::<SALT_LEN>(&file.kdf.salt, "salt")?;
+    base64_decode_fixed::<NONCE_LEN>(&file.nonce, "nonce")?;
+    if file.kdf.memory_kib == 0
+        || file.kdf.memory_kib > MAX_VAULT_KDF_MEMORY_KIB
+        || file.kdf.iterations == 0
+        || file.kdf.iterations > MAX_VAULT_KDF_ITERATIONS
+        || file.kdf.parallelism == 0
+        || file.kdf.parallelism > MAX_VAULT_KDF_PARALLELISM
+    {
+        return Err(secret_error(
+            "Chariox Vault KDF parameters exceed their safe profile".to_string(),
+        ));
+    }
+    Params::new(
+        file.kdf.memory_kib,
+        file.kdf.iterations,
+        file.kdf.parallelism,
+        Some(KEY_LEN),
+    )
+    .map_err(|error| secret_error(format!("invalid Chariox Vault KDF params: {error}")))?;
+    let maximum_encoded_ciphertext = MAX_TRANSFERRED_VAULT_BYTES
+        .saturating_add(2)
+        .saturating_div(3)
+        .saturating_mul(4);
+    if file.ciphertext.len() as u64 > maximum_encoded_ciphertext {
+        return Err(secret_error(
+            "Chariox Vault ciphertext encoding exceeds its size limit".to_string(),
+        ));
+    }
+    let ciphertext = base64_decode(&file.ciphertext, "ciphertext")?;
+    if ciphertext.len() < AUTH_TAG_LEN || ciphertext.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES {
+        return Err(secret_error(
+            "Chariox Vault ciphertext size is invalid".to_string(),
+        ));
+    }
     Ok(())
 }
 
@@ -472,6 +911,402 @@ fn derive_key(
         .hash_password_into(passphrase.as_bytes(), &salt, key.as_mut())
         .map_err(|error| secret_error(format!("failed to derive Chariox vault key: {error}")))?;
     Ok(key)
+}
+
+fn validate_transferred_vault_snapshot(
+    snapshot: &TransferredVaultSnapshot,
+    expected_source: Option<&TransferredVaultSourceBinding>,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    let target_public_key = relay_crypto::public_key_from_private_key_base64(target_private_key)?;
+    let target_key_thumbprint = public_key_thumbprint(&target_public_key);
+    let source = expected_source
+        .cloned()
+        .unwrap_or(TransferredVaultSourceBinding {
+            context_id: snapshot.context_id.clone(),
+            source_kernel_id: snapshot.source_kernel_id.clone(),
+            source_key_thumbprint: snapshot.source_key_thumbprint.clone(),
+        });
+    validate_transferred_vault_snapshot_for_export(
+        snapshot,
+        &source,
+        target_kernel_id,
+        &target_key_thumbprint,
+    )
+}
+
+fn validate_transfer_envelope(
+    envelope: &TransferredVaultKeyEnvelope,
+    target_kernel_id: &str,
+    target_private_key: &str,
+) -> Result<(), DaemonError> {
+    if envelope.schema_version != TRANSFERRED_VAULT_SCHEMA_VERSION {
+        return Err(secret_error(format!(
+            "unsupported transferred Vault key envelope version {}",
+            envelope.schema_version
+        )));
+    }
+    validate_transfer_binding(&envelope.context_id, "context id")?;
+    validate_transfer_binding(&envelope.source_kernel_id, "source kernel id")?;
+    validate_transfer_binding(&envelope.target_kernel_id, "target kernel id")?;
+    validate_sha256(&envelope.source_key_thumbprint, "source key thumbprint")?;
+    validate_sha256(&envelope.target_key_thumbprint, "target key thumbprint")?;
+    validate_sha256(&envelope.vault_sha256, "Vault digest")?;
+    if envelope.target_kernel_id != target_kernel_id {
+        return Err(secret_error(
+            "stored transferred Vault target kernel does not match".to_string(),
+        ));
+    }
+    let target_public_key = relay_crypto::public_key_from_private_key_base64(target_private_key)?;
+    if public_key_thumbprint(&target_public_key) != envelope.target_key_thumbprint
+        || public_key_thumbprint(&envelope.target_sealed_unlock_key.sender_public_key)
+            != envelope.target_key_thumbprint
+    {
+        return Err(secret_error(
+            "stored transferred Vault target sealing key does not match".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn decode_transferred_vault_bytes(
+    snapshot: &TransferredVaultSnapshot,
+) -> Result<Vec<u8>, DaemonError> {
+    let maximum_base64_bytes = MAX_TRANSFERRED_VAULT_BYTES
+        .saturating_add(2)
+        .saturating_div(3)
+        .saturating_mul(4);
+    if snapshot.vault_file_base64.len() as u64 > maximum_base64_bytes {
+        return Err(secret_error(
+            "transferred Vault encoding exceeds its size limit".to_string(),
+        ));
+    }
+    let bytes = base64_decode(&snapshot.vault_file_base64, "transferred Vault file")?;
+    if bytes.len() as u64 != snapshot.vault_size_bytes
+        || bytes.len() as u64 > MAX_TRANSFERRED_VAULT_BYTES
+    {
+        return Err(secret_error(
+            "transferred Vault bytes do not match the declared size".to_string(),
+        ));
+    }
+    if sha256_hex(&bytes) != snapshot.vault_sha256 {
+        return Err(secret_error(
+            "transferred Vault bytes do not match the declared digest".to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn unseal_transferred_vault_key(
+    schema_version: u32,
+    context_id: &str,
+    source_kernel_id: &str,
+    source_key_thumbprint: &str,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+    vault_sha256: &str,
+    sealed_unlock_key: &chariox_relay::protocol::EncryptedRelayPayload,
+    target_private_key: &str,
+    purpose: &[u8],
+) -> Result<Zeroizing<[u8; KEY_LEN]>, DaemonError> {
+    if schema_version != TRANSFERRED_VAULT_SCHEMA_VERSION {
+        return Err(secret_error(
+            "unsupported transferred Vault key envelope version".to_string(),
+        ));
+    }
+    let aad = transferred_vault_aad(
+        context_id,
+        source_kernel_id,
+        source_key_thumbprint,
+        target_kernel_id,
+        target_key_thumbprint,
+        vault_sha256,
+    );
+    let decrypted = relay_crypto::decrypt_payload_for_private_key_bound(
+        target_private_key,
+        sealed_unlock_key,
+        purpose,
+        &aad,
+    )?;
+    let plaintext = Zeroizing::new(decrypted.plaintext);
+    let key: [u8; KEY_LEN] = plaintext.as_slice().try_into().map_err(|_| {
+        secret_error("transferred Vault unlock key has an invalid length".to_string())
+    })?;
+    Ok(Zeroizing::new(key))
+}
+
+fn transferred_vault_aad(
+    context_id: &str,
+    source_kernel_id: &str,
+    source_key_thumbprint: &str,
+    target_kernel_id: &str,
+    target_key_thumbprint: &str,
+    vault_sha256: &str,
+) -> Vec<u8> {
+    [
+        b"chariox-managed-context-vault-v1".as_slice(),
+        context_id.as_bytes(),
+        source_kernel_id.as_bytes(),
+        source_key_thumbprint.as_bytes(),
+        target_kernel_id.as_bytes(),
+        target_key_thumbprint.as_bytes(),
+        vault_sha256.as_bytes(),
+    ]
+    .join(&0)
+}
+
+fn validate_transferred_vault_plaintext(vault_bytes: &[u8], key: &[u8]) -> Result<(), DaemonError> {
+    let file = serde_json::from_slice::<EncryptedVaultFile>(vault_bytes)
+        .map_err(|error| secret_error(format!("failed to parse transferred Vault: {error}")))?;
+    decrypt_vault_payload(&file, key).map(|_| ())
+}
+
+fn install_vault_bytes_no_clobber(
+    path: &Path,
+    vault_bytes: &[u8],
+    expected_sha256: &str,
+    target_kernel_id: &str,
+) -> Result<(), DaemonError> {
+    if ensure_vault_destination_compatible(path, vault_bytes, expected_sha256)? {
+        return Ok(());
+    }
+    write_private_file_no_clobber(path, vault_bytes, target_kernel_id)
+}
+
+fn install_envelope_no_clobber(
+    path: &Path,
+    envelope_bytes: &[u8],
+    target_kernel_id: &str,
+) -> Result<(), DaemonError> {
+    if ensure_envelope_destination_compatible(path, envelope_bytes)? {
+        return Ok(());
+    }
+    write_private_file_no_clobber(path, envelope_bytes, target_kernel_id)
+}
+
+fn ensure_vault_destination_compatible(
+    path: &Path,
+    vault_bytes: &[u8],
+    expected_sha256: &str,
+) -> Result<bool, DaemonError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let existing = read_bounded_regular_file(path, MAX_TRANSFERRED_VAULT_BYTES)?;
+    if sha256_hex(&existing) == expected_sha256 && existing == vault_bytes {
+        return Ok(true);
+    }
+    Err(secret_error(
+        "refusing to replace an existing target Vault with transferred context".to_string(),
+    ))
+}
+
+fn ensure_envelope_destination_compatible(
+    path: &Path,
+    envelope_bytes: &[u8],
+) -> Result<bool, DaemonError> {
+    if !path.exists() {
+        return Ok(false);
+    }
+    let existing = read_bounded_regular_file(path, MAX_TRANSFERRED_VAULT_ENVELOPE_BYTES)?;
+    if existing == envelope_bytes {
+        return Ok(true);
+    }
+    Err(secret_error(
+        "refusing to replace an existing transferred Vault key envelope".to_string(),
+    ))
+}
+
+fn write_private_file_no_clobber(
+    path: &Path,
+    bytes: &[u8],
+    target_kernel_id: &str,
+) -> Result<(), DaemonError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| secret_error("transferred Vault destination has no parent".to_string()))?;
+    fs::create_dir_all(parent).map_err(|error| {
+        secret_error(format!(
+            "failed to create transferred Vault destination: {error}"
+        ))
+    })?;
+    let temporary = private_staging_path(path, target_kernel_id)?;
+    let result = (|| {
+        let mut options = OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&temporary).map_err(|error| {
+            secret_error(format!(
+                "failed to stage transferred Vault material: {error}"
+            ))
+        })?;
+        file.write_all(bytes)
+            .and_then(|_| file.sync_all())
+            .map_err(|error| {
+                secret_error(format!(
+                    "failed to stage transferred Vault material: {error}"
+                ))
+            })?;
+        fs::hard_link(&temporary, path).map_err(|error| {
+            secret_error(format!(
+                "failed to publish transferred Vault material: {error}"
+            ))
+        })?;
+        #[cfg(unix)]
+        File::open(parent)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| {
+                let _ = fs::remove_file(path);
+                secret_error(format!(
+                    "failed to sync transferred Vault material: {error}"
+                ))
+            })?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temporary);
+    result
+}
+
+fn cleanup_private_staging(path: &Path, target_kernel_id: &str) -> Result<(), DaemonError> {
+    let temporary = private_staging_path(path, target_kernel_id)?;
+    let metadata = match fs::symlink_metadata(&temporary) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(secret_error(format!(
+                "failed to inspect transferred Vault staging: {error}"
+            )))
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(secret_error(
+            "transferred Vault staging must be a regular file".to_string(),
+        ));
+    }
+    fs::remove_file(&temporary).map_err(|error| {
+        secret_error(format!(
+            "failed to remove transferred Vault staging: {error}"
+        ))
+    })
+}
+
+fn remove_transferred_vault_file(path: &Path, label: &str) -> Result<(), DaemonError> {
+    let metadata = fs::symlink_metadata(path).map_err(|error| {
+        secret_error(format!(
+            "failed to inspect transferred {label} during rollback: {error}"
+        ))
+    })?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(secret_error(format!(
+            "transferred {label} rollback target is not a regular file"
+        )));
+    }
+    fs::remove_file(path).map_err(|error| {
+        secret_error(format!(
+            "failed to remove transferred {label} during rollback: {error}"
+        ))
+    })
+}
+
+fn private_staging_path(path: &Path, target_kernel_id: &str) -> Result<PathBuf, DaemonError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| secret_error("transferred Vault destination has no parent".to_string()))?;
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| secret_error("transferred Vault destination name is invalid".to_string()))?;
+    let target_namespace = sha256_hex(target_kernel_id.as_bytes());
+    Ok(parent.join(format!(
+        ".{file_name}.managed-context-{target_namespace}.tmp"
+    )))
+}
+
+fn remember_transferred_vault_key(
+    path: PathBuf,
+    key: Zeroizing<[u8; KEY_LEN]>,
+) -> Result<(), DaemonError> {
+    unlocked_vaults()
+        .lock()
+        .map_err(|error| secret_error(format!("Chariox vault unlock state poisoned: {error}")))?
+        .insert(
+            path,
+            UnlockedVault {
+                key,
+                expires_at_ms: None,
+            },
+        );
+    Ok(())
+}
+
+fn transferred_vault_envelope_path(path: &Path, target_kernel_id: &str) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("vault.json");
+    let target_namespace = sha256_hex(target_kernel_id.as_bytes());
+    path.with_file_name(format!(
+        "{file_name}.managed-context-key-{target_namespace}.json"
+    ))
+}
+
+fn read_bounded_regular_file(path: &Path, maximum_bytes: u64) -> Result<Vec<u8>, DaemonError> {
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW);
+    }
+    let file = options
+        .open(path)
+        .map_err(|error| secret_error(format!("failed to open Chariox Vault material: {error}")))?;
+    let metadata = file.metadata().map_err(|error| {
+        secret_error(format!("failed to inspect Chariox Vault material: {error}"))
+    })?;
+    if !metadata.is_file() || metadata.len() > maximum_bytes {
+        return Err(secret_error(
+            "Chariox Vault material must be a bounded regular file".to_string(),
+        ));
+    }
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.take(maximum_bytes + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| secret_error(format!("failed to read Chariox Vault material: {error}")))?;
+    if bytes.len() as u64 > maximum_bytes {
+        return Err(secret_error(
+            "Chariox Vault material exceeds its size limit".to_string(),
+        ));
+    }
+    Ok(bytes)
+}
+
+fn validate_transfer_binding(value: &str, label: &str) -> Result<(), DaemonError> {
+    if value.is_empty() || value.len() > 4096 || value.chars().any(char::is_control) {
+        return Err(secret_error(format!(
+            "transferred Vault {label} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_sha256(value: &str, label: &str) -> Result<(), DaemonError> {
+    if value.len() != 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(secret_error(format!(
+            "transferred Vault {label} is invalid"
+        )));
+    }
+    Ok(())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
 }
 
 fn vault_temp_path(path: &Path) -> PathBuf {
@@ -598,6 +1433,7 @@ fn secret_error(message: String) -> DaemonError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct EncryptedVaultFile {
     version: u32,
     kdf: VaultKdfConfig,
@@ -607,6 +1443,7 @@ struct EncryptedVaultFile {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct VaultKdfConfig {
     algorithm: String,
     salt: String,
@@ -677,6 +1514,52 @@ mod tests {
                 parallelism: 1,
             },
         )
+    }
+
+    fn source_binding(snapshot: &TransferredVaultSnapshot) -> TransferredVaultSourceBinding {
+        TransferredVaultSourceBinding {
+            context_id: snapshot.context_id.clone(),
+            source_kernel_id: snapshot.source_kernel_id.clone(),
+            source_key_thumbprint: snapshot.source_key_thumbprint.clone(),
+        }
+    }
+
+    fn boot_config(
+        root: &Path,
+        vault_path: &Path,
+        daemon_id: &str,
+        relay_private_key: &str,
+    ) -> crate::config::DaemonConfig {
+        let mut config = crate::config::DaemonConfig::for_tests();
+        config.daemon_id = daemon_id.to_string();
+        config.relay_private_key = relay_private_key.to_string();
+        config.relay_public_key =
+            relay_crypto::public_key_from_private_key_base64(relay_private_key)
+                .expect("test relay public key should derive");
+        config.session_history_root = root.join(format!("{daemon_id}-sessions"));
+        config.user_config.history.operational.path = Some(
+            root.join(format!("{daemon_id}-operational.db"))
+                .display()
+                .to_string(),
+        );
+        config.user_config.artifacts.operational.root = Some(
+            root.join(format!("{daemon_id}-artifacts"))
+                .display()
+                .to_string(),
+        );
+        config.user_config.artifacts.operational.index_path = Some(
+            root.join(format!("{daemon_id}-artifacts.db"))
+                .display()
+                .to_string(),
+        );
+        config.user_config.state.path = Some(
+            root.join(format!("{daemon_id}-state"))
+                .join("state.db")
+                .display()
+                .to_string(),
+        );
+        config.user_config.credential_vault.path = vault_path.display().to_string();
+        config
     }
 
     #[test]
@@ -764,6 +1647,267 @@ mod tests {
         )
         .expect_err("wrong passphrase should fail");
         assert!(format!("{error}").contains("failed to unlock Chariox vault"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transferred_vault_is_target_bound_and_reopens_after_restart() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-transferred-vault-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source_path = root.join("source-vault.json");
+        let target_path = root.join("target-vault.json");
+        let source_store = test_store(source_path.clone());
+        unlock_chariox_encrypted_vault(
+            &source_path,
+            "source-passphrase",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("source vault should unlock");
+        source_store
+            .set_secret("chariox-test", "token", "vault-secret-canary")
+            .expect("source secret should store");
+
+        let source_private = relay_crypto::generate_private_key_base64();
+        let target_private = relay_crypto::generate_private_key_base64();
+        let target_public = relay_crypto::public_key_from_private_key_base64(&target_private)
+            .expect("target public key should derive");
+        let snapshot = export_transferred_vault_snapshot(
+            &source_path,
+            "context-one",
+            "source-kernel",
+            &source_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("vault should export");
+        let serialized = serde_json::to_string(&snapshot).expect("snapshot should serialize");
+        assert!(!serialized.contains("vault-secret-canary"));
+        assert!(!format!("{snapshot:?}").contains(&snapshot.vault_file_base64));
+
+        let wrong_target_private = relay_crypto::generate_private_key_base64();
+        let wrong_target_error = install_transferred_vault_snapshot(
+            root.join("wrong-target-vault.json"),
+            &snapshot,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &wrong_target_private,
+        )
+        .expect_err("wrong target key should reject");
+        assert!(wrong_target_error
+            .to_string()
+            .contains("target key does not match"));
+
+        lock_chariox_encrypted_vault(&source_path).expect("source unlock should clear");
+        install_transferred_vault_snapshot(
+            &target_path,
+            &snapshot,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &target_private,
+        )
+        .expect("target vault should install");
+        let target_store = test_store(target_path.clone());
+        assert_eq!(
+            target_store
+                .get_secret("chariox-test", "token")
+                .expect("installed target vault should read"),
+            "vault-secret-canary"
+        );
+
+        target_store
+            .set_secret("chariox-test", "rotated", "new-secret")
+            .expect("transferred Vault should remain mutable");
+        let vault_staging =
+            private_staging_path(&target_path, "target-kernel").expect("vault staging path");
+        let envelope_staging = private_staging_path(
+            &transferred_vault_envelope_path(&target_path, "target-kernel"),
+            "target-kernel",
+        )
+        .expect("envelope staging path");
+        fs::write(&vault_staging, b"stale vault staging").expect("seed vault staging");
+        fs::write(&envelope_staging, b"stale envelope staging").expect("seed envelope staging");
+        lock_chariox_encrypted_vault(&target_path).expect("simulate kernel shutdown");
+        let target_config = boot_config(
+            &root.join("target-boot"),
+            &target_path,
+            "target-kernel",
+            &target_private,
+        );
+        crate::app::DaemonApp::bootstrap(target_config)
+            .expect("target kernel should bootstrap from the persisted envelope");
+        assert!(!vault_staging.exists());
+        assert!(!envelope_staging.exists());
+        assert_eq!(
+            target_store
+                .get_secret("chariox-test", "token")
+                .expect("restored target vault should read"),
+            "vault-secret-canary"
+        );
+        assert_eq!(
+            target_store
+                .get_secret("chariox-test", "rotated")
+                .expect("mutated target Vault should survive bootstrap"),
+            "new-secret"
+        );
+
+        lock_chariox_encrypted_vault(&target_path).expect("clear target unlock");
+        let other_private = relay_crypto::generate_private_key_base64();
+        let other_config = boot_config(
+            &root.join("other-boot"),
+            &target_path,
+            "other-kernel",
+            &other_private,
+        );
+        crate::app::DaemonApp::bootstrap(other_config)
+            .expect("another kernel sharing the Vault path should ignore another target envelope");
+        let _ = lock_chariox_encrypted_vault(&target_path);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn transferred_vault_rejects_tampered_binding_and_existing_target() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-transferred-vault-tamper-test-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let source_path = root.join("source-vault.json");
+        let source_store = test_store(source_path.clone());
+        unlock_chariox_encrypted_vault(
+            &source_path,
+            "source-passphrase",
+            VaultUnlockLease::KernelShutdown,
+        )
+        .expect("source vault should unlock");
+        source_store
+            .set_secret("chariox-test", "token", "secret")
+            .expect("source secret should store");
+        let source_private = relay_crypto::generate_private_key_base64();
+        let target_private = relay_crypto::generate_private_key_base64();
+        let target_public = relay_crypto::public_key_from_private_key_base64(&target_private)
+            .expect("target public key should derive");
+        let snapshot = export_transferred_vault_snapshot(
+            &source_path,
+            "context-one",
+            "source-kernel",
+            &source_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("vault should export");
+
+        let mut unknown_field = snapshot.clone();
+        let mut vault_json = serde_json::from_slice::<serde_json::Value>(
+            &decode_transferred_vault_bytes(&unknown_field)
+                .expect("transferred Vault bytes should decode"),
+        )
+        .expect("transferred Vault should be JSON");
+        vault_json
+            .as_object_mut()
+            .expect("transferred Vault should be an object")
+            .insert(
+                "plaintext_secret".to_string(),
+                serde_json::Value::String("unknown-field-canary".to_string()),
+            );
+        let unknown_bytes = serde_json::to_vec(&vault_json).expect("unknown Vault should encode");
+        unknown_field.vault_size_bytes = unknown_bytes.len() as u64;
+        unknown_field.vault_sha256 = sha256_hex(&unknown_bytes);
+        unknown_field.vault_file_base64 =
+            base64::engine::general_purpose::STANDARD.encode(&unknown_bytes);
+        let unknown_error = validate_transferred_vault_snapshot_for_export(
+            &unknown_field,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &snapshot.target_key_thumbprint,
+        )
+        .expect_err("unknown plaintext Vault field should reject");
+        assert!(!format!("{unknown_error:?}").contains("unknown-field-canary"));
+
+        let mut tampered = snapshot.clone();
+        tampered.context_id = "context-two".to_string();
+        assert!(install_transferred_vault_snapshot(
+            root.join("tampered-vault.json"),
+            &tampered,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &target_private,
+        )
+        .is_err());
+
+        let attacker_private = relay_crypto::generate_private_key_base64();
+        let attacker_snapshot = export_transferred_vault_snapshot(
+            &source_path,
+            "attacker-context",
+            "attacker-kernel",
+            &attacker_private,
+            "target-kernel",
+            &target_public,
+        )
+        .expect("self-consistent attacker snapshot should export");
+        assert!(install_transferred_vault_snapshot(
+            root.join("attacker-vault.json"),
+            &attacker_snapshot,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &target_private,
+        )
+        .expect_err("authenticated source binding should reject another source")
+        .to_string()
+        .contains("source or context binding does not match"));
+
+        let forged_path = root.join("forged-on-disk-vault.json");
+        fs::write(
+            &forged_path,
+            decode_transferred_vault_bytes(&attacker_snapshot)
+                .expect("attacker Vault bytes should decode"),
+        )
+        .expect("forged Vault should write");
+        let forged_envelope = TransferredVaultKeyEnvelope {
+            schema_version: attacker_snapshot.schema_version,
+            context_id: attacker_snapshot.context_id.clone(),
+            source_kernel_id: attacker_snapshot.source_kernel_id.clone(),
+            source_key_thumbprint: attacker_snapshot.source_key_thumbprint.clone(),
+            target_kernel_id: attacker_snapshot.target_kernel_id.clone(),
+            target_key_thumbprint: attacker_snapshot.target_key_thumbprint.clone(),
+            vault_sha256: attacker_snapshot.vault_sha256.clone(),
+            target_sealed_unlock_key: attacker_snapshot.sealed_unlock_key.clone(),
+        };
+        fs::write(
+            transferred_vault_envelope_path(&forged_path, "target-kernel"),
+            serde_json::to_vec(&forged_envelope).expect("forged envelope should serialize"),
+        )
+        .expect("forged envelope should write");
+        let forged_boot = crate::app::DaemonApp::bootstrap(boot_config(
+            &root.join("forged-boot"),
+            &forged_path,
+            "target-kernel",
+            &target_private,
+        ));
+        let forged_error = match forged_boot {
+            Ok(_) => panic!("forged on-disk Vault envelope should not bootstrap"),
+            Err(error) => error,
+        };
+        assert!(forged_error
+            .to_string()
+            .contains("target sealing key does not match"));
+
+        let occupied = root.join("occupied-vault.json");
+        fs::create_dir_all(&root).expect("test root should create");
+        fs::write(&occupied, b"not the transferred vault").expect("occupied vault should write");
+        assert!(install_transferred_vault_snapshot(
+            &occupied,
+            &snapshot,
+            &source_binding(&snapshot),
+            "target-kernel",
+            &target_private,
+        )
+        .expect_err("occupied target should reject")
+        .to_string()
+        .contains("refusing to replace"));
+        let _ = lock_chariox_encrypted_vault(&source_path);
         let _ = fs::remove_dir_all(root);
     }
 }

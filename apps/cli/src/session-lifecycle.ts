@@ -36,6 +36,7 @@ type SessionLifecycleDeps = {
   connectedStatus: string
   waitingRoomState: () => WaitingRoomState
   attachmentState: () => RuntimeAttachment | null
+  sessionState: () => RuntimeSession
   deriveDetachedCliTransitionState: (options: {
     cliOptions: CliOptions
     waitingRoomState: WaitingRoomState
@@ -207,6 +208,27 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
     }
     await deps.detachAttachment(attachment.id)
     deps.setAttachmentState(null)
+  }
+
+  const rollbackAttachedSession = async (
+    sessionId: string,
+    message = "Managed session launch was cancelled.",
+  ) => {
+    const attachment = deps.attachmentState()
+    if (attachment?.session_id !== sessionId || deps.sessionState().id !== sessionId) {
+      return false
+    }
+    let detachError: unknown
+    try {
+      await deps.detachAttachment(attachment.id)
+    } catch (error) {
+      detachError = error
+    }
+    if (deps.attachmentState()?.id === attachment.id && deps.sessionState().id === sessionId) {
+      await transitionToNoSession(message)
+    }
+    if (detachError) throw detachError
+    return true
   }
 
   const attachBinding = async (
@@ -414,6 +436,7 @@ export function createSessionLifecycleController(deps: SessionLifecycleDeps) {
   return {
     transitionToNoSession,
     detachCurrentAttachment,
+    rollbackAttachedSession,
     attachBinding,
   }
 }

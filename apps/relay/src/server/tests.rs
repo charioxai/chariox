@@ -183,3 +183,32 @@ async fn assert_no_relay_close(
         Ok(other) => panic!("active socket closed unexpectedly: {other:?}"),
     }
 }
+
+async fn assert_relay_close(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) {
+    loop {
+        match timeout(Duration::from_millis(250), socket.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => {
+                let envelope = serde_json::from_str::<RelayEnvelope>(&text)
+                    .expect("relay text frame should decode");
+                if let RelayEnvelope::Close { reason } = envelope {
+                    assert_eq!(reason, "relay token expired");
+                    return;
+                }
+            }
+            Ok(Some(Ok(Message::Ping(_)))) | Ok(Some(Ok(Message::Pong(_)))) => {}
+            Ok(other) => panic!("active socket closed without relay close envelope: {other:?}"),
+            Err(_) => panic!("active socket was not closed when its relay token expired"),
+        }
+    }
+}
+
+fn test_current_unix_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
+}

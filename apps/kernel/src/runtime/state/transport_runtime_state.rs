@@ -244,6 +244,10 @@ impl KernelRuntimeState {
         self.owned.runtime_projection_changes.sequence()
     }
 
+    pub(crate) fn record_waiting_room_change(&self) {
+        self.owned.runtime_projection_changes.record_change();
+    }
+
     pub(crate) async fn wait_for_waiting_room_change_after(&self, sequence: u64) {
         self.owned
             .runtime_projection_changes

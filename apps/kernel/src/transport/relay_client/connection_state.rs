@@ -19,6 +19,9 @@ use super::request_errors::relay_error;
 use super::RelayOutgoingSender;
 
 const CLOUD_RELAY_PRESENCE_PUBLISH_TIMEOUT: Duration = Duration::from_millis(750);
+const MANAGED_SLICE_ACTIVATION_EXPECTATION_TTL: Duration = Duration::from_secs(30);
+const MANAGED_SLICE_ACTIVATION_CONFIRMATION_TTL: Duration = Duration::from_secs(30);
+const MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS: u8 = 3;
 
 #[allow(dead_code)]
 #[derive(Debug)]
@@ -33,6 +36,50 @@ pub struct RelayClientState {
     pub(super) pending_display_tunnel_registrations:
         BTreeMap<String, oneshot::Sender<Option<RelayError>>>,
     pub(super) display_streams: BTreeMap<String, mpsc::Sender<RelayDisplayTunnelClientEvent>>,
+    managed_slice_activation_expectations: BTreeMap<String, ManagedSliceRelayActivationExpectation>,
+    pending_managed_slice_activation_confirmation:
+        Option<PendingManagedSliceActivationConfirmation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ManagedSliceRelayActivationExpectation {
+    worker_kernel_id: String,
+    worker_relay_subject: String,
+    worker_public_key: String,
+    activation_nonce: String,
+    confirmed: bool,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PendingManagedSliceActivationConfirmation {
+    pub(crate) slice_id: String,
+    pub(crate) owner_kernel_id: String,
+    pub(crate) owner_public_key: String,
+    pub(crate) worker_kernel_id: String,
+    pub(crate) activation_nonce: String,
+    expires_at: Instant,
+    attempts: u8,
+}
+
+impl PendingManagedSliceActivationConfirmation {
+    pub(crate) fn new(
+        slice_id: String,
+        owner_kernel_id: String,
+        owner_public_key: String,
+        worker_kernel_id: String,
+        activation_nonce: String,
+    ) -> Self {
+        Self {
+            slice_id,
+            owner_kernel_id,
+            owner_public_key,
+            worker_kernel_id,
+            activation_nonce,
+            expires_at: Instant::now() + MANAGED_SLICE_ACTIVATION_CONFIRMATION_TTL,
+            attempts: 0,
+        }
+    }
 }
 
 impl RelayClientState {
@@ -48,7 +95,7 @@ impl RelayClientState {
         self.connected_relay_url.clone()
     }
 
-    pub(super) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
+    pub(crate) fn peer_public_key(&self, target_ref: &str) -> Option<String> {
         self.peer_public_keys.get(target_ref).cloned()
     }
 
@@ -59,6 +106,152 @@ impl RelayClientState {
     ) {
         self.peer_public_keys
             .insert(target_ref.into(), public_key.into());
+    }
+
+    pub(crate) fn begin_managed_slice_relay_activation(
+        &mut self,
+        slice_id: String,
+        worker_kernel_id: String,
+        worker_relay_subject: String,
+        worker_public_key: String,
+        activation_nonce: String,
+    ) {
+        self.prune_managed_slice_relay_activations(Instant::now());
+        self.managed_slice_activation_expectations.insert(
+            slice_id,
+            ManagedSliceRelayActivationExpectation {
+                worker_kernel_id,
+                worker_relay_subject,
+                worker_public_key,
+                activation_nonce,
+                confirmed: false,
+                expires_at: Instant::now() + MANAGED_SLICE_ACTIVATION_EXPECTATION_TTL,
+            },
+        );
+    }
+
+    pub(crate) fn confirm_managed_slice_relay_activation(
+        &mut self,
+        slice_id: &str,
+        worker_kernel_id: &str,
+        worker_relay_subject: &str,
+        worker_public_key: &str,
+        activation_nonce: &str,
+    ) -> bool {
+        self.prune_managed_slice_relay_activations(Instant::now());
+        let Some(expectation) = self.managed_slice_activation_expectations.get_mut(slice_id) else {
+            return false;
+        };
+        if expectation.worker_kernel_id != worker_kernel_id
+            || expectation.worker_relay_subject != worker_relay_subject
+            || expectation.worker_public_key != worker_public_key
+            || expectation.activation_nonce != activation_nonce
+        {
+            return false;
+        }
+        expectation.confirmed = true;
+        true
+    }
+
+    pub(crate) fn managed_slice_relay_activation_confirmed(
+        &self,
+        slice_id: &str,
+        activation_nonce: &str,
+    ) -> bool {
+        self.managed_slice_activation_expectations
+            .get(slice_id)
+            .is_some_and(|expectation| {
+                expectation.activation_nonce == activation_nonce
+                    && expectation.confirmed
+                    && expectation.expires_at > Instant::now()
+            })
+    }
+
+    pub(crate) fn retain_completed_managed_slice_relay_activation(
+        &mut self,
+        slice_id: &str,
+        activation_nonce: &str,
+    ) {
+        if let Some(expectation) = self.managed_slice_activation_expectations.get_mut(slice_id) {
+            if expectation.activation_nonce == activation_nonce && expectation.confirmed {
+                expectation.expires_at = Instant::now() + MANAGED_SLICE_ACTIVATION_EXPECTATION_TTL;
+            }
+        }
+    }
+
+    pub(crate) fn discard_managed_slice_relay_activation(
+        &mut self,
+        slice_id: &str,
+        activation_nonce: &str,
+    ) {
+        if self
+            .managed_slice_activation_expectations
+            .get(slice_id)
+            .is_some_and(|expectation| expectation.activation_nonce == activation_nonce)
+        {
+            self.managed_slice_activation_expectations.remove(slice_id);
+        }
+    }
+
+    pub(crate) fn stage_managed_slice_activation_confirmation(
+        &mut self,
+        confirmation: PendingManagedSliceActivationConfirmation,
+    ) {
+        self.pending_managed_slice_activation_confirmation = Some(confirmation);
+    }
+
+    pub(crate) fn claim_pending_managed_slice_activation_confirmation(
+        &mut self,
+    ) -> Option<PendingManagedSliceActivationConfirmation> {
+        let expired_or_exhausted = self
+            .pending_managed_slice_activation_confirmation
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.expires_at <= Instant::now()
+                    || pending.attempts >= MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS
+            });
+        if expired_or_exhausted {
+            self.pending_managed_slice_activation_confirmation = None;
+            return None;
+        }
+        let pending = self
+            .pending_managed_slice_activation_confirmation
+            .as_mut()?;
+        pending.attempts += 1;
+        Some(pending.clone())
+    }
+
+    pub(crate) fn pending_managed_slice_activation_confirmation(
+        &self,
+    ) -> Option<PendingManagedSliceActivationConfirmation> {
+        self.pending_managed_slice_activation_confirmation
+            .as_ref()
+            .filter(|pending| {
+                pending.expires_at > Instant::now()
+                    && pending.attempts < MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS
+            })
+            .cloned()
+    }
+
+    pub(crate) fn finish_managed_slice_activation_confirmation(
+        &mut self,
+        slice_id: &str,
+        activation_nonce: &str,
+    ) {
+        if self
+            .pending_managed_slice_activation_confirmation
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.slice_id == slice_id && pending.activation_nonce == activation_nonce
+            })
+        {
+            self.pending_managed_slice_activation_confirmation = None;
+        }
+    }
+
+    fn prune_managed_slice_relay_activations(&mut self, now: Instant) {
+        self.managed_slice_activation_expectations
+            .retain(|_, expectation| expectation.expires_at > now);
     }
 
     pub(super) fn forget_peer_public_key(&mut self, target_ref: &str) {
@@ -210,6 +403,8 @@ impl Default for RelayClientState {
             display_tunnels: BTreeMap::new(),
             pending_display_tunnel_registrations: BTreeMap::new(),
             display_streams: BTreeMap::new(),
+            managed_slice_activation_expectations: BTreeMap::new(),
+            pending_managed_slice_activation_confirmation: None,
         }
     }
 }
@@ -224,6 +419,7 @@ pub(super) async fn set_connected(
         guard.connected = true;
         guard.connected_relay_url = Some(relay_url);
         guard.outgoing_tx = Some(outgoing_tx.clone());
+        guard.prune_managed_slice_relay_activations(Instant::now());
         guard.prune_expired_display_tunnels(crate::session::unix_epoch_ms());
         guard
             .display_tunnels
@@ -333,6 +529,7 @@ pub(super) async fn set_disconnected(state: &Arc<RwLock<RelayClientState>>) {
         guard.connected_relay_url = None;
         guard.outgoing_tx = None;
         guard.peer_public_keys.clear();
+        guard.managed_slice_activation_expectations.clear();
         guard.display_streams.clear();
         (
             std::mem::take(&mut guard.pending_peer_requests),
@@ -373,6 +570,145 @@ mod tests {
         set_disconnected(&state).await;
 
         assert!(state.read().await.peer_public_key("worker-1").is_none());
+    }
+
+    #[test]
+    fn managed_slice_activation_requires_exact_worker_subject_key_and_nonce() {
+        let mut state = RelayClientState::default();
+        state.begin_managed_slice_relay_activation(
+            "slice-1".to_string(),
+            "worker-1".to_string(),
+            "slice:dev".to_string(),
+            "worker-key".to_string(),
+            "activation-1".to_string(),
+        );
+
+        for (worker_id, subject, key, nonce) in [
+            ("worker-2", "slice:dev", "worker-key", "activation-1"),
+            ("worker-1", "slice:other", "worker-key", "activation-1"),
+            ("worker-1", "slice:dev", "replacement-key", "activation-1"),
+            ("worker-1", "slice:dev", "worker-key", "activation-2"),
+        ] {
+            assert!(
+                !state.confirm_managed_slice_relay_activation(
+                    "slice-1", worker_id, subject, key, nonce,
+                )
+            );
+            assert!(!state.managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
+        }
+
+        assert!(state.confirm_managed_slice_relay_activation(
+            "slice-1",
+            "worker-1",
+            "slice:dev",
+            "worker-key",
+            "activation-1",
+        ));
+        assert!(state.managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
+        assert!(!state.managed_slice_relay_activation_confirmed("slice-1", "activation-2"));
+    }
+
+    #[test]
+    fn cancelled_owner_activation_expires_and_cannot_be_confirmed() {
+        let mut state = RelayClientState::default();
+        state.begin_managed_slice_relay_activation(
+            "slice-1".to_string(),
+            "worker-1".to_string(),
+            "slice:dev".to_string(),
+            "worker-key".to_string(),
+            "activation-1".to_string(),
+        );
+        state
+            .managed_slice_activation_expectations
+            .get_mut("slice-1")
+            .expect("expectation should exist")
+            .expires_at = Instant::now() - Duration::from_millis(1);
+
+        assert!(!state.confirm_managed_slice_relay_activation(
+            "slice-1",
+            "worker-1",
+            "slice:dev",
+            "worker-key",
+            "activation-1",
+        ));
+        assert!(!state
+            .managed_slice_activation_expectations
+            .contains_key("slice-1"));
+    }
+
+    #[test]
+    fn worker_confirmation_is_bounded_by_attempts_and_expiry() {
+        let pending = || {
+            PendingManagedSliceActivationConfirmation::new(
+                "slice-1".to_string(),
+                "owner-1".to_string(),
+                "owner-key".to_string(),
+                "worker-1".to_string(),
+                "activation-1".to_string(),
+            )
+        };
+        let mut state = RelayClientState::default();
+        state.stage_managed_slice_activation_confirmation(pending());
+        for _ in 0..MANAGED_SLICE_ACTIVATION_CONFIRMATION_MAX_ATTEMPTS {
+            assert!(state
+                .claim_pending_managed_slice_activation_confirmation()
+                .is_some());
+        }
+        assert!(state
+            .claim_pending_managed_slice_activation_confirmation()
+            .is_none());
+        assert!(state
+            .pending_managed_slice_activation_confirmation
+            .is_none());
+
+        state.stage_managed_slice_activation_confirmation(pending());
+        state
+            .pending_managed_slice_activation_confirmation
+            .as_mut()
+            .expect("pending confirmation should exist")
+            .expires_at = Instant::now() - Duration::from_millis(1);
+        assert!(state
+            .claim_pending_managed_slice_activation_confirmation()
+            .is_none());
+        assert!(state
+            .pending_managed_slice_activation_confirmation
+            .is_none());
+    }
+
+    #[tokio::test]
+    async fn disconnect_invalidates_owner_expectation_but_preserves_worker_confirmation() {
+        let state = Arc::new(RwLock::new(RelayClientState::default()));
+        {
+            let mut guard = state.write().await;
+            guard.begin_managed_slice_relay_activation(
+                "slice-1".to_string(),
+                "worker-1".to_string(),
+                "slice:dev".to_string(),
+                "worker-key".to_string(),
+                "activation-1".to_string(),
+            );
+            guard.stage_managed_slice_activation_confirmation(
+                PendingManagedSliceActivationConfirmation::new(
+                    "slice-1".to_string(),
+                    "owner-1".to_string(),
+                    "owner-key".to_string(),
+                    "worker-1".to_string(),
+                    "activation-1".to_string(),
+                ),
+            );
+        }
+
+        set_disconnected(&state).await;
+
+        let guard = state.read().await;
+        assert!(!guard.managed_slice_relay_activation_confirmed("slice-1", "activation-1"));
+        assert_eq!(
+            guard
+                .pending_managed_slice_activation_confirmation()
+                .expect("worker must confirm after reconnect")
+                .activation_nonce,
+            "activation-1"
+        );
     }
 
     #[tokio::test]

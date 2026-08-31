@@ -266,6 +266,13 @@ impl RelayAuthVerifier {
             Self::ScopedToken(verifier) => verifier.verify(request),
         }
     }
+
+    pub(crate) fn live_verification_time_ms(&self) -> Option<u64> {
+        match self {
+            Self::SharedToken(_) => None,
+            Self::ScopedToken(verifier) => verifier.now_ms.is_none().then(current_unix_ms),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -594,7 +601,7 @@ fn validate_claims(
     if !claims.allows_action(action) {
         return Err(RelayAuthError::ActionNotAllowed);
     }
-    if !claims.allows_target(target) {
+    if target.is_some() && !claims.allows_target(target) {
         return Err(RelayAuthError::TargetNotAllowed);
     }
     Ok(())

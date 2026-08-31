@@ -52,7 +52,7 @@ import {
 const scriptDir = path.dirname(fileURLToPath(import.meta.url))
 const cliRoot = path.resolve(scriptDir, "..")
 const repoRoot = path.resolve(cliRoot, "..", "..")
-const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://chariox-cloud-staging.osc-fr1.scalingo.io").replace(/\/$/, "")
+const apiUrl = (process.env.CHARIOX_CLOUD_HOSTED_API_URL ?? "https://staging.chariox.com").replace(/\/$/, "")
 const pollTimeoutMs = Number(process.env.CHARIOX_CLOUD_HOSTED_POLL_TIMEOUT_MS ?? 10 * 60 * 1000)
 const runMultiUser = process.env.CHARIOX_CLOUD_HOSTED_MULTI_USER === "1"
 const runSecondKernel = process.env.CHARIOX_CLOUD_HOSTED_SECOND_KERNEL === "1"

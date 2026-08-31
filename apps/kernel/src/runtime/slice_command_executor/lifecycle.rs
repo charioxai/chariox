@@ -1,6 +1,6 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{sleep, Duration};
+use tokio::time::{sleep, timeout, Duration, Instant};
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -14,12 +14,18 @@ use crate::transport::relay_client::RelayClientState;
 
 use super::display_endpoint::revoke_display_tunnels_for_slice;
 use super::provider_auth::merge_detected_provider_auth;
-use crate::runtime::cloud_api_client::issue_cloud_runtime_token;
-use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection;
-use crate::runtime::cloud_relay_control::{
-    cloud_relay_profile_has_runtime_credentials, cloud_runtime_token_subject,
-    CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+use super::worker_discovery::{
+    discover_started_slice_worker, provision_and_prepare_worker_discovery,
 };
+use crate::runtime::cloud_api_client::{
+    issue_cloud_slice_recovery_token, issue_cloud_slice_runtime_token,
+};
+use crate::runtime::cloud_relay_connection_executor::ensure_cloud_relay_connection;
+use crate::runtime::cloud_relay_control::relay_token_expiry_ms;
+
+const HOSTED_SLICE_RELAY_RECONNECT_TIMEOUT: Duration = Duration::from_secs(15);
+const HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 
 pub(super) async fn execute_list_slices_request(
     runtime_state: &KernelRuntimeState,
@@ -106,6 +112,7 @@ pub(super) async fn execute_list_slice_audit_request(
 pub(super) async fn execute_save_slice_state_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceStateSaveRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let operation_guard =
@@ -205,6 +212,7 @@ pub(super) async fn execute_save_slice_state_request(
         let started = execute_start_slice_request(
             runtime_state,
             config_projection,
+            relay_state,
             SliceRefRequest {
                 slice_ref: saved_slice.id.clone(),
             },
@@ -324,6 +332,7 @@ pub(super) async fn execute_create_slice_backup_request(
 pub(super) async fn execute_start_slice_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
+    relay_state: Option<Arc<RwLock<RelayClientState>>>,
     request: SliceRefRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let _operation = runtime_state.begin_slice_operation(&request.slice_ref, "slice.start")?;
@@ -331,6 +340,16 @@ pub(super) async fn execute_start_slice_request(
     let initial_record = runtime_state
         .reconcile_slice_agent_attachments(&initial_record)
         .await?;
+    let materialization_state = runtime_state.clone();
+    let materialization_slice = initial_record.clone();
+    let initial_record = tokio::task::spawn_blocking(move || {
+        materialization_state.materialize_slice_development_context(&materialization_slice)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.start",
+        message: format!("slice development materialization task failed: {error}"),
+    })??;
     let relaunch_manifests =
         runtime_state.slice_agent_relaunch_manifests(&initial_record, "slice.start")?;
     runtime_state
@@ -343,7 +362,7 @@ pub(super) async fn execute_start_slice_request(
         &request.slice_ref,
         crate::slice::SliceRelayEndpoint {
             url: relay.relay_url.clone(),
-            private: relay.container_relay_url.is_none(),
+            private: relay.uses_private_relay(),
         },
     )?;
     let supervisor_slice = initial_slice.clone();
@@ -353,33 +372,37 @@ pub(super) async fn execute_start_slice_request(
     if let Some(state) = runtime_state.active_saved_state_for_slice(&initial_slice.id)? {
         docker_options = docker_options.with_saved_state(&state);
     }
-    let supervisor_result = tokio::task::spawn_blocking(move || {
-        crate::slice::run_local_docker_slice_action(
-            &supervisor_slice,
-            crate::slice::LocalDockerSliceAction::Provision,
-            supervisor_relay,
-            None,
-            None,
-            &docker_options,
-        )
-    })
+    let discovery_config = match provision_and_prepare_worker_discovery(
+        runtime_state,
+        config_projection,
+        &relay,
+        Box::new(move || {
+            crate::slice::run_local_docker_slice_action(
+                &supervisor_slice,
+                crate::slice::LocalDockerSliceAction::Provision,
+                supervisor_relay,
+                None,
+                None,
+                &docker_options,
+            )
+        }),
+    )
     .await
-    .map_err(|error| DaemonError::LocalTransport {
-        operation: "slice.start",
-        message: format!("slice supervisor task failed: {error}"),
-    })?;
-    if let Err(error) = supervisor_result {
-        let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
-        let _ = runtime_state.record_slice_audit_event(
-            &initial_record,
-            "start",
-            "failed",
-            None,
-            Some(&error.to_string()),
-        );
-        return Err(error);
-    }
-    if relay.container_relay_url.is_none() {
+    {
+        Ok(config) => config,
+        Err(error) => {
+            let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &initial_record,
+                "start",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    };
+    if relay.uses_private_relay() {
         if let Err(error) = runtime_state
             .ensure_slice_private_relay_home_connection(
                 &initial_slice.id,
@@ -399,9 +422,7 @@ pub(super) async fn execute_start_slice_request(
             return Err(error);
         }
     }
-    let discovered = match discover_started_slice_worker(config_projection, &initial_slice, &relay)
-        .await
-    {
+    let discovered = match discover_started_slice_worker(&discovery_config, &initial_slice).await {
         Ok(worker) => Some(worker),
         Err(error) => {
             runtime_state
@@ -418,6 +439,34 @@ pub(super) async fn execute_start_slice_request(
             return Err(error);
         }
     };
+    if relay.uses_shared_relay() {
+        let activation_result = match relay_state.as_ref() {
+            Some(relay_state) => {
+                activate_hosted_slice_relay_token(
+                    config_projection,
+                    relay_state,
+                    &initial_slice,
+                    discovered.as_ref().expect("slice worker was discovered"),
+                )
+                .await
+            }
+            None => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: "home relay connection state is unavailable".to_string(),
+            }),
+        };
+        if let Err(error) = activation_result {
+            let _ = runtime_state.mark_slice_operation_failed(&request.slice_ref, "start", &error);
+            let _ = runtime_state.record_slice_audit_event(
+                &initial_record,
+                "start",
+                "failed",
+                None,
+                Some(&error.to_string()),
+            );
+            return Err(error);
+        }
+    }
     let slice = runtime_state.mark_slice_running(&request.slice_ref, discovered)?;
     let mut slice = slice;
     if !relaunch_manifests.is_empty() {
@@ -551,6 +600,27 @@ pub(super) async fn execute_delete_slice_request(
             return Err(error);
         }
     }
+    let cleanup_state = runtime_state.clone();
+    let cleanup_slice = deleting_slice.clone();
+    let cleanup_result = tokio::task::spawn_blocking(move || {
+        cleanup_state.cleanup_slice_development_context(&cleanup_slice)
+    })
+    .await
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "slice.delete",
+        message: format!("slice development cleanup task failed: {error}"),
+    })?;
+    if let Err(error) = cleanup_result {
+        let _ = runtime_state.mark_slice_delete_failed(&request.slice_ref, &error);
+        let _ = runtime_state.record_slice_audit_event(
+            &deleting_slice,
+            "delete",
+            "failed",
+            None,
+            Some(&error.to_string()),
+        );
+        return Err(error);
+    }
     let slice = runtime_state.delete_slice(&request.slice_ref)?;
     runtime_state
         .stop_slice_private_relay_home_connection(&slice.id)
@@ -624,44 +694,18 @@ fn relay_presence_from_started_slice(
     })
 }
 
-async fn discover_started_slice_worker(
-    config_projection: &DaemonConfigProjectionStore,
-    slice: &crate::slice::SliceRecord,
-    relay: &crate::slice::LocalDockerSliceRelay,
-) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
-    let mut config = config_projection.snapshot();
-    config.relay_url = Some(relay.relay_url.clone());
-    config.relay_token = Some(relay.relay_token.clone());
-    config.cloud_relay = None;
-    let worker_ref = slice.worker_kernel_ref.clone();
-    let mut last_error = None;
-    for _ in 0..20 {
-        match crate::transport::relay_discovery::get_live_kernel(&config, &worker_ref).await {
-            Ok(kernel) => return Ok(kernel),
-            Err(error) => {
-                last_error = Some(error);
-                sleep(Duration::from_millis(250)).await;
-            }
-        }
-    }
-    Err(last_error.unwrap_or_else(|| DaemonError::LocalTransport {
-        operation: "slice.discover_worker",
-        message: format!("slice `{}` worker did not appear", slice.name),
-    }))
-}
-
 async fn local_docker_slice_relay(
     config_projection: &DaemonConfigProjectionStore,
     slice: &crate::slice::SliceRecord,
 ) -> Result<crate::slice::LocalDockerSliceRelay, DaemonError> {
-    let mut config = config_projection.snapshot();
+    let config = config_projection.snapshot();
     let mut hosted_relay_token = None;
     if let (Some(relay_url), Some(relay_token)) =
         (config.relay_url.clone(), config.relay_token.clone())
     {
         if configured_relay_is_container_reachable(&relay_url) {
             hosted_relay_token =
-                Some(hosted_cloud_slice_relay_token(&mut config, relay_token).await?);
+                Some(hosted_cloud_slice_relay_token(&config, slice, relay_token).await?);
         }
     }
     Ok(local_docker_slice_relay_for_config(
@@ -681,8 +725,6 @@ fn local_docker_slice_relay_for_config(
     {
         if configured_relay_is_container_reachable(&relay_url) {
             let relay_token = hosted_relay_token.unwrap_or(relay_token);
-            let cloud_relay_config_json =
-                hosted_cloud_relay_config_json(config, &relay_url, &relay_token);
             crate::logging::info_with_fields(
                 "daemon.slice",
                 "selected hosted relay for local docker slice",
@@ -690,14 +732,16 @@ fn local_docker_slice_relay_for_config(
                     "slice_id": slice.id,
                     "relay_url": relay_url,
                     "cloud_profile_present": config.cloud_relay.is_some(),
-                    "cloud_relay_config_present": cloud_relay_config_json.is_some(),
+                    "cloud_relay_config_present": false,
                 }),
             );
             return crate::slice::LocalDockerSliceRelay {
                 relay_url: relay_url.clone(),
                 container_relay_url: Some(relay_url),
                 relay_token,
-                cloud_relay_config_json,
+                // The home kernel's Cloud profile contains machine credentials and
+                // session tokens. It must never be copied into a provider-visible slice.
+                cloud_relay_config_json: None,
             };
         }
     }
@@ -705,48 +749,270 @@ fn local_docker_slice_relay_for_config(
 }
 
 async fn hosted_cloud_slice_relay_token(
-    config: &mut crate::config::DaemonConfig,
+    config: &crate::config::DaemonConfig,
+    slice: &crate::slice::SliceRecord,
     fallback_relay_token: String,
 ) -> Result<String, DaemonError> {
     let Some(profile) = config.cloud_relay.clone() else {
         return Ok(fallback_relay_token);
     };
-    if !cloud_relay_profile_has_runtime_credentials(&profile) {
-        return Ok(fallback_relay_token);
-    }
-    let token_subject = cloud_runtime_token_subject(config, &profile);
-    let issued = issue_cloud_runtime_token(
+    let issued = issue_cloud_slice_runtime_token(
         &profile,
-        &token_subject.subject,
-        token_subject.subject_kind,
-        None,
-        None,
-        token_subject.machine_id,
+        &slice.worker_kernel_ref,
+        &slice.owner_kernel_id,
         None,
     )
     .await?;
-    if let Some(profile) = config.cloud_relay.as_mut() {
-        profile.token_expires_at_ms =
-            Some(crate::session::unix_epoch_ms() + CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS);
-    }
     Ok(issued.token)
 }
 
-fn hosted_cloud_relay_config_json(
-    config: &crate::config::DaemonConfig,
-    relay_url: &str,
-    relay_token: &str,
-) -> Option<String> {
-    if !relay_url.starts_with("wss://") {
-        return None;
+async fn activate_hosted_slice_relay_token(
+    config_projection: &DaemonConfigProjectionStore,
+    relay_state: &Arc<RwLock<RelayClientState>>,
+    slice: &crate::slice::SliceRecord,
+    worker: &chariox_relay::protocol::RelayKernelPresence,
+) -> Result<(), DaemonError> {
+    let config = config_projection.snapshot();
+    let Some(profile) = config.cloud_relay.as_ref() else {
+        return Ok(());
+    };
+    let issued = issue_cloud_slice_runtime_token(
+        profile,
+        &slice.worker_kernel_ref,
+        &slice.owner_kernel_id,
+        Some(&worker.public_key),
+    )
+    .await?;
+    let expires_at_ms =
+        relay_token_expiry_ms(&issued.token).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "activate hosted slice relay token",
+            message: "Cloud returned a relay token without an expiry".to_string(),
+        })?;
+    let recovery = issue_cloud_slice_recovery_token(
+        profile,
+        &slice.worker_kernel_ref,
+        &slice.owner_kernel_id,
+        &worker.public_key,
+    )
+    .await?;
+    let recovery_expires_at_ms =
+        relay_token_expiry_ms(&recovery.token).ok_or_else(|| DaemonError::LocalTransport {
+            operation: "activate hosted slice relay token",
+            message: "Cloud returned a slice recovery token without an expiry".to_string(),
+        })?;
+    let activation_nonce = managed_slice_relay_activation_nonce();
+    relay_state
+        .write()
+        .await
+        .begin_managed_slice_relay_activation(
+            slice.id.clone(),
+            worker.kernel_id.clone(),
+            slice.worker_kernel_ref.clone(),
+            worker.public_key.clone(),
+            activation_nonce.clone(),
+        );
+    let result = async {
+        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection(
+            &config,
+            chariox_relay::protocol::ClientTarget {
+                daemon_id: Some(worker.kernel_id.clone()),
+                daemon_alias: None,
+            },
+            crate::transport::relay_peer::RelayPeerRequest::InstallManagedSliceRelayToken {
+                slice_id: slice.id.clone(),
+                owner_kernel_id: slice.owner_kernel_id.clone(),
+                owner_machine_id: slice.owner_machine_id.clone(),
+                activation_nonce: activation_nonce.clone(),
+                relay_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
+                    issued.token,
+                ),
+                expires_at_ms,
+                relay_recovery_token: crate::transport::relay_peer::RelayManagedSliceToken::new(
+                    recovery.token,
+                ),
+                recovery_expires_at_ms,
+            },
+        )
+        .await?;
+        match response {
+            crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenInstalled {
+                slice_id,
+                activation_nonce: installed_nonce,
+                relay_peer_protocol_version,
+            } if slice_id == slice.id
+                && installed_nonce == activation_nonce
+                && relay_peer_protocol_version
+                    >= crate::transport::relay_peer::RELAY_PEER_PROTOCOL_VERSION =>
+            {
+                wait_for_hosted_slice_relay_activation(
+                    config_projection,
+                    relay_state,
+                    slice,
+                    worker,
+                    &activation_nonce,
+                )
+                .await
+            }
+            crate::transport::relay_peer::RelayPeerResponse::ManagedSliceRelayTokenFailed {
+                code,
+                retryable,
+            } => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: format!(
+                    "slice worker rejected key-bound relay token ({code}, retryable={retryable})"
+                ),
+            }),
+            _ => Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: "slice worker returned an incompatible relay-token response".to_string(),
+            }),
+        }
     }
-    let profile = config.cloud_relay.as_ref()?;
-    serde_json::to_string(&serde_json::json!({
-        "relay_url": relay_url,
-        "relay_token": relay_token,
-        "cloud_relay": profile,
-    }))
-    .ok()
+    .await;
+    let mut state = relay_state.write().await;
+    if result.is_ok() {
+        state.retain_completed_managed_slice_relay_activation(&slice.id, &activation_nonce);
+    } else {
+        state.discard_managed_slice_relay_activation(&slice.id, &activation_nonce);
+    }
+    result
+}
+
+async fn wait_for_hosted_slice_relay_activation(
+    config_projection: &DaemonConfigProjectionStore,
+    relay_state: &Arc<RwLock<RelayClientState>>,
+    slice: &crate::slice::SliceRecord,
+    worker: &chariox_relay::protocol::RelayKernelPresence,
+    activation_nonce: &str,
+) -> Result<(), DaemonError> {
+    let deadline = Instant::now() + HOSTED_SLICE_RELAY_RECONNECT_TIMEOUT;
+    let mut last_probe_error = None;
+    let ping_value = format!(
+        "managed-slice-relay-activation:{}:{}",
+        slice.id, activation_nonce
+    );
+
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            let detail = last_probe_error
+                .map(|error: DaemonError| format!("; last probe failed: {error}"))
+                .unwrap_or_default();
+            return Err(DaemonError::LocalTransport {
+                operation: "activate hosted slice relay token",
+                message: format!(
+                    "slice worker did not confirm key-bound relay-token activation within 15s{detail}"
+                ),
+            });
+        }
+
+        if !relay_state
+            .read()
+            .await
+            .managed_slice_relay_activation_confirmed(&slice.id, activation_nonce)
+        {
+            sleep(remaining.min(HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL)).await;
+            continue;
+        }
+
+        let config = config_projection.snapshot();
+        let observation = timeout(
+            remaining.min(HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT),
+            crate::transport::relay_discovery::find_live_kernel_once(&config, &worker.kernel_id),
+        )
+        .await;
+        let presence = match observation {
+            Ok(Ok(presence)) => presence,
+            Ok(Err(error)) => {
+                last_probe_error = Some(error);
+                sleep(
+                    deadline
+                        .saturating_duration_since(Instant::now())
+                        .min(HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL),
+                )
+                .await;
+                continue;
+            }
+            Err(_) => {
+                last_probe_error = Some(DaemonError::LocalTransport {
+                    operation: "activate hosted slice relay token",
+                    message: "relay presence probe timed out".to_string(),
+                });
+                continue;
+            }
+        };
+
+        if hosted_slice_activation_presence_ready(presence.as_ref(), &worker.public_key)? {
+            let ping_timeout = deadline
+                .saturating_duration_since(Instant::now())
+                .min(HOSTED_SLICE_RELAY_RECONNECT_PROBE_TIMEOUT);
+            if ping_timeout.is_zero() {
+                continue;
+            }
+            let ping = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                &config,
+                chariox_relay::protocol::ClientTarget {
+                    daemon_id: Some(worker.kernel_id.clone()),
+                    daemon_alias: None,
+                },
+                crate::transport::relay_peer::RelayPeerRequest::Ping {
+                    value: ping_value.clone(),
+                },
+                ping_timeout,
+            );
+            match timeout(ping_timeout, ping).await {
+                Ok(Ok(crate::transport::relay_peer::RelayPeerResponse::Pong {
+                    value,
+                    daemon_id,
+                })) if value == ping_value && daemon_id == worker.kernel_id => return Ok(()),
+                Ok(Ok(_)) => {
+                    last_probe_error = Some(DaemonError::LocalTransport {
+                        operation: "activate hosted slice relay token",
+                        message: "reconnected slice returned an incompatible ping response"
+                            .to_string(),
+                    });
+                }
+                Ok(Err(error)) => last_probe_error = Some(error),
+                Err(_) => {
+                    last_probe_error = Some(DaemonError::LocalTransport {
+                        operation: "activate hosted slice relay token",
+                        message: "reconnected slice ping timed out".to_string(),
+                    });
+                }
+            }
+        }
+
+        sleep(
+            deadline
+                .saturating_duration_since(Instant::now())
+                .min(HOSTED_SLICE_RELAY_RECONNECT_POLL_INTERVAL),
+        )
+        .await;
+    }
+}
+
+fn hosted_slice_activation_presence_ready(
+    presence: Option<&chariox_relay::protocol::RelayKernelPresence>,
+    expected_public_key: &str,
+) -> Result<bool, DaemonError> {
+    let Some(presence) = presence else {
+        return Ok(false);
+    };
+    if presence.public_key != expected_public_key {
+        return Err(DaemonError::LocalTransport {
+            operation: "activate hosted slice relay token",
+            message: "slice worker relay key changed during credential activation".to_string(),
+        });
+    }
+    Ok(true)
+}
+
+fn managed_slice_relay_activation_nonce() -> String {
+    format!(
+        "{:032x}{:032x}",
+        rand::random::<u128>(),
+        rand::random::<u128>()
+    )
 }
 
 fn configured_relay_is_container_reachable(relay_url: &str) -> bool {
@@ -787,6 +1053,9 @@ mod tests {
             workspace_id: Some("workspace".to_string()),
             worktree_id: Some("worktree".to_string()),
             workspace_mount: Some("worktree".to_string()),
+            development: None,
+            development_storage_root: None,
+            development_publication: None,
             worker_kernel_ref: "slice:dev".to_string(),
             worker_kernel_id: Some("worker-1".to_string()),
             worker_machine_id: Some("machine-slice-1".to_string()),
@@ -842,6 +1111,42 @@ mod tests {
     }
 
     #[test]
+    fn hosted_slice_activation_requires_live_same_key_after_confirmation() {
+        let worker = chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "worker-1".to_string(),
+            machine_id: "machine-slice-1".to_string(),
+            machine_alias: None,
+            relay_alias: None,
+            kernel_alias: Some("slice:dev".to_string()),
+            available_providers: Vec::new(),
+            provider_accounts: Vec::new(),
+            capabilities: Vec::new(),
+            accepting_remote_leases: false,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "worker-key".to_string(),
+        };
+        assert!(!hosted_slice_activation_presence_ready(None, "worker-key")
+            .expect("offline worker should remain pending"));
+        assert!(
+            hosted_slice_activation_presence_ready(Some(&worker), "worker-key")
+                .expect("same-key worker should be ready after authenticated confirmation")
+        );
+
+        let mut replacement = worker;
+        replacement.public_key = "replacement-key".to_string();
+        assert!(hosted_slice_activation_presence_ready(Some(&replacement), "worker-key").is_err());
+    }
+
+    #[test]
+    fn managed_slice_activation_nonce_is_fresh() {
+        let first = managed_slice_relay_activation_nonce();
+        let second = managed_slice_relay_activation_nonce();
+        assert_eq!(first.len(), 64);
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn hosted_cloud_slices_use_shared_relay_for_worker_projection() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.relay_url = Some("wss://relay.example.test".to_string());
@@ -861,7 +1166,7 @@ mod tests {
     }
 
     #[test]
-    fn hosted_cloud_slices_pass_refreshable_relay_profile_to_worker() {
+    fn hosted_cloud_slices_never_pass_the_home_cloud_profile_to_worker() {
         let mut config = crate::config::DaemonConfig::for_tests();
         config.relay_url = Some("wss://relay.example.test".to_string());
         config.relay_token = Some("shared-token".to_string());
@@ -875,16 +1180,8 @@ mod tests {
             Some("fresh-worker-token".to_string()),
         );
 
-        let profile_json = relay
-            .cloud_relay_config_json
-            .expect("hosted cloud relay should pass refreshable config");
-        let payload: serde_json::Value = serde_json::from_str(&profile_json).unwrap();
-        assert_eq!(payload["relay_url"], "wss://relay.example.test");
-        assert_eq!(payload["relay_token"], "fresh-worker-token");
-        assert_eq!(
-            payload["cloud_relay"]["machine_credential"],
-            "machine-secret"
-        );
+        assert_eq!(relay.cloud_relay_config_json, None);
+        assert_eq!(relay.relay_token, "fresh-worker-token");
     }
 
     #[test]

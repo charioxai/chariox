@@ -1,6 +1,95 @@
 use super::*;
 
 #[tokio::test]
+async fn managed_activity_reaches_zero_only_after_prompt_settlement_is_durable() {
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(crate::session::CreateSessionRequest::new(
+            "workspace-managed-activity-settlement",
+            "worktree-managed-activity-settlement",
+        ))
+        .expect("session should be created");
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::new(
+            session.id(),
+            "client-managed-activity-settlement",
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "claude-code",
+                "default",
+                "sonnet",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+    let crate::session::PromptSubmissionOutcome::Started { prompt } = app
+        .submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            "finish the managed turn",
+            Vec::new(),
+        )
+        .expect("prompt should start")
+    else {
+        panic!("first prompt should start immediately");
+    };
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    runtime.owned.note_prompt_started(run.id());
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    let response = "managed response persisted before idle";
+    runtime.owned.fan_out_terminal_output(
+        session.id(),
+        run.id(),
+        crate::terminal::TerminalOutputKind::ProviderOutput,
+        Some("managed-activity-response".to_string()),
+        vec![attachment.id().to_string()],
+        response.as_bytes(),
+    );
+    runtime.owned.record_assistant_message_completion(
+        session.id(),
+        run.id(),
+        vec![attachment.id().to_string()],
+        "managed-activity-completion",
+        crate::session::unix_epoch_ms(),
+    );
+    assert_eq!(runtime.managed_running_agent_count(), 1);
+    let before_settlement = runtime.managed_activity_change_sequence();
+
+    runtime
+        .owned
+        .complete_local_prompt_without_advance(session.id(), agent.id(), Some(run.id()))
+        .expect("prompt completion should settle")
+        .expect("active prompt should complete");
+
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_prompt_settlement_event(session.id(), agent.id(), prompt.id())
+        .expect("settlement history should load")
+        .is_some());
+    assert!(runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("durable response history should load")
+        .iter()
+        .any(|entry| entry.text.contains(response)));
+    assert_eq!(runtime.managed_running_agent_count(), 0);
+    assert!(runtime.managed_activity_change_sequence() > before_settlement);
+}
+
+#[tokio::test]
 async fn provider_settlement_starts_metaagent_task_queued_behind_completed_turn() {
     let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
         .expect("daemon bootstrap should succeed");
@@ -440,6 +529,228 @@ async fn provider_completed_signal_settles_matching_active_prompt_after_quiet_in
         .expect("authoritative prompt settlement should be persisted");
     assert_eq!(settlement.prompt_id.as_deref(), Some("prompt-1"));
     assert_eq!(settlement.content, None, "settlement marker stays hidden");
+}
+
+#[tokio::test]
+async fn detached_session_completes_active_and_two_queued_prompts_without_transient_backlog() {
+    let owner_user_id = "user-detached-queue";
+    let mut app = DaemonApp::bootstrap(crate::config::DaemonConfig::for_tests())
+        .expect("daemon bootstrap should succeed");
+    let (session, agent) = crate::app::KernelSessionService::new(&mut app)
+        .create_session(
+            crate::session::CreateSessionRequest::new(
+                "workspace-detached-queue",
+                "worktree-detached-queue",
+            )
+            .with_owner_user_id(owner_user_id),
+        )
+        .expect("session should be created");
+    let agent = app
+        .agents_mut()
+        .activate_agent_meta_mode(agent.id(), None)
+        .expect("agent should enter Meta mode");
+    let source_client_id = format!("metaagent:{}:detached-queue", agent.id());
+    let attachment = crate::app::KernelSessionService::new(&mut app)
+        .attach(crate::attachment::AttachRequest::for_user(
+            session.id(),
+            &source_client_id,
+            crate::attachment::ClientCapabilityLevel::FullTerminal,
+            owner_user_id,
+        ))
+        .expect("attachment should attach");
+    let run = app
+        .launch_provider(
+            crate::provider::LaunchProviderRequest::new(
+                session.id(),
+                "dev-stub",
+                "dev-stub",
+                "default",
+                "default",
+            )
+            .with_agent_id(agent.id()),
+        )
+        .expect("provider run should launch");
+    app.update_provider_run_projection(run.clone());
+
+    for prompt in [
+        "first detached turn",
+        "second detached turn",
+        "third detached turn",
+    ] {
+        app.submit_prompt(
+            session.id(),
+            attachment.id(),
+            Some(agent.id()),
+            prompt,
+            Vec::new(),
+        )
+        .expect("prompt should be admitted");
+    }
+    app.detach(attachment.id())
+        .expect("the only terminal should detach while prompts remain queued");
+
+    let app = Arc::new(Mutex::new(app));
+    let runtime = owned_runtime_state(&app).await;
+    assert!(runtime
+        .owned
+        .attachment_store
+        .list_session_attachment_ids(session.id())
+        .is_empty());
+
+    for (index, expected_prompt) in [
+        "first detached turn",
+        "second detached turn",
+        "third detached turn",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let current = runtime
+            .owned
+            .session_store
+            .get_session(session.id())
+            .expect("session should remain available");
+        let active = current
+            .active_prompt_for_agent(agent.id())
+            .expect("the next detached prompt should be active");
+        assert_eq!(active.prompt(), expected_prompt);
+        assert_eq!(active.source_attachment_id(), attachment.id());
+        assert_eq!(active.source_client_id(), Some(source_client_id.as_str()));
+        assert_eq!(active.source_user_id(), Some(owner_user_id));
+        let (resolved_client_id, resolved_user_id) = runtime
+            .owned
+            .active_prompt_source_attribution(session.id(), agent.id())
+            .expect("structured dispatch attribution should resolve without a live attachment");
+        assert_eq!(
+            resolved_client_id.as_deref(),
+            Some(source_client_id.as_str())
+        );
+        assert_eq!(resolved_user_id.as_deref(), Some(owner_user_id));
+        assert_eq!(resolved_user_id.as_deref(), Some(agent.owner_user_id()));
+        assert_eq!(
+            crate::prompt_assembly::provider_turn_mode_for_prompt(
+                agent.id(),
+                agent.is_metaagent(),
+                resolved_client_id.as_deref(),
+                "",
+            ),
+            crate::prompt_assembly::PromptAssemblyMode::MetaagentProviderTurn,
+            "detached structured dispatch should retain the original client mode",
+        );
+
+        let response_text = format!("completed {expected_prompt}");
+        runtime.owned.fan_out_terminal_output(
+            session.id(),
+            run.id(),
+            crate::terminal::TerminalOutputKind::ProviderOutput,
+            Some(format!("detached-response-{index}")),
+            Vec::new(),
+            response_text.as_bytes(),
+        );
+        runtime.owned.record_assistant_message_completion(
+            session.id(),
+            run.id(),
+            Vec::new(),
+            &format!("detached-message-{index}"),
+            crate::session::unix_epoch_ms(),
+        );
+        assert!(
+            runtime.owned.terminal_stream.output_records().is_empty(),
+            "zero-recipient terminal output must not accumulate transient records",
+        );
+        assert_eq!(
+            runtime
+                .owned
+                .terminal_stream
+                .health_store()
+                .snapshot()
+                .pending_completion_records,
+            0,
+            "zero-recipient assistant completions must not accumulate transient records",
+        );
+
+        let settled = runtime
+            .settle_owned_provider_prompt(session.id(), run.id(), true, false, true)
+            .await
+            .expect("detached provider completion should settle and advance the queue");
+        assert!(settled.had_active_prompt);
+        assert_eq!(settled.started_next_prompt, index < 2);
+    }
+
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            let session_is_idle = runtime
+                .owned
+                .session_store
+                .get_session(session.id())
+                .expect("detached session should remain")
+                .active_provider_run_id()
+                .is_none();
+            let provider_is_parked = runtime
+                .owned
+                .provider_store
+                .get_run(run.id())
+                .expect("detached provider run should remain")
+                .state()
+                == crate::provider::ProviderRunState::Parked;
+            if session_is_idle && provider_is_parked {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("completed detached provider should park");
+
+    let completed = runtime
+        .owned
+        .session_store
+        .get_session(session.id())
+        .expect("completed detached session should remain available");
+    assert!(completed.active_prompt_for_agent(agent.id()).is_none());
+    assert!(completed
+        .queued_prompts_for_agent(agent.id())
+        .is_none_or(|queued| queued.is_empty()));
+    assert!(runtime.owned.terminal_stream.output_records().is_empty());
+    assert_eq!(
+        runtime
+            .owned
+            .terminal_stream
+            .health_store()
+            .snapshot()
+            .pending_completion_records,
+        0,
+    );
+    let history = runtime
+        .owned
+        .operational_history_store
+        .load_session_history_entries(session.id(), Some(agent.id()))
+        .expect("durable detached history should load");
+    for prompt in [
+        "first detached turn",
+        "second detached turn",
+        "third detached turn",
+    ] {
+        assert!(
+            history.iter().any(|entry| entry.text.contains(prompt)),
+            "durable history should contain `{prompt}`",
+        );
+    }
+    for (index, response) in [
+        "completed first detached turn",
+        "completed second detached turn",
+        "completed third detached turn",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let entry = history
+            .iter()
+            .find(|entry| entry.merge_key.as_deref() == Some(&format!("detached-response-{index}")))
+            .expect("detached agent response should be recoverable from durable history");
+        assert_eq!(entry.text, response);
+        assert_eq!(entry.source_attachment_id.as_deref(), Some(attachment.id()));
+    }
 }
 
 #[tokio::test]

@@ -1,6 +1,9 @@
+use std::future::Future;
 use std::sync::Arc;
+use std::time::Duration;
 
 use tokio::sync::RwLock;
+use tokio::time::timeout;
 
 use crate::error::DaemonError;
 use crate::local::{
@@ -10,11 +13,11 @@ use crate::local::{
 };
 use crate::runtime::cloud_api_client::{
     cloud_profile_from_persisted, issue_cloud_runtime_token, post_cloud_json,
-    CloudPairingTokenResponse,
+    CloudPairingTokenResponse, CloudRuntimeTokenRequestOptions,
 };
 use crate::runtime::cloud_relay_control::{
     cloud_relay_profile_has_runtime_credentials, cloud_relay_runtime_token_is_fresh,
-    cloud_runtime_token_subject, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
+    cloud_runtime_token_subject, CLOUD_RELAY_CLIENT_TOKEN_TTL_MS, CLOUD_RELAY_RUNTIME_TOKEN_TTL_MS,
 };
 use crate::runtime::cloud_relay_profile_store::{
     clear_cloud_profile_if_stale, persist_cloud_profile, required_cloud_relay_profile,
@@ -25,7 +28,9 @@ use crate::runtime::projection::{
 };
 use crate::runtime::remote_relay_inventory::projected_relay_status;
 use crate::runtime::state::KernelRuntimeState;
-use crate::transport::relay_client::RelayClientState;
+use crate::transport::relay_client::{refresh_remote_inventory_projection, RelayClientState};
+
+const KERNEL_CONNECTION_INVENTORY_REFRESH_TIMEOUT: Duration = Duration::from_secs(30);
 
 pub(crate) async fn execute_cloud_relay_status_request(
     config_projection: &DaemonConfigProjectionStore,
@@ -55,14 +60,17 @@ pub(crate) async fn ensure_cloud_relay_connection(
     }
 
     let token_subject = cloud_runtime_token_subject(&config, &profile);
+    let public_key_thumbprint =
+        crate::runtime::terminal_pairings::public_key_thumbprint(&config.relay_public_key);
     let issued = match issue_cloud_runtime_token(
         &profile,
         &token_subject.subject,
         token_subject.subject_kind,
-        None,
-        None,
-        token_subject.machine_id,
-        None,
+        CloudRuntimeTokenRequestOptions {
+            machine_id: token_subject.machine_id,
+            public_key_thumbprint: Some(public_key_thumbprint),
+            ..CloudRuntimeTokenRequestOptions::default()
+        },
     )
     .await
     {
@@ -93,7 +101,8 @@ pub(crate) async fn execute_connect_cloud_relay_request(
     _request: ConnectCloudRelayRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let mut profile = required_cloud_relay_profile(config_projection)?;
-    let daemon_id = config_projection.snapshot().daemon_id;
+    let config = config_projection.snapshot();
+    let daemon_id = config.daemon_id;
     let (subject, subject_kind, machine_id) = if let Some(machine_id) = profile.machine_id.clone() {
         (machine_id.clone(), "machine", Some(machine_id))
     } else {
@@ -103,10 +112,13 @@ pub(crate) async fn execute_connect_cloud_relay_request(
         &profile,
         &subject,
         subject_kind,
-        None,
-        None,
-        machine_id,
-        None,
+        CloudRuntimeTokenRequestOptions {
+            machine_id,
+            public_key_thumbprint: Some(crate::runtime::terminal_pairings::public_key_thumbprint(
+                &config.relay_public_key,
+            )),
+            ..CloudRuntimeTokenRequestOptions::default()
+        },
     )
     .await?;
     profile.token_expires_at_ms =
@@ -148,7 +160,26 @@ pub(crate) async fn execute_resolve_kernel_client_connection_request(
     remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
     request: ResolveKernelClientConnectionRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
-    let kernel = resolve_relay_kernel_presence(remote_relay_inventory_projection, &request)?;
+    let inventory_stale_after_ms = (config_projection
+        .snapshot()
+        .relay_heartbeat_ms
+        .saturating_mul(2))
+    .max(1_000);
+    let inventory_is_fresh = remote_relay_inventory_projection
+        .is_fresh(crate::session::unix_epoch_ms(), inventory_stale_after_ms);
+    let refresh_config = config_projection.clone();
+    let refresh_projection = remote_relay_inventory_projection.clone();
+    let kernel =
+        resolve_relay_kernel_presence_with_refresh(
+            remote_relay_inventory_projection,
+            &request,
+            inventory_is_fresh,
+            KERNEL_CONNECTION_INVENTORY_REFRESH_TIMEOUT,
+            || async move {
+                refresh_remote_inventory_projection(refresh_config, refresh_projection).await
+            },
+        )
+        .await?;
     let target_daemon_alias = relay_kernel_target_alias(&kernel);
     let config = config_projection.snapshot();
     let connection = if config.cloud_relay.is_some() {
@@ -250,13 +281,15 @@ async fn issue_cloud_relay_client_token(
         &profile,
         &client_id,
         "client",
-        Some(vec![request.target_daemon_alias]),
-        Some(client_id.clone()),
-        profile
-            .machine_credential
-            .as_ref()
-            .and(profile.machine_id.clone()),
-        request.session_id,
+        cloud_relay_client_token_options(
+            request.target_daemon_alias,
+            client_id.clone(),
+            profile
+                .machine_credential
+                .as_ref()
+                .and(profile.machine_id.clone()),
+            request.session_id,
+        ),
     )
     .await
     {
@@ -274,10 +307,57 @@ async fn issue_cloud_relay_client_token(
     Ok((cloud_profile_from_persisted(&profile), token))
 }
 
-fn resolve_relay_kernel_presence(
+fn cloud_relay_client_token_options(
+    target_daemon_alias: String,
+    client_id: String,
+    machine_id: Option<String>,
+    session_id: Option<String>,
+) -> CloudRuntimeTokenRequestOptions {
+    CloudRuntimeTokenRequestOptions {
+        ttl_ms: Some(CLOUD_RELAY_CLIENT_TOKEN_TTL_MS),
+        allowed_targets: Some(vec![target_daemon_alias]),
+        client_id: Some(client_id),
+        machine_id,
+        session_id,
+        ..CloudRuntimeTokenRequestOptions::default()
+    }
+}
+
+async fn resolve_relay_kernel_presence_with_refresh<F, Fut>(
     remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
     request: &ResolveKernelClientConnectionRequest,
-) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError> {
+    inventory_is_fresh: bool,
+    refresh_timeout: Duration,
+    refresh: F,
+) -> Result<chariox_relay::protocol::RelayKernelPresence, DaemonError>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), DaemonError>>,
+{
+    validate_relay_kernel_reference(request)?;
+    if inventory_is_fresh {
+        if let Some(kernel) =
+            find_relay_kernel_presence(remote_relay_inventory_projection, request)?
+        {
+            return Ok(kernel);
+        }
+    }
+    timeout(refresh_timeout, refresh())
+        .await
+        .map_err(|_| DaemonError::LocalTransport {
+            operation: "kernel client connection resolve",
+            message: format!(
+                "relay inventory refresh timed out after {} ms",
+                refresh_timeout.as_millis()
+            ),
+        })??;
+    find_relay_kernel_presence(remote_relay_inventory_projection, request)?
+        .ok_or_else(|| missing_relay_kernel_error(request.kernel_ref.trim()))
+}
+
+fn validate_relay_kernel_reference(
+    request: &ResolveKernelClientConnectionRequest,
+) -> Result<(), DaemonError> {
     let kernel_ref = request.kernel_ref.trim();
     if kernel_ref.is_empty() || kernel_ref == "local" {
         return Err(DaemonError::LocalTransport {
@@ -285,6 +365,14 @@ fn resolve_relay_kernel_presence(
             message: "remote kernel selection is empty".to_string(),
         });
     }
+    Ok(())
+}
+
+fn find_relay_kernel_presence(
+    remote_relay_inventory_projection: &RemoteRelayInventoryProjectionStore,
+    request: &ResolveKernelClientConnectionRequest,
+) -> Result<Option<chariox_relay::protocol::RelayKernelPresence>, DaemonError> {
+    let kernel_ref = request.kernel_ref.trim();
     let machine_ref = request
         .machine_ref
         .as_deref()
@@ -308,12 +396,7 @@ fn resolve_relay_kernel_presence(
         })
         .collect();
     if matches.is_empty() {
-        return Err(DaemonError::LocalTransport {
-            operation: "kernel client connection resolve",
-            message: format!(
-                "kernel `{kernel_ref}` is not present in the reachable relay inventory"
-            ),
-        });
+        return Ok(None);
     }
     if matches.len() > 1 {
         return Err(DaemonError::LocalTransport {
@@ -321,7 +404,14 @@ fn resolve_relay_kernel_presence(
             message: format!("kernel `{kernel_ref}` is ambiguous in the reachable relay inventory"),
         });
     }
-    Ok(matches.remove(0))
+    Ok(Some(matches.remove(0)))
+}
+
+fn missing_relay_kernel_error(kernel_ref: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "kernel client connection resolve",
+        message: format!("kernel `{kernel_ref}` is not present in the reachable relay inventory"),
+    }
 }
 
 fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresence) -> String {
@@ -330,4 +420,229 @@ fn relay_kernel_target_alias(kernel: &chariox_relay::protocol::RelayKernelPresen
         .clone()
         .or_else(|| kernel.kernel_alias.clone())
         .unwrap_or_else(|| kernel.kernel_id.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn request() -> ResolveKernelClientConnectionRequest {
+        ResolveKernelClientConnectionRequest {
+            kernel_ref: "kernel-new".to_string(),
+            machine_ref: Some("machine-new".to_string()),
+            client_id: Some("client-1".to_string()),
+            session_id: None,
+        }
+    }
+
+    fn kernel() -> chariox_relay::protocol::RelayKernelPresence {
+        chariox_relay::protocol::RelayKernelPresence {
+            kernel_id: "kernel-new".to_string(),
+            machine_id: "machine-new".to_string(),
+            machine_alias: Some("new machine".to_string()),
+            relay_alias: None,
+            kernel_alias: Some("default".to_string()),
+            available_providers: vec!["codex".to_string()],
+            provider_accounts: Vec::new(),
+            capabilities: vec!["kernel_ws".to_string()],
+            accepting_remote_leases: true,
+            leased_agent_count: 0,
+            local_session_count: 0,
+            public_key: "public-key".to_string(),
+        }
+    }
+
+    #[test]
+    fn client_connection_token_outlives_bounded_slice_operations() {
+        let options = cloud_relay_client_token_options(
+            "kernel-new".to_string(),
+            "client-1".to_string(),
+            Some("machine-home".to_string()),
+            Some("session-1".to_string()),
+        );
+
+        assert_eq!(options.ttl_ms, Some(30 * 60_000));
+        assert_eq!(
+            options.allowed_targets,
+            Some(vec!["kernel-new".to_string()])
+        );
+        assert_eq!(options.client_id.as_deref(), Some("client-1"));
+        assert_eq!(options.machine_id.as_deref(), Some("machine-home"));
+        assert_eq!(options.session_id.as_deref(), Some("session-1"));
+    }
+
+    #[tokio::test]
+    async fn missing_kernel_connection_resolve_refreshes_inventory_before_failing() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let refresh_projection = projection.clone();
+
+        let resolved = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            false,
+            Duration::from_secs(1),
+            || async move {
+                refresh_projection.update(Vec::new(), vec![kernel()]);
+                Ok(())
+            },
+        )
+        .await
+        .expect("fresh inventory should resolve the newly registered kernel");
+
+        assert_eq!(resolved.kernel_id, "kernel-new");
+        assert_eq!(resolved.machine_id, "machine-new");
+    }
+
+    #[tokio::test]
+    async fn cached_kernel_connection_resolve_skips_inventory_refresh() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(Vec::new(), vec![kernel()]);
+
+        let resolved = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            true,
+            Duration::from_secs(1),
+            || async { panic!("cached kernel must not trigger a relay inventory refresh") },
+        )
+        .await
+        .expect("cached inventory should resolve the kernel");
+
+        assert_eq!(resolved.kernel_id, "kernel-new");
+    }
+
+    #[tokio::test]
+    async fn stale_cached_kernel_connection_revalidates_inventory() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        projection.update(Vec::new(), vec![kernel()]);
+        let refresh_projection = projection.clone();
+
+        let error = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            false,
+            Duration::from_secs(1),
+            || async move {
+                refresh_projection.update(Vec::new(), Vec::new());
+                Ok(())
+            },
+        )
+        .await
+        .expect_err("stale cached kernel absent from fresh inventory must not resolve");
+
+        assert!(error
+            .to_string()
+            .contains("kernel `kernel-new` is not present in the reachable relay inventory"));
+    }
+
+    #[tokio::test]
+    async fn stale_ambiguous_kernel_connection_refreshes_before_resolving() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let mut selected_kernel = kernel();
+        selected_kernel.kernel_alias = Some("shared".to_string());
+        let mut stale_duplicate = selected_kernel.clone();
+        stale_duplicate.kernel_id = "kernel-stale".to_string();
+        stale_duplicate.machine_id = "machine-stale".to_string();
+        projection.update(Vec::new(), vec![selected_kernel.clone(), stale_duplicate]);
+        let refresh_projection = projection.clone();
+        let mut alias_request = request();
+        alias_request.kernel_ref = "shared".to_string();
+        alias_request.machine_ref = None;
+
+        let resolved = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &alias_request,
+            false,
+            Duration::from_secs(1),
+            || async move {
+                refresh_projection.update(Vec::new(), vec![selected_kernel]);
+                Ok(())
+            },
+        )
+        .await
+        .expect("fresh inventory should remove stale alias ambiguity");
+
+        assert_eq!(resolved.kernel_id, "kernel-new");
+    }
+
+    #[tokio::test]
+    async fn missing_kernel_connection_resolve_preserves_refresh_failure() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+
+        let error = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            false,
+            Duration::from_secs(1),
+            || async {
+                Err(DaemonError::LocalTransport {
+                    operation: "remote relay inventory refresh",
+                    message: "relay unavailable".to_string(),
+                })
+            },
+        )
+        .await
+        .expect_err("refresh failure should fail connection resolution");
+
+        assert!(error.to_string().contains("relay unavailable"));
+    }
+
+    #[tokio::test]
+    async fn missing_kernel_connection_resolve_times_out_refresh() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+
+        let error = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            false,
+            Duration::from_millis(1),
+            std::future::pending::<Result<(), DaemonError>>,
+        )
+        .await
+        .expect_err("timed out refresh should fail connection resolution");
+
+        assert!(error
+            .to_string()
+            .contains("relay inventory refresh timed out after 1 ms"));
+    }
+
+    #[tokio::test]
+    async fn missing_kernel_connection_resolve_reports_fresh_absence() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+
+        let error = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &request(),
+            false,
+            Duration::from_secs(1),
+            || async { Ok(()) },
+        )
+        .await
+        .expect_err("kernel absent from fresh inventory should remain unresolved");
+
+        assert!(error
+            .to_string()
+            .contains("kernel `kernel-new` is not present in the reachable relay inventory"));
+    }
+
+    #[tokio::test]
+    async fn invalid_kernel_connection_resolve_skips_inventory_refresh() {
+        let projection = RemoteRelayInventoryProjectionStore::default();
+        let mut invalid_request = request();
+        invalid_request.kernel_ref = "local".to_string();
+
+        let error = resolve_relay_kernel_presence_with_refresh(
+            &projection,
+            &invalid_request,
+            false,
+            Duration::from_secs(1),
+            || async { panic!("invalid kernel reference must not trigger inventory refresh") },
+        )
+        .await
+        .expect_err("local kernel reference should be rejected");
+
+        assert!(error
+            .to_string()
+            .contains("remote kernel selection is empty"));
+    }
 }

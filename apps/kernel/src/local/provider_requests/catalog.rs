@@ -329,13 +329,26 @@ fn claude_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = Command::new(&executable)
-        .args(["auth", "status", "--json"])
-        .envs(environment)
-        .env_remove("ANTHROPIC_API_KEY")
-        .env_remove("ANTHROPIC_AUTH_TOKEN")
-        .env_remove("ANTHROPIC_BASE_URL")
-        .env_remove("ANTHROPIC_CUSTOM_HEADERS")
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec![
+            "auth".to_string(),
+            "status".to_string(),
+            "--json".to_string(),
+        ],
+        environment.clone(),
+        None,
+        "claude:auth-status",
+    )?;
+    for name in [
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "ANTHROPIC_CUSTOM_HEADERS",
+    ] {
+        command.env_remove(name);
+    }
+    let output = command
         .output()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -371,8 +384,13 @@ fn opencode_auth_status(
     environment: &BTreeMap<String, String>,
 ) -> Result<ProviderAuthStatus, DaemonError> {
     let executable = resolve_opencode_executable()?;
-    let mut command = Command::new(&executable);
-    command.args(["auth", "list"]).envs(environment);
+    let mut command = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["auth".to_string(), "list".to_string()],
+        environment.clone(),
+        None,
+        "opencode:auth-status",
+    )?;
     remove_account_auth_environment(&mut command, "opencode");
     let output = command
         .output()
@@ -421,10 +439,19 @@ fn opencode_usage_snapshot(
     let Ok(executable) = resolve_opencode_executable() else {
         return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
     };
-    let mut command = Command::new(executable);
-    command
-        .args(["stats", "--format", "json"])
-        .envs(environment);
+    let Ok(mut command) = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec![
+            "stats".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ],
+        environment.clone(),
+        None,
+        "opencode:usage",
+    ) else {
+        return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
+    };
     remove_account_auth_environment(&mut command, "opencode");
     let Ok(output) = command.output() else {
         return ProviderAccountUsageSnapshot::unavailable(account_profile, "opencode");
@@ -495,13 +522,18 @@ fn remove_account_auth_environment(command: &mut Command, provider: &str) {
 }
 
 fn command_version(executable: &std::path::Path) -> Result<String, DaemonError> {
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "provider_version",
-            message: error.to_string(),
-        })?;
+    let output = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["--version".to_string()],
+        BTreeMap::new(),
+        None,
+        "provider:version",
+    )?
+    .output()
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "provider_version",
+        message: error.to_string(),
+    })?;
     let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
     (!text.is_empty())
         .then_some(text)
@@ -547,13 +579,18 @@ fn strip_ansi(value: &str) -> String {
 
 fn claude_version() -> Result<String, DaemonError> {
     let executable = resolve_claude_executable()?;
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "get_provider_auth_status",
-            message: format!("failed to read Claude version: {error}"),
-        })?;
+    let output = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["--version".to_string()],
+        BTreeMap::new(),
+        None,
+        "claude:version",
+    )?
+    .output()
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "get_provider_auth_status",
+        message: format!("failed to read Claude version: {error}"),
+    })?;
     if !output.status.success() {
         return Err(DaemonError::LocalTransport {
             operation: "get_provider_auth_status",
@@ -653,13 +690,22 @@ pub(crate) fn logout_provider_response(
         }
         Some("claude") => {
             let executable = resolve_claude_executable()?;
-            let status = Command::new(executable)
-                .args(["auth", "logout"])
-                .envs(environment)
-                .env_remove("ANTHROPIC_API_KEY")
-                .env_remove("ANTHROPIC_AUTH_TOKEN")
-                .env_remove("ANTHROPIC_BASE_URL")
-                .env_remove("ANTHROPIC_CUSTOM_HEADERS")
+            let mut command = crate::provider::managed_isolated_utility_command(
+                executable.display().to_string(),
+                vec!["auth".to_string(), "logout".to_string()],
+                environment,
+                None,
+                "claude:logout",
+            )?;
+            for name in [
+                "ANTHROPIC_API_KEY",
+                "ANTHROPIC_AUTH_TOKEN",
+                "ANTHROPIC_BASE_URL",
+                "ANTHROPIC_CUSTOM_HEADERS",
+            ] {
+                command.env_remove(name);
+            }
+            let status = command
                 .status()
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "logout_provider",

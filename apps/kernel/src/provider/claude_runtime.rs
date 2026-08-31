@@ -11,6 +11,7 @@ use crate::prompt_assembly::PromptEnvelope;
 use crate::terminal::TerminalOutputKind;
 
 use super::claude::materialize_runtime_claude_mcp_config;
+use super::managed_isolation::expose_runtime_directory_in_managed_namespace;
 use super::{
     AgentExecutionMode, AgentPermissionLevel, ProviderPromptSignalBatch, RuntimeProviderRun,
 };
@@ -94,8 +95,7 @@ pub(crate) fn initialize_claude_runtime(
             cancelled_turn_pending_settlement: false,
             next_turn_number: 1,
             result_number: 1,
-            emitted_text_offsets: BTreeMap::new(),
-            saw_text_delta: false,
+            emitted_text_by_block: BTreeMap::new(),
             exit_reported: false,
         },
         selection: ClaudeRunSelection {
@@ -136,6 +136,9 @@ fn install_claude_mcp_config_argument(
         }
         _ => {}
     }
+    if let Some(directory) = config_file.and_then(std::path::Path::parent) {
+        expose_runtime_directory_in_managed_namespace(args, directory)?;
+    }
     Ok(())
 }
 
@@ -161,8 +164,7 @@ pub(crate) fn submit_claude_prompt(
     state.active_turn_id = Some(turn_id);
     state.active_prompt_message = Some(message);
     state.turn_watchdog.begin(Instant::now());
-    state.saw_text_delta = false;
-    state.emitted_text_offsets.clear();
+    state.emitted_text_by_block.clear();
     Ok(())
 }
 
@@ -450,8 +452,7 @@ fn restart_claude_runtime(
     state.active_turn_id = None;
     state.active_prompt_message = None;
     state.turn_watchdog.settle();
-    state.emitted_text_offsets.clear();
-    state.saw_text_delta = false;
+    state.emitted_text_by_block.clear();
     state.exit_reported = false;
     Ok(())
 }
@@ -574,8 +575,7 @@ mod tests {
                 cancelled_turn_pending_settlement: false,
                 next_turn_number: 1,
                 result_number: 1,
-                emitted_text_offsets: Default::default(),
-                saw_text_delta: false,
+                emitted_text_by_block: Default::default(),
                 exit_reported: false,
             },
             ProviderPromptSignalBatch::default(),
@@ -788,6 +788,51 @@ mod tests {
     }
 
     #[test]
+    fn managed_runtime_mcp_config_is_visible_inside_the_private_tmp_namespace() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-claude-runtime-binding-test-{}",
+            std::process::id()
+        ));
+        let config = root.join("mcp-config.json");
+        let mut args = vec![
+            "--tmpfs".to_string(),
+            "/tmp".to_string(),
+            "--setenv".to_string(),
+            crate::provider::managed_isolation::MANAGED_PROVIDER_ISOLATION_MARKER_ENV.to_string(),
+            "1".to_string(),
+            "--".to_string(),
+            "/usr/local/bin/claude".to_string(),
+            "--mcp-config".to_string(),
+            CLAUDE_MCP_CONFIG_PLACEHOLDER.to_string(),
+        ];
+
+        super::install_claude_mcp_config_argument(&mut args, Some(&config))
+            .expect("managed MCP config should be installed");
+
+        let separator = args
+            .iter()
+            .position(|arg| arg == "--")
+            .expect("managed launch should retain its separator");
+        assert_eq!(
+            &args[separator - 5..separator],
+            [
+                "--dir",
+                root.to_str().expect("test root should be UTF-8"),
+                "--ro-bind",
+                root.to_str().expect("test root should be UTF-8"),
+                root.to_str().expect("test root should be UTF-8"),
+            ]
+        );
+        assert!(args[separator + 1..].windows(2).any(|window| {
+            window
+                == [
+                    "--mcp-config",
+                    config.to_str().expect("config should be UTF-8"),
+                ]
+        }));
+    }
+
+    #[test]
     fn generated_claude_session_ids_are_uuid_v4_shape() {
         let session_id = new_claude_session_id();
         assert_eq!(session_id.len(), 36);
@@ -881,6 +926,44 @@ mod tests {
         assert_eq!(batch.chunks.len(), 1);
         assert_eq!(batch.chunks[0].kind, TerminalOutputKind::ProviderOutput);
         assert_eq!(batch.chunks[0].bytes, b"hello");
+    }
+
+    #[test]
+    fn reconciles_partial_stream_with_authoritative_assistant_snapshot() {
+        let (mut state, mut streamed) = parser_state();
+
+        apply_claude_message(
+            "run-1",
+            &mut state,
+            json!({
+                "type": "stream_event",
+                "event": {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "text_delta", "text": "CL" }
+                }
+            }),
+            &mut streamed,
+        );
+        assert_eq!(streamed.chunks[0].bytes, b"CL");
+
+        let mut completed = ProviderPromptSignalBatch::default();
+        let assistant = json!({
+            "type": "assistant",
+            "message": {
+                "id": "msg-1",
+                "content": [{ "type": "text", "text": "CLAUDE_MANAGED_EMPTY_OK" }]
+            }
+        });
+        apply_claude_message("run-1", &mut state, assistant.clone(), &mut completed);
+
+        assert_eq!(completed.chunks.len(), 1);
+        assert_eq!(completed.chunks[0].kind, TerminalOutputKind::ProviderOutput);
+        assert_eq!(completed.chunks[0].bytes, b"AUDE_MANAGED_EMPTY_OK");
+
+        let mut duplicate = ProviderPromptSignalBatch::default();
+        apply_claude_message("run-1", &mut state, assistant, &mut duplicate);
+        assert!(duplicate.chunks.is_empty());
     }
 
     #[test]

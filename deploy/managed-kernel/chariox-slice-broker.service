@@ -1,0 +1,36 @@
+[Unit]
+Description=Chariox managed slice Docker broker
+After=chariox-rootless-docker.service
+Wants=chariox-rootless-docker.service
+
+[Service]
+Type=simple
+User=chariox-docker
+Group=chariox-docker
+Environment=HOME=/var/lib/chariox-docker/home
+Environment=DOCKER_HOST=unix:///run/chariox-docker/docker.sock
+Environment=CHARIOX_SLICE_DOCKER_BROKER_SOCKET=/var/lib/chariox-slice-share/.broker-private/control/control.sock
+Environment=CHARIOX_SLICE_DOCKER_SHARE_ROOT=/var/lib/chariox-slice-share
+Environment=CHARIOX_SLICE_DOCKER_BROKER_INPUT_ROOT=/run/chariox-slice-broker/input
+Environment=CHARIOX_SLICE_DOCKER_BROKER_OUTPUT_ROOT=/var/lib/chariox-slice-share/.broker-private/output
+Environment=CHARIOX_SLICE_DOCKER_BROKER_ARTIFACT_ROOT=/var/lib/chariox-slice-share/.broker-private/artifacts
+Environment=CHARIOX_SLICE_DOCKER_PROVISIONER=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/provision-linux-docker-slice.sh
+Environment=CHARIOX_MANAGED_RELEASE_MANIFEST=/usr/lib/chariox/release-manifest.json
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/enter-rootless-docker-namespace.sh /usr/bin/node /usr/lib/chariox/slice-build-context/apps/kernel/slice-linux-docker/managed-docker-broker.mjs
+Restart=no
+NoNewPrivileges=true
+CapabilityBoundingSet=
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/chariox-docker /var/lib/chariox-slice-share /run/chariox-docker
+UMask=0007
+
+[Install]
+WantedBy=multi-user.target

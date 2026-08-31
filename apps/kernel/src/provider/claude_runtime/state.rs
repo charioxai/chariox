@@ -44,8 +44,7 @@ pub struct ClaudeRuntimeState {
     pub(super) cancelled_turn_pending_settlement: bool,
     pub(super) next_turn_number: u64,
     pub(super) result_number: u64,
-    pub(super) emitted_text_offsets: BTreeMap<String, usize>,
-    pub(super) saw_text_delta: bool,
+    pub(super) emitted_text_by_block: BTreeMap<String, String>,
     pub(super) exit_reported: bool,
 }
 
@@ -74,8 +73,14 @@ impl std::fmt::Debug for ClaudeRuntimeState {
             )
             .field("next_turn_number", &self.next_turn_number)
             .field("result_number", &self.result_number)
-            .field("emitted_text_offsets", &self.emitted_text_offsets)
-            .field("saw_text_delta", &self.saw_text_delta)
+            .field(
+                "emitted_text_lengths_by_block",
+                &self
+                    .emitted_text_by_block
+                    .iter()
+                    .map(|(key, text)| (key, text.len()))
+                    .collect::<BTreeMap<_, _>>(),
+            )
             .field("exit_reported", &self.exit_reported)
             .finish()
     }

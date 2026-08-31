@@ -277,7 +277,7 @@ fn env_cloud_profile_can_accompany_env_relay_config_for_worker_refresh() {
             "CHARIOX_CLOUD_RELAY_CONFIG_JSON",
             r#"{
                   "cloud_relay": {
-                    "api_url": "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+                    "api_url": "https://staging.chariox.com",
                     "email": "worker@example.com",
                     "account_id": "account-1",
                     "user_id": "user-1",
@@ -347,7 +347,7 @@ fn load_from_env_imports_cli_cloud_profile_for_kernel_startup() {
         r#"{
               "relay": {
                 "cloud": {
-                  "apiUrl": "https://chariox-cloud-staging.osc-fr1.scalingo.io",
+                  "apiUrl": "https://staging.chariox.com",
                   "email": "test@example.com",
                   "accountId": "account-1",
                   "userId": "user-1",

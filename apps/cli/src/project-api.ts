@@ -7,6 +7,7 @@ import {
   listProjectsRequest,
   renameProjectRequest,
   restoreProjectRequest,
+  updateProjectWorkspacesRequest,
 } from "./ipc-requests.js"
 import { expectVariant } from "./ipc-response.js"
 
@@ -30,6 +31,17 @@ export async function renameProject(
 ): Promise<RuntimeProject> {
   const response = await client.send<Record<string, unknown>>(renameProjectRequest(projectId, name))
   return expectVariant<{ project: RuntimeProject }>(response, "ProjectRenamed").project
+}
+
+export async function updateProjectWorkspaces(
+  client: LocalIpcClient,
+  projectId: string,
+  workspaceIds: string[],
+): Promise<RuntimeProject> {
+  const response = await client.send<Record<string, unknown>>(
+    updateProjectWorkspacesRequest(projectId, workspaceIds),
+  )
+  return expectVariant<{ project: RuntimeProject }>(response, "ProjectWorkspacesUpdated").project
 }
 
 export async function archiveProject(

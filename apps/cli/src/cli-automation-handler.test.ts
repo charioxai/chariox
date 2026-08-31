@@ -67,6 +67,22 @@ test("automation action handler waits until snapshot filters match", async () =>
   assert.equal(attempts, 3)
 })
 
+test("automation exit uses the ordinary CLI cleanup path", async () => {
+  let exitRequests = 0
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    requestExit: async () => {
+      exitRequests += 1
+    },
+  })
+
+  const result = await handler({ action: "exit" })
+  await Promise.resolve()
+
+  assert.deepEqual(result, { exiting: true })
+  assert.equal(exitRequests, 1)
+})
+
 test("automation action handler sets focused interaction custom reply", async () => {
   const writes: Array<{ interactionId: string; reply: string }> = []
   const editing: Array<{ interactionId: string; editing: boolean }> = []
@@ -102,6 +118,27 @@ test("automation prompt submit does not relaunch when the session has an active 
       id: "session-1",
       active_provider_run_id: "provider-run-1",
     }) as RuntimeSession,
+    setPromptText: (value) => {
+      promptText = value
+    },
+    submitPrompt: async () => {
+      submitted = true
+    },
+    snapshot: () => ({ promptText, submitted }),
+  })
+
+  const result = await handler({ action: "submit_prompt", prompt: "hello" })
+
+  assert.deepEqual(result, { promptText: "hello", submitted: true })
+})
+
+test("automation prompt submit delegates provider recovery to the ordinary TUI submit path", async () => {
+  let promptText = ""
+  let submitted = false
+  const handler = createCliAutomationActionHandler({
+    ...baseDeps(),
+    isAttached: () => true,
+    sessionState: () => automationSession({ active_provider_run_id: null }),
     setPromptText: (value) => {
       promptText = value
     },
@@ -677,7 +714,7 @@ function baseDeps() {
     queuedPromptStripItemsForAgent: () => [],
     selectedQueuedPromptIndexForAgent: () => 0,
     onQueuedPromptAction: () => {},
-    restoreTerminalAndExit: async () => {},
+    requestExit: async () => {},
     waitingRoomState: () => waitingRoomFixture(),
     setWaitingRoomState: () => {},
     externalProviderSessionsState: () => [],

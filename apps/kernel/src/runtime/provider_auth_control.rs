@@ -14,8 +14,6 @@ use crate::provider::ProviderLoginStart;
 use crate::pty::{PtyProcessState, PtySpawnRequest};
 use crate::runtime::state::KernelRuntimeState;
 
-const PROVIDER_LOGIN_TIMEOUT_MS: u64 = 10 * 60 * 1_000;
-
 pub(crate) async fn execute_provider_auth_request(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -59,6 +57,36 @@ pub(crate) async fn execute_get_provider_auth_status_request(
     .map_err(|error| provider_auth_task_error("get provider auth status", error))?
 }
 
+async fn reconcile_running_terminal_provider_auth(
+    runtime_state: &KernelRuntimeState,
+    owner_user_id: &str,
+    provider: &str,
+) -> Result<(), DaemonError> {
+    let records = runtime_state
+        .provider_login_process_store()
+        .running_for_owner_provider(owner_user_id, provider);
+    for record in records {
+        let request = GetProviderLoginStatusRequest {
+            login_id: record.login_id.clone(),
+        };
+        if execute_get_provider_login_status_request(runtime_state, owner_user_id, request)
+            .await
+            .is_err()
+        {
+            let _ = runtime_state
+                .with_app_side_effect(|app| app.pty_mut().remove_process(&record.login_id))
+                .await;
+            runtime_state.provider_login_process_store().set_state(
+                owner_user_id,
+                &record.login_id,
+                ProviderLoginProcessState::Failed,
+                crate::session::unix_epoch_ms(),
+            )?;
+        }
+    }
+    Ok(())
+}
+
 async fn start_terminal_provider_auth(
     runtime_state: &KernelRuntimeState,
     owner_user_id: &str,
@@ -83,9 +111,15 @@ async fn start_terminal_provider_auth(
             "provider `{provider}` does not require an interactive logout workflow"
         )));
     }
+    reconcile_running_terminal_provider_auth(runtime_state, owner_user_id, provider).await?;
     let registry = runtime_state.provider_account_profile_registry();
     let profile = registry.get(owner_user_id, provider, &account_profile)?;
     let environment = registry.resolve_environment(owner_user_id, provider, &profile.profile_id)?;
+    let credential_scope = provider_auth_credential_scope(
+        provider,
+        &profile.profile_id,
+        environment.get("CLAUDE_CONFIG_DIR").map(String::as_str),
+    );
     let (program, args) = match (provider, operation) {
         ("claude", crate::runtime::state::ProviderAuthProcessOperation::Login) => (
             crate::provider::resolve_claude_executable()?,
@@ -116,6 +150,7 @@ async fn start_terminal_provider_auth(
             owner_user_id: owner_user_id.to_string(),
             provider: provider.to_string(),
             account_profile: profile.profile_id.clone(),
+            credential_scope,
             login_id: login_id.clone(),
             state: ProviderLoginProcessState::Running,
             backend: crate::runtime::state::ProviderLoginProcessBackend::Terminal,
@@ -186,7 +221,9 @@ pub(crate) async fn execute_get_provider_login_status_request(
         });
     }
     let now_ms = crate::session::unix_epoch_ms();
-    if now_ms.saturating_sub(record.started_at_ms) >= PROVIDER_LOGIN_TIMEOUT_MS {
+    if now_ms.saturating_sub(record.started_at_ms)
+        >= crate::runtime::state::PROVIDER_LOGIN_TIMEOUT_MS
+    {
         if record.backend == crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer {
             cancel_codex_login(
                 runtime_state,
@@ -439,6 +476,7 @@ pub(crate) async fn execute_start_provider_login_request(
                     owner_user_id: owner_user_id.to_string(),
                     provider: "codex".to_string(),
                     account_profile: login.account_profile.clone(),
+                    credential_scope: login.account_profile.clone(),
                     login_id: login_id.to_string(),
                     state: ProviderLoginProcessState::Running,
                     backend: crate::runtime::state::ProviderLoginProcessBackend::CodexAppServer,
@@ -499,9 +537,51 @@ fn provider_auth_task_error(operation: &'static str, error: tokio::task::JoinErr
     }
 }
 
+fn provider_auth_credential_scope(
+    provider: &str,
+    account_profile: &str,
+    claude_config_dir: Option<&str>,
+) -> String {
+    if provider == "claude" {
+        return claude_config_dir
+            .map(|path| format!("claude-config:{path}"))
+            .unwrap_or_else(|| "claude-ambient".to_string());
+    }
+    account_profile.to_string()
+}
+
 fn provider_login_error(message: impl Into<String>) -> DaemonError {
     DaemonError::LocalTransport {
         operation: "provider login",
         message: message.into(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_auth_credential_scope;
+
+    #[test]
+    fn claude_auth_scope_distinguishes_ambient_and_explicit_config_dirs() {
+        assert_eq!(
+            provider_auth_credential_scope("claude", "default", None),
+            "claude-ambient"
+        );
+        assert_eq!(
+            provider_auth_credential_scope("claude", "work", Some("/profiles/work")),
+            "claude-config:/profiles/work"
+        );
+        assert_eq!(
+            provider_auth_credential_scope("claude", "personal", Some("/profiles/personal")),
+            "claude-config:/profiles/personal"
+        );
+    }
+
+    #[test]
+    fn non_claude_auth_scope_is_the_account_profile() {
+        assert_eq!(
+            provider_auth_credential_scope("opencode", "work", None),
+            "work"
+        );
     }
 }

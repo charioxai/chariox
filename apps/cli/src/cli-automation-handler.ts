@@ -24,9 +24,6 @@ import {
   promptAttachmentTransferIsForced,
 } from "./prompt-attachment-transfer.js"
 import { submitPromptWithRecovery } from "./prompt-runtime-api.js"
-import { launchProviderRun } from "./provider-api.js"
-import { resizeSessionTerminal } from "./session-runtime-api.js"
-import { resolveAttachTimeProviderLaunch } from "@chariox/kernel-client/session-lifecycle-state"
 import type { WaitingRoomState } from "./waiting-room-types.js"
 import type { WaitingRoomProjectSummary } from "./waiting-room-projects.js"
 import { waitingRoomProjectsForNavigation } from "./waiting-room-project-rows.js"
@@ -64,7 +61,7 @@ export type CliAutomationActionDeps = {
   queuedPromptStripItemsForAgent: (agentId: string | null | undefined) => readonly QueuedPromptStripItem[]
   selectedQueuedPromptIndexForAgent: (agentId: string | null | undefined) => number
   onQueuedPromptAction: (item: QueuedPromptStripItem, action: "steer" | "cancel") => void | Promise<void>
-  restoreTerminalAndExit: (exitCode: number) => Promise<void>
+  requestExit: () => Promise<unknown>
   waitingRoomState: () => WaitingRoomState
   setWaitingRoomState: (state: WaitingRoomState) => void
   externalProviderSessionsState: () => ExternalProviderSessionRecord[]
@@ -134,26 +131,6 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
             deps.appLogger,
           )
           return deps.snapshot()
-        }
-        const session = deps.sessionState()
-        if (deps.isAttached()) {
-          const launchDecision = resolveAttachTimeProviderLaunch(session, {
-            provider: deps.options.provider ?? "opencode",
-            model: deps.options.model,
-            effort: deps.options.effort,
-          }, false)
-          if (launchDecision.action === "launch_provider_run") {
-            await launchProviderRun(
-              deps.client,
-              session.id,
-              launchDecision.launch.provider,
-              deps.options.accountProfile,
-              launchDecision.launch.model,
-              launchDecision.launch.effort,
-              launchDecision.targetAgentId,
-            )
-            await resizeSessionTerminal(deps.client, session.id)
-          }
         }
         deps.setPromptText(prompt)
         await deps.submitPrompt()
@@ -402,7 +379,7 @@ export function createCliAutomationActionHandler(deps: CliAutomationActionDeps) 
         return snapshot
       }
       case "exit":
-        void deps.restoreTerminalAndExit(0)
+        void deps.requestExit()
         return { exiting: true }
       default:
         throw new Error(`unknown automation action '${action || String(request.action)}'`)

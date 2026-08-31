@@ -1,4 +1,4 @@
-use std::process::Command;
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -319,13 +319,18 @@ fn epoch_to_ms(value: u64) -> u64 {
 
 fn codex_version() -> Result<String, DaemonError> {
     let executable = resolve_codex_executable()?;
-    let output = Command::new(executable)
-        .arg("--version")
-        .output()
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "codex_version",
-            message: error.to_string(),
-        })?;
+    let output = crate::provider::managed_isolated_utility_command(
+        executable.display().to_string(),
+        vec!["--version".to_string()],
+        BTreeMap::new(),
+        None,
+        "codex:version",
+    )?
+    .output()
+    .map_err(|error| DaemonError::LocalTransport {
+        operation: "codex_version",
+        message: error.to_string(),
+    })?;
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if !stdout.is_empty() {
         return Ok(stdout);

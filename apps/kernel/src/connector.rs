@@ -586,6 +586,12 @@ fn bundled_adapter_roots() -> Vec<PathBuf> {
 }
 
 fn chariox_home() -> Option<PathBuf> {
+    if let Some(root) = std::env::var_os("CHARIOX_CAPABILITY_ISOLATION_ROOT")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+    {
+        return Some(root.join("user"));
+    }
     std::env::var_os("CHARIOX_HOME")
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)

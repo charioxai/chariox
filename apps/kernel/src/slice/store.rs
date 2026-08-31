@@ -5,9 +5,10 @@ use crate::error::DaemonError;
 use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
-    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceDisplayEndpoint,
-    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceOperationStatus,
-    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceDevelopmentPublication,
+    SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode,
+    SliceOperationStatus, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
+    SliceSavedStateStatus, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
@@ -150,6 +151,9 @@ impl SliceStore {
             workspace_id: input.workspace_id,
             worktree_id: input.worktree_id,
             workspace_mount: input.workspace_mount,
+            development: input.development,
+            development_storage_root: None,
+            development_publication: None,
             worker_kernel_ref,
             worker_kernel_id: None,
             worker_machine_id: None,
@@ -670,6 +674,55 @@ impl SliceStore {
                     message: format!("unknown slice `{slice_ref}`"),
                 })?;
         record.provider_auth = provider_auth;
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_development_publication(
+        &self,
+        slice_ref: &str,
+        publication: SliceDevelopmentPublication,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.development.materialize",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.workspace_mount = Some(publication.primary_repository_path.clone());
+        record.development_publication = Some(publication);
+        record.updated_at_ms = now_ms;
+        Ok(record.clone())
+    }
+
+    pub fn set_development_storage_root(
+        &self,
+        slice_ref: &str,
+        storage_root: String,
+        now_ms: u64,
+    ) -> Result<SliceRecord, DaemonError> {
+        let resolved = self.resolve(slice_ref)?;
+        let mut state = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let record =
+            state
+                .records
+                .get_mut(&resolved.id)
+                .ok_or_else(|| DaemonError::LocalTransport {
+                    operation: "slice.development.storage",
+                    message: format!("unknown slice `{slice_ref}`"),
+                })?;
+        record.development_storage_root = Some(storage_root);
         record.updated_at_ms = now_ms;
         Ok(record.clone())
     }

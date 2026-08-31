@@ -136,6 +136,102 @@ test("waiting room slices filter reusable slices by selected worktree", () => {
   }
 })
 
+test("waiting room slices require the exact selected Project repository topology", () => {
+  const remote = {
+    workspaceId: "/primary",
+    worktreeId: "/primary-worktree",
+    projects: [{
+      id: "project-1",
+      owner_user_id: "local",
+      workspace_id: "/primary",
+      workspace_ids: ["/primary", "/supporting"],
+      name: "Project",
+      kind: "named" as const,
+      status: "active" as const,
+      created_at_ms: 1,
+      updated_at_ms: 1,
+      session_count: 1,
+      joined_collaborator_count: 0,
+      pending_collaboration_invite_count: 0,
+    }],
+    slices: [
+      slice({
+        id: "exact",
+        development: {
+          kind: "source_project",
+          project_id: "project-1",
+          repositories: [
+            { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
+            { role: "supporting", workspaceId: "/supporting", worktreeId: null },
+          ],
+        },
+      }),
+      slice({
+        id: "stale",
+        development: {
+          kind: "source_project",
+          project_id: "project-1",
+          repositories: [
+            { role: "primary", workspaceId: "/primary", worktreeId: "/primary-worktree" },
+          ],
+        },
+      }),
+      slice({
+        id: "empty",
+        development: { kind: "empty" },
+      }),
+      slice({ id: "legacy-empty" }),
+    ],
+  }
+  const slices = waitingRoomSlices(remote, {
+    workspacePath: "/primary",
+    worktreePath: "/primary-worktree",
+    projectSelectionId: "existing:project-1",
+    developmentMode: "current_project",
+  })
+  assert.deepEqual(slices.map((entry) => entry.id), ["exact"])
+
+  const primaryOnlySlices = waitingRoomSlices(remote, {
+    workspacePath: "/primary",
+    worktreePath: "/primary-worktree",
+    projectSelectionId: "existing:project-1",
+    developmentMode: "current_project",
+    repositorySelection: {
+      projectId: "project-1",
+      primaryWorkspaceId: "/primary",
+      supportingWorkspaceIds: [],
+    },
+  })
+  assert.deepEqual(primaryOnlySlices.map((entry) => entry.id), ["stale"])
+
+  const emptySlices = waitingRoomSlices(remote, {
+    workspacePath: "/primary",
+    worktreePath: "/primary-worktree",
+    projectSelectionId: "existing:project-1",
+    developmentMode: "empty",
+  })
+  assert.deepEqual(emptySlices.map((entry) => entry.id), ["empty", "legacy-empty"])
+
+  const unresolvedProjectSlices = waitingRoomSlices(remote, {
+    workspacePath: "/primary",
+    worktreePath: "/primary-worktree",
+    projectSelectionId: "new",
+    developmentMode: "current_project",
+  })
+  assert.deepEqual(unresolvedProjectSlices, [])
+
+  const missingPrimarySlices = waitingRoomSlices({
+    worktreeId: remote.worktreeId,
+    projects: remote.projects,
+    slices: remote.slices,
+  }, {
+    worktreePath: "/primary-worktree",
+    projectSelectionId: "existing:project-1",
+    developmentMode: "current_project",
+  })
+  assert.deepEqual(missingPrimarySlices, [])
+})
+
 test("waiting room slice labels show partial and stale provider auth coverage", () => {
   const slices = waitingRoomSlices({
     slices: [

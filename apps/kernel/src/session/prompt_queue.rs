@@ -102,6 +102,10 @@ pub struct PromptQueueItem {
 pub(crate) struct DurablePromptPrivateState {
     pub(crate) session_id: String,
     pub(crate) prompt_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_client_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) source_user_id: Option<String>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub(crate) hidden_system_context: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -126,6 +130,8 @@ pub(crate) struct DurablePromptPrivateState {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct PromptPrivateMetadata {
+    source_client_id: Option<String>,
+    source_user_id: Option<String>,
     hidden_system_context: String,
     operation_id: Option<String>,
     operation_fingerprint: Option<String>,
@@ -147,6 +153,8 @@ impl DurablePromptPrivateState {
         prompt.private_metadata.as_ref().map(|metadata| Self {
             session_id: session_id.to_string(),
             prompt_id: prompt.id.clone(),
+            source_client_id: metadata.source_client_id.clone(),
+            source_user_id: metadata.source_user_id.clone(),
             hidden_system_context: metadata.hidden_system_context.clone(),
             operation_id: metadata.operation_id.clone(),
             operation_fingerprint: metadata.operation_fingerprint.clone(),
@@ -301,6 +309,8 @@ impl PromptQueueItem {
                 if metadata.operation_id.is_none()
                     && metadata.delivery_phase.is_none()
                     && metadata.recovery_operation_id.is_none()
+                    && metadata.source_client_id.is_none()
+                    && metadata.source_user_id.is_none()
                 {
                     self.private_metadata = None;
                 }
@@ -310,6 +320,19 @@ impl PromptQueueItem {
         self.private_metadata
             .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()))
             .hidden_system_context = hidden_system_context;
+        self
+    }
+
+    pub(crate) fn with_source_attribution(
+        mut self,
+        source_client_id: impl Into<String>,
+        source_user_id: impl Into<String>,
+    ) -> Self {
+        let metadata = self
+            .private_metadata
+            .get_or_insert_with(|| Box::new(PromptPrivateMetadata::default()));
+        metadata.source_client_id = Some(source_client_id.into());
+        metadata.source_user_id = Some(source_user_id.into());
         self
     }
 
@@ -406,6 +429,18 @@ impl PromptQueueItem {
             .as_ref()
             .map(|metadata| metadata.hidden_system_context.as_str())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn source_client_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source_client_id.as_deref())
+    }
+
+    pub(crate) fn source_user_id(&self) -> Option<&str> {
+        self.private_metadata
+            .as_ref()
+            .and_then(|metadata| metadata.source_user_id.as_deref())
     }
 
     pub(crate) fn durable_operation_id(&self) -> Option<&str> {
@@ -531,11 +566,15 @@ impl PromptQueueItem {
             && private.operation_id.is_none()
             && private.delivery_phase.is_none()
             && private.recovery_operation_id.is_none()
+            && private.source_client_id.is_none()
+            && private.source_user_id.is_none()
         {
             self.private_metadata = None;
             return;
         }
         self.private_metadata = Some(Box::new(PromptPrivateMetadata {
+            source_client_id: private.source_client_id.clone(),
+            source_user_id: private.source_user_id.clone(),
             hidden_system_context: private.hidden_system_context.clone(),
             operation_id: private.operation_id.clone(),
             operation_fingerprint: private.operation_fingerprint.clone(),
@@ -663,7 +702,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prompt_queue_item_does_not_serialize_hidden_system_context() {
+    fn prompt_queue_item_does_not_serialize_private_runtime_metadata() {
         let mut item = PromptQueueItem::new(
             "prompt-1",
             "attachment-1",
@@ -671,6 +710,7 @@ mod tests {
             "VISIBLE_PROMPT_TOKEN",
             PromptStatus::Queued,
         )
+        .with_source_attribution("client-private", "user-private")
         .with_hidden_system_context("HIDDEN_CONTEXT_TOKEN")
         .with_durable_operation("operation-private", "fingerprint-private");
         item.set_durable_initially_queued(true);
@@ -690,6 +730,8 @@ mod tests {
         assert!(!payload.contains("fingerprint-private"));
         assert!(!payload.contains("durable_initially_queued"));
         assert!(!payload.contains("private_metadata"));
+        assert!(!payload.contains("client-private"));
+        assert!(!payload.contains("user-private"));
         assert!(!payload.contains("provider-run-private"));
         assert!(!payload.contains("provider-session-private"));
         assert!(!payload.contains(&recovery_operation_id));

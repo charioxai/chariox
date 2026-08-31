@@ -13,18 +13,31 @@ hash_stdin() {
 }
 
 runtime_source_revision() {
+  if [[ "${CHARIOX_SLICE_BUILD_CONTEXT_DIGEST:-}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+    printf '%s\n' "$CHARIOX_SLICE_BUILD_CONTEXT_DIGEST"
+    return
+  fi
   (
     cd "$REPO_ROOT"
     if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       git ls-files --cached --others --exclude-standard \
-        apps/kernel apps/relay examples/workflow-code
+        Cargo.toml Cargo.lock \
+        adapters/rust \
+        apps/aegs-dummy apps/kernel apps/relay \
+        examples/workflow-code \
+        packages/aegs-sdk packages/event-protocol
     else
-      find apps/kernel apps/relay examples/workflow-code -type f \
+      find \
+        Cargo.toml Cargo.lock \
+        adapters/rust \
+        apps/aegs-dummy apps/kernel apps/relay \
+        examples/workflow-code \
+        packages/aegs-sdk packages/event-protocol \
+        -type f \
         ! -path '*/target/*' \
         ! -path '*/node_modules/*' \
         | LC_ALL=C sort
     fi \
-      | grep -v '^apps/kernel/slice-linux-docker/' \
       | while IFS= read -r path; do
           [[ -f "$path" ]] || continue
           printf '%s ' "$path"
@@ -34,6 +47,9 @@ runtime_source_revision() {
 }
 
 SLICE_NAME="${CHARIOX_SLICE_NAME:-chariox-slice-linux}"
+SLICE_ID="${CHARIOX_SLICE_ID:-slice-linux}"
+SLICE_OWNER_KERNEL_ID="${CHARIOX_SLICE_OWNER_KERNEL_ID:-}"
+SLICE_OWNER_MACHINE_ID="${CHARIOX_SLICE_OWNER_MACHINE_ID:-}"
 SLICE_IMAGE="${CHARIOX_SLICE_DOCKER_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BASE_IMAGE="${CHARIOX_SLICE_BASE_IMAGE:-chariox-slice-linux:0.1.0}"
 SLICE_BUILD_IMAGE="${CHARIOX_SLICE_BUILD_IMAGE:-auto}"
@@ -43,12 +59,15 @@ SLICE_DOCKER_CPUS="${CHARIOX_SLICE_DOCKER_CPUS:-}"
 SLICE_HOME_VOLUME="${CHARIOX_SLICE_HOME_VOLUME:-${SLICE_NAME}-home}"
 SLICE_SAVED_HOME_ARCHIVE="${CHARIOX_SLICE_SAVED_HOME_ARCHIVE:-}"
 SLICE_WORKSPACE="${CHARIOX_SLICE_WORKSPACE:-$REPO_ROOT}"
+SLICE_WORKSPACE_SOURCE="${CHARIOX_SLICE_WORKSPACE_SOURCE:-$SLICE_WORKSPACE}"
+SLICE_DEVELOPMENT_MOUNT_COUNT="${CHARIOX_SLICE_DEVELOPMENT_MOUNT_COUNT:-0}"
 SLICE_WORKSPACE_MOUNT_MODE="${CHARIOX_SLICE_WORKSPACE_MOUNT_MODE:-rw}"
 SLICE_ALLOW_UNCONFINED_SECCOMP="${CHARIOX_SLICE_ALLOW_UNCONFINED_SECCOMP:-0}"
 SLICE_RECREATE="${CHARIOX_SLICE_RECREATE:-0}"
 SLICE_START_DESKTOP="${CHARIOX_SLICE_START_DESKTOP:-1}"
 SLICE_START_PROVIDER_SERVERS="${CHARIOX_SLICE_START_PROVIDER_SERVERS:-1}"
 SLICE_START_RUNTIME="${CHARIOX_SLICE_START_RUNTIME:-0}"
+MANAGED_PROVIDER_ISOLATION_PROBE="${CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE:-0}"
 SLICE_IMPORT_PROVIDER_AUTH="${CHARIOX_SLICE_IMPORT_PROVIDER_AUTH:-0}"
 SLICE_MIN_FREE_MB="${CHARIOX_SLICE_MIN_FREE_MB:-256}"
 SLICE_CODEX_PORT="${CHARIOX_SLICE_CODEX_PORT:-43252}"
@@ -75,6 +94,7 @@ SLICE_CLAUDE_STATS="${CHARIOX_SLICE_CLAUDE_STATS:-$HOME/.claude/stats-cache.json
 SLICE_CLAUDE_CREDENTIALS="${CHARIOX_SLICE_CLAUDE_CREDENTIALS:-$HOME/.claude/.credentials.json}"
 SLICE_CLAUDE_KEYCHAIN_SERVICE="${CHARIOX_SLICE_CLAUDE_KEYCHAIN_SERVICE:-Claude Code-credentials}"
 SLICE_GITHUB_HOST="${CHARIOX_SLICE_GITHUB_HOST:-github.com}"
+SLICE_GITHUB_TOKEN_FILE="${CHARIOX_SLICE_GITHUB_TOKEN_FILE:-}"
 SLICE_OPENCODE_PROVIDER="${CHARIOX_SLICE_OPENCODE_PROVIDER:-openai}"
 SLICE_OPENCODE_LOGIN_METHOD="${CHARIOX_SLICE_OPENCODE_LOGIN_METHOD:-ChatGPT Pro/Plus (headless)}"
 SLICE_LOGIN_PROVIDER="${CHARIOX_SLICE_LOGIN_PROVIDER:-codex}"
@@ -82,6 +102,7 @@ SLICE_AUTH_PROVIDER="${CHARIOX_SLICE_AUTH_PROVIDER:-all}"
 SLICE_ACCOUNT_OWNER="${CHARIOX_SLICE_ACCOUNT_OWNER:-local-user}"
 SLICE_ACCOUNT_PROFILE="${CHARIOX_SLICE_ACCOUNT_PROFILE:-default}"
 SLICE_ACCOUNT_ROOT="/home/slice/.chariox/daemon/provider-accounts/$SLICE_ACCOUNT_OWNER"
+SLICE_PROVIDER_HOME="/home/slice/provider-home"
 SLICE_RELAY_PEER_PROTOCOL_VERSION="$(sed -nE 's/^pub const RELAY_PEER_PROTOCOL_VERSION: u32 = ([0-9]+);$/\1/p' "$REPO_ROOT/apps/kernel/src/transport/relay_peer.rs" | head -n 1)"
 SLICE_RUNTIME_SOURCE_REVISION="$(runtime_source_revision)"
 
@@ -97,11 +118,13 @@ fail() {
 if [[ ! "$SLICE_ACCOUNT_OWNER" =~ ^[A-Za-z0-9-]+$ || ! "$SLICE_ACCOUNT_PROFILE" =~ ^[A-Za-z0-9-]+$ ]]; then
   fail "slice account owner/profile contains an unsafe path component"
 fi
+if [[ ! "$SLICE_DEVELOPMENT_MOUNT_COUNT" =~ ^[0-9]+$ || "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 128 ]]; then
+  fail "slice development mount count is invalid"
+fi
 
 run_with_timeout() {
   local seconds="$1"
   shift
-  local command_display="$*"
   local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
   rm -f "$timeout_marker"
   "$@" &
@@ -126,7 +149,7 @@ run_with_timeout() {
   wait "$watchdog" 2>/dev/null || true
   if [[ -f "$timeout_marker" ]]; then
     rm -f "$timeout_marker"
-    log "timed out after ${seconds}s: ${command_display}"
+    log "managed slice Docker operation timed out after ${seconds}s"
     return 124
   fi
   rm -f "$timeout_marker"
@@ -137,7 +160,6 @@ run_with_file_stdin_timeout() {
   local seconds="$1"
   local input_file="$2"
   shift 2
-  local command_display="$* < $input_file"
   local timeout_marker="${TMPDIR:-/tmp}/chariox-slice-timeout.$$.$RANDOM"
   rm -f "$timeout_marker"
   "$@" <"$input_file" &
@@ -162,7 +184,7 @@ run_with_file_stdin_timeout() {
   wait "$watchdog" 2>/dev/null || true
   if [[ -f "$timeout_marker" ]]; then
     rm -f "$timeout_marker"
-    log "timed out after ${seconds}s: ${command_display}"
+    log "managed slice Docker operation timed out after ${seconds}s"
     return 124
   fi
   rm -f "$timeout_marker"
@@ -206,7 +228,7 @@ restore_saved_home_volume() {
     "$SLICE_IMAGE" \
     sleep infinity >/dev/null
   run_with_timeout 60 docker start "$helper" >/dev/null
-  run_with_timeout 120 docker cp "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
+  run_with_timeout 120 docker cp -L "$SLICE_SAVED_HOME_ARCHIVE" "$helper:/tmp/home.tar.zst"
   run_with_timeout 120 docker exec -u root "$helper" \
     bash -lc "set -euo pipefail; find /home-dst -mindepth 1 -maxdepth 1 -exec rm -rf {} +; cd /home-dst; tar --zstd -xf /tmp/home.tar.zst; chown -R slice:slice /home-dst"
   run_with_timeout 30 docker rm -f "$helper" >/dev/null 2>&1 || true
@@ -259,11 +281,15 @@ refresh_slice_support_files() {
     || log "screen script overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/browser-cdp.mjs" "$SLICE_NAME:/opt/chariox-slice/browser-cdp.mjs" \
     || log "browser CDP helper overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe.mjs" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe.mjs" \
+    || log "provider isolation probe overlay refresh unavailable; continuing"
+  run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/managed-provider-isolation-probe-wrapper.sh" "$SLICE_NAME:/opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh" \
+    || log "provider isolation probe wrapper refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs" "$SLICE_NAME:/opt/chariox-slice/provider-port-bridge.mjs" \
     || log "provider bridge overlay refresh unavailable; continuing"
   run_with_timeout 30 docker cp "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/validate-screen.sh" "$SLICE_NAME:/opt/chariox-slice/validate-screen.sh" \
     || log "screen validator overlay refresh unavailable; continuing"
-  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod +x /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/managed-provider-isolation-probe.mjs /opt/chariox-slice/managed-provider-isolation-probe-wrapper.sh /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/validate-screen.sh \
     || log "script permission refresh unavailable; continuing"
 }
 
@@ -321,7 +347,18 @@ image_runtime_compatible() {
 
 build_standard_runtime_image() {
   local image="$1"
+  local prebuilt_marker="$REPO_ROOT/apps/kernel/slice-linux-docker/prebuilt/.managed-release"
   log "building $image"
+  if [[ -f "$prebuilt_marker" ]]; then
+    docker build \
+      --build-arg "CHARIOX_PREBUILT_RUNTIME=1" \
+      --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
+      --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
+      -f "$REPO_ROOT/apps/kernel/slice-linux-docker/docker/Dockerfile" \
+      -t "$image" \
+      "$REPO_ROOT"
+    return
+  fi
   docker build \
     --build-arg "CHARIOX_RELAY_PEER_PROTOCOL_VERSION=$SLICE_RELAY_PEER_PROTOCOL_VERSION" \
     --build-arg "CHARIOX_RUNTIME_SOURCE_REVISION=$SLICE_RUNTIME_SOURCE_REVISION" \
@@ -464,14 +501,34 @@ ensure_container() {
       -p "127.0.0.1:$SLICE_RELAY_PORT:$SLICE_RELAY_PORT"
       -p "127.0.0.1:$SLICE_NOVNC_PORT:$SLICE_NOVNC_PORT"
       -v "$SLICE_HOME_VOLUME:/home/slice"
-      -v "$SLICE_WORKSPACE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
+      -v "$SLICE_WORKSPACE_SOURCE:/workspace:$SLICE_WORKSPACE_MOUNT_MODE"
       --add-host "host.docker.internal:host-gateway"
     )
     if [[ "$SLICE_ALLOW_UNCONFINED_SECCOMP" == "1" ]]; then
-      docker_create_args+=(--security-opt seccomp=unconfined)
+      # The worker kernel launches providers through an inner bubblewrap user,
+      # PID, and mount namespace. Docker's default seccomp, AppArmor, and
+      # system-path masks block that setup before bubblewrap can install the
+      # narrower provider boundary. Managed hosts run this container in the
+      # dedicated rootless daemon; ordinary local slices must opt in.
+      docker_create_args+=(
+        --security-opt seccomp=unconfined
+        --security-opt apparmor=unconfined
+        --security-opt systempaths=unconfined
+      )
     fi
-    if [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
-      docker_create_args+=(-v "$SLICE_WORKSPACE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
+    if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
+      docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
+      for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
+        mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
+        mount_source_variable="${mount_variable}_SOURCE"
+        development_mount="${!mount_variable:-}"
+        development_mount_source="${!mount_source_variable:-$development_mount}"
+        [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
+        docker_create_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
+        docker_create_args+=(-v "$development_mount_source:$development_mount:$SLICE_WORKSPACE_MOUNT_MODE")
+      done
+    elif [[ "$SLICE_WORKSPACE" != "/workspace" ]]; then
+      docker_create_args+=(-v "$SLICE_WORKSPACE_SOURCE:$SLICE_WORKSPACE:$SLICE_WORKSPACE_MOUNT_MODE")
     fi
     if [[ -n "$SLICE_DOCKER_MEMORY" ]]; then
       docker_create_args+=(--memory "$SLICE_DOCKER_MEMORY")
@@ -512,6 +569,11 @@ ensure_container() {
     fi
   fi
 
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \
+    /home/slice/.chariox/daemon/config.json \
+    /tmp/chariox-slice-state/cloud-relay-config.json \
+    || fail "failed to scrub legacy Cloud relay credentials from the slice"
+
   if [[ "$created_container" == "1" ]]; then
     run_with_timeout 30 docker exec -u root "$SLICE_NAME" bash -lc "mkdir -p /home/slice/.local/share /home/slice/.config /home/slice/.cache && chown -R slice:slice /home/slice" \
       || log "home directory ownership refresh unavailable; continuing"
@@ -532,17 +594,46 @@ ensure_auth_target_container() {
     log "starting container $SLICE_NAME"
     run_with_timeout 60 docker start "$SLICE_NAME" >/dev/null || fail "failed to start container $SLICE_NAME"
   fi
+  run_with_timeout 30 docker exec -u root "$SLICE_NAME" rm -f \
+    /home/slice/.chariox/daemon/config.json \
+    /tmp/chariox-slice-state/cloud-relay-config.json \
+    || fail "failed to scrub legacy Cloud relay credentials from the slice"
 }
 
 exec_slice_with_timeout() {
   local seconds="$1"
   shift
   local relay_env_args=()
+  local workspace_root_env_args=()
+  if [[ "$SLICE_DEVELOPMENT_MOUNT_COUNT" -gt 0 ]]; then
+    workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_COUNT=$SLICE_DEVELOPMENT_MOUNT_COUNT")
+    local mount_index mount_variable development_mount
+    for ((mount_index = 0; mount_index < SLICE_DEVELOPMENT_MOUNT_COUNT; mount_index++)); do
+      mount_variable="CHARIOX_SLICE_DEVELOPMENT_MOUNT_${mount_index}"
+      development_mount="${!mount_variable:-}"
+      [[ -n "$development_mount" ]] || fail "slice development mount $mount_index is missing"
+      workspace_root_env_args+=(-e "CHARIOX_MANAGED_WORKSPACE_ROOT_${mount_index}=$development_mount")
+    done
+  fi
+  local relay_token_path="/tmp/chariox-slice-state/relay-token"
+  local relay_token_input
+  relay_token_input="$(mktemp "${TMPDIR:-/tmp}/chariox-slice-relay-token.XXXXXX")"
+  trap 'rm -f "$relay_token_input"' RETURN
+  chmod 600 "$relay_token_input"
+  printf '%s' "$SLICE_RELAY_TOKEN" >"$relay_token_input"
+  run_with_timeout 30 docker exec -u slice "$SLICE_NAME" mkdir -p /tmp/chariox-slice-state
+  if ! run_with_file_stdin_timeout 30 "$relay_token_input" docker exec -i -u slice "$SLICE_NAME" \
+    sh -c 'umask 077; cat > /tmp/chariox-slice-state/relay-token'; then
+    rm -f "$relay_token_input"
+    fail "failed to transfer the slice relay token"
+  fi
+  rm -f "$relay_token_input"
+  trap - RETURN
   if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" || -n "$SLICE_CLOUD_RELAY_CONFIG_JSON" ]]; then
     local cloud_relay_config_path="/tmp/chariox-slice-state/cloud-relay-config.json"
     if [[ -n "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" && -f "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" ]]; then
       run_with_timeout 30 docker exec -u root "$SLICE_NAME" mkdir -p /tmp/chariox-slice-state
-      run_with_timeout 30 docker cp "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" "$SLICE_NAME:$cloud_relay_config_path"
+      run_with_timeout 30 docker cp -L "$SLICE_CLOUD_RELAY_CONFIG_HOST_PATH" "$SLICE_NAME:$cloud_relay_config_path"
       run_with_timeout 30 docker exec -u root "$SLICE_NAME" chown slice:slice "$cloud_relay_config_path"
       run_with_timeout 30 docker exec -u root "$SLICE_NAME" chmod 600 "$cloud_relay_config_path"
     else
@@ -550,7 +641,7 @@ exec_slice_with_timeout() {
     fi
     relay_env_args+=(-e CHARIOX_SLICE_CLOUD_RELAY_CONFIG_PATH="$cloud_relay_config_path")
   fi
-  relay_env_args+=(-e CHARIOX_SLICE_RELAY_TOKEN="$SLICE_RELAY_TOKEN")
+  relay_env_args+=(-e CHARIOX_SLICE_RELAY_TOKEN_FILE="$relay_token_path")
   if [[ -n "$SLICE_RELAY_URL" ]]; then
     relay_env_args+=(-e CHARIOX_SLICE_RELAY_URL="$SLICE_RELAY_URL")
   fi
@@ -565,10 +656,15 @@ exec_slice_with_timeout() {
     -e CHARIOX_SLICE_RELAY_PORT="$SLICE_RELAY_PORT" \
     -e CHARIOX_SLICE_NOVNC_PORT="$SLICE_NOVNC_PORT" \
     "${relay_env_args[@]}" \
+    "${workspace_root_env_args[@]}" \
     -e CHARIOX_SLICE_DAEMON_ALIAS="$SLICE_DAEMON_ALIAS" \
     -e CHARIOX_SLICE_MACHINE_ID="$SLICE_MACHINE_ID" \
     -e CHARIOX_SLICE_MACHINE_ALIAS="$SLICE_MACHINE_ALIAS" \
+    -e CHARIOX_SLICE_ID="$SLICE_ID" \
+    -e CHARIOX_SLICE_OWNER_KERNEL_ID="$SLICE_OWNER_KERNEL_ID" \
+    -e CHARIOX_SLICE_OWNER_MACHINE_ID="$SLICE_OWNER_MACHINE_ID" \
     -e CHARIOX_SLICE_SCREEN_GEOMETRY="${CHARIOX_SLICE_SCREEN_GEOMETRY:-1280x800x24}" \
+    -e CHARIOX_MANAGED_PROVIDER_ISOLATION_PROBE="$MANAGED_PROVIDER_ISOLATION_PROBE" \
     -u slice \
     "$SLICE_NAME" \
     "$@"
@@ -624,10 +720,11 @@ copy_provider_auth_file() {
 
   local target_dir
   target_dir="$(dirname "$target_path")"
-  local backup_path="${target_path}.before-slice-auth-$(date +%Y%m%d%H%M%S)"
+  local backup_path="${target_path}.before-slice-auth"
   run_with_file_stdin_timeout 90 "$source_path" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
     mkdir -p '$target_dir'
+    rm -f '${target_path}.before-slice-auth-'*
     if [[ -f '$target_path' ]]; then
       cp '$target_path' '$backup_path'
     fi
@@ -782,11 +879,23 @@ import_github_auth() {
 
   local token_tmp
   token_tmp="$(mktemp "${TMPDIR:-/tmp}/chariox-github-token.XXXXXX")"
+  trap 'rm -f "$token_tmp"' RETURN
   chmod 600 "$token_tmp"
-  if ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
-    rm -f "$token_tmp"
-    log "GitHub auth is not configured on the kernel host; skipping"
-    return 0
+  if [[ -n "$SLICE_GITHUB_TOKEN_FILE" ]]; then
+    if [[ -s "$SLICE_GITHUB_TOKEN_FILE" ]]; then
+      cp "$SLICE_GITHUB_TOKEN_FILE" "$token_tmp"
+    elif [[ "$SLICE_AUTH_PROVIDER" == "github" ]]; then
+      rm -f "$token_tmp"
+      fail "GitHub auth import requires an explicit managed credential input"
+    else
+      rm -f "$token_tmp"
+      log "GitHub auth has no explicit managed credential input; skipping"
+      return 0
+    fi
+  elif ! gh auth token --hostname "$SLICE_GITHUB_HOST" >"$token_tmp" 2>/dev/null || [[ ! -s "$token_tmp" ]]; then
+      rm -f "$token_tmp"
+      log "GitHub auth is not configured on the kernel host; skipping"
+      return 0
   fi
 
   if ! run_with_timeout 30 docker exec -u slice "$SLICE_NAME" bash -lc "command -v gh >/dev/null 2>&1"; then
@@ -798,10 +907,13 @@ import_github_auth() {
   local import_status=0
   run_with_file_stdin_timeout 90 "$token_tmp" docker exec -i -u slice "$SLICE_NAME" bash -lc "
     set -euo pipefail
+    install -d -m 0700 '$SLICE_PROVIDER_HOME'
+    export HOME='$SLICE_PROVIDER_HOME'
     gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --with-token >/dev/null
     gh auth setup-git --hostname '$SLICE_GITHUB_HOST' >/dev/null
   " || import_status=$?
   rm -f "$token_tmp"
+  trap - RETURN
   if [[ "$import_status" != "0" ]]; then
     fail "failed to import GitHub auth into slice"
   fi
@@ -811,6 +923,7 @@ import_github_auth() {
 remove_github_auth() {
   exec_slice bash -lc "
     set +e
+    export HOME='$SLICE_PROVIDER_HOME'
     gh auth logout --hostname '$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://'$SLICE_GITHUB_HOST' >/dev/null 2>&1
     git config --global --remove-section credential.https://gist.'$SLICE_GITHUB_HOST' >/dev/null 2>&1
@@ -857,7 +970,7 @@ provider_login_command() {
       printf '%s\n' "CLAUDE_CONFIG_DIR='$SLICE_ACCOUNT_ROOT/claude/$SLICE_ACCOUNT_PROFILE/claude' claude auth login"
       ;;
     github)
-      printf '%s\n' "gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
+      printf '%s\n' "install -d -m 0700 '$SLICE_PROVIDER_HOME' && export HOME='$SLICE_PROVIDER_HOME' && gh auth login --hostname '$SLICE_GITHUB_HOST' --git-protocol https --web && gh auth setup-git --hostname '$SLICE_GITHUB_HOST'"
       ;;
     *)
       fail "unsupported slice provider login: $SLICE_LOGIN_PROVIDER"

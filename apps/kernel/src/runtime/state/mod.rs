@@ -42,6 +42,7 @@ mod provider_reload;
 use provider_output_deadline_store::ProviderOutputDeadlineStore;
 pub(crate) use provider_reload::*;
 mod event_delivery_runtime_state;
+mod managed_activity_runtime_state;
 mod provider_launch_defaults_owned_state;
 mod provider_relaunch_runtime;
 mod provider_reload_pending_runtime;
@@ -198,6 +199,7 @@ mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
 mod capability_owned_state;
+mod detached_provider_run_owned_state;
 mod owned;
 mod pending_runtime_state;
 use pending_runtime_state::*;
@@ -225,7 +227,7 @@ mod provider_liveness_runtime;
 mod provider_login_state;
 pub(in crate::runtime) use provider_login_state::{
     ProviderAuthProcessOperation, ProviderLoginProcessBackend, ProviderLoginProcessRecord,
-    ProviderLoginProcessStore,
+    ProviderLoginProcessStore, PROVIDER_LOGIN_TIMEOUT_MS,
 };
 mod provider_mcp_continuation_runtime;
 mod provider_output_runtime;
@@ -252,6 +254,7 @@ mod session;
 mod session_collaboration_state;
 mod session_lifecycle_runtime_state;
 mod session_lookup_state;
+mod slice_development_runtime_state;
 mod slice_runtime_state;
 mod structured_provider_output_runtime;
 mod terminal_runtime_state;
