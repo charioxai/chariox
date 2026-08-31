@@ -195,6 +195,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
         .iter()
         .any(|spec| spec.name == "slice_browser_status"));
     super::controller_observations::check(fixture, &token, &status.payload).await;
+    super::controller_mutations::check(fixture, &token, &status.payload).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {

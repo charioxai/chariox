@@ -17,12 +17,22 @@ pub(crate) enum RoomBrowserControllerCommand {
         target_id: String,
         document_id: String,
     },
+    Action {
+        target_id: String,
+        document_id: String,
+        node_ref: String,
+        action: crate::runtime::browser_controller_action::BrowserLocatorAction,
+        timeout_ms: u64,
+    },
     Release,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    Action {
+        result: Option<crate::runtime::browser_controller_action::BrowserControllerActionResult>,
+    },
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,

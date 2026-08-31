@@ -6,9 +6,25 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 284);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 20);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 285);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 21);
     for (command, wire_command) in [
+        (
+            RoomBrowserControllerCommand::Action {
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                node_ref: "backend:1".into(),
+                action: crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
+                    text: "sensitive-fill-fixture".into(),
+                    append: false,
+                    submit: false,
+                },
+                timeout_ms: 500,
+            },
+            serde_json::json!({"kind":"action","target_id":"target-1","document_id":"doc-1",
+                "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
+                "append":false,"submit":false},"timeout_ms":500}),
+        ),
         (
             RoomBrowserControllerCommand::Snapshot {
                 target_id: "target-1".into(),
@@ -42,6 +58,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         };
         let wire = serde_json::json!({"kind":"room_browser_controller", "session_id":"room-1",
             "slice_id":"slice-1","command":wire_command});
+        assert!(
+            !format!("{request:?}").contains("sensitive-fill-fixture"),
+            "relay diagnostics must not print fill payloads"
+        );
         assert_eq!(serde_json::to_value(&request).unwrap(), wire);
         assert_eq!(
             serde_json::from_value::<RelayPeerRequest>(wire).unwrap(),
@@ -49,6 +69,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         );
     }
     for result in [
+        serde_json::json!({"kind":"action","result":{
+            "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
+            "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50
+        }}),
         serde_json::json!({"kind":"snapshot","snapshot":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "snapshot_revision":2,"accessibility_nodes":[],"dom_documents":[],"shadow_roots":[],

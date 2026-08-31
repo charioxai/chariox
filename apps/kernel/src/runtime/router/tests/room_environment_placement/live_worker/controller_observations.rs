@@ -34,7 +34,7 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
         .await
         .unwrap();
     assert!(text.ok);
-    assert_eq!(text.payload["text"], "Save on worker");
+    assert_eq!(text.payload["text"], "Save on worker\nWorker note");
     for (query, matched) in [("Save on worker", true), ("not in this page", false)] {
         let result = runtime
             .dispatch_authenticated_runtime_tool_call(

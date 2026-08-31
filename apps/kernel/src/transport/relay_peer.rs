@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 20 adds structured observations to the provisioner-scoped Room
-/// controller route, retaining home-owned tab and element identities.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 20;
+/// Version 21 adds locator mutations to the provisioner-scoped Room controller
+/// route, retaining home-owned element lookup, action admission, and history.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 21;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {

@@ -615,7 +615,22 @@ runtime tools without running inside the slice. Tool discovery and dispatch
 derive the slice from the provider run's Room, never from caller-supplied IDs.
 Unbound home agents do not gain access to local screen helpers.
 
-Structured actions, events, file operations, worker-agent MCP forwarding, and
+Protocol v285 and relay peer v21 add locator actions to the same physical route.
+Home-owned element resolution, stale-reference checks, actor admission, action
+serialization, and terminal history surround worker execution. The worker validates
+action parameters and timeout before sending input to its controller; the home
+validates the returned target/document and action kind before recording completion.
+Fill payloads are excluded from request debug formatting. This is not a vault or
+secret-insertion acceptance claim. Home MCP advertises click, fill and submit
+alongside the read tools. The public-path routing drill observes changed page
+state and the home action ledger, and verifies that human input ownership blocks
+agent mutations until explicit release. Browser-tab takeover uses the same
+browser-component readiness as browser actions while the desktop is starting;
+desktop takeover still requires desktop readiness, and controller recovery
+blocks new input admission. Navigation and the remaining tools are not yet enabled for
+home agents.
+
+Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.
 Existing clients' minimum
 versions remain unchanged because their public request shapes have not changed.
