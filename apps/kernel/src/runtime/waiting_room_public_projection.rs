@@ -1209,6 +1209,7 @@ mod tests {
             name: id.to_string(),
             owner_kernel_id: "daemon".to_string(),
             owner_machine_id: "machine".to_string(),
+            environment_session_id: None,
             session_id: Some("session-slice".to_string()),
             session_ids: vec!["session-slice".to_string()],
             agent_ids: vec![agent_id.to_string()],

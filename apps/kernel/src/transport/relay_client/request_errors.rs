@@ -67,6 +67,8 @@ pub(super) fn relay_request_kind(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
+        LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
+        LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::StopRoomEnvironment(_) => "environment.stop",
         LocalDaemonRequest::RetryRoomEnvironment(_) => "environment.retry",
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(_) => "environment.viewport.update",
@@ -197,6 +199,19 @@ mod tests {
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_placement_errors_keep_stable_relay_codes() {
+        let error = DaemonError::LocalTransport {
+            operation: "environment.slice.bind",
+            message: "environment_slice_binding_rejected: slice belongs to another Room"
+                .to_string(),
+        };
+        assert_eq!(
+            map_relay_error(&error).code,
+            "environment_slice_binding_rejected"
+        );
     }
 
     #[test]

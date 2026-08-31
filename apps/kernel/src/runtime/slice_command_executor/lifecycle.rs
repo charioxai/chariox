@@ -773,6 +773,7 @@ mod tests {
             name: "dev".to_string(),
             owner_kernel_id: "kernel-1".to_string(),
             owner_machine_id: "machine-1".to_string(),
+            environment_session_id: None,
             session_id: None,
             session_ids: Vec::new(),
             agent_ids,

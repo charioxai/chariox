@@ -14,6 +14,7 @@ mod provider_usage_activity;
 mod publication;
 mod recall_terminal_metaagent;
 mod room_environment;
+mod room_environment_placement;
 mod slice_display;
 mod slice_logs;
 mod workflow_code;

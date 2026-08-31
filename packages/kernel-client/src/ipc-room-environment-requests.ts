@@ -6,6 +6,14 @@ export function getRoomEnvironmentStateRequest(sessionId: string) {
   }
 }
 
+export function getRoomEnvironmentSliceRequest(sessionId: string) {
+  return { GetRoomEnvironmentSlice: { session_id: sessionId } }
+}
+
+export function bindRoomEnvironmentSliceRequest(sessionId: string, sliceRef: string) {
+  return { BindRoomEnvironmentSlice: { session_id: sessionId, slice_ref: sliceRef } }
+}
+
 export function getRoomEnvironmentEventsRequest(sessionId: string, cursor: number) {
   return {
     GetRoomEnvironmentEvents: {

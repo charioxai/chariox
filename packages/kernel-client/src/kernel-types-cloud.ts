@@ -130,6 +130,7 @@ export type SliceRecord = {
   name: string
   owner_kernel_id: string
   owner_machine_id: string
+  environment_session_id?: string | null
   session_id?: string | null
   session_ids?: string[]
   agent_ids?: string[]

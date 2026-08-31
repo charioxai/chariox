@@ -25,6 +25,23 @@ pub(crate) struct SessionRuntimeStore {
 }
 
 impl SessionRuntimeStore {
+    pub(super) fn bind_room_environment_slice(
+        &self,
+        request: crate::local::BindRoomEnvironmentSliceRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        (
+            self.state
+                .bind_room_environment_slice(request, &caller_user_id)
+                .map(|binding| LocalDaemonResponse::RoomEnvironmentSlice {
+                    binding: Some(binding),
+                }),
+            None,
+        )
+    }
     pub(crate) fn new(state: KernelRuntimeState) -> Self {
         Self { state }
     }

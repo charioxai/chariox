@@ -68,6 +68,9 @@ pub struct SliceRecord {
     pub name: String,
     pub owner_kernel_id: String,
     pub owner_machine_id: String,
+    /// Durable reservation of this physical browser/profile for one Room.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub environment_session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

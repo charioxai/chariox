@@ -189,6 +189,7 @@ mod tests {
     mod relay_leased_prompt_steer;
     mod remote_authorization;
     mod remote_workspace_live_sync_authorization;
+    mod room_environment_placement;
     mod runtime_persistence;
     mod session_actor_projection;
     mod session_lifecycle_projection;

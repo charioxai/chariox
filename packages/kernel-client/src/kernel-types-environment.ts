@@ -145,6 +145,17 @@ export type RoomEnvironmentStateResponse = {
   }
 }
 
+export type RoomEnvironmentSliceBinding = {
+  session_id: string
+  slice_id: string
+  owner_kernel_id: string
+  worker_kernel_ref: string
+}
+
+export type RoomEnvironmentSliceResponse = {
+  RoomEnvironmentSlice: { binding: RoomEnvironmentSliceBinding | null }
+}
+
 export type RoomEnvironmentEventsResponse = {
   RoomEnvironmentEvents: {
     replay: RoomEnvironmentReplay

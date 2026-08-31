@@ -72,6 +72,13 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
     use KernelCommandPriority::{Background, Interactive, Normal};
 
     match request {
+        LocalDaemonRequest::BindRoomEnvironmentSlice(request) => {
+            LocalRequestMetadata::new("environment.slice.bind", Interactive)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::GetRoomEnvironmentSlice(request) => {
+            LocalRequestMetadata::new("environment.slice.get", Normal).session(&request.session_id)
+        }
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
@@ -422,6 +429,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::ResolveSession(_) => "session.resolve",
         LocalDaemonRequest::GetSessionState(_) => "session.state.get",
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
+        LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
+        LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",
