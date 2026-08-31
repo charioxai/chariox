@@ -15,6 +15,11 @@ impl KernelRuntimeState {
         processes: crate::runtime::browser_controller_process::BrowserControllerProcessStore,
     ) {
         self.owned.browser_controller_processes = processes;
+        self.owned
+            .browser_controller_generations
+            .lock()
+            .expect("browser controller generation lock poisoned")
+            .clear();
     }
 
     pub(crate) fn browser_controller_process_enabled(&self) -> bool {
@@ -26,8 +31,8 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
         let processes = self.owned.browser_controller_processes.clone();
-        let session_id = session_id.to_string();
-        tokio::task::spawn_blocking(move || processes.acquire(&session_id))
+        let owned_session_id = session_id.to_string();
+        let snapshot = tokio::task::spawn_blocking(move || processes.acquire(&owned_session_id))
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "browser_controller_process.start",
@@ -36,7 +41,11 @@ impl KernelRuntimeState {
             .map_err(|message| DaemonError::LocalTransport {
                 operation: "browser_controller_process.start",
                 message,
-            })
+            })?;
+        if let Some(snapshot) = snapshot.as_ref() {
+            self.observe_browser_controller_generation(session_id, snapshot.runtime_generation)?;
+        }
+        Ok(snapshot)
     }
 
     pub(crate) async fn finish_room_environment_controller_start(
@@ -135,6 +144,10 @@ impl KernelRuntimeState {
                 .room_environment_snapshot(session_id)
                 .map_err(|error| environment_runtime_error("browser_controller.reconcile", error));
         };
+        let controller_recovery_pending = self.observe_browser_controller_generation(
+            session_id,
+            reconciliation.process.runtime_generation,
+        )?;
         let focused_target_id = reconciliation.browser.focused_target_id.clone();
         let tabs = reconciliation
             .browser
@@ -147,12 +160,34 @@ impl KernelRuntimeState {
                 title: tab.title,
             })
             .collect();
-        self.reconcile_room_environment_controller_tabs(
-            session_id,
-            tabs,
-            focused_target_id.as_deref(),
-        )
-        .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))
+        let mut environment = self
+            .reconcile_room_environment_controller_tabs(
+                session_id,
+                tabs,
+                focused_target_id.as_deref(),
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?;
+        if controller_recovery_pending {
+            self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::BrowserController,
+                EnvironmentComponentHealthState::Ready,
+                None,
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+            self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::Browser,
+                EnvironmentComponentHealthState::Ready,
+                None,
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+            environment = self
+                .complete_room_environment_browser_controller_recovery(session_id)
+                .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+            self.complete_browser_controller_generation_recovery(session_id)?;
+        }
+        Ok(environment)
     }
 
     pub(crate) async fn capture_browser_environment_snapshot(
@@ -646,8 +681,8 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
         let processes = self.owned.browser_controller_processes.clone();
-        let session_id = session_id.to_string();
-        tokio::task::spawn_blocking(move || processes.release(&session_id))
+        let owned_session_id = session_id.to_string();
+        let snapshot = tokio::task::spawn_blocking(move || processes.release(&owned_session_id))
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "browser_controller_process.stop",
@@ -656,7 +691,13 @@ impl KernelRuntimeState {
             .map_err(|message| DaemonError::LocalTransport {
                 operation: "browser_controller_process.stop",
                 message,
-            })
+            })?;
+        self.owned
+            .browser_controller_generations
+            .lock()
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?
+            .remove(session_id);
+        Ok(snapshot)
     }
 
     pub(crate) async fn stop_managed_room_environment_runtime(
@@ -690,7 +731,7 @@ impl KernelRuntimeState {
         &self,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
         let processes = self.owned.browser_controller_processes.clone();
-        tokio::task::spawn_blocking(move || processes.shutdown())
+        let snapshot = tokio::task::spawn_blocking(move || processes.shutdown())
             .await
             .map_err(|error| DaemonError::LocalTransport {
                 operation: "browser_controller_process.shutdown",
@@ -699,7 +740,81 @@ impl KernelRuntimeState {
             .map_err(|message| DaemonError::LocalTransport {
                 operation: "browser_controller_process.shutdown",
                 message,
-            })
+            })?;
+        self.owned
+            .browser_controller_generations
+            .lock()
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?
+            .clear();
+        Ok(snapshot)
+    }
+
+    fn observe_browser_controller_generation(
+        &self,
+        session_id: &str,
+        generation: u64,
+    ) -> Result<bool, DaemonError> {
+        let mut generations = self
+            .owned
+            .browser_controller_generations
+            .lock()
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?;
+        let mut began_recovery = false;
+        let recovery_pending = match generations.get_mut(session_id) {
+            Some((previous, pending)) if *previous != generation => {
+                *previous = generation;
+                *pending = true;
+                began_recovery = true;
+                true
+            }
+            Some((_, pending)) => *pending,
+            None => {
+                generations.insert(session_id.to_string(), (generation, false));
+                false
+            }
+        };
+        drop(generations);
+        if began_recovery {
+            self.begin_room_environment_browser_controller_recovery(session_id)
+                .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+            self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::BrowserController,
+                EnvironmentComponentHealthState::Starting,
+                Some("controller_restarted"),
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+            self.update_room_environment_component_health(
+                session_id,
+                EnvironmentComponent::Browser,
+                EnvironmentComponentHealthState::Starting,
+                None,
+            )
+            .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+        }
+        Ok(recovery_pending)
+    }
+
+    fn complete_browser_controller_generation_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<(), DaemonError> {
+        let mut generations = self
+            .owned
+            .browser_controller_generations
+            .lock()
+            .map_err(|_| controller_generation_error("generation lock poisoned"))?;
+        if let Some((_, pending)) = generations.get_mut(session_id) {
+            *pending = false;
+        }
+        Ok(())
+    }
+}
+
+fn controller_generation_error(message: &str) -> DaemonError {
+    DaemonError::LocalTransport {
+        operation: "browser_controller.recover",
+        message: message.to_string(),
     }
 }
 

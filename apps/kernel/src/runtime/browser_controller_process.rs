@@ -1309,7 +1309,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         target_id: &str,
         document_id: &str,
     ) -> Result<BrowserControllerStructuredSnapshot, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .capture_browser_snapshot(target_id, document_id)
     }
@@ -1322,7 +1322,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         action: &BrowserLocatorAction,
         timeout_ms: u64,
     ) -> Result<BrowserControllerActionResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .perform_browser_action(target_id, document_id, node_ref, action, timeout_ms)
     }
@@ -1333,7 +1333,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         document_id: &str,
         url: &str,
     ) -> Result<BrowserControllerNavigationResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend.navigate_browser(target_id, document_id, url)
     }
 
@@ -1344,7 +1344,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         wait: &BrowserCompatibilityWait,
         timeout_ms: u64,
     ) -> Result<BrowserControllerCompatibilityWaitResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .wait_for_browser(target_id, document_id, wait, timeout_ms)
     }
@@ -1355,7 +1355,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         document_id: &str,
         action: &BrowserDialogAction,
     ) -> Result<BrowserControllerDialogResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .handle_browser_dialog(target_id, document_id, action)
     }
@@ -1365,7 +1365,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         target_id: &str,
         document_id: &str,
     ) -> Result<BrowserControllerDownloadsResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .configure_browser_downloads(target_id, document_id)
     }
@@ -1377,7 +1377,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         node_ref: &str,
         files: &BrowserUploadFiles,
     ) -> Result<BrowserControllerUploadResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .upload_browser_files(target_id, document_id, node_ref, files)
     }
@@ -1389,7 +1389,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         permission: BrowserPermissionName,
         setting: BrowserPermissionSetting,
     ) -> Result<BrowserControllerPermissionResult, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .set_browser_permission(target_id, document_id, permission, setting)
     }
@@ -1400,9 +1400,21 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         cursor: u64,
         limit: u16,
     ) -> Result<BrowserControllerEventBatch, String> {
-        self.ensure_started()?;
+        self.ensure_started_without_transparent_restart()?;
         self.backend
             .poll_browser_events(browser_generation, cursor, limit)
+    }
+
+    fn ensure_started_without_transparent_restart(&mut self) -> Result<(), String> {
+        let generation = self.snapshot.runtime_generation;
+        self.ensure_started()?;
+        if self.snapshot.runtime_generation != generation {
+            return Err(
+                "browser controller restarted before the operation; reconcile and retry with fresh references"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     fn start(&mut self) -> Result<(), String> {
@@ -1565,6 +1577,37 @@ mod tests {
         assert_eq!(snapshot.restart_count, 1);
         assert_eq!(supervisor.backend().start_count, 1);
         assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn mutation_does_not_run_after_an_implicit_controller_restart() {
+        let mut backend = FakeBackend::default();
+        backend.health.push_back(Ok(BrowserControllerProcessHealth {
+            state: BrowserControllerProcessState::Unhealthy,
+            process_id: Some(43),
+            diagnostic_code: Some("health_timeout".to_string()),
+        }));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(44))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+
+        let error = supervisor
+            .perform_browser_action(
+                "target-a",
+                "loader-a",
+                "backend:103",
+                &BrowserLocatorAction::Click,
+                1_000,
+            )
+            .expect_err("mutation must wait for recovery reconciliation");
+
+        assert_eq!(
+            error,
+            "browser controller restarted before the operation; reconcile and retry with fresh references"
+        );
+        assert_eq!(supervisor.snapshot().runtime_generation, 2);
+        assert_eq!(supervisor.snapshot().restart_count, 1);
     }
 
     #[test]

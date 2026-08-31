@@ -243,6 +243,24 @@ impl KernelRuntimeState {
             .finish_room_environment_action(session_id, action_id, terminal)
     }
 
+    pub(crate) fn begin_room_environment_browser_controller_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .begin_room_environment_browser_controller_recovery(session_id)
+    }
+
+    pub(crate) fn complete_room_environment_browser_controller_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .complete_room_environment_browser_controller_recovery(session_id)
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &self,
         session_id: &str,

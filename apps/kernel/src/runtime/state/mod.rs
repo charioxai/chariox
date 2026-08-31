@@ -68,6 +68,8 @@ struct KernelRuntimeOwnedState {
     slice_store: crate::slice::SliceStore,
     browser_controller_processes:
         crate::runtime::browser_controller_process::BrowserControllerProcessStore,
+    browser_controller_generations:
+        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
@@ -471,6 +473,7 @@ impl KernelRuntimeState {
                 slice_store,
                 browser_controller_processes:
                     crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
+                browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 provider_run_projection,
                 provider_process_projection,

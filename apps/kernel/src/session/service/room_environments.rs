@@ -280,6 +280,32 @@ impl SessionService {
             .finish_action(session_id, action_id, terminal)
     }
 
+    pub(crate) fn begin_room_environment_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .begin_browser_controller_recovery(session_id)
+    }
+
+    pub(crate) fn complete_room_environment_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .complete_browser_controller_recovery(session_id)
+    }
+
     pub(crate) fn request_room_environment_takeover_as_actor(
         &mut self,
         session_id: &str,

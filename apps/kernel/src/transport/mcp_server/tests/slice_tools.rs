@@ -331,12 +331,14 @@ async fn mcp_browser_status_uses_the_room_owned_controller_instead_of_one_shot_c
     let _guard = crate::env_lock::lock();
     let fixture = ControllerMcpFixture::new();
     let controller = fixture.root.join("browser-controller.sh");
+    let controller_pid = fixture.root.join("browser-controller.pid");
     let controller_log = fixture.root.join("controller.log");
     let one_shot = fixture.root.join("slice-screen.sh");
     let one_shot_log = fixture.root.join("one-shot.log");
     let controller_script = format!(
         r#"#!/bin/sh
 set -eu
+printf '%s\n' "$$" > '{}'
 document=loader-a
 url=https://example.test/dashboard
 while IFS= read -r request; do
@@ -384,6 +386,7 @@ while IFS= read -r request; do
   esac
 done
 "#,
+        controller_pid.display(),
         controller_log.display(),
         controller_log.display(),
         controller_log.display(),
@@ -590,7 +593,7 @@ done
         find_value["result"]["structuredContent"]["browser"]["matches"][0]["field_id"],
         value["result"]["structuredContent"]["browser"]["buttons"][0]["field_id"]
     );
-    let field_id = value["result"]["structuredContent"]["browser"]["fields"][0]["field_id"]
+    let mut field_id = value["result"]["structuredContent"]["browser"]["fields"][0]["field_id"]
         .as_str()
         .expect("status should expose an opaque field id")
         .to_string();
@@ -650,6 +653,93 @@ done
             .as_str()
             .is_some_and(|action_id| action_id.starts_with("action-")));
     }
+    let first_controller_pid = std::fs::read_to_string(&controller_pid)
+        .expect("controller pid should exist")
+        .trim()
+        .parse::<u32>()
+        .expect("controller pid should be numeric");
+    assert!(std::process::Command::new("/bin/kill")
+        .args(["-9", &first_controller_pid.to_string()])
+        .status()
+        .expect("controller kill should run")
+        .success());
+    let recovered_response = handle_json_rpc_value(
+        router.clone(),
+        &auth_token,
+        serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 51,
+            "method": "tools/call",
+            "params": {
+                "name": "slice_browser_status",
+                "arguments": {}
+            }
+        }),
+    )
+    .await
+    .expect("browser status should recover the killed controller");
+    let recovered_body = recovered_response
+        .into_body()
+        .collect()
+        .await
+        .expect("recovered browser status body should collect")
+        .to_bytes();
+    let recovered_value: Value =
+        serde_json::from_slice(&recovered_body).expect("recovered browser status body json");
+    assert_eq!(
+        recovered_value["result"]["isError"], false,
+        "{recovered_value:#}"
+    );
+    assert_eq!(
+        recovered_value["result"]["structuredContent"]["tab_id"],
+        "tab-1"
+    );
+    assert_eq!(
+        recovered_value["result"]["structuredContent"]["runtime_generation"],
+        1
+    );
+    let recovered_field_id = recovered_value["result"]["structuredContent"]["browser"]["fields"][0]
+        ["field_id"]
+        .as_str()
+        .expect("recovered status should expose a new opaque field id")
+        .to_string();
+    assert_ne!(recovered_field_id, field_id);
+    assert!(matches!(
+        router
+            .runtime_state()
+            .resolve_room_environment_element_reference(&session_id, &field_id),
+        Err(crate::session::EnvironmentError::StaleElementReference { .. })
+    ));
+    field_id = recovered_field_id;
+    let recovered_controller_pid = std::fs::read_to_string(&controller_pid)
+        .expect("recovered controller pid should exist")
+        .trim()
+        .parse::<u32>()
+        .expect("recovered controller pid should be numeric");
+    assert_ne!(recovered_controller_pid, first_controller_pid);
+    let recovered_environment = router
+        .runtime_state()
+        .room_environment_snapshot(&session_id)
+        .expect("Room Environment should recover");
+    assert_eq!(recovered_environment.tabs.len(), 1);
+    assert_eq!(recovered_environment.tabs[0].tab_id, "tab-1");
+    let recovered_actor_ids = recovered_environment
+        .actors
+        .iter()
+        .map(|actor| actor.actor_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        recovered_actor_ids.len(),
+        recovered_environment.actors.len(),
+        "controller recovery must not duplicate Actors"
+    );
+    assert!(recovered_actor_ids
+        .contains(crate::session::agent_environment_actor_id(&agent_id).as_str()));
+    assert_eq!(recovered_environment.actions.len(), 3);
+    assert!(recovered_environment
+        .actions
+        .iter()
+        .all(|action| action.state == crate::session::EnvironmentActionState::Completed));
     let text_response = handle_json_rpc_value(
         router.clone(),
         &auth_token,
@@ -888,7 +978,7 @@ done
     }));
     assert_eq!(
         std::fs::read_to_string(&controller_log).expect("controller log should exist"),
-        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
+        "reconcile\nsnapshot\nreconcile\nsnapshot\nfill\nclick\nsubmit\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nreconcile\nsnapshot\nsnapshot\nreconcile\nsnapshot\nfill\nreconcile\ndialog-dismiss\nreconcile\nnavigate\nreconcile\nreconcile\nwait-selector\nreconcile\nwait-idle\n"
     );
     assert!(
         !std::fs::read_to_string(&controller_log)

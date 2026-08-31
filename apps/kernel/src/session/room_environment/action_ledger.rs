@@ -3,7 +3,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::action::{
     ActionAdmission, ActionCancellationOutcome, EnvironmentAction,
     EnvironmentActionCancellationReason, EnvironmentActionFailureCode, EnvironmentActionOutcome,
-    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode,
+    InputTarget,
 };
 use super::model::{
     EnvironmentActor, EnvironmentActorKind, EnvironmentError, EnvironmentLifecycle,
@@ -28,6 +29,12 @@ pub(crate) struct ActionTakeoverEffect {
 pub(crate) struct ActionCancellationEffect {
     pub(crate) outcome: ActionCancellationOutcome,
     pub(crate) action_changed: bool,
+    pub(crate) started_action_ids: Vec<String>,
+}
+
+pub(crate) struct ActionRecoveryEffect {
+    pub(crate) failed_action_ids: Vec<String>,
+    pub(crate) ownership_changed: bool,
     pub(crate) started_action_ids: Vec<String>,
 }
 
@@ -273,8 +280,8 @@ impl EnvironmentActionLedger {
         self.history_action_sequences
             .insert(action_id.clone(), sequence);
         self.actions.insert(action_id.clone(), action);
+        self.requests.insert(action_id.clone(), accepted_request);
         if let Some(idempotency_key) = request.idempotency_key {
-            self.requests.insert(action_id.clone(), accepted_request);
             self.idempotency_actions
                 .insert(idempotency_key, action_id.clone());
         }
@@ -541,11 +548,94 @@ impl EnvironmentActionLedger {
         active_action_ids
     }
 
+    pub(crate) fn begin_controller_recovery(&mut self) -> ActionRecoveryEffect {
+        let failed_action_ids = self
+            .order
+            .iter()
+            .filter(|action_id| {
+                self.actions.get(*action_id).is_some_and(|action| {
+                    action.state == EnvironmentActionState::Running
+                        && action.mode == EnvironmentMode::Browser
+                })
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        for action_id in &failed_action_ids {
+            self.fail_action_for_process_loss(action_id);
+        }
+        self.reservations
+            .retain(|_, action_id| !failed_action_ids.contains(action_id));
+        let ownership_changed = self.finalize_takeovers();
+        ActionRecoveryEffect {
+            failed_action_ids,
+            ownership_changed,
+            started_action_ids: Vec::new(),
+        }
+    }
+
+    pub(crate) fn complete_controller_recovery(
+        &mut self,
+        runtime_generation: u64,
+        tabs: &TabRegistry,
+    ) -> ActionRecoveryEffect {
+        let failed_action_ids =
+            self.order
+                .iter()
+                .filter(|action_id| {
+                    let Some(action) = self.actions.get(*action_id) else {
+                        return false;
+                    };
+                    if action.state != EnvironmentActionState::Queued {
+                        return false;
+                    }
+                    self.requests.get(*action_id).is_none_or(|request| {
+                        request.runtime_generation != runtime_generation
+                            || request.tab_preconditions.iter().any(
+                                |(tab_id, document_revision)| {
+                                    tabs.validate_reference(
+                                        request.runtime_generation,
+                                        runtime_generation,
+                                        tab_id,
+                                        *document_revision,
+                                    )
+                                    .is_err()
+                                },
+                            )
+                    })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+        for action_id in &failed_action_ids {
+            self.fail_action_for_process_loss(action_id);
+        }
+        let ownership_changed = self.finalize_takeovers();
+        let started_action_ids = self.promote_queued_actions();
+        ActionRecoveryEffect {
+            failed_action_ids,
+            ownership_changed,
+            started_action_ids,
+        }
+    }
+
     pub(crate) fn clear_ownership(&mut self) -> bool {
         let changed = !self.input_owners.is_empty() || !self.pending_takeovers.is_empty();
         self.input_owners.clear();
         self.pending_takeovers.clear();
         changed
+    }
+
+    fn fail_action_for_process_loss(&mut self, action_id: &str) {
+        let action = self
+            .actions
+            .get_mut(action_id)
+            .expect("recovery action should remain in the ledger");
+        action.state = EnvironmentActionState::Failed;
+        action.cancellation_requested = false;
+        action.finished_at_ms = Some(next_action_timestamp(action));
+        action.outcome = Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ProcessLost,
+        });
+        self.sync_history_action(action_id);
     }
 
     fn blocking_action_ids(

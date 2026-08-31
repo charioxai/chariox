@@ -297,6 +297,34 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
+    pub(crate) fn begin_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.begin_browser_controller_recovery();
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn complete_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.complete_browser_controller_recovery();
+        Ok(environment.snapshot())
+    }
+
     pub(crate) fn request_takeover_as_actor(
         &mut self,
         session_id: &str,

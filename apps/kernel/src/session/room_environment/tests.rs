@@ -1178,6 +1178,248 @@ fn process_loss_fails_only_running_actions_and_invalidates_runtime_handles() {
 }
 
 #[test]
+fn controller_recovery_preserves_room_identity_tabs_actors_and_human_ownership() {
+    let mut environment = ready_environment_with_agent();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "user-1",
+            EnvironmentActorKind::Human,
+            "Miguel",
+        ))
+        .unwrap();
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-a", "loader-a", "https://a.test", "A"),
+            observed_tab("target-b", "loader-b", "https://b.test", "B"),
+        ],
+        Some("target-a"),
+    );
+    let element_refs = environment
+        .register_element_references("tab-1", 1, 1, ["backend:103".to_string()])
+        .unwrap();
+    let completed_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "completed-click",
+                "tab-1",
+                1,
+            ))
+            .unwrap(),
+    );
+    environment
+        .finish_action(&completed_id, EnvironmentActionTerminal::Completed)
+        .unwrap();
+    let running_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "running-click",
+                "tab-1",
+                1,
+            ))
+            .unwrap(),
+    );
+    let queued_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "queued-click",
+                "tab-1",
+                1,
+            ))
+            .unwrap(),
+    );
+    let computer_id = accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::computer_mutation(
+                "agent-1",
+                1,
+                "desktop-key",
+                None,
+            ))
+            .unwrap(),
+    );
+    assert_eq!(
+        environment
+            .request_takeover("user-1", InputTarget::BrowserTab("tab-2".to_string()))
+            .unwrap(),
+        TakeoverOutcome::Granted
+    );
+
+    environment.begin_browser_controller_recovery();
+    let recovering = environment.snapshot();
+    assert_eq!(recovering.environment_id, "environment-1");
+    assert_eq!(recovering.runtime_generation, 1);
+    assert_eq!(
+        recovering
+            .tabs
+            .iter()
+            .map(|tab| tab.tab_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tab-1", "tab-2"]
+    );
+    assert_eq!(recovering.actors.len(), 2);
+    assert_eq!(
+        recovering.input_ownership,
+        vec![InputOwnership {
+            target: InputTarget::BrowserTab("tab-2".to_string()),
+            actor_id: "user-1".to_string(),
+        }]
+    );
+    assert_eq!(
+        recovering
+            .actions
+            .iter()
+            .find(|action| action.action_id == completed_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Completed
+    );
+    assert_eq!(
+        recovering
+            .actions
+            .iter()
+            .find(|action| action.action_id == running_id)
+            .unwrap()
+            .outcome,
+        Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ProcessLost,
+        })
+    );
+    assert_eq!(
+        recovering
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Queued
+    );
+    assert_eq!(
+        recovering
+            .actions
+            .iter()
+            .find(|action| action.action_id == computer_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+    assert_eq!(
+        environment.resolve_element_reference(&element_refs["backend:103"]),
+        Err(EnvironmentError::StaleElementReference {
+            reference_id: element_refs["backend:103"].clone(),
+        })
+    );
+    assert_eq!(
+        environment.submit_action(EnvironmentActionRequest::browser_mutation(
+            "agent-1",
+            1,
+            "blocked-during-recovery",
+            "tab-1",
+            1,
+        )),
+        Err(EnvironmentError::EnvironmentNotReady {
+            lifecycle: EnvironmentLifecycle::Starting,
+        })
+    );
+
+    environment.reconcile_controller_tabs(
+        vec![
+            observed_tab("target-a", "loader-a", "https://a.test", "A"),
+            observed_tab("target-b", "loader-b", "https://b.test", "B"),
+        ],
+        Some("target-a"),
+    );
+    environment.complete_browser_controller_recovery();
+    let recovered = environment.snapshot();
+    assert_eq!(recovered.runtime_generation, 1);
+    assert_eq!(recovered.tabs.len(), 2);
+    assert_eq!(recovered.input_ownership, recovering.input_ownership);
+    assert_eq!(
+        recovered
+            .actions
+            .iter()
+            .find(|action| action.action_id == queued_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+    assert_eq!(
+        recovered
+            .actions
+            .iter()
+            .find(|action| action.action_id == computer_id)
+            .unwrap()
+            .state,
+        EnvironmentActionState::Running
+    );
+}
+
+#[test]
+fn controller_recovery_fails_queued_work_if_its_document_changed() {
+    let mut environment = ready_environment_with_agent();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab("target-a", "loader-a1", "https://a.test", "A")],
+        Some("target-a"),
+    );
+    accepted_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "running-click",
+                "tab-1",
+                1,
+            ))
+            .unwrap(),
+    );
+    let queued_id = queued_action_id(
+        environment
+            .submit_action(EnvironmentActionRequest::browser_mutation(
+                "agent-1",
+                1,
+                "queued-click",
+                "tab-1",
+                1,
+            ))
+            .unwrap(),
+    );
+
+    environment.begin_browser_controller_recovery();
+    environment.reconcile_controller_tabs(
+        vec![observed_tab(
+            "target-a",
+            "loader-a2",
+            "https://a.test/reloaded",
+            "Reloaded",
+        )],
+        Some("target-a"),
+    );
+    environment.complete_browser_controller_recovery();
+
+    let recovered = environment.snapshot();
+    assert_eq!(recovered.tabs.len(), 1);
+    assert_eq!(recovered.tabs[0].tab_id, "tab-1");
+    assert_eq!(recovered.tabs[0].document_revision, 2);
+    let queued = recovered
+        .actions
+        .iter()
+        .find(|action| action.action_id == queued_id)
+        .unwrap();
+    assert_eq!(queued.state, EnvironmentActionState::Failed);
+    assert_eq!(
+        queued.outcome,
+        Some(EnvironmentActionOutcome::Failed {
+            code: EnvironmentActionFailureCode::ProcessLost,
+        })
+    );
+}
+
+#[test]
 fn process_loss_emits_action_changes_before_compacting_terminal_records() {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment =

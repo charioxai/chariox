@@ -6,7 +6,7 @@ use super::action::{
     InputTarget,
 };
 use super::action_ledger::{
-    ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
+    ActionCancellationEffect, ActionRecoveryEffect, ActionTakeoverEffect, EnvironmentActionLedger,
 };
 use super::elements::{ElementReferenceRegistry, EnvironmentElementTarget};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
@@ -36,6 +36,7 @@ pub struct RoomEnvironment {
     tabs: TabRegistry,
     element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
+    browser_controller_recovering: bool,
     event_log: EnvironmentEventLog,
 }
 
@@ -82,6 +83,7 @@ impl RoomEnvironment {
             tabs: TabRegistry::new(),
             element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
+            browser_controller_recovering: false,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -386,6 +388,11 @@ impl RoomEnvironment {
         &mut self,
         request: EnvironmentActionRequest,
     ) -> Result<ActionAdmission, EnvironmentError> {
+        if self.browser_controller_recovering {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: EnvironmentLifecycle::Starting,
+            });
+        }
         let admission_lifecycle = if self.lifecycle == EnvironmentLifecycle::Starting
             && request.mode == EnvironmentMode::Browser
             && self.browser_components_ready()
@@ -411,6 +418,21 @@ impl RoomEnvironment {
             _ => {}
         }
         Ok(admission)
+    }
+
+    pub(crate) fn begin_browser_controller_recovery(&mut self) {
+        self.browser_controller_recovering = true;
+        self.element_references.clear();
+        let effect = self.action_ledger.begin_controller_recovery();
+        self.emit_action_recovery_effect(effect);
+    }
+
+    pub(crate) fn complete_browser_controller_recovery(&mut self) {
+        let effect = self
+            .action_ledger
+            .complete_controller_recovery(self.runtime_generation, &self.tabs);
+        self.browser_controller_recovering = false;
+        self.emit_action_recovery_effect(effect);
     }
 
     fn browser_components_ready(&self) -> bool {
@@ -667,6 +689,7 @@ impl RoomEnvironment {
 
     fn invalidate_runtime(&mut self) {
         self.has_started = true;
+        self.browser_controller_recovering = false;
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
@@ -681,6 +704,19 @@ impl RoomEnvironment {
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
         });
+    }
+
+    fn emit_action_recovery_effect(&mut self, effect: ActionRecoveryEffect) {
+        for action_id in effect.failed_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
+        }
+        if effect.ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        for action_id in effect.started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
     }
 
     fn emit(&mut self, kind: EnvironmentEventKind) {
