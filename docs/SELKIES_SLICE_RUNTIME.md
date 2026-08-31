@@ -28,8 +28,11 @@ pinned. Hardware encoding and WebRTC are not required for this baseline.
 The Dockerfile has a `selkies-build` target and a small `selkies-runtime`
 target below the full Chariox slice. The build uses a digest-pinned Node image,
 the checked-in npm lockfiles, and serial web builds. The runtime uses the
-checked-in Python version constraints and rejects source-only dependency
-fallbacks. Build inputs are bind-mounted into the install layer, so the final
+checked-in Python version and wheel-hash requirements for both architectures.
+Pip rejects unlisted hashes and source-only dependency fallbacks. The locally
+built Selkies wheel and SHA-verified capture wheels install offline without
+dependency resolution, followed by `pip check`. Build inputs are bind-mounted
+into the install layer, so the final
 image does not retain wheel archives, npm dependencies, or source-build tools.
 Runtime notices and the input pins live in `/usr/share/doc/chariox-selkies`.
 

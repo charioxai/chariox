@@ -19,15 +19,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pulseaudio x11-utils x11-xserver-utils xvfb \
   && rm -rf /var/lib/apt/lists/*
 RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package \
-    --mount=type=bind,source=apps/kernel/slice-linux-docker/selkies-runtime.constraints.txt,target=/tmp/selkies-constraints.txt \
+    --mount=type=bind,source=apps/kernel/slice-linux-docker/selkies-runtime.requirements.txt,target=/tmp/selkies-requirements.txt \
     python3 -m venv /opt/chariox-selkies \
   && /opt/chariox-selkies/bin/pip install --no-cache-dir --only-binary=:all: \
-    --constraint /tmp/selkies-constraints.txt \
+    --require-hashes --requirement /tmp/selkies-requirements.txt \
+  && /opt/chariox-selkies/bin/pip install --no-cache-dir --no-index --no-deps \
     /tmp/selkies-package/selkies-*.whl /tmp/selkies-package/wheels/*.whl \
   && /opt/chariox-selkies/bin/pip check \
   && mkdir -p /usr/share/doc/chariox-selkies \
   && cp -a /tmp/selkies-package/licenses/. /usr/share/doc/chariox-selkies/ \
-  && cp /tmp/selkies-constraints.txt /usr/share/doc/chariox-selkies/python-constraints.txt
+  && cp /tmp/selkies-requirements.txt /usr/share/doc/chariox-selkies/python-requirements.txt
 ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
 
 FROM selkies-runtime AS slice-runtime-deps
