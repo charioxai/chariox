@@ -312,7 +312,8 @@ pub(super) fn compose_command_router(
     if session_projection.list_shared().is_none() {
         session_projection.update_list(runtime_state.list_session_snapshots());
     }
-    install_provider_native_interaction_bridge(runtime_state.clone(), &provider_store);
+    let native_interaction_bridge =
+        install_provider_native_interaction_bridge(runtime_state.clone(), &provider_store);
     let provider_launch_pending = ProviderLaunchPendingTracker::default();
     let capability_runtime = CapabilityRuntimeStore::new(runtime_state.clone());
     let agent_runtime = AgentRuntime::new(
@@ -346,6 +347,7 @@ pub(super) fn compose_command_router(
         terminal_stream.clone(),
     );
     CommandRouter {
+        _native_interaction_bridge: native_interaction_bridge,
         app,
         runtime_state,
         agent_runtime,

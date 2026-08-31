@@ -192,6 +192,18 @@ impl RestoredExternalProviderAttachmentState {
                     self.live_session_ids.insert(session.id().to_string());
                 }
             }
+            "workflow.publication.materialized" => {
+                if let Ok(session) = decode_durable_payload_field::<RuntimeSession>(
+                    event,
+                    "session",
+                    "durable_state.scan_publication_materialization",
+                ) {
+                    self.live_session_ids.insert(session.id().to_string());
+                    for agent in session.agents() {
+                        self.restore_agent_if_session_live(agent.clone());
+                    }
+                }
+            }
             "sessions.updated" => {
                 if let Ok(sessions) = decode_durable_payload_field::<Vec<RuntimeSession>>(
                     event,
@@ -1068,6 +1080,33 @@ impl DaemonApp {
                 self.update_session_projection(session);
             }
             "workflow.runtime.updated" => {}
+            "workflow.publication.materialized" => {
+                let session: RuntimeSession = decode_durable_payload_field(
+                    &event,
+                    "session",
+                    "durable_state.restore_publication_materialization",
+                )?;
+                if !self.session_belongs_to_current_kernel(&session) {
+                    return Ok(());
+                }
+                for agent in session.agents() {
+                    if agent.session_id() != session.id()
+                        || agent.owner_user_id() != session.owner_user_id()
+                    {
+                        return Err(DaemonError::LocalTransport {
+                            operation: "durable_state.restore_publication_materialization",
+                            message: "publication agent ownership does not match its session"
+                                .to_string(),
+                        });
+                    }
+                }
+                for agent in session.agents() {
+                    self.agents.restore_agent(agent.clone());
+                }
+                self.prompt_state_owner.restore_session_state(&session);
+                let session = self.restore_session_with_project_migration(session);
+                self.update_session_projection(session);
+            }
             "session.updated" => {
                 if durable_payload_entity_belongs_to_other_owner(
                     &event,

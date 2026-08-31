@@ -416,6 +416,8 @@ pub struct RegisterWorkflowPublicationEndpointRequest {
 pub struct MaterializeWorkflowPublicationRequest {
     pub publication_id: String,
     pub snapshot: WorkflowPublicationSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

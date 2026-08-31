@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 282);
 
     let create_request = LocalDaemonRequest::CreateWorkflowPublication(
         crate::local::CreateWorkflowPublicationRequest {
@@ -190,9 +190,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         crate::local::MaterializeWorkflowPublicationRequest {
             publication_id: "publication-1".to_string(),
             snapshot: snapshot.clone(),
+            runtime_key: Some("deployment-1:replica-0".to_string()),
         },
     ));
-    let publication = crate::session::WorkflowPublicationDefinition::new_immutable(
+    let mut publication = crate::session::WorkflowPublicationDefinition::new_immutable(
         "publication-1",
         "session-1",
         "workflow-1",
@@ -218,6 +219,12 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some("publish-operation-1".to_string()),
         Some("sha256:publication-request-1".to_string()),
         "local",
+    );
+    publication.set_runtime_materialization(
+        crate::session::WorkflowPublicationRuntimeMaterialization {
+            key: "deployment-1:replica-0".to_string(),
+            agent_id_map: BTreeMap::from([("agent-1".to_string(), "runtime-agent-1".to_string())]),
+        },
     );
     let session = crate::session::RuntimeSession::new(
         "session-1",
@@ -427,6 +434,10 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
         Some(&serde_json::json!("human_http"))
     );
     assert_eq!(
+        snapshot.pointer("/5/MaterializeWorkflowPublication/runtime_key"),
+        Some(&serde_json::json!("deployment-1:replica-0"))
+    );
+    assert_eq!(
         snapshot.pointer("/5/MaterializeWorkflowPublication/snapshot/workflow/schemas/0/id"),
         Some(&serde_json::json!("schema-1"))
     );
@@ -618,13 +629,13 @@ fn local_daemon_protocol_workflow_publication_shape_is_versioned() {
     let hash = Sha256::digest(serialized.as_bytes());
     assert_eq!(
         format!("{hash:x}"),
-        "1b0e56130fa8a124e0bc7488ac6545ceb7e251c83a0c30a3f62bbaa14c8a5851"
+        "f72ff182e8d3a2485d2e94a139809f464896ec166f30064ff74218df9730d552"
     );
 }
 
 #[test]
 fn local_daemon_protocol_publication_invocation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 282);
 
     let request =
         LocalDaemonRequest::InvokeWorkflowEndpoint(crate::local::InvokeWorkflowEndpointRequest {

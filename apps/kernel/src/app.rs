@@ -243,7 +243,7 @@ impl DaemonApp {
         );
 
         let durable_state_started = Instant::now();
-        let durable_state = DurableKernelStateStore::open(config.durable_state_path())?;
+        let durable_state = DurableKernelStateStore::open_owned(config.durable_state_path())?;
         let managed_context_root = config
             .durable_state_path()
             .parent()

@@ -83,6 +83,7 @@ export async function loadPublicationPackageConfig(
     validateProviderBindings?: boolean
     promptProviderModelReplacement?: ProviderModelBindingPrompt | false
     runtimeWorkspace?: string
+    runtimeKey?: string
     client?: KernelLookupClient
   } = {},
 ): Promise<WorkflowPublicationConfig> {
@@ -110,6 +111,9 @@ export async function loadPublicationPackageConfig(
   )
   validateAgentAppConfig(config.agent_app, { packageRoot: root })
   if (!options.materialize) return config
+  if (options.runtimeKey !== undefined && !options.runtimeWorkspace?.trim()) {
+    throw new Error("resumable publication requires an explicit stable runtime workspace")
+  }
   const requirements = await loadPublicationRequirements(root)
   const ownedClient = options.client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
   try {
@@ -143,7 +147,8 @@ export async function loadPublicationPackageConfig(
       : 1
     const materializedConfigs: WorkflowPublicationConfig[] = []
     for (let index = 0; index < replicaCount; index += 1) {
-      const materialized = await materializePublicationConfig(config, materializationSnapshot, ownedClient)
+      const runtimeKey = options.runtimeKey === undefined ? undefined : `${options.runtimeKey}:replica-${index}`
+      const materialized = await materializePublicationConfig(config, materializationSnapshot, ownedClient, runtimeKey)
       await activatePublicationEventBindings({
         client: ownedClient,
         packageRoot: root,
@@ -341,7 +346,7 @@ export function publicationConfigFromKernelRecord(
 
 export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicationConfig | undefined> {
   if (process.env.CHARIOX_PUBLICATION_PACKAGE) {
-    const packageOptions: { kernelEndpoint?: string; hookId?: string; runtimeWorkspace?: string } = {
+    const packageOptions: { kernelEndpoint?: string; hookId?: string; runtimeWorkspace?: string; runtimeKey?: string } = {
       kernelEndpoint: defaultKernelEndpoint(),
     }
     if (process.env.CHARIOX_PUBLICATION_HOOK_ID) {
@@ -349,6 +354,9 @@ export async function loadGatewayPublicationConfig(): Promise<WorkflowPublicatio
     }
     if (process.env.CHARIOX_PUBLICATION_RUNTIME_WORKSPACE) {
       packageOptions.runtimeWorkspace = process.env.CHARIOX_PUBLICATION_RUNTIME_WORKSPACE
+    }
+    if (process.env.CHARIOX_PUBLICATION_RUNTIME_KEY) {
+      packageOptions.runtimeKey = process.env.CHARIOX_PUBLICATION_RUNTIME_KEY
     }
     return withEnvTlsConfig(await loadPublicationPackageConfig(process.env.CHARIOX_PUBLICATION_PACKAGE, {
       ...packageOptions,
@@ -376,16 +384,26 @@ export async function materializePublicationConfig(
   config: WorkflowPublicationConfig,
   snapshot: WorkflowPublicationSnapshot,
   client?: KernelLookupClient,
+  runtimeKey?: string,
 ): Promise<WorkflowPublicationConfig> {
   const ownedClient = client ?? new LocalIpcClient(config.kernel_endpoint ?? defaultKernelEndpoint())
   try {
     const response = await ownedClient.send(
-      materializeWorkflowPublicationRequest(config.publication_id, snapshot),
+      materializeWorkflowPublicationRequest(config.publication_id, snapshot,
+        runtimeKey === undefined ? {} : { runtimeKey }),
     )
-    const materialized = response.WorkflowPublicationMaterialized as { session?: { id?: string } } | undefined
+    const materialized = response.WorkflowPublicationMaterialized as {
+      session?: Pick<RuntimeSession, "id" | "workflow_publications">
+    } | undefined
     const runtimeSessionId = materialized?.session?.id
     if (!runtimeSessionId) {
       throw new Error(`unexpected workflow publication materialization response: ${JSON.stringify(response)}`)
+    }
+    if (runtimeKey !== undefined && !materialized?.session?.workflow_publications?.some(
+      (publication) => publication.id === config.publication_id
+        && publication.runtime_materialization?.key === runtimeKey,
+    )) {
+      throw new Error("kernel did not acknowledge the publication runtime key; protocol 282 or newer is required")
     }
     return {
       ...config,

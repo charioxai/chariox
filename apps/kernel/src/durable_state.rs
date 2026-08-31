@@ -15,6 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::DaemonError;
 
+mod owner;
 pub(crate) mod workflow_runtime;
 
 #[derive(Debug, Clone)]
@@ -23,6 +24,7 @@ pub struct DurableKernelStateStore {
     connection: Arc<Mutex<Connection>>,
     writer: Arc<DurableStateWriter>,
     workflow_runtime_transition_lock: Arc<Mutex<()>>,
+    _owner: Option<Arc<fs::File>>,
 }
 
 const DURABLE_WRITE_QUEUE_CAPACITY: usize = 4_096;
@@ -231,6 +233,13 @@ pub(crate) struct DurableCheckpointEntity {
 }
 
 impl DurableKernelStateStore {
+    pub(crate) fn open_owned(path: PathBuf) -> Result<Self, DaemonError> {
+        let owner = owner::acquire(&path)?;
+        let mut store = Self::open(path)?;
+        store._owner = Some(Arc::new(owner));
+        Ok(store)
+    }
+
     pub fn open(path: PathBuf) -> Result<Self, DaemonError> {
         let initialize_incremental_vacuum = fs::metadata(&path)
             .map(|metadata| metadata.len() == 0)
@@ -277,6 +286,7 @@ impl DurableKernelStateStore {
             connection: Arc::new(Mutex::new(connection)),
             writer: Arc::new(writer),
             workflow_runtime_transition_lock: Arc::new(Mutex::new(())),
+            _owner: None,
         })
     }
 

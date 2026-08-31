@@ -202,6 +202,15 @@ Rules:
   lists
 - deployed workflow sessions MUST NOT be editable through ordinary workflow,
   session, or agent authoring commands
+- a deployment replica may use a destination-owned materialization key to resume
+  its durable session and agent identities. Creation is one durable event;
+  retry does not restore initial schedules or overwrite queued work. Different
+  replicas use different keys, and conflicting snapshots fail closed.
+- runtime authority is exclusive per durable store, including during process
+  replacement. A process-lifetime file lease prevents two kernels from restoring
+  and scheduling the same work. The router owns the native permission bridge;
+  the provider store keeps a weak reference so teardown cannot retain its own
+  runtime and state lease through a reference cycle.
 - the kernel remains the authority for source and deployed workflow
   sessions, workflow queues, workflow runs, provider runs, artifacts, and
   outputs

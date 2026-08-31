@@ -172,11 +172,13 @@ export function registerWorkflowPublicationEndpointRequest(
 export function materializeWorkflowPublicationRequest(
   publicationId: string,
   snapshot: WorkflowPublicationSnapshot,
+  options: { runtimeKey?: string } = {},
 ) {
   return {
     MaterializeWorkflowPublication: {
       publication_id: publicationId,
       snapshot,
+      ...(options.runtimeKey === undefined ? {} : { runtime_key: options.runtimeKey }),
     },
   }
 }

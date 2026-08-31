@@ -739,6 +739,22 @@ Workflow trigger and deployment direction:
   kernel-owned session in the destination kernel. That deployed session is
   independent from the source session because it is a separate execution
   environment, not because a trigger was created
+- protocol 282 adds optional `runtime_key` to `MaterializeWorkflowPublication`.
+  A destination-owned key binds one immutable publication/snapshot to one
+  runtime session and agent map. Repeating it, including after kernel restart,
+  returns that runtime without reinstalling its initial queues or schedules.
+  A conflicting snapshot, disabled publication, ended session, or changed agent
+  ownership fails closed. Omitting the key still creates an independent runtime.
+  The gateway appends `:replica-N` to `CHARIOX_PUBLICATION_RUNTIME_KEY` for each
+  configured replica. Keys do not authorize access or transfer credentials.
+- materialization acknowledges only after atomically persisting the initial
+  session and agents. Subsequent queues, schedules, and runs use the ordinary
+  kernel durable-state path. Recovery requires the same kernel identity, durable
+  state and workspace mapping; a key alone is not a persistence mechanism.
+- a kernel holds an exclusive process-lifetime lease on its durable store.
+  Deployment replacement must stop the previous state owner before starting its
+  successor. The lease is released only after the last owned store reference
+  and durable writer are gone; database observers do not become schedulers.
 - serving either a live source trigger or a deployed package MUST validate
   provider/model bindings, extension requirements, and credential requirements
   before it accepts traffic

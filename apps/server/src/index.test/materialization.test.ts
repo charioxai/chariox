@@ -38,6 +38,13 @@ import {
   writeFile,
   type WorkflowPublicationConfig,
 } from "../index.test-support.js"
+import { materializePublicationConfig } from "../publication-config.js"
+
+test("gateway refuses a kernel that ignores the publication resume key", async () => {
+  await assert.rejects(materializePublicationConfig(baseConfig, {} as never, {
+    send: async () => ({ WorkflowPublicationMaterialized: { session: { id: "fresh-session" } } }),
+  }, "deployment-a:replica-0"), /did not acknowledge.*protocol 282/)
+})
 
 test("gateway materializes exported publication packages through the kernel", async () => {
   const root = await mkdtemp(join(tmpdir(), "chariox-server-publication-materialize-"))
@@ -144,10 +151,16 @@ test("gateway materializes exported publication packages through the kernel", as
       credentials: [{ name: "github-token", used_by: "github" }],
     }))
 
+    await assert.rejects(loadPublicationPackageConfig(root, {
+      materialize: true, runtimeKey: "deployment-a",
+      client: { send: async () => { throw new Error("must reject before contacting kernel") } },
+    }), /explicit stable runtime workspace/)
+
     const config = await loadPublicationPackageConfig(root, {
       kernelEndpoint: "ws://kernel",
       materialize: true,
       runtimeWorkspace,
+      runtimeKey: "deployment-a",
       client: {
         send: async (request) => {
           requests.push(request)
@@ -165,7 +178,9 @@ test("gateway materializes exported publication packages through the kernel", as
           return {
             WorkflowPublicationMaterialized: {
               publication_id: "pub-1",
-              session: { id: "runtime-session-1" },
+              session: { id: "runtime-session-1", workflow_publications: [{
+                id: "pub-1", runtime_materialization: { key: "deployment-a:replica-0", agent_id_map: { "agent-1": "agent-2" } },
+              }] },
               agent_id_map: { "agent-1": "agent-2" },
             },
           }
@@ -187,6 +202,7 @@ test("gateway materializes exported publication packages through the kernel", as
     assert.deepEqual(requests[1], { ListMcpServers: { workspace_id: runtimeWorkspace } })
     const materializeRequest = requests.find((request) => "MaterializeWorkflowPublication" in request) as {
       MaterializeWorkflowPublication: {
+        runtime_key: string
         snapshot: {
           source_session: { workspace_id: string; worktree_id: string }
           agents: Array<{
@@ -199,6 +215,7 @@ test("gateway materializes exported publication packages through the kernel", as
         }
       }
     }
+    assert.equal(materializeRequest.MaterializeWorkflowPublication.runtime_key, "deployment-a:replica-0")
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.workspace_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.source_session.worktree_id, runtimeWorkspace)
     assert.equal(materializeRequest.MaterializeWorkflowPublication.snapshot.agents[0]?.workspace_id, runtimeWorkspace)

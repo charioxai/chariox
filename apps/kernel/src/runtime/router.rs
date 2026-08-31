@@ -48,6 +48,7 @@ pub(crate) const INTERACTIVE_COMMAND_QUEUE_LIMIT: usize = 128;
 
 #[derive(Clone)]
 pub(crate) struct CommandRouter {
+    _native_interaction_bridge: Option<Arc<dyn crate::provider::ProviderNativeInteractionBridge>>,
     app: Arc<Mutex<DaemonApp>>,
     runtime_state: KernelRuntimeState,
     agent_runtime: AgentRuntime,

@@ -711,6 +711,7 @@ export type WorkflowPublicationDefinition = {
   source_snapshot_digest?: string | null
   creation_operation_key?: string | null
   creation_request_digest?: string | null
+  runtime_materialization?: { key: string; agent_id_map: Record<string, string> }
   status?: string | null
   open_url?: string | null
   viewer_url?: string | null

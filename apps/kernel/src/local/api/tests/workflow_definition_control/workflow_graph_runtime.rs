@@ -333,7 +333,9 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
 }
 
 fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session_inner() {
-    let harness = LocalRouterTestHarness::new();
+    let config = crate::config::DaemonConfig::for_tests();
+    let state_path = config.durable_state_path();
+    let harness = LocalRouterTestHarness::with_config(config);
     let source_session = match harness
         .dispatch(LocalDaemonRequest::CreateSession(
             CreateSessionRequest::new("workspace-1", "worktree-1"),
@@ -442,6 +444,21 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         _ => panic!("unexpected local response"),
     };
 
+    let snapshot = WorkflowPublicationSnapshot {
+        schema_version: 1,
+        captured_at_ms: Some(42),
+        source_session: Some(WorkflowPublicationSourceSessionSnapshot {
+            id: Some(source_session.id().to_string()),
+            alias: source_session.alias().map(str::to_string),
+            workspace_id: source_session.workspace_id().to_string(),
+            worktree_id: source_session.worktree_id().to_string(),
+        }),
+        workflow: workflow.clone(),
+        endpoint: Some(endpoint.clone()),
+        queues: vec![source_queue],
+        schedules: vec![source_watchdog.clone()],
+        agents: vec![source_agent.clone()],
+    };
     let runtime_owner_user_id = "published-runtime-user";
     let materialized = match harness
         .dispatch_as_user(
@@ -449,21 +466,8 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
             LocalDaemonRequest::MaterializeWorkflowPublication(Box::new(
                 MaterializeWorkflowPublicationRequest {
                     publication_id: "publication-1".to_string(),
-                    snapshot: WorkflowPublicationSnapshot {
-                        schema_version: 1,
-                        captured_at_ms: Some(42),
-                        source_session: Some(WorkflowPublicationSourceSessionSnapshot {
-                            id: Some(source_session.id().to_string()),
-                            alias: source_session.alias().map(str::to_string),
-                            workspace_id: source_session.workspace_id().to_string(),
-                            worktree_id: source_session.worktree_id().to_string(),
-                        }),
-                        workflow: workflow.clone(),
-                        endpoint: Some(endpoint.clone()),
-                        queues: vec![source_queue],
-                        schedules: vec![source_watchdog.clone()],
-                        agents: vec![source_agent.clone()],
-                    },
+                    runtime_key: None,
+                    snapshot: snapshot.clone(),
                 },
             )),
         )
@@ -598,4 +602,117 @@ fn local_request_api_materializes_workflow_publication_as_hidden_runtime_session
         }
         _ => panic!("unexpected local response"),
     }
+
+    let resume_request = || {
+        LocalDaemonRequest::MaterializeWorkflowPublication(Box::new(
+            MaterializeWorkflowPublicationRequest {
+                publication_id: "publication-1".to_string(),
+                runtime_key: Some("deployment-a:replica-0".to_string()),
+                snapshot: snapshot.clone(),
+            },
+        ))
+    };
+    let first = harness
+        .dispatch_as_user(runtime_owner_user_id, resume_request())
+        .unwrap();
+    let retry = harness
+        .dispatch_as_user(runtime_owner_user_id, resume_request())
+        .unwrap();
+    let other = harness
+        .dispatch_as_user("different-owner", resume_request())
+        .unwrap();
+    let LocalDaemonResponse::WorkflowPublicationMaterialized {
+        session: first,
+        agent_id_map: first_map,
+        ..
+    } = first
+    else {
+        panic!("expected materialization")
+    };
+    let LocalDaemonResponse::WorkflowPublicationMaterialized {
+        session: retry,
+        agent_id_map: retry_map,
+        ..
+    } = retry
+    else {
+        panic!("expected retry")
+    };
+    let LocalDaemonResponse::WorkflowPublicationMaterialized {
+        session: other,
+        agent_id_map: other_map,
+        ..
+    } = other
+    else {
+        panic!("expected independent owner")
+    };
+    assert_eq!(first.id(), retry.id());
+    assert_eq!(first_map, retry_map);
+    assert_ne!(
+        first.id(),
+        materialized.id(),
+        "a resume key cannot select an unkeyed runtime"
+    );
+    assert_ne!(
+        first.id(),
+        other.id(),
+        "runtime keys are scoped to caller ownership"
+    );
+    assert_ne!(first_map, other_map);
+    assert_eq!(other.owner_user_id(), "different-owner");
+    assert!(other
+        .agents()
+        .iter()
+        .all(|agent| agent.owner_user_id() == "different-owner"));
+
+    // A rejected creation write must not leave an in-memory binding which a
+    // retry can mistake for an acknowledged, recoverable materialization.
+    let database = rusqlite::Connection::open(state_path).unwrap();
+    database
+        .execute_batch(
+            "CREATE TRIGGER fail_publication_creation BEFORE INSERT ON durable_state_events
+        WHEN NEW.kind = 'workflow.publication.materialized'
+        BEGIN SELECT RAISE(FAIL, 'injected publication creation failure'); END;",
+        )
+        .unwrap();
+    let failed_request = || {
+        let LocalDaemonRequest::MaterializeWorkflowPublication(mut request) = resume_request()
+        else {
+            unreachable!()
+        };
+        request.runtime_key = Some("failed-creation".to_string());
+        LocalDaemonRequest::MaterializeWorkflowPublication(request)
+    };
+    let baseline_agents = harness.with_app(|app| app.agents.list_agents().len());
+    let baseline_sessions = harness.with_app(|app| app.sessions.list_all_sessions().len());
+    let error = harness
+        .dispatch_as_user(runtime_owner_user_id, failed_request())
+        .unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("injected publication creation failure"));
+    assert_eq!(
+        harness.with_app(|app| app.agents.list_agents().len()),
+        baseline_agents
+    );
+    assert_eq!(
+        harness.with_app(|app| app.sessions.list_all_sessions().len()),
+        baseline_sessions
+    );
+    database
+        .execute_batch("DROP TRIGGER fail_publication_creation;")
+        .unwrap();
+    let response = harness
+        .dispatch_as_user(runtime_owner_user_id, failed_request())
+        .unwrap();
+    let LocalDaemonResponse::WorkflowPublicationMaterialized { session, .. } = response else {
+        panic!("expected retry after storage recovery")
+    };
+    let durable_creations: u32 = database.query_row(
+        "SELECT COUNT(*) FROM durable_state_events WHERE kind = 'workflow.publication.materialized' AND subject_id = ?1",
+        [session.id()], |row| row.get(0),
+    ).unwrap();
+    assert_eq!(
+        durable_creations, 1,
+        "retry must create a durable record, not reuse failed in-memory state"
+    );
 }
