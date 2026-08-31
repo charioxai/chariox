@@ -57,15 +57,56 @@ impl KernelRuntimeState {
         };
         let config = self.owned.config_projection.snapshot();
         let config = config.slice_relay_override(&slice).unwrap_or(config);
-        let response = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+        let target = ClientTarget {
+            daemon_id: slice.worker_kernel_id.clone(),
+            daemon_alias: slice
+                .worker_kernel_id
+                .is_none()
+                .then(|| slice.worker_kernel_ref.clone()),
+        };
+        let recovery = match &command {
+            Command::Action {
+                execution_id,
+                target_id,
+                document_id,
+                node_ref,
+                action,
+                timeout_ms,
+            } => Some(Command::RecoverAction {
+                execution_id: execution_id.clone(),
+                target_id: target_id.clone(),
+                document_id: document_id.clone(),
+                node_ref: node_ref.clone(),
+                action: action.clone(),
+                timeout_ms: *timeout_ms,
+            }),
+            _ => None,
+        };
+        let request = |command| RelayPeerRequest::RoomBrowserController {
+            session_id: session_id.to_string(),
+            slice_id: slice.id.clone(),
+            command,
+        };
+        let first = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
             &config,
-            ClientTarget { daemon_id: slice.worker_kernel_id.clone(),
-                daemon_alias: slice.worker_kernel_id.is_none().then(|| slice.worker_kernel_ref.clone()) },
-            RelayPeerRequest::RoomBrowserController {
-                session_id: session_id.to_string(), slice_id: slice.id.clone(), command,
-            },
+            target.clone(),
+            request(command.clone()),
             Duration::from_secs(15),
-        ).await?;
+        ).await;
+        let response = match first {
+            Ok(response) => response,
+            Err(first_error) if recovery.is_some() => {
+                crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
+                    &config,
+                    target,
+                    request(recovery.expect("action recovery command")),
+                    Duration::from_secs(15),
+                ).await.map_err(|retry_error| controller_route_error(&format!(
+                    "browser action result remained unavailable after non-mutating receipt recovery: {retry_error}; initial delivery error: {first_error}"
+                )))?
+            }
+            Err(error) => return Err(error),
+        };
         match response {
             RelayPeerResponse::RoomBrowserController {
                 session_id: returned_room,
@@ -148,6 +189,22 @@ async fn execute_local(
             action,
             timeout_ms,
         } => processes.perform_cancellable_browser_action(
+            &session_id,
+            &execution_id,
+            &target_id,
+            &document_id,
+            &node_ref,
+            &action,
+            timeout_ms,
+        ),
+        Command::RecoverAction {
+            execution_id,
+            target_id,
+            document_id,
+            node_ref,
+            action,
+            timeout_ms,
+        } => processes.recover_cancellable_browser_action(
             &session_id,
             &execution_id,
             &target_id,

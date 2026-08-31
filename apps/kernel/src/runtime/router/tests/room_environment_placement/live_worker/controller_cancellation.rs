@@ -116,6 +116,10 @@ async fn check_pending_cleanup(
     delay: Duration,
     expect_fence: bool,
 ) {
+    let cancellation_requests_before = fixture
+        .worker
+        .runtime_state
+        .test_browser_action_cancellation_request_count();
     let hold = fixture._worker_state.root.join("hold-fill");
     let hold_release = fixture._worker_state.root.join("hold-release");
     let release_pending = fixture._worker_state.root.join("release-pending");
@@ -296,6 +300,14 @@ async fn check_pending_cleanup(
     assert!(
         error.to_string().to_lowercase().contains("cancel"),
         "{error}"
+    );
+    assert_eq!(
+        fixture
+            .worker
+            .runtime_state
+            .test_browser_action_cancellation_request_count(),
+        cancellation_requests_before + 1,
+        "an accepted cancellation must not be re-sent while physical cleanup remains pending"
     );
     dispatch_json(
         &fixture.home,

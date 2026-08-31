@@ -650,13 +650,36 @@ and button press, while keeping the browser available for subsequent actions.
 Protocol v287 and relay peer v23 distinguish graceful cancellation from a
 forced physical fence. If controller cleanup does not complete inside the
 combined command and action timeout, the worker kills and reaps the controller,
-restarts it against the surviving browser, and reports both facts to the home.
-The home finishes the Action as cancelled before reconciling the new controller
+then reports the fence to the home. The home finishes the Action as cancelled,
+starts the controller against the surviving browser, and reconciles its new
 generation. Reconciliation invalidates old element references while preserving
 stable Room tabs, external browser state, and the single human input owner. The
 cancelled call does not return until recovery either succeeds or fails visibly;
 failure leaves Browser and Browser Controller health unavailable with a
 recovery diagnostic.
+
+Protocol v288 and relay peer v24 add non-mutating locator-action receipt
+recovery. The worker retains the last 256 terminal receipts in memory, keyed by
+Room and execution identity. A receipt stores the terminal result and a SHA-256
+request fingerprint, not the fill payload. If the encrypted terminal response
+is lost, the home sends `RecoverAction` with the identical request envelope. An
+identical completed request replays its receipt, and an identical in-flight
+request waits for the original execution; neither sends physical input again.
+Reusing an execution identity with a different target, document, node, action,
+or timeout fails closed. An evicted receipt or worker restart makes recovery
+return explicit loss of completion proof and never turns the recovery request
+into a new physical Action. Existing clients' minimum versions remain unchanged
+because this is a home-worker transport contract. The real-relay drill discards
+one encrypted response after the external browser records its mutation, then
+proves that the public Room tool succeeds, the Action ledger completes, and the
+physical click count increases exactly once. A second fault removes the receipt
+before recovery and proves a clear failure, one physical click, and subsequent
+fresh-action availability.
+
+Protocol v288 also removes the worker's advisory restart result. After
+a fence, the home is the only authority that starts and reconciles the
+controller.
+
 Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.

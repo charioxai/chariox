@@ -107,18 +107,14 @@ impl KernelRuntimeState {
         };
         let controller_fenced = matches!(
             &result,
-            Err(DaemonError::LocalTransport {
-                operation: "browser_controller.cancelled_after_fence",
-                ..
+            Err(DaemonError::BrowserControllerActionCancelled {
+                controller_fenced: true,
             })
         );
         let terminal = if controller_fenced
             || matches!(
                 &result,
-                Err(DaemonError::LocalTransport {
-                    operation: "browser_controller.cancelled",
-                    ..
-                })
+                Err(DaemonError::BrowserControllerActionCancelled { .. })
             ) {
             EnvironmentActionTerminal::Cancelled
         } else if result.is_ok() {
@@ -134,7 +130,7 @@ impl KernelRuntimeState {
                 .await
             {
                 return Err(DaemonError::LocalTransport {
-                    operation: "browser_controller.cancelled_after_fence",
+                    operation: "browser_controller.recovery_failed",
                     message: format!(
                         "browser action was cancelled, but controller recovery failed: {recovery_error}"
                     ),

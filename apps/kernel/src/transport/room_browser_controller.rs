@@ -25,6 +25,14 @@ pub(crate) enum RoomBrowserControllerCommand {
         action: crate::runtime::browser_controller_action::BrowserLocatorAction,
         timeout_ms: u64,
     },
+    RecoverAction {
+        execution_id: String,
+        target_id: String,
+        document_id: String,
+        node_ref: String,
+        action: crate::runtime::browser_controller_action::BrowserLocatorAction,
+        timeout_ms: u64,
+    },
     CancelAction {
         execution_id: String,
     },
@@ -36,7 +44,6 @@ pub(crate) enum RoomBrowserControllerCommand {
 pub(crate) enum RoomBrowserControllerResult {
     ActionCancelled {
         controller_fenced: bool,
-        controller_restarted: bool,
     },
     CancellationRequested {
         accepted: bool,

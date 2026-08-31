@@ -200,6 +200,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
     super::controller_mutations::check(fixture, &token, &status.payload).await;
     super::controller_cancellation::check(fixture, &token, &status.payload).await;
     super::controller_cancellation::check_running(fixture, &token, &status.payload).await;
+    super::controller_response_loss::check(fixture, &token).await;
     // A worker-local Room can even have the same textual session ID as the
     // home Room. It must not claim a provisioned browser via the local API.
     let local_room = {

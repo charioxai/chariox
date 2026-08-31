@@ -15,7 +15,8 @@ appendFileSync(`${pidFile}s`, `${process.pid}\n`);
 const stateFile = join(dirname(pidFile), "chromium-state.json");
 let state = existsSync(stateFile)
   ? JSON.parse(readFileSync(stateFile, "utf8"))
-  : { open: true, saved: false, pressed: false, note: "", submitted: null, focused: "worker-save" };
+  : { open: true, saved: false, clickCount: 0, pressed: false, note: "", submitted: null, focused: "worker-save" };
+state.clickCount ??= 0;
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 persist();
 const chromium = {
@@ -87,6 +88,7 @@ const chromium = {
         if (params.type === "mousePressed") state.pressed = true;
         if (params.type === "mouseReleased" && state.pressed) {
           state.saved = true;
+          state.clickCount += 1;
           state.submitted = null;
           state.pressed = false;
         }

@@ -6,8 +6,8 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 287);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 23);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 288);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 24);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -23,6 +23,23 @@ fn room_controller_protocol_shapes_are_versioned() {
                 timeout_ms: 500,
             },
             serde_json::json!({"kind":"action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
+                "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
+                "append":false,"submit":false},"timeout_ms":500}),
+        ),
+        (
+            RoomBrowserControllerCommand::RecoverAction {
+                execution_id: "11111111111111111111111111111111".into(),
+                target_id: "target-1".into(),
+                document_id: "doc-1".into(),
+                node_ref: "backend:1".into(),
+                action: crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
+                    text: "sensitive-fill-fixture".into(),
+                    append: false,
+                    submit: false,
+                },
+                timeout_ms: 500,
+            },
+            serde_json::json!({"kind":"recover_action","execution_id":"11111111111111111111111111111111","target_id":"target-1","document_id":"doc-1",
                 "node_ref":"backend:1","action":{"kind":"fill","text":"sensitive-fill-fixture",
                 "append":false,"submit":false},"timeout_ms":500}),
         ),
@@ -78,10 +95,8 @@ fn room_controller_protocol_shapes_are_versioned() {
     for result in [
         serde_json::json!({"kind":"cancellation_requested","accepted":true}),
         serde_json::json!({"kind":"cancellation_requested","accepted":false}),
-        serde_json::json!({"kind":"action_cancelled","controller_fenced":false,
-            "controller_restarted":false}),
-        serde_json::json!({"kind":"action_cancelled","controller_fenced":true,
-            "controller_restarted":true}),
+        serde_json::json!({"kind":"action_cancelled","controller_fenced":false}),
+        serde_json::json!({"kind":"action_cancelled","controller_fenced":true}),
         serde_json::json!({"kind":"action","result":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50

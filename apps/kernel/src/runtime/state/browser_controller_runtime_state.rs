@@ -26,6 +26,20 @@ impl KernelRuntimeState {
             .clear();
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_forget_completed_browser_action_receipts(&self) {
+        self.owned
+            .browser_controller_processes
+            .test_forget_completed_browser_actions();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_browser_action_cancellation_request_count(&self) -> usize {
+        self.owned
+            .browser_controller_processes
+            .test_browser_action_cancellation_request_count()
+    }
+
     pub(crate) fn browser_controller_process_enabled(&self) -> bool {
         self.owned.browser_controller_processes.is_enabled()
     }
@@ -300,25 +314,8 @@ impl KernelRuntimeState {
             RoomBrowserControllerResult::Action {
                 result: Some(result),
             } => result,
-            RoomBrowserControllerResult::ActionCancelled {
-                controller_fenced,
-                controller_restarted,
-            } => {
-                return Err(DaemonError::LocalTransport {
-                    operation: if controller_fenced {
-                        "browser_controller.cancelled_after_fence"
-                    } else {
-                        "browser_controller.cancelled"
-                    },
-                    message: if controller_fenced {
-                        format!(
-                            "browser action cancelled after fencing the controller; worker restart {}",
-                            if controller_restarted { "succeeded" } else { "failed" }
-                        )
-                    } else {
-                        "browser action cancelled by the controller".into()
-                    },
-                })
+            RoomBrowserControllerResult::ActionCancelled { controller_fenced } => {
+                return Err(DaemonError::BrowserControllerActionCancelled { controller_fenced })
             }
             _ => {
                 return Err(controller_route_error(
@@ -362,10 +359,17 @@ impl KernelRuntimeState {
             None,
         )
         .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
-        match self
-            .reconcile_browser_controller_environment(session_id)
+        let recovery = match self
+            .ensure_browser_controller_process_started(session_id)
             .await
         {
+            Ok(_) => {
+                self.reconcile_browser_controller_environment(session_id)
+                    .await
+            }
+            Err(error) => Err(error),
+        };
+        match recovery {
             Ok(environment) => Ok(environment),
             Err(error) => {
                 let _ = self.update_room_environment_component_health(

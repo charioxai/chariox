@@ -1043,7 +1043,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessOwnership<B> {
 #[derive(Clone, Default)]
 pub(crate) struct BrowserControllerProcessStore {
     ownership: Option<Arc<Mutex<StdioOwnership>>>,
-    cancellations: cancellation::BrowserActionCancellations,
+    executions: cancellation::BrowserActionExecutions,
 }
 
 impl BrowserControllerProcessStore {
