@@ -374,7 +374,7 @@ impl SessionRuntimeStore {
             Ok(session) => session,
             Err(error) => return self.with_session_projection_action_result(Err(error)).await,
         };
-        let _slice_guards = match self.state.guard_slice_execution(
+        let slice_admission = match self.state.guard_slice_execution(
             Some(&request.session_id),
             request
                 .agents
@@ -398,7 +398,9 @@ impl SessionRuntimeStore {
         let mut slice_kernel_refs = HashMap::<String, String>::new();
         let mut create_requests = Vec::with_capacity(request.agents.len());
         let mut slice_refs_for_agents = Vec::with_capacity(request.agents.len());
-        for item in request.agents {
+        for (item, slice_ref_for_agent) in
+            request.agents.into_iter().zip(&slice_admission.slice_ids)
+        {
             if item.metaagent {
                 return self
                     .with_session_projection_action_result(Err(DaemonError::LocalTransport {
@@ -412,8 +414,8 @@ impl SessionRuntimeStore {
             let execution_mode = item.execution_mode.or(default_execution_mode);
             let permission_level = item.permission_level.or(default_permission_level);
             let requested_worktree_for_scope = item.worktree_id.clone();
-            let slice_ref_for_agent = item.slice_ref.clone();
-            let slice_kernel_ref = match item.slice_ref {
+            let slice_ref_for_agent = slice_ref_for_agent.clone();
+            let slice_kernel_ref = match slice_ref_for_agent.clone() {
                 Some(slice_ref) => {
                     let requested_worktree_id = requested_worktree_for_scope
                         .as_deref()
@@ -481,7 +483,7 @@ impl SessionRuntimeStore {
             if let Some(worktree_id) = item.worktree_id {
                 create_request = create_request.with_worktree(worktree_id);
             }
-            if let Some(kernel_ref) = item.kernel_ref.or(slice_kernel_ref) {
+            if let Some(kernel_ref) = slice_kernel_ref.or(item.kernel_ref) {
                 create_request = create_request.with_kernel(kernel_ref);
             }
             if let Some(placement) = item.worktree_placement {

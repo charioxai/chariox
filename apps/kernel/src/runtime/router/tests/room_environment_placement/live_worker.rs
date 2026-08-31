@@ -10,8 +10,8 @@ struct LiveWorker {
     shutdown: watch::Sender<bool>,
     tasks: Vec<JoinHandle<()>>,
     address: std::net::SocketAddr,
-    worktree: std::path::PathBuf,
-    _home_state: TestState,
+    worktrees: Vec<std::path::PathBuf>,
+    home_state: TestState,
     _worker_state: TestState,
 }
 
@@ -55,15 +55,14 @@ impl LiveWorker {
             )),
             2,
         ));
-        let worktree = home_state.root.join("leased-worktree");
         let mut fixture = Self {
             home: Arc::clone(&home),
             rooms,
             shutdown,
             tasks: vec![relay_task],
             address,
-            worktree,
-            _home_state: home_state,
+            worktrees: Vec::new(),
+            home_state,
             _worker_state: worker_state,
         };
         for router in [home, worker] {
@@ -92,6 +91,15 @@ impl LiveWorker {
         .await
         .expect("both kernels register with the real relay");
         fixture
+    }
+
+    fn placement(&mut self) -> Value {
+        let path = self
+            .home_state
+            .root
+            .join(format!("leased-worktree-{}", self.worktrees.len()));
+        self.worktrees.push(path.clone());
+        json!({"target_directory":path,"from_ref":"HEAD"})
     }
 
     async fn create_slice(&self) {
@@ -150,10 +158,10 @@ impl Drop for LiveWorker {
         for task in &self.tasks {
             task.abort();
         }
-        if self.worktree.exists() {
+        for worktree in self.worktrees.iter().filter(|path| path.exists()) {
             let result = std::process::Command::new("git")
                 .args(["worktree", "remove", "--force"])
-                .arg(&self.worktree)
+                .arg(worktree)
                 .output()
                 .expect("remove drill worktree");
             assert!(
@@ -172,13 +180,12 @@ fn room_environment_worker_spawn_and_destroy_use_public_commands() {
 
 async fn spawn_and_destroy_use_public_commands() {
     let mut fixture = LiveWorker::start().await;
+    let placement = fixture.placement();
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
             "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
-            "kernel_ref":"desktop-worker", "worktree_placement":{
-                "target_directory":fixture.worktree, "from_ref":"HEAD"
-            }
+            "kernel_ref":"desktop-worker", "worktree_placement":placement
         }}),
     )
     .await
@@ -231,13 +238,12 @@ fn room_environment_worker_alias_attaches_agent_to_slice() {
 async fn worker_alias_attaches_agent_to_slice() {
     let mut fixture = LiveWorker::start().await;
     fixture.create_slice().await;
+    let placement = fixture.placement();
     let spawned = dispatch_json(
         &fixture.home,
         json!({"SpawnAgent": {
             "session_id":fixture.rooms[0], "provider":"managed-dev-stub", "model":"default",
-            "kernel_ref":"desktop-worker", "worktree_placement":{
-                "target_directory":fixture.worktree, "from_ref":"HEAD"
-            }
+            "kernel_ref":"desktop-worker", "worktree_placement":placement
         }}),
     )
     .await
@@ -273,5 +279,57 @@ async fn worker_alias_attaches_agent_to_slice() {
     assert!(
         detached.agent_ids.is_empty(),
         "deletion clears the slice's durable agent attachment"
+    );
+}
+
+#[test]
+fn room_environment_worker_batch_preserves_mixed_target_attachments() {
+    run_test(batch_preserves_mixed_target_attachments);
+}
+
+async fn batch_preserves_mixed_target_attachments() {
+    let mut fixture = LiveWorker::start().await;
+    fixture.create_slice().await;
+    let alias_placement = fixture.placement();
+    let slice_placement = fixture.placement();
+    let spawned = dispatch_json(&fixture.home, json!({"SpawnAgents":{
+        "session_id":fixture.rooms[0], "agents":[
+            {"provider":"managed-dev-stub", "model":"default"},
+            {"provider":"managed-dev-stub", "model":"default", "kernel_ref":"desktop-worker", "worktree_placement":alias_placement},
+            {"provider":"managed-dev-stub", "model":"default", "slice_ref":"desktop", "worktree_placement":slice_placement}
+        ]
+    }})).await.expect("mixed local, worker-alias and slice batch");
+    let agents = spawned["AgentsSpawned"]["agents"].as_array().unwrap();
+    assert_eq!(agents.len(), 3);
+    let attached = dispatch_json(&fixture.home, json!({"GetSlice":{"slice_ref":"desktop"}}))
+        .await
+        .unwrap();
+    for agent in agents {
+        dispatch_json(
+            &fixture.home,
+            json!({"DestroyAgent":{
+                "session_id":fixture.rooms[0],"agent_id":agent["id"]
+            }}),
+        )
+        .await
+        .expect("remove each batch agent");
+    }
+    fixture.stop().await;
+    assert!(
+        agents[0]["remote_execution"].is_null(),
+        "first batch target stays local"
+    );
+    assert_eq!(
+        agents[1]["remote_execution"]["worker_kernel_id"],
+        "environment-worker"
+    );
+    assert_eq!(
+        agents[2]["remote_execution"]["worker_kernel_id"],
+        "environment-worker"
+    );
+    assert_eq!(
+        attached["Slice"]["slice"]["agent_ids"],
+        json!([agents[1]["id"], agents[2]["id"]]),
+        "mixed batch preserves target order and attaches both aliases of one slice"
     );
 }
