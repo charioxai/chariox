@@ -209,25 +209,85 @@ fn room_environment_placement_rejects_shared_worker_references() {
     run_test(rejects_shared_worker_references);
 }
 
-async fn rejects_shared_worker_references() {
+#[test]
+fn room_environment_placement_allows_colocated_containers_with_distinct_worker_identities() {
+    run_test(allows_colocated_containers_with_distinct_worker_identities);
+}
+
+async fn allows_colocated_containers_with_distinct_worker_identities() {
     let state = TestState::new();
     let (router, rooms) = state.router();
-    for name in ["first", "second"] {
-        dispatch_json(
-            &router,
-            json!({"CreateSlice":{
-                "name":name,"base":"clean","display_mode":"headed","worker_kernel_ref":"same-worker"
-            }}),
-        )
+    let slices = router.app.lock().await.slices().clone();
+    for (index, name) in ["first", "second"].into_iter().enumerate() {
+        create_desktop(&router, name).await;
+        let slice = slices.resolve(name).unwrap();
+        slices
+            .set_worker_presence(
+                name,
+                Some(format!("container-kernel-{index}")),
+                Some(format!("slice:{}", slice.id)),
+                vec!["codex".to_string()],
+                10,
+            )
+            .unwrap();
+    }
+    let first = dispatch_json(&router, json!({"GetSlice":{"slice_ref":"first"}}))
         .await
         .unwrap();
-    }
-    assert!(
-        dispatch_json(&router, bind(&rooms[0], "first"))
-            .await
-            .is_err(),
-        "two records are not isolation when they route to the same worker"
+    let second = dispatch_json(&router, json!({"GetSlice":{"slice_ref":"second"}}))
+        .await
+        .unwrap();
+    assert_eq!(
+        first["Slice"]["slice"]["owner_machine_id"],
+        second["Slice"]["slice"]["owner_machine_id"]
     );
+    for (index, name) in ["first", "second"].into_iter().enumerate() {
+        dispatch_json(&router, bind(&rooms[index], name))
+            .await
+            .expect("separate containers on one Docker host can belong to different Rooms");
+    }
+}
+
+async fn rejects_shared_worker_references() {
+    for identity in ["alias", "kernel", "machine"] {
+        let state = TestState::new();
+        let (router, rooms) = state.router();
+        let slices = router.app.lock().await.slices().clone();
+        for name in ["first", "second"] {
+            dispatch_json(
+                &router,
+                json!({"CreateSlice":{
+                    "name":name,"base":"clean","display_mode":"headed",
+                    "worker_kernel_ref":if identity == "alias" { "same-worker" } else { name }
+                }}),
+            )
+            .await
+            .unwrap();
+            slices
+                .set_worker_presence(
+                    name,
+                    Some(if identity == "kernel" {
+                        "same-kernel".to_string()
+                    } else {
+                        format!("kernel-{name}")
+                    }),
+                    Some(if identity == "machine" {
+                        "same-worker-machine".to_string()
+                    } else {
+                        format!("slice:{name}")
+                    }),
+                    Vec::new(),
+                    10,
+                )
+                .unwrap();
+        }
+        assert!(
+            dispatch_json(&router, bind(&rooms[0], "first"))
+                .await
+                .is_err(),
+            "duplicate {identity} targets cannot establish separate physical profiles"
+        );
+    }
 }
 
 #[test]

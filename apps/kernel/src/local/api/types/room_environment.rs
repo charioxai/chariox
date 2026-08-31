@@ -15,6 +15,11 @@ pub struct RoomEnvironmentSliceBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GetRoomEnvironmentSliceRequest {
+    pub session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetRoomEnvironmentStateRequest {
     pub session_id: String,
 }
