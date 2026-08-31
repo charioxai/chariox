@@ -585,6 +585,8 @@ The reservation is the optional `environment_session_id` in the durable slice re
 
 These requests configure placement only. They do not start a container, move a controller, admit a viewer, or persist the full Environment action ledger. Binding must be consumed and revalidated by the worker/controller and secure viewer routes before multi-Room product enablement. Clients invoking placement require v282; clients using only earlier Environment controls keep their existing minimum versions. Rollback to a kernel that does not understand the reservation is not safe for multi-Room use.
 
+The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.
+
 A full Environment snapshot carries at least:
 
 - `session_id`

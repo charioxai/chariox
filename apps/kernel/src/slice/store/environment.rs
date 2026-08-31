@@ -1,6 +1,18 @@
 use super::*;
 
 impl SliceStore {
+    pub(crate) fn guard_environment_use(
+        &self,
+        slice_ref: &str,
+        session_id: Option<&str>,
+        operation: &'static str,
+    ) -> Result<SliceOperationGuard, DaemonError> {
+        let guard = self.try_begin_operation(slice_ref, operation)?;
+        // Re-read under the operation marker: binding cannot change until admission ends.
+        require_environment_session(&self.resolve(slice_ref)?, session_id)?;
+        Ok(guard)
+    }
+
     pub(crate) fn environment_slice(&self, session_id: &str) -> Option<SliceRecord> {
         self.inner
             .lock()
@@ -79,6 +91,23 @@ impl SliceStore {
         state.records.insert(updated.id.clone(), updated.clone());
         Ok(updated)
     }
+}
+
+pub(super) fn require_environment_session(
+    slice: &SliceRecord,
+    session_id: Option<&str>,
+) -> Result<(), DaemonError> {
+    if slice
+        .environment_session_id
+        .as_deref()
+        .is_some_and(|owner| Some(owner) != session_id)
+    {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.slice.access",
+            message: "environment_slice_access_denied: slice belongs to another Room".to_string(),
+        });
+    }
+    Ok(())
 }
 
 fn binding_error(message: &str) -> DaemonError {

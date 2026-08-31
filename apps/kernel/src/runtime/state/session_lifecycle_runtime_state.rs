@@ -24,6 +24,11 @@ impl KernelRuntimeState {
                 message: "creating separate metaagents is deprecated; create a regular session and send `/meta <task>` to enter meta mode".to_string(),
             });
         }
+        let _slice_guards = self.guard_slice_execution(
+            None,
+            [(slice_ref.as_deref(), kernel_ref.as_deref())],
+            "session.create",
+        )?;
         if slice_ref.is_none() && kernel_ref.is_none() {
             request = prepare_local_session_worktree_placement(request)?;
         }
@@ -541,6 +546,11 @@ impl KernelRuntimeState {
         let local_agent =
             self.owned
                 .ensure_agent_ref_owner(agent_ref, caller_user_id, "move agent to remote")?;
+        let _slice_guards = self.guard_slice_execution(
+            Some(session_id),
+            [(None, Some(machine_ref))],
+            "agent.move_remote",
+        )?;
         let terminated_run_ids = self
             .owned
             .terminate_idle_provider_runs_for_agent_before_remote_move(session_id, &local_agent)?;
