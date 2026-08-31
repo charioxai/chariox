@@ -6,8 +6,8 @@ use crate::slice_provider_auth::SliceProviderAuthSummary;
 
 use super::model::{
     CreateSliceInput, SliceBackendKind, SliceBackupRecord, SliceDisplayEndpoint,
-    SliceDisplayEndpointAccess, SliceDisplayEndpointKind, SliceDisplayMode, SliceOperationStatus,
-    SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord, SliceSavedStateStatus, SliceStatus,
+    SliceOperationStatus, SliceRecord, SliceRelayEndpoint, SliceSavedStateRecord,
+    SliceSavedStateStatus, SliceStatus,
 };
 use super::ports::{self, LocalDockerSlicePorts};
 
@@ -105,31 +105,17 @@ impl SliceStore {
         } else {
             None
         };
-        let display_url = if input.display_mode == SliceDisplayMode::Headed {
-            input.display_url.or_else(|| {
-                let ports = local_docker_ports
-                    .map(LocalDockerSlicePorts::from_assignment)
-                    .unwrap_or_else(|| LocalDockerSlicePorts::for_slice_id(&id));
-                Some(format!(
-                    "http://127.0.0.1:{}/vnc.html?host=127.0.0.1&port={}&autoconnect=true&resize=scale",
-                    ports.novnc, ports.novnc
-                ))
-            })
-        } else {
-            None
-        };
-        let display_endpoint = display_url.map(|url| SliceDisplayEndpoint {
-            slice_id: id.clone(),
-            kind: SliceDisplayEndpointKind::Novnc,
-            url,
-            access: SliceDisplayEndpointAccess::Local,
-            expires_at_ms: None,
-            capabilities: vec![
-                "view".to_string(),
-                "keyboard".to_string(),
-                "mouse".to_string(),
-            ],
-        });
+        let display_port = local_docker_ports
+            .map(LocalDockerSlicePorts::from_assignment)
+            .unwrap_or_else(|| LocalDockerSlicePorts::for_slice_id(&id))
+            .novnc;
+        let display_endpoint = super::display::display_endpoint_for_slice(
+            &id,
+            &input.display_mode,
+            input.display_backend,
+            display_port,
+            input.display_url,
+        );
         let from_saved_state = input.from_saved_state.clone();
         let record = SliceRecord {
             id: id.clone(),

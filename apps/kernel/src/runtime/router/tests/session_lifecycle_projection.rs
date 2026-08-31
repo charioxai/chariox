@@ -257,6 +257,7 @@ async fn end_session_detaches_reusable_slice_agents() {
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: Default::default(),
                 workspace_id: Some("workspace".to_string()),
                 worktree_id: Some("worktree".to_string()),
                 workspace_mount: Some("worktree".to_string()),
@@ -317,6 +318,7 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
         backend: crate::slice::SliceBackendKind::LocalDocker,
         os: "linux".to_string(),
         display_mode: crate::slice::SliceDisplayMode::Headless,
+        display_backend: Default::default(),
         workspace_id: Some("workspace".to_string()),
         worktree_id: Some("worktree".to_string()),
         workspace_mount: Some("worktree".to_string()),
@@ -380,6 +382,62 @@ async fn create_slice_ignores_client_supplied_provider_auth() {
 }
 
 #[tokio::test]
+async fn create_slice_preserves_selkies_selection_and_read_only_capabilities() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let router = CommandRouter::with_interactive_capacity(Arc::clone(&app), 1);
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "CreateSlice": {
+            "name": "selkies-desktop", "display_mode": "headed", "display_backend": "selkies",
+            "base": "clean"
+        }
+    }))
+    .expect("slice request should decode");
+    let command = KernelCommand::from_local_request("create-selkies-slice", None, None, &request);
+    let LocalDaemonResponse::SliceCreated { slice } = router
+        .dispatch(command, request)
+        .await
+        .expect("slice should create")
+    else {
+        panic!("expected created slice");
+    };
+    let endpoint = slice
+        .display_endpoint
+        .as_ref()
+        .expect("headed slice has an endpoint");
+    assert_eq!(
+        endpoint.kind,
+        crate::slice::SliceDisplayEndpointKind::Selkies
+    );
+    assert_eq!(
+        endpoint.capabilities,
+        vec!["view", "websocket", "h264", "software_encoding"]
+    );
+    assert_eq!(slice.display_backend().as_env_value(), "selkies");
+    assert!(!endpoint.url.contains("vnc.html"));
+    assert_eq!(
+        url::Url::parse(&endpoint.url).unwrap().port(),
+        Some(slice.local_docker_ports.unwrap().novnc)
+    );
+    let request = LocalDaemonRequest::GetSlice(crate::local::SliceRefRequest {
+        slice_ref: slice.id.clone(),
+    });
+    let command = KernelCommand::from_local_request("get-selkies-slice", None, None, &request);
+    let LocalDaemonResponse::Slice { slice: persisted } = router
+        .dispatch(command, request)
+        .await
+        .expect("slice should remain retrievable")
+    else {
+        panic!("expected stored slice");
+    };
+    assert_eq!(
+        persisted.display_backend(),
+        crate::slice::SliceDisplayBackend::Selkies
+    );
+}
+
+#[tokio::test]
 async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
     let app = Arc::new(Mutex::new(
         DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
@@ -390,6 +448,7 @@ async fn unsupported_slice_auth_mutations_fail_loudly_and_audit() {
         backend: crate::slice::SliceBackendKind::SshDocker,
         os: "linux".to_string(),
         display_mode: crate::slice::SliceDisplayMode::Headless,
+        display_backend: Default::default(),
         workspace_id: Some("workspace".to_string()),
         worktree_id: Some("worktree".to_string()),
         workspace_mount: Some("worktree".to_string()),
@@ -893,6 +952,7 @@ fn create_router_test_slice(
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: Default::default(),
                 workspace_id: Some(workspace_id.to_string()),
                 worktree_id: Some(worktree_id.to_string()),
                 workspace_mount: Some(worktree_id.to_string()),

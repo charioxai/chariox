@@ -1,3 +1,5 @@
+import type { SliceDisplayBackend } from "./kernel-types-cloud.js"
+
 export function listSlicesRequest() {
   return { ListSlices: null }
 }
@@ -7,6 +9,7 @@ export function createSliceRequest(options: {
   backend?: "local_docker" | "ssh_docker"
   os?: string
   displayMode?: "headless" | "headed"
+  displayBackend?: SliceDisplayBackend
   workspaceId?: string | null
   worktreeId?: string | null
   workspaceMount?: string | null
@@ -22,6 +25,7 @@ export function createSliceRequest(options: {
       backend: options.backend ?? "local_docker",
       os: options.os ?? "linux",
       display_mode: options.displayMode ?? "headless",
+      ...(options.displayBackend === undefined ? {} : { display_backend: options.displayBackend }),
       workspace_id: options.workspaceId ?? null,
       worktree_id: options.worktreeId ?? null,
       workspace_mount: options.workspaceMount ?? null,
