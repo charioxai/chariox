@@ -1,6 +1,52 @@
 use super::*;
 
 #[test]
+fn room_environment_execution_rejects_worker_identity_collisions_after_binding() {
+    run_test(rejects_worker_identity_collisions_after_binding);
+}
+
+async fn rejects_worker_identity_collisions_after_binding() {
+    let mut failures = Vec::new();
+    for reference in ["kernel_ref", "slice_ref"] {
+        let state = TestState::new();
+        let (router, rooms) = state.router();
+        for (index, name) in ["first", "second"].into_iter().enumerate() {
+            create_desktop(&router, name).await;
+            dispatch_json(&router, bind(&rooms[index], name))
+                .await
+                .unwrap();
+        }
+        // Worker discovery changes after reservations were established.
+        let slices = router.app.lock().await.slices().clone();
+        for name in ["first", "second"] {
+            slices
+                .set_worker_presence(
+                    name,
+                    Some("shared-kernel".to_string()),
+                    Some("shared-machine".to_string()),
+                    Vec::new(),
+                    1,
+                )
+                .unwrap();
+        }
+        let mut spawn = json!({"session_id":rooms[0],"provider":"codex"});
+        spawn[reference] = json!(if reference == "kernel_ref" {
+            "shared-machine"
+        } else {
+            "first"
+        });
+        let error = dispatch_json(&router, json!({"SpawnAgent":spawn}))
+            .await
+            .unwrap_err()
+            .to_string();
+        if !error.contains("worker reference is shared by another slice") {
+            failures.push(format!("{reference}: {error}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[test]
 fn room_environment_execution_rejects_every_cross_room_admission_path() {
     run_test(rejects_every_cross_room_admission_path);
 }

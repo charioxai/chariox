@@ -12,12 +12,6 @@ impl KernelRuntimeState {
     ) -> Result<LocalDaemonResponse, DaemonError> {
         let slice_ref = request.slice_ref.clone();
         let kernel_ref = request.kernel_ref.clone();
-        if slice_ref.is_some() && kernel_ref.is_some() {
-            return Err(DaemonError::LocalTransport {
-                operation: "session.create",
-                message: "use either kernel_ref or slice_ref, not both".to_string(),
-            });
-        }
         if request.metaagent {
             return Err(DaemonError::LocalTransport {
                 operation: "session.create",
