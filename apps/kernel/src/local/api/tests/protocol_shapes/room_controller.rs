@@ -6,8 +6,8 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 286);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 22);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 287);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 23);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -78,7 +78,10 @@ fn room_controller_protocol_shapes_are_versioned() {
     for result in [
         serde_json::json!({"kind":"cancellation_requested","accepted":true}),
         serde_json::json!({"kind":"cancellation_requested","accepted":false}),
-        serde_json::json!({"kind":"action_cancelled"}),
+        serde_json::json!({"kind":"action_cancelled","controller_fenced":false,
+            "controller_restarted":false}),
+        serde_json::json!({"kind":"action_cancelled","controller_fenced":true,
+            "controller_restarted":true}),
         serde_json::json!({"kind":"action","result":{
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "action_kind":"click","dialog_opened":false,"attempts":2,"elapsed_ms":50

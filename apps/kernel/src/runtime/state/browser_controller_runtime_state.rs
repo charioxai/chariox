@@ -300,10 +300,24 @@ impl KernelRuntimeState {
             RoomBrowserControllerResult::Action {
                 result: Some(result),
             } => result,
-            RoomBrowserControllerResult::ActionCancelled => {
+            RoomBrowserControllerResult::ActionCancelled {
+                controller_fenced,
+                controller_restarted,
+            } => {
                 return Err(DaemonError::LocalTransport {
-                    operation: "browser_controller.cancelled",
-                    message: "browser action cancelled by the controller".into(),
+                    operation: if controller_fenced {
+                        "browser_controller.cancelled_after_fence"
+                    } else {
+                        "browser_controller.cancelled"
+                    },
+                    message: if controller_fenced {
+                        format!(
+                            "browser action cancelled after fencing the controller; worker restart {}",
+                            if controller_restarted { "succeeded" } else { "failed" }
+                        )
+                    } else {
+                        "browser action cancelled by the controller".into()
+                    },
                 })
             }
             _ => {
@@ -328,6 +342,49 @@ impl KernelRuntimeState {
             element.document_revision,
             element_ref.to_string(),
         ))
+    }
+
+    pub(crate) async fn recover_browser_controller_after_fence(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponentHealthState::Starting,
+            Some("controller_fenced"),
+        )
+        .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+        self.update_room_environment_component_health(
+            session_id,
+            EnvironmentComponent::Browser,
+            EnvironmentComponentHealthState::Starting,
+            None,
+        )
+        .map_err(|error| environment_runtime_error("browser_controller.recover", error))?;
+        match self
+            .reconcile_browser_controller_environment(session_id)
+            .await
+        {
+            Ok(environment) => Ok(environment),
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::BrowserController,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_recovery_failed"),
+                );
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::Browser,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_recovery_failed"),
+                );
+                let _ =
+                    self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+                Err(error)
+            }
+        }
     }
 
     pub(crate) async fn perform_browser_environment_locator_action_as_agent(

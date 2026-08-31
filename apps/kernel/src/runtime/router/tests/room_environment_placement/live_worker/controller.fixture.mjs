@@ -1,22 +1,26 @@
 // Run the production Chariox controller. Only external Chromium/CDP responses
 // are synthetic; kernel routing, relay encryption and controller stdio are real.
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [directory, pidFile] = process.argv.slice(2);
 const { BrowserControllerStdioServer } = await import(pathToFileURL(join(directory, "browser-controller.mjs")));
 const { BrowserCdpClient } = await import(pathToFileURL(join(directory, "browser-controller-cdp.mjs")));
-writeFileSync(pidFile, String(process.pid), { flag: "wx" });
-let open = true;
-let saved = false;
-let pressed = false;
-let note = "";
-let submitted = null;
-let focused = "worker-save";
+// The production supervisor may fence and restart the controller while the
+// external browser remains alive. Keep the current generation convenient for
+// assertions and retain every PID so cleanup can prove that none leaked.
+writeFileSync(pidFile, String(process.pid));
+appendFileSync(`${pidFile}s`, `${process.pid}\n`);
+const stateFile = join(dirname(pidFile), "chromium-state.json");
+let state = existsSync(stateFile)
+  ? JSON.parse(readFileSync(stateFile, "utf8"))
+  : { open: true, saved: false, pressed: false, note: "", submitted: null, focused: "worker-save" };
+const persist = () => writeFileSync(stateFile, JSON.stringify(state));
+persist();
 const chromium = {
-  isOpen: () => open,
-  close: async () => { open = false; },
+  isOpen: () => state.open,
+  close: async () => { state.open = false; persist(); },
   async send(method, params = {}) {
     switch (method) {
       case "Target.getTargets": return { targetInfos: [{ type: "page", targetId: "worker-tab", url: "https://worker.test/", title: "Worker browser" }] };
@@ -25,12 +29,12 @@ const chromium = {
       case "Runtime.evaluate": return { result: { value: true } };
       case "Accessibility.getFullAXTree": return { nodes: [{
         nodeId: "ax-save", backendDOMNodeId: 103, ignored: false,
-        role: { value: "button" }, name: { value: submitted === null ? (saved ? "Saved on worker" : "Save on worker") : `Submitted: ${submitted}` },
-        properties: [{ name: "focused", value: { value: focused === "worker-save" } }],
+        role: { value: "button" }, name: { value: state.submitted === null ? (state.saved ? "Saved on worker" : "Save on worker") : `Submitted: ${state.submitted}` },
+        properties: [{ name: "focused", value: { value: state.focused === "worker-save" } }],
       }, {
         nodeId: "ax-note", backendDOMNodeId: 104, ignored: false,
-        role: { value: "textbox" }, name: { value: "Worker note" }, value: { value: note },
-        properties: [{ name: "focused", value: { value: focused === "worker-note" } }],
+        role: { value: "textbox" }, name: { value: "Worker note" }, value: { value: state.note },
+        properties: [{ name: "focused", value: { value: state.focused === "worker-note" } }],
       }] };
       case "DOMSnapshot.captureSnapshot": return {
         strings: ["#document", "BUTTON", "", "Save on worker", "https://worker.test/", "INPUT", "type", "text"],
@@ -52,19 +56,22 @@ const chromium = {
           return { result: { value: { state: "disabled" } } };
         }
         if (params.functionDeclaration.includes("requestSubmit")) {
-          submitted = note;
+          state.submitted = state.note;
+          persist();
           return { result: { value: { ok: true } } };
         }
         if (params.functionDeclaration.includes("this.focus()")) {
-          focused = params.objectId;
-          if (focused === "worker-note" && params.arguments?.[0]?.value) note = "";
+          state.focused = params.objectId;
+          if (state.focused === "worker-note" && params.arguments?.[0]?.value) state.note = "";
+          persist();
           return { result: { value: { ok: true } } };
         }
         return { result: { value: { state: "ready", x: 60, y: params.objectId === "worker-note" ? 75 : 35, width: 100, height: 30, editable: params.objectId === "worker-note" } } };
       }
       case "Input.insertText": {
-        if (focused !== "worker-note") throw new Error("worker input is not focused");
-        note += params.text;
+        if (state.focused !== "worker-note") throw new Error("worker input is not focused");
+        state.note += params.text;
+        persist();
         return {};
       }
       case "Runtime.releaseObject":
@@ -77,8 +84,13 @@ const chromium = {
         return {};
       case "Input.dispatchMouseEvent": {
         if (params.x !== 60 || params.y !== 35) throw new Error("wrong click coordinates");
-        if (params.type === "mousePressed") pressed = true;
-        if (params.type === "mouseReleased" && pressed) { saved = true; submitted = null; pressed = false; }
+        if (params.type === "mousePressed") state.pressed = true;
+        if (params.type === "mouseReleased" && state.pressed) {
+          state.saved = true;
+          state.submitted = null;
+          state.pressed = false;
+        }
+        persist();
         return {};
       }
       case "Target.setDiscoverTargets":

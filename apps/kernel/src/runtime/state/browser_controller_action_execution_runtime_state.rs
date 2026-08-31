@@ -105,13 +105,21 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
-        let terminal = if matches!(
+        let controller_fenced = matches!(
             &result,
             Err(DaemonError::LocalTransport {
-                operation: "browser_controller.cancelled",
+                operation: "browser_controller.cancelled_after_fence",
                 ..
             })
-        ) {
+        );
+        let terminal = if controller_fenced
+            || matches!(
+                &result,
+                Err(DaemonError::LocalTransport {
+                    operation: "browser_controller.cancelled",
+                    ..
+                })
+            ) {
             EnvironmentActionTerminal::Cancelled
         } else if result.is_ok() {
             EnvironmentActionTerminal::Completed
@@ -120,6 +128,19 @@ impl KernelRuntimeState {
         };
         self.finish_room_environment_action(session_id, &action_id, terminal)
             .map_err(action_environment_error)?;
+        if controller_fenced {
+            if let Err(recovery_error) = self
+                .recover_browser_controller_after_fence(session_id)
+                .await
+            {
+                return Err(DaemonError::LocalTransport {
+                    operation: "browser_controller.cancelled_after_fence",
+                    message: format!(
+                        "browser action was cancelled, but controller recovery failed: {recovery_error}"
+                    ),
+                });
+            }
+        }
         Ok(BrowserControllerActionExecution {
             action_id,
             actor_id,

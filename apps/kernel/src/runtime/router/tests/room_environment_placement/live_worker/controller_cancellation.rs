@@ -102,8 +102,26 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
 }
 
 pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Value) {
+    check_pending_cleanup(fixture, token, status, Duration::from_millis(100), false).await;
+    // The fixture's worker driver has a three-second response timeout. Crossing
+    // it must not turn uncertainty into permission to send human input.
+    check_pending_cleanup(fixture, token, status, Duration::from_millis(3300), false).await;
+    check_pending_cleanup(fixture, token, status, Duration::from_millis(8300), true).await;
+}
+
+async fn check_pending_cleanup(
+    fixture: &LiveWorker,
+    token: &str,
+    status: &Value,
+    delay: Duration,
+    expect_fence: bool,
+) {
     let hold = fixture._worker_state.root.join("hold-fill");
     let hold_release = fixture._worker_state.root.join("hold-release");
+    let release_pending = fixture._worker_state.root.join("release-pending");
+    if release_pending.exists() {
+        std::fs::remove_file(&release_pending).unwrap();
+    }
     std::fs::write(&hold, b"disabled page field").unwrap();
     std::fs::write(&hold_release, b"browser cleanup awaiting response").unwrap();
     let fill = tool_task(
@@ -112,13 +130,18 @@ pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Va
         "slice_browser_fill",
         json!({"field_id":status["browser"]["fields"][0]["field_id"],"text":"must not be entered"}),
     );
+    let controller_pid = std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
+        .unwrap()
+        .trim()
+        .parse::<u32>()
+        .unwrap();
     let target = json!({"kind":"browser_tab","id":status["tab_id"]});
     let assertions = std::panic::AssertUnwindSafe(async {
         let running = wait_action(fixture, "fill", "running").await;
         // Wait for the browser's object release, not just ledger admission, so
         // the test holds a physical request across the cancellation handshake.
         timeout(Duration::from_secs(2), async {
-            while !fixture._worker_state.root.join("release-pending").exists() {
+            while !release_pending.exists() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })
@@ -132,11 +155,7 @@ pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Va
         )
         .await
         .unwrap();
-        tokio::time::sleep(Duration::from_millis(100)).await;
-        assert!(
-            !fill.is_finished(),
-            "a cancel acknowledgement cannot finish pending physical cleanup"
-        );
+        tokio::time::sleep(delay).await;
         let pending = dispatch_json(
             &fixture.home,
             json!({"GetRoomEnvironmentState":{
@@ -148,11 +167,85 @@ pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Va
         let owners = pending["RoomEnvironmentState"]["environment"]["input_ownership"]
             .as_array()
             .unwrap();
-        assert!(
-            !owners.iter().any(|owner| owner["target"] == target
-                && owner["actor_id"].as_str().unwrap().starts_with("user:")),
-            "human ownership must wait for physical completion"
-        );
+        let human_owns = owners.iter().any(|owner| {
+            owner["target"] == target && owner["actor_id"].as_str().unwrap().starts_with("user:")
+        });
+        if expect_fence {
+            assert!(
+                human_owns,
+                "a completed physical fence must finalize takeover"
+            );
+            assert!(
+                fill.is_finished(),
+                "a completed physical fence must finish the call"
+            );
+            assert!(
+                !crate::runtime::process_health::process_running(controller_pid),
+                "human ownership requires the timed-out controller to be physically stopped"
+            );
+            let recovered_pid = timeout(Duration::from_secs(2), async {
+                loop {
+                    let pid =
+                        std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
+                            .unwrap()
+                            .trim()
+                            .parse::<u32>()
+                            .unwrap();
+                    if pid != controller_pid && crate::runtime::process_health::process_running(pid)
+                    {
+                        break pid;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            })
+            .await
+            .expect("a fenced controller must restart before cancellation completes");
+            assert_ne!(recovered_pid, controller_pid);
+            let recovered = dispatch_json(
+                &fixture.home,
+                json!({"GetRoomEnvironmentState":{
+                    "session_id":fixture.rooms[0]
+                }}),
+            )
+            .await
+            .unwrap();
+            let environment = &recovered["RoomEnvironmentState"]["environment"];
+            assert_eq!(
+                environment["tabs"], status["tabs"],
+                "controller recovery must preserve stable Room tabs"
+            );
+            for component in ["browser_controller", "browser"] {
+                assert!(
+                    environment["health"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|health| {
+                            health["component"] == component && health["state"] == "ready"
+                        }),
+                    "{component} must be ready after fenced recovery"
+                );
+            }
+            assert_eq!(
+                environment["input_ownership"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|owner| owner["target"] == target)
+                    .count(),
+                1,
+                "controller recovery must not duplicate input authority"
+            );
+        } else {
+            assert!(
+                !human_owns,
+                "human ownership must wait for physical completion"
+            );
+            assert!(
+                !fill.is_finished(),
+                "a cancel acknowledgement cannot finish pending physical cleanup"
+            );
+        }
         std::fs::remove_file(&hold_release).unwrap();
         timeout(Duration::from_secs(1), async {
             while !fill.is_finished() {
@@ -212,13 +305,19 @@ pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Va
     )
     .await
     .unwrap();
+    let fresh = fixture
+        .home
+        .runtime_state
+        .dispatch_authenticated_runtime_tool_call(token, "slice_browser_status", json!({}))
+        .await
+        .unwrap();
     fixture
         .home
         .runtime_state
         .dispatch_authenticated_runtime_tool_call(
             token,
             "slice_browser_submit",
-            json!({"field_id":status["browser"]["fields"][0]["field_id"]}),
+            json!({"field_id":fresh.payload["browser"]["fields"][0]["field_id"]}),
         )
         .await
         .unwrap();
@@ -230,7 +329,7 @@ pub(super) async fn check_running(fixture: &LiveWorker, token: &str, status: &Va
         .unwrap();
     assert_eq!(
         page.payload["browser"]["buttons"][0]["label"], "Submitted: A note from home",
-        "the cancelled fill must never replace the existing form text"
+        "cancellation and controller recovery must preserve the external browser state"
     );
 }
 

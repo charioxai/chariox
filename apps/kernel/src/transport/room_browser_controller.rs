@@ -34,7 +34,10 @@ pub(crate) enum RoomBrowserControllerCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
-    ActionCancelled,
+    ActionCancelled {
+        controller_fenced: bool,
+        controller_restarted: bool,
+    },
     CancellationRequested {
         accepted: bool,
     },

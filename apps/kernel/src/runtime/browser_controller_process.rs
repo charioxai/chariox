@@ -277,6 +277,20 @@ impl BrowserControllerProcessStdioBackend {
         method: &str,
         params: serde_json::Value,
     ) -> Result<BrowserControllerRpcResponse, String> {
+        // Locator actions have their own bounded actionability deadline inside
+        // the controller. The stdio deadline starts outside that operation, so
+        // add the declared action budget instead of timing the transport out
+        // while the controller is still performing or cleaning up the action.
+        let timeout = if method == "browser.action" {
+            self.timeout.saturating_add(Duration::from_millis(
+                params
+                    .get("timeout_ms")
+                    .and_then(serde_json::Value::as_u64)
+                    .unwrap_or(0),
+            ))
+        } else {
+            self.timeout
+        };
         let cancellation = (method == "browser.action")
             .then(|| self.action_cancellation.clone())
             .flatten();
@@ -327,11 +341,28 @@ impl BrowserControllerProcessStdioBackend {
                     .map_err(|error| error.to_string())?;
                 cancellation_sent = true;
             }
-            let remaining = self.timeout.saturating_sub(started.elapsed());
+            let remaining = timeout.saturating_sub(started.elapsed());
             if remaining.is_zero() {
+                if let Some(signal) = cancellation.as_ref().filter(|signal| signal.requested()) {
+                    // A timeout is not proof that physical input stopped. Kill
+                    // and reap the only process capable of sending more input
+                    // before confirming cancellation to the home kernel.
+                    kill_child(&mut process.child);
+                    signal.confirm_fence();
+                    return Ok(BrowserControllerRpcResponse {
+                        id: Some(request_id),
+                        ok: false,
+                        result: None,
+                        error: Some(BrowserControllerRpcError {
+                            code: "browser_action_cancelled".to_string(),
+                            message: "browser controller was fenced after cancellation timed out"
+                                .to_string(),
+                        }),
+                    });
+                }
                 return Err(format!(
                     "browser controller `{method}` timed out after {}ms",
-                    self.timeout.as_millis()
+                    timeout.as_millis()
                 ));
             }
             let poll = if cancellation.is_some() {

@@ -6,6 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 pub(super) struct CancellationSignal {
     requested: AtomicBool,
     stopped: AtomicBool,
+    fenced: AtomicBool,
 }
 
 impl CancellationSignal {
@@ -14,6 +15,13 @@ impl CancellationSignal {
     }
     pub(super) fn confirm_stop(&self) {
         self.stopped.store(true, Ordering::Release);
+    }
+    pub(super) fn confirm_fence(&self) {
+        self.fenced.store(true, Ordering::Release);
+        self.confirm_stop();
+    }
+    fn fenced(&self) -> bool {
+        self.fenced.load(Ordering::Acquire)
     }
 }
 
@@ -105,7 +113,13 @@ impl BrowserControllerProcessStore {
         );
         ownership.supervisor.backend.action_cancellation = None;
         if active.signal.stopped.load(Ordering::Acquire) {
-            Ok(Response::ActionCancelled)
+            let controller_fenced = active.signal.fenced();
+            let controller_restarted =
+                controller_fenced && ownership.supervisor.ensure_started().is_ok();
+            Ok(Response::ActionCancelled {
+                controller_fenced,
+                controller_restarted,
+            })
         } else {
             result.map(|result| Response::Action {
                 result: Some(result),

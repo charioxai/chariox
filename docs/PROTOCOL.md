@@ -646,9 +646,20 @@ operation's `ActionCancelled` response confirms physical cancellation and lets
 the home finish the action as cancelled and grant pending human ownership.
 The controller checks cancellation before input and between pointer movement
 and button press, while keeping the browser available for subsequent actions.
-Lost execution responses, controller recovery, and cancellation during other
-operations require further resiliency validation; this is not full cancellation
-acceptance for every Browser and Computer operation.
+
+Protocol v287 and relay peer v23 distinguish graceful cancellation from a
+forced physical fence. If controller cleanup does not complete inside the
+combined command and action timeout, the worker kills and reaps the controller,
+restarts it against the surviving browser, and reports both facts to the home.
+The home finishes the Action as cancelled before reconciling the new controller
+generation. Reconciliation invalidates old element references while preserving
+stable Room tabs, external browser state, and the single human input owner. The
+cancelled call does not return until recovery either succeeds or fails visibly;
+failure leaves Browser and Browser Controller health unavailable with a
+recovery diagnostic.
+Cancellation during other operations and physical input-device reset after a
+mid-sequence controller loss still require further resiliency validation; this
+is not full cancellation acceptance for every Browser and Computer operation.
 
 Navigation, dialogs, events, file operations, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.

@@ -117,9 +117,11 @@ pub(super) async fn controller_scenario(private_relay: bool) {
     let result = std::panic::AssertUnwindSafe(check_slice_controller(&fixture))
         .catch_unwind()
         .await;
-    let pid = std::fs::read_to_string(fixture._worker_state.root.join("controller.pid"))
-        .ok()
-        .map(|pid| pid.trim().parse::<u32>().expect("controller PID"));
+    let pids = std::fs::read_to_string(fixture._worker_state.root.join("controller.pids"))
+        .unwrap_or_default()
+        .lines()
+        .map(|pid| pid.parse::<u32>().expect("controller PID"))
+        .collect::<Vec<_>>();
     let cleanup = fixture
         .worker
         .runtime_state
@@ -127,7 +129,7 @@ pub(super) async fn controller_scenario(private_relay: bool) {
         .await;
     fixture.stop().await;
     cleanup.expect("stop fixture controller on success and failure");
-    if let Some(pid) = pid {
+    for pid in pids {
         eprintln!("relay controller fixture PID: {pid}");
         assert!(
             !crate::runtime::process_health::process_running(pid),
