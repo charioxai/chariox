@@ -4,6 +4,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use tokio::time::{timeout, Duration};
 
+mod batch;
 mod session;
 
 struct LiveWorker {

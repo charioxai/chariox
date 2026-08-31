@@ -512,11 +512,21 @@ impl SessionRuntimeStore {
         }
         let agents = match self
             .state
-            .spawn_agents(create_requests, &caller_user_id)
+            .spawn_agents(create_requests, &caller_user_id, &slice_refs_for_agents)
             .await
         {
             Ok(agents) => agents,
-            Err(error) => return self.with_session_projection_action_result(Err(error)).await,
+            Err(error) => {
+                // A worker-backed failure may have created and then rolled back
+                // agents. Publish the recovered state even though the request failed.
+                let projection = self
+                    .state
+                    .session_snapshot(&request.session_id)
+                    .await
+                    .ok()
+                    .map(SessionProjectionAction::Update);
+                return (Err(error), projection);
+            }
         };
         let slice_attachments = agents
             .iter()
