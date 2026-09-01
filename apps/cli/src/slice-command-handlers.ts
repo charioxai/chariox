@@ -129,7 +129,7 @@ function formatSliceStateStatus(slice: SliceRecord, state: SliceSavedStateRecord
   ].filter(Boolean).join("\n")
 }
 
-function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
+export function formatSliceStateSaved(slice: SliceRecord, state: SliceSavedStateRecord): string {
   return [
     `saved slice state ${formatSliceLabel(slice)} (${slice.id})`,
     `state=${state.id}`,

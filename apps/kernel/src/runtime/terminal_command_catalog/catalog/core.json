@@ -242,6 +242,21 @@
           "stop agent input",
           "complete takeover"
         ]
+      },
+      {
+        "id": "room-save",
+        "label": "save",
+        "description": "Save the Room Environment slice, then restart its agents or shut the slice down",
+        "value": "/room save ",
+        "examples": [
+          "/room save restart",
+          "/room save shutdown"
+        ],
+        "searchAliases": [
+          "save and restart agents",
+          "save and shut down slice",
+          "persist Room environment"
+        ]
       }
     ]
   },

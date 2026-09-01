@@ -242,6 +242,7 @@ mod tests {
                 "/room takeover ",
                 "/room release ",
                 "/room cancel ",
+                "/room save ",
             ]
         );
         let cancel = room
@@ -250,6 +251,15 @@ mod tests {
             .find(|node| node.id == "room-cancel")
             .expect("Room action cancellation command should be present");
         assert_eq!(cancel.examples, vec!["/room cancel action-7"]);
+        let save = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-save")
+            .expect("Room Environment save command should be present");
+        assert_eq!(
+            save.examples,
+            vec!["/room save restart", "/room save shutdown"]
+        );
     }
 
     #[test]

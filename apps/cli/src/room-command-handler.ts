@@ -1,9 +1,11 @@
 import {
   cancelRoomEnvironmentActionRequest,
+  getRoomEnvironmentSliceRequest,
   getRoomEnvironmentStateRequest,
   releaseRoomEnvironmentInputRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
+  saveSliceStateRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
   type RoomEnvironmentViewportRequest,
@@ -14,15 +16,25 @@ import type {
   RoomEnvironmentActionCancellationUpdatedResponse,
   RoomEnvironmentInputReleasedResponse,
   RoomEnvironmentInputTarget,
+  RoomEnvironmentSliceResponse,
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
   RoomEnvironmentTakeoverUpdatedResponse,
   RoomEnvironmentUpdatedResponse,
+  SliceRecord,
+  SliceSavedStateRecord,
 } from "@chariox/kernel-client/kernel-types"
 
 import type { ParsedSlashCommand } from "./commands.js"
+import { formatSliceStateSaved } from "./slice-command-handlers.js"
 
 type RoomCommand = Extract<ParsedSlashCommand, { kind: "room" }>
+type SliceStateSavedResponse = {
+  SliceStateSaved: {
+    slice: SliceRecord
+    state: SliceSavedStateRecord
+  }
+}
 
 export type RoomCommandHandlerDeps = {
   isAttached: () => boolean
@@ -37,13 +49,14 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry", "takeover", "release", "cancel"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "start", "stop", "retry", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
   let startViewport: RoomEnvironmentViewportRequest | undefined
   let inputTarget: RoomEnvironmentInputTarget | undefined
   let actionId: string | undefined
+  let saveMode: "restart_agents" | "shutdown" | undefined
   if (subcommand === "start") {
     const parsedViewport = parseStartViewport(command.args.slice(1))
     if (typeof parsedViewport === "string") {
@@ -64,6 +77,12 @@ export async function handleRoomSlashCommand(
       return
     }
     actionId = command.args[1]
+  } else if (subcommand === "save") {
+    if (command.args.length !== 2 || !command.args[1] || !["restart", "shutdown"].includes(command.args[1])) {
+      deps.flashFooter(roomSaveUsage(), "error")
+      return
+    }
+    saveMode = command.args[1] === "restart" ? "restart_agents" : "shutdown"
   } else if (command.args.length > 1) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
@@ -122,6 +141,28 @@ export async function handleRoomSlashCommand(
     deps.appendNotice(`Room action ${actionId} ${formatCancellationOutcome(outcome)}\n${formatRoomEnvironmentStatus(environment)}`)
     return
   }
+  if (subcommand === "save") {
+    if (!saveMode) throw new Error("Room Environment save mode is missing")
+    const bindingResponse = await deps.send<RoomEnvironmentSliceResponse>(
+      getRoomEnvironmentSliceRequest(sessionId),
+    )
+    if (!bindingResponse || typeof bindingResponse !== "object" || !("RoomEnvironmentSlice" in bindingResponse)) {
+      throw new Error("Room Environment slice response is malformed")
+    }
+    const binding = bindingResponse.RoomEnvironmentSlice.binding
+    if (!binding) {
+      deps.flashFooter("Room Environment has no bound slice to save", "error")
+      return
+    }
+    const response = await deps.send<SliceStateSavedResponse>(
+      saveSliceStateRequest(binding.slice_id, saveMode, "this_slice"),
+    )
+    if (!response || typeof response !== "object" || !("SliceStateSaved" in response)) {
+      throw new Error("Room Environment slice save response is malformed")
+    }
+    deps.appendNotice(formatSliceStateSaved(response.SliceStateSaved.slice, response.SliceStateSaved.state))
+    return
+  }
 
   let request: unknown
   if (subcommand === "start") {
@@ -175,7 +216,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID"
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomStartUsage(): string {
@@ -188,6 +229,10 @@ function roomInputUsage(): string {
 
 function roomCancelUsage(): string {
   return "usage: /room cancel ACTION_ID"
+}
+
+function roomSaveUsage(): string {
+  return "usage: /room save restart|shutdown"
 }
 
 function formatCancellationOutcome(outcome: RoomEnvironmentActionCancellationOutcome): string {
