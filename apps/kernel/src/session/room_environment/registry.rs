@@ -1,8 +1,10 @@
 use std::collections::BTreeMap;
 
 use super::{
-    CanonicalViewport, EnvironmentActor, EnvironmentError, EnvironmentLifecycle, EnvironmentReplay,
-    RoomEnvironment, RoomEnvironmentSnapshot,
+    ActionAdmission, CanonicalViewport, EnvironmentActionRequest, EnvironmentActionTerminal,
+    EnvironmentActor, EnvironmentComponent, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentLifecycle, EnvironmentReplay, EnvironmentTabObservation, RoomEnvironment,
+    RoomEnvironmentSnapshot,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -64,6 +66,33 @@ impl RoomEnvironmentRegistry {
         &mut self,
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.begin_stop(session_id)?;
+        self.complete_stop(session_id)
+    }
+
+    pub(crate) fn begin_stop(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        match environment.snapshot().lifecycle {
+            EnvironmentLifecycle::Stopped
+            | EnvironmentLifecycle::Stopping
+            | EnvironmentLifecycle::Failed => {}
+            _ => environment.transition_to(EnvironmentLifecycle::Stopping)?,
+        }
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn complete_stop(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         let environment = self
             .environments_by_session
             .get_mut(session_id)
@@ -72,15 +101,14 @@ impl RoomEnvironmentRegistry {
             })?;
         match environment.snapshot().lifecycle {
             EnvironmentLifecycle::Stopped => {}
-            EnvironmentLifecycle::Stopping => {
+            EnvironmentLifecycle::Stopping | EnvironmentLifecycle::Failed => {
                 environment.transition_to(EnvironmentLifecycle::Stopped)?;
             }
-            EnvironmentLifecycle::Failed => {
-                environment.transition_to(EnvironmentLifecycle::Stopped)?;
-            }
-            _ => {
-                environment.transition_to(EnvironmentLifecycle::Stopping)?;
-                environment.transition_to(EnvironmentLifecycle::Stopped)?;
+            from => {
+                return Err(EnvironmentError::InvalidLifecycleTransition {
+                    from,
+                    to: EnvironmentLifecycle::Stopped,
+                });
             }
         }
         Ok(environment.snapshot())
@@ -111,8 +139,6 @@ impl RoomEnvironmentRegistry {
         Ok(environment.snapshot())
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition(
         &mut self,
         session_id: &str,
@@ -125,6 +151,23 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.transition_to(lifecycle)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn update_component_health(
+        &mut self,
+        session_id: &str,
+        component: EnvironmentComponent,
+        state: EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.update_component_health(component, state, diagnostic_code);
         Ok(environment.snapshot())
     }
 
@@ -157,6 +200,128 @@ impl RoomEnvironmentRegistry {
                 session_id: session_id.to_string(),
             })?;
         environment.reconcile_actors(actors)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn reconcile_controller_tabs(
+        &mut self,
+        session_id: &str,
+        tabs: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.reconcile_controller_tabs(tabs, focused_runtime_target_id);
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<super::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .controller_tab_binding(tab_id)
+    }
+
+    pub(crate) fn register_element_references(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, String>, EnvironmentError> {
+        self.environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .register_element_references(
+                tab_id,
+                runtime_generation,
+                document_revision,
+                controller_node_refs,
+            )
+    }
+
+    pub(crate) fn resolve_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<super::EnvironmentElementTarget, EnvironmentError> {
+        self.environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .resolve_element_reference(reference_id)
+    }
+
+    pub(crate) fn submit_action(
+        &mut self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+    ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        let admission = environment.submit_action(request)?;
+        Ok((admission, environment.snapshot()))
+    }
+
+    pub(crate) fn finish_action(
+        &mut self,
+        session_id: &str,
+        action_id: &str,
+        terminal: EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.finish_action(action_id, terminal)?;
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn begin_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.begin_browser_controller_recovery();
+        Ok(environment.snapshot())
+    }
+
+    pub(crate) fn complete_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        let environment = self
+            .environments_by_session
+            .get_mut(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?;
+        environment.complete_browser_controller_recovery();
         Ok(environment.snapshot())
     }
 

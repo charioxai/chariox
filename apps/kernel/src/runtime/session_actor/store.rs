@@ -68,18 +68,29 @@ impl SessionRuntimeStore {
             Err(error) => Err(error),
         }
         .map_err(|error| room_environment_control_error("environment.start", error));
-        let result = viewport.and_then(|viewport| {
-            self.state
+        let result = match viewport {
+            Ok(viewport) => self
+                .state
                 .start_room_environment(&request.session_id, viewport)
+                .map_err(|error| room_environment_control_error("environment.start", error)),
+            Err(error) => Err(error),
+        };
+        let result = match result {
+            Ok(_) => self
+                .state
+                .finish_room_environment_controller_start(&request.session_id, "environment.start")
+                .await
                 .and_then(|_| {
-                    self.state.reconcile_room_environment_actors(
-                        &request.session_id,
-                        Some(&caller_user_id),
-                    )
+                    self.state
+                        .reconcile_room_environment_actors(
+                            &request.session_id,
+                            Some(&caller_user_id),
+                        )
+                        .map_err(|error| room_environment_control_error("environment.start", error))
                 })
-                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
-                .map_err(|error| room_environment_control_error("environment.start", error))
-        });
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
         (result, None)
     }
 
@@ -90,11 +101,16 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = self
-            .state
-            .stop_room_environment(&request.session_id)
-            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
-            .map_err(|error| room_environment_control_error("environment.stop", error));
+        let result = if self.state.browser_controller_process_enabled() {
+            self.state
+                .stop_managed_room_environment_runtime(&request.session_id)
+                .await
+        } else {
+            self.state
+                .stop_room_environment(&request.session_id)
+                .map_err(|error| room_environment_control_error("environment.stop", error))
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
         (result, None)
     }
 
@@ -108,8 +124,15 @@ impl SessionRuntimeStore {
         let result = self
             .state
             .retry_room_environment(&request.session_id)
-            .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
             .map_err(|error| room_environment_control_error("environment.retry", error));
+        let result = match result {
+            Ok(_) => self
+                .state
+                .finish_room_environment_controller_start(&request.session_id, "environment.retry")
+                .await
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment }),
+            Err(error) => Err(error),
+        };
         (result, None)
     }
 
@@ -143,11 +166,59 @@ impl SessionRuntimeStore {
                     request.expected_revision,
                     viewport,
                 )
-                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
                 .map_err(|error| {
                     room_environment_control_error("environment.viewport.update", error)
                 })
         });
+        let result = match result {
+            Ok(environment) if self.state.browser_controller_process_enabled() => {
+                match self
+                    .state
+                    .reconcile_browser_controller_environment(&request.session_id)
+                    .await
+                {
+                    Ok(_) => self
+                        .state
+                        .update_room_environment_component_health(
+                            &request.session_id,
+                            crate::session::EnvironmentComponent::Browser,
+                            crate::session::EnvironmentComponentHealthState::Ready,
+                            None,
+                        )
+                        .map_err(|error| {
+                            room_environment_control_error("environment.viewport.update", error)
+                        }),
+                    Err(_) => {
+                        let degraded = self
+                            .state
+                            .update_room_environment_component_health(
+                                &request.session_id,
+                                crate::session::EnvironmentComponent::Browser,
+                                crate::session::EnvironmentComponentHealthState::Degraded,
+                                Some("viewport_apply_failed"),
+                            )
+                            .unwrap_or(environment);
+                        if degraded.lifecycle == crate::session::EnvironmentLifecycle::Ready {
+                            self.state
+                                .transition_room_environment(
+                                    &request.session_id,
+                                    crate::session::EnvironmentLifecycle::Degraded,
+                                )
+                                .map_err(|error| {
+                                    room_environment_control_error(
+                                        "environment.viewport.update",
+                                        error,
+                                    )
+                                })
+                        } else {
+                            Ok(degraded)
+                        }
+                    }
+                }
+            }
+            other => other,
+        }
+        .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment });
         (result, None)
     }
 

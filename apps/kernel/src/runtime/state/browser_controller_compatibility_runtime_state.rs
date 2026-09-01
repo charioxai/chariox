@@ -1,0 +1,151 @@
+use crate::error::DaemonError;
+use crate::runtime::browser_controller_compatibility::{
+    normalize_browser_navigation_url, BrowserCompatibilityWait,
+    BrowserControllerCompatibilityWaitResult, BrowserControllerNavigationResult,
+};
+
+use super::KernelRuntimeState;
+
+impl KernelRuntimeState {
+    pub(crate) async fn navigate_browser_environment_compatibility_as_agent(
+        &self,
+        session_id: &str,
+        agent_id: &str,
+        url: &str,
+    ) -> Result<
+        super::BrowserControllerActionExecution<BrowserControllerNavigationResult>,
+        DaemonError,
+    > {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: format!("{}: {error:?}", error.code()),
+            })?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: "the Room browser has no focused tab for navigate".to_string(),
+            })?;
+        let document_revision = environment
+            .tabs
+            .iter()
+            .find(|tab| tab.tab_id == tab_id)
+            .map(|tab| tab.document_revision)
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: format!("Room browser tab `{tab_id}` is not available"),
+            })?;
+        self.execute_browser_mutation_as_agent(
+            session_id,
+            agent_id,
+            &tab_id,
+            document_revision,
+            "navigate",
+            self.navigate_browser_environment_compatibility(session_id, url),
+        )
+        .await
+    }
+
+    pub(crate) async fn navigate_browser_environment_compatibility(
+        &self,
+        session_id: &str,
+        url: &str,
+    ) -> Result<BrowserControllerNavigationResult, DaemonError> {
+        let url = normalize_browser_navigation_url(url).map_err(|message| {
+            DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message,
+            }
+        })?;
+        let (target_id, document_id) =
+            self.focused_browser_controller_identity(session_id, "navigate")?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        let result = tokio::task::spawn_blocking(move || {
+            processes.navigate_browser(&owned_session_id, &target_id, &document_id, &url)
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.navigate",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.navigate",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.navigate",
+            message: "browser controller is not enabled".to_string(),
+        })?;
+        self.reconcile_browser_controller_environment(session_id)
+            .await?;
+        Ok(result)
+    }
+
+    pub(crate) async fn wait_for_browser_environment_compatibility(
+        &self,
+        session_id: &str,
+        wait: BrowserCompatibilityWait,
+        timeout_ms: u64,
+    ) -> Result<BrowserControllerCompatibilityWaitResult, DaemonError> {
+        wait.validate(timeout_ms)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.wait",
+                message,
+            })?;
+        let (target_id, document_id) =
+            self.focused_browser_controller_identity(session_id, "wait")?;
+        let processes = self.owned.browser_controller_processes.clone();
+        let owned_session_id = session_id.to_string();
+        tokio::task::spawn_blocking(move || {
+            processes.wait_for_browser(
+                &owned_session_id,
+                &target_id,
+                &document_id,
+                &wait,
+                timeout_ms,
+            )
+        })
+        .await
+        .map_err(|error| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.wait",
+            message: error.to_string(),
+        })?
+        .map_err(|message| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.wait",
+            message,
+        })?
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "browser_controller.compatibility.wait",
+            message: "browser controller is not enabled".to_string(),
+        })
+    }
+
+    fn focused_browser_controller_identity(
+        &self,
+        session_id: &str,
+        action: &str,
+    ) -> Result<(String, String), DaemonError> {
+        let environment = self
+            .room_environment_snapshot(session_id)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility",
+                message: format!("{}: {error:?}", error.code()),
+            })?;
+        let tab_id = environment
+            .focused_tab_id
+            .ok_or_else(|| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility",
+                message: format!("the Room browser has no focused tab for {action}"),
+            })?;
+        let binding = self
+            .room_environment_controller_tab_binding(session_id, &tab_id)
+            .map_err(|error| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility",
+                message: format!("{}: {error:?}", error.code()),
+            })?;
+        Ok((binding.runtime_target_id, binding.document_id))
+    }
+}

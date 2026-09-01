@@ -1,5 +1,468 @@
 use super::*;
 
+mod browser_isolation;
+
+struct TestBrowserControllerTool {
+    root: std::path::PathBuf,
+    path: std::path::PathBuf,
+    log: std::path::PathBuf,
+}
+
+impl TestBrowserControllerTool {
+    fn new() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        use std::sync::atomic::{AtomicU64, Ordering};
+
+        static SEQUENCE: AtomicU64 = AtomicU64::new(0);
+        let sequence = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "chariox-room-controller-tool-{}-{sequence}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("create controller tool root");
+        let path = root.join("controller-tool.sh");
+        let log = root.join("commands.log");
+        let script = r#"#!/bin/sh
+set -eu
+printf 'start\n' >> '__LOG__'
+while IFS= read -r request; do
+  id=${request#*:}
+  id=${id%%,*}
+  case "$request" in
+    *'"method":"health"'*)
+      printf 'health\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"state":"ready","process_id":%s,"diagnostic_code":null}}\n' "$id" "$$"
+      ;;
+    *'"method":"browser.reconcile"'*)
+      printf 'reconcile\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"event_cursor":1,"tabs":[{"target_id":"target-a","document_id":"loader-a","url":"https://a.test","title":"A"}],"focused_target_id":"target-a","viewport":{"css_width":1280,"css_height":800,"device_scale_factor":1,"desktop_pixel_width":1280,"desktop_pixel_height":800}}}\n' "$id"
+      ;;
+    *'"method":"browser.snapshot"'*)
+      printf 'snapshot\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","snapshot_revision":1,"accessibility_nodes":[{"node_ref":"backend:103","parent_ref":null,"child_refs":[],"role":"button","name":"Save","description":"","value":"","ignored":false,"disabled":false,"focused":true}],"dom_nodes":[{"node_ref":"backend:103","parent_ref":"backend:102","node_type":1,"node_name":"BUTTON","text":"","attributes":{"id":"save"},"bounds":{"x":10,"y":20,"width":100,"height":30}}]}}\n' "$id"
+      ;;
+    *'"method":"browser.action"'*)
+      printf 'action\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action_kind":"click","dialog_opened":true,"attempts":2,"elapsed_ms":50}}\n' "$id"
+      ;;
+    *'"method":"browser.dialog"'*)
+      printf 'dialog\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","action":"dismiss"}}\n' "$id"
+      ;;
+    *'"method":"browser.downloads.configure"'*)
+      printf 'downloads\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","enabled":true}}\n' "$id"
+      ;;
+    *'"method":"browser.upload"'*)
+      printf 'upload\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","file_count":1,"total_bytes":12}}\n' "$id"
+      ;;
+    *'"method":"browser.permission"'*)
+      printf 'permission\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"target_id":"target-a","document_id":"loader-a","permission":"geolocation","setting":"denied"}}\n' "$id"
+      ;;
+    *'"method":"browser.events.poll"'*)
+      printf 'events\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"events":[{"event_id":2,"browser_generation":1,"kind":"console","target_id":"target-a","document_id":"loader-a","data":{"console_type":"warning","argument_count":1}},{"event_id":3,"browser_generation":1,"kind":"target_created","target_id":"other-room-target","document_id":null,"data":{"url":"https://other.test/"}},{"event_id":4,"browser_generation":1,"kind":"browser_connected","target_id":null,"document_id":null,"data":{}}],"next_cursor":4,"replay_gap":false}}\n' "$id"
+      ;;
+    *'"method":"shutdown"'*)
+      printf 'shutdown\n' >> '__LOG__'
+      printf '{"id":%s,"ok":true,"result":{"state":"stopped","process_id":null,"diagnostic_code":null}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+"#
+        .replace("__LOG__", &log.display().to_string());
+        std::fs::write(&path, script).expect("write controller tool");
+        let mut permissions = std::fs::metadata(&path)
+            .expect("controller tool metadata")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&path, permissions).expect("make controller tool executable");
+        Self { root, path, log }
+    }
+}
+
+impl Drop for TestBrowserControllerTool {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
+}
+
+#[tokio::test]
+async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new(
+                "browser-workspace",
+                "browser-worktree",
+            ))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let tool = TestBrowserControllerTool::new();
+    let mut state = owned_runtime_state(&app).await;
+    state.set_browser_controller_process_store_for_test(
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+            &tool.path,
+            Vec::new(),
+            Duration::from_secs(5),
+        ),
+    );
+    let validation_state = state.clone();
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        state,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let start_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    let start_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-start",
+                None,
+                None,
+                &start_request,
+            ),
+            start_request,
+        )
+        .await
+        .expect("managed Environment should start");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = start_response else {
+        panic!("unexpected start response");
+    };
+    assert_eq!(
+        environment.lifecycle,
+        crate::session::EnvironmentLifecycle::Starting
+    );
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::BrowserController
+            && health.state == crate::session::EnvironmentComponentHealthState::Ready
+    }));
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::Browser
+            && health.state == crate::session::EnvironmentComponentHealthState::Ready
+    }));
+    assert_eq!(environment.tabs.len(), 1);
+    assert_eq!(environment.tabs[0].tab_id, "tab-1");
+    assert_eq!(environment.tabs[0].url, "https://a.test");
+    assert!(environment.tabs[0].focused);
+    let environment_id = environment.environment_id.clone();
+
+    let first_snapshot = validation_state
+        .capture_browser_environment_snapshot(&session_id, "tab-1")
+        .await
+        .expect("structured snapshot should cross the controller boundary");
+    let second_snapshot = validation_state
+        .capture_browser_environment_snapshot(&session_id, "tab-1")
+        .await
+        .expect("repeated structured snapshot should remain valid");
+    assert_eq!(first_snapshot.session_id, session_id);
+    assert_eq!(first_snapshot.environment_id, environment_id);
+    assert_eq!(first_snapshot.runtime_generation, 1);
+    assert_eq!(first_snapshot.tab_id, "tab-1");
+    assert_eq!(first_snapshot.document_revision, 1);
+    assert_eq!(first_snapshot.snapshot_revision, 1);
+    let accessibility_node = &first_snapshot.accessibility_nodes[0];
+    assert_eq!(accessibility_node.parent_ref, None);
+    assert!(accessibility_node.child_refs.is_empty());
+    assert_eq!(accessibility_node.role, "button");
+    assert_eq!(accessibility_node.name, "Save");
+    assert_eq!(accessibility_node.description, "");
+    assert_eq!(accessibility_node.value, "");
+    assert!(!accessibility_node.ignored);
+    assert!(!accessibility_node.disabled);
+    assert!(accessibility_node.focused);
+    let dom_node = &first_snapshot.dom_nodes[0];
+    assert_eq!(dom_node.parent_ref, None);
+    assert_eq!(dom_node.node_type, 1);
+    assert_eq!(dom_node.node_name, "BUTTON");
+    assert_eq!(dom_node.text, "");
+    assert_eq!(dom_node.attributes["id"], "save");
+    assert_eq!(dom_node.bounds.expect("button bounds").width, 100.0);
+    assert_eq!(
+        first_snapshot.accessibility_nodes[0].element_ref,
+        first_snapshot.dom_nodes[0].element_ref
+    );
+    assert_eq!(
+        first_snapshot.dom_nodes[0].element_ref, second_snapshot.dom_nodes[0].element_ref,
+        "opaque element references should remain stable within one document"
+    );
+    let resolved = validation_state
+        .resolve_room_environment_element_reference(
+            &session_id,
+            &first_snapshot.dom_nodes[0].element_ref,
+        )
+        .expect("opaque element reference resolves inside the kernel");
+    assert_eq!(resolved.tab_id, "tab-1");
+    assert_eq!(resolved.runtime_generation, 1);
+    assert_eq!(resolved.document_revision, 1);
+    assert_eq!(resolved.controller_node_ref, "backend:103");
+    let action_result = validation_state
+        .perform_browser_environment_locator_action(
+            &session_id,
+            &first_snapshot.dom_nodes[0].element_ref,
+            crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
+            500,
+        )
+        .await
+        .expect("opaque element reference should drive a locator action");
+    assert_eq!(action_result.session_id, session_id);
+    assert_eq!(action_result.environment_id, environment_id);
+    assert_eq!(action_result.runtime_generation, 1);
+    assert_eq!(action_result.tab_id, "tab-1");
+    assert_eq!(action_result.document_revision, 1);
+    assert_eq!(
+        action_result.element_ref,
+        first_snapshot.dom_nodes[0].element_ref
+    );
+    assert_eq!(action_result.action_kind, "click");
+    assert!(action_result.dialog_opened);
+    assert_eq!(action_result.attempts, 2);
+    assert_eq!(action_result.elapsed_ms, 50);
+    let dialog_result = validation_state
+        .handle_browser_environment_dialog(
+            &session_id,
+            "tab-1",
+            crate::runtime::browser_controller_action::BrowserDialogAction::Dismiss,
+        )
+        .await
+        .expect("dialog response should cross the controller boundary");
+    assert_eq!(dialog_result.session_id, session_id);
+    assert_eq!(dialog_result.environment_id, environment_id);
+    assert_eq!(dialog_result.runtime_generation, 1);
+    assert_eq!(dialog_result.tab_id, "tab-1");
+    assert_eq!(dialog_result.document_revision, 1);
+    assert_eq!(dialog_result.action, "dismiss");
+    let downloads = validation_state
+        .configure_browser_environment_downloads(&session_id, "tab-1")
+        .await
+        .expect("download configuration should cross the controller boundary");
+    assert!(downloads.enabled);
+    assert_eq!(downloads.tab_id, "tab-1");
+    let upload = validation_state
+        .upload_browser_environment_files(
+            &session_id,
+            &first_snapshot.dom_nodes[0].element_ref,
+            vec![std::path::PathBuf::from("/workspace/report.txt")],
+        )
+        .await
+        .expect("upload should cross the controller boundary");
+    assert_eq!(upload.file_count, 1);
+    assert_eq!(upload.total_bytes, 12);
+    assert_eq!(upload.element_ref, first_snapshot.dom_nodes[0].element_ref);
+    let permission = validation_state
+        .set_browser_environment_permission(
+            &session_id,
+            "tab-1",
+            crate::runtime::browser_controller_permission::BrowserPermissionName::Geolocation,
+            crate::runtime::browser_controller_permission::BrowserPermissionSetting::Denied,
+        )
+        .await
+        .expect("permission decision should cross the controller boundary");
+    assert_eq!(permission.permission, "geolocation");
+    assert_eq!(permission.setting, "denied");
+    assert_eq!(permission.tab_id, "tab-1");
+    let events = validation_state
+        .poll_browser_environment_events(&session_id, 1, 1, 10)
+        .await
+        .expect("event polling should cross the controller boundary");
+    assert_eq!(events.browser_generation, 1);
+    assert_eq!(events.next_cursor, 4);
+    assert!(!events.replay_gap);
+    assert_eq!(
+        events.events.len(),
+        2,
+        "other Room targets must stay isolated"
+    );
+    assert_eq!(events.events[0].event_id, 2);
+    assert_eq!(events.events[0].kind, "console");
+    assert_eq!(events.events[0].tab_id.as_deref(), Some("tab-1"));
+    assert_eq!(events.events[0].document_id.as_deref(), Some("loader-a"));
+    assert_eq!(events.events[1].kind, "browser_connected");
+    assert_eq!(events.events[1].tab_id, None);
+
+    let stop_request =
+        LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+        });
+    let stop_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request("managed-controller-stop", None, None, &stop_request),
+            stop_request,
+        )
+        .await
+        .expect("managed Environment should stop");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = stop_response else {
+        panic!("unexpected stop response");
+    };
+    assert_eq!(
+        environment.lifecycle,
+        crate::session::EnvironmentLifecycle::Stopped
+    );
+    assert!(environment.health.iter().any(|health| {
+        health.component == crate::session::EnvironmentComponent::BrowserController
+            && health.state == crate::session::EnvironmentComponentHealthState::Unavailable
+    }));
+
+    let restart_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-restart",
+                None,
+                None,
+                &restart_request,
+            ),
+            restart_request,
+        )
+        .await
+        .expect("managed Environment should restart");
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "managed-controller-session-end",
+                None,
+                None,
+                &end_request,
+            ),
+            end_request,
+        )
+        .await
+        .expect("ending the Room should stop its controller lease");
+    assert!(matches!(
+        end_response,
+        LocalDaemonResponse::SessionEnded { .. }
+    ));
+    assert_eq!(
+        std::fs::read_to_string(&tool.log).expect("read controller commands"),
+        "start\nhealth\nhealth\nreconcile\nhealth\nsnapshot\nhealth\nsnapshot\nhealth\naction\nhealth\ndialog\nhealth\ndownloads\nhealth\nupload\nhealth\npermission\nhealth\nevents\nshutdown\nstart\nhealth\nhealth\nreconcile\nshutdown\n"
+    );
+}
+
+#[tokio::test]
+async fn ending_a_session_survives_managed_environment_cleanup_failure() {
+    let app = Arc::new(Mutex::new(
+        DaemonApp::bootstrap(DaemonConfig::for_tests()).expect("daemon should boot"),
+    ));
+    let (session_id, terminal_stream) = {
+        let mut app_locked = app.lock().await;
+        let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
+            .create_session(CreateSessionRequest::new(
+                "cleanup-failure-workspace",
+                "cleanup-failure-worktree",
+            ))
+            .expect("session should be created");
+        (session.id().to_string(), app_locked.terminal_stream_store())
+    };
+    let tool = TestBrowserControllerTool::new();
+    let mut state = owned_runtime_state(&app).await;
+    state.set_browser_controller_process_store_for_test(
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore::new(
+            &tool.path,
+            Vec::new(),
+            Duration::from_secs(5),
+        ),
+    );
+    let validation_state = state.clone();
+    let runtime = SessionRuntime::with_queue_limit_and_focus_projection(
+        state,
+        1,
+        FocusedAgentProjection::default(),
+        SessionStateProjectionStore::default(),
+        AgentRuntimeProjectionStore::default(),
+        terminal_stream,
+    );
+
+    let start_request =
+        LocalDaemonRequest::StartRoomEnvironment(crate::local::StartRoomEnvironmentRequest {
+            session_id: session_id.clone(),
+            viewport: crate::local::RoomEnvironmentViewportRequest {
+                css_width: 1280,
+                css_height: 800,
+                device_scale_factor: 1,
+                desktop_pixel_width: 1280,
+                desktop_pixel_height: 800,
+            },
+        });
+    runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "cleanup-failure-controller-start",
+                None,
+                None,
+                &start_request,
+            ),
+            start_request,
+        )
+        .await
+        .expect("managed Environment should start");
+    validation_state
+        .begin_stop_room_environment(&session_id)
+        .expect("test should leave the Environment mid-stop");
+
+    let end_request = LocalDaemonRequest::EndSession(EndSessionRequest {
+        session_id: session_id.clone(),
+    });
+    let end_response = runtime
+        .dispatch_session_command(
+            KernelCommand::from_local_request(
+                "cleanup-failure-session-end",
+                None,
+                None,
+                &end_request,
+            ),
+            end_request,
+        )
+        .await
+        .expect("controller cleanup failure must not block session teardown");
+
+    assert!(matches!(
+        end_response,
+        LocalDaemonResponse::SessionEnded { .. }
+    ));
+    assert_eq!(
+        validation_state
+            .session_snapshot(&session_id)
+            .await
+            .expect("ended session remains queryable")
+            .status(),
+        crate::session::SessionStatus::Ended
+    );
+}
+
 #[tokio::test]
 async fn create_session_uses_owned_runtime_state_without_app_lock() {
     let app = Arc::new(Mutex::new(

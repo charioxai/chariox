@@ -497,6 +497,10 @@ Lifecycle transitions must have bounded deadlines. Failure cannot leave the Envi
 
 The Browser Controller owns browser-process integration below the kernel. The kernel owns the Room-visible tab registry and assigns stable `tab_id` values. Controller or browser target identifiers remain implementation details.
 
+On Linux slices, the Browser Controller is a long-lived child process owned directly by the worker kernel. The kernel is its only caller and communicates through a private, request-correlated stdin/stdout channel with bounded health and shutdown deadlines. The controller exposes no agent-addressable socket or command surface. Each physical browser/profile has exactly one Room owner. Repeated acquisition by that Room reuses its controller; a different Room must use a different physical Environment, never another lease on the same browser. Releasing the lease stops the controller but retains the owner binding, because neither the browser nor its profile is erased by controller shutdown. Failed startup also retains that binding. Kernel shutdown terminates the complete controller process group. Controller readiness updates only the Browser Controller component health. It does not by itself make the Environment ready before the browser, desktop, and streamer have also reconciled.
+
+The opt-in local controller store currently enforces this binding for its own lifetime. Durable Room-to-slice/worker placement and recovery after kernel replacement remain required before multi-Room product enablement. Creating another store pointed at the same CDP endpoint is not isolation. The home kernel must bind distinct Rooms to distinct physical Environments and restore those bindings before admitting browser or viewer requests.
+
 Tab rules:
 
 - a recoverable controller reconnect must not duplicate a Tab

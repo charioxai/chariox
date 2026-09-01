@@ -1,5 +1,6 @@
 mod action;
 mod action_ledger;
+mod elements;
 mod event;
 mod event_log;
 mod model;
@@ -14,6 +15,7 @@ pub use action::{
     EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
     EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, InputTarget,
 };
+pub(crate) use elements::EnvironmentElementTarget;
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};
 pub use model::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
@@ -21,6 +23,7 @@ pub use model::{
     EnvironmentComponent, EnvironmentComponentHealth, EnvironmentComponentHealthState,
     EnvironmentError, EnvironmentLifecycle, EnvironmentTab, RoomEnvironmentSnapshot,
 };
+pub(crate) use model::{EnvironmentTabObservation, EnvironmentTabRuntimeBinding};
 pub use ownership::{InputOwnership, PendingInputTakeover, TakeoverOutcome};
 pub(crate) use registry::RoomEnvironmentRegistry;
 pub use state::RoomEnvironment;

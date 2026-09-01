@@ -2,17 +2,20 @@ use std::collections::BTreeMap;
 
 use super::action::{
     ActionAdmission, ActionCancellationOutcome, EnvironmentActionHistoryPage,
-    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, InputTarget,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode,
+    InputTarget,
 };
 use super::action_ledger::{
-    ActionCancellationEffect, ActionTakeoverEffect, EnvironmentActionLedger,
+    ActionCancellationEffect, ActionRecoveryEffect, ActionTakeoverEffect, EnvironmentActionLedger,
 };
+use super::elements::{ElementReferenceRegistry, EnvironmentElementTarget};
 use super::event::{EnvironmentEventKind, EnvironmentReplay};
 use super::event_log::{EnvironmentEventLog, EnvironmentReplayPlan};
 use super::model::{
     CanonicalViewport, EnvironmentActor, EnvironmentActorPresence, EnvironmentComponent,
     EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
-    EnvironmentLifecycle, RoomEnvironmentSnapshot,
+    EnvironmentLifecycle, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentSnapshot,
 };
 use super::ownership::TakeoverOutcome;
 use super::tabs::TabRegistry;
@@ -31,7 +34,9 @@ pub struct RoomEnvironment {
     health: BTreeMap<EnvironmentComponent, EnvironmentComponentHealth>,
     actors: BTreeMap<String, EnvironmentActor>,
     tabs: TabRegistry,
+    element_references: ElementReferenceRegistry,
     action_ledger: EnvironmentActionLedger,
+    browser_controller_recovering: bool,
     event_log: EnvironmentEventLog,
 }
 
@@ -76,7 +81,9 @@ impl RoomEnvironment {
             health: default_component_health(),
             actors: BTreeMap::new(),
             tabs: TabRegistry::new(),
+            element_references: ElementReferenceRegistry::new(),
             action_ledger: EnvironmentActionLedger::new(event_capacity, action_queue_capacity),
+            browser_controller_recovering: false,
             event_log: EnvironmentEventLog::new(event_capacity)?,
         })
     }
@@ -109,6 +116,11 @@ impl RoomEnvironment {
             before_sequence,
             limit.clamp(1, MAX_ACTION_HISTORY_PAGE_SIZE),
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retained_action_request_count(&self) -> usize {
+        self.action_ledger.retained_request_count()
     }
 
     pub fn transition_to(&mut self, next: EnvironmentLifecycle) -> Result<(), EnvironmentError> {
@@ -186,6 +198,53 @@ impl RoomEnvironment {
             self.emit(EnvironmentEventKind::TabsChanged);
         }
         Ok(tab_id)
+    }
+
+    pub(crate) fn reconcile_controller_tabs(
+        &mut self,
+        observations: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) {
+        let changed = self
+            .tabs
+            .reconcile_controller_tabs(observations, focused_runtime_target_id);
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
+        if changed {
+            self.emit(EnvironmentEventKind::TabsChanged);
+        }
+    }
+
+    pub(crate) fn controller_tab_binding(
+        &self,
+        tab_id: &str,
+    ) -> Result<EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.tabs.controller_binding(tab_id)
+    }
+
+    pub(crate) fn register_element_references(
+        &mut self,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, String>, EnvironmentError> {
+        self.element_references.register(
+            &self.tabs,
+            self.runtime_generation,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_element_reference(
+        &self,
+        reference_id: &str,
+    ) -> Result<EnvironmentElementTarget, EnvironmentError> {
+        self.element_references
+            .resolve(&self.tabs, self.runtime_generation, reference_id)
     }
 
     pub fn register_actor(&mut self, actor: EnvironmentActor) -> Result<(), EnvironmentError> {
@@ -334,9 +393,22 @@ impl RoomEnvironment {
         &mut self,
         request: EnvironmentActionRequest,
     ) -> Result<ActionAdmission, EnvironmentError> {
+        if self.browser_controller_recovering {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: EnvironmentLifecycle::Starting,
+            });
+        }
+        let admission_lifecycle = if self.lifecycle == EnvironmentLifecycle::Starting
+            && request.mode == EnvironmentMode::Browser
+            && self.browser_components_ready()
+        {
+            EnvironmentLifecycle::Ready
+        } else {
+            self.lifecycle
+        };
         let admission = self.action_ledger.submit(
             request,
-            self.lifecycle,
+            admission_lifecycle,
             self.runtime_generation,
             &self.actors,
             &self.tabs,
@@ -351,6 +423,34 @@ impl RoomEnvironment {
             _ => {}
         }
         Ok(admission)
+    }
+
+    pub(crate) fn begin_browser_controller_recovery(&mut self) {
+        self.browser_controller_recovering = true;
+        self.element_references.clear();
+        let effect = self.action_ledger.begin_controller_recovery();
+        self.emit_action_recovery_effect(effect);
+    }
+
+    pub(crate) fn complete_browser_controller_recovery(&mut self) {
+        let effect = self
+            .action_ledger
+            .complete_controller_recovery(self.runtime_generation, &self.tabs);
+        self.browser_controller_recovering = false;
+        self.emit_action_recovery_effect(effect);
+    }
+
+    fn browser_components_ready(&self) -> bool {
+        [
+            EnvironmentComponent::BrowserController,
+            EnvironmentComponent::Browser,
+        ]
+        .into_iter()
+        .all(|component| {
+            self.health
+                .get(&component)
+                .is_some_and(|health| health.state == EnvironmentComponentHealthState::Ready)
+        })
     }
 
     pub fn finish_action(
@@ -549,12 +649,16 @@ impl RoomEnvironment {
     ) -> Result<(), EnvironmentError> {
         self.tabs
             .record_navigation(tab_id, url.into(), title.into())?;
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
         Ok(())
     }
 
     pub fn close_tab(&mut self, tab_id: &str) -> Result<(), EnvironmentError> {
         self.tabs.close(tab_id)?;
+        self.element_references
+            .retain_current(&self.tabs, self.runtime_generation);
         self.emit(EnvironmentEventKind::TabsChanged);
         Ok(())
     }
@@ -590,9 +694,11 @@ impl RoomEnvironment {
 
     fn invalidate_runtime(&mut self) {
         self.has_started = true;
+        self.browser_controller_recovering = false;
         self.runtime_generation += 1;
         self.lifecycle = EnvironmentLifecycle::Starting;
         self.tabs.clear();
+        self.element_references.clear();
         self.health = default_component_health();
         let failed_action_ids = self.action_ledger.invalidate_runtime();
         for action_id in failed_action_ids {
@@ -603,6 +709,19 @@ impl RoomEnvironment {
         self.emit(EnvironmentEventKind::LifecycleChanged {
             lifecycle: EnvironmentLifecycle::Starting,
         });
+    }
+
+    fn emit_action_recovery_effect(&mut self, effect: ActionRecoveryEffect) {
+        for action_id in effect.failed_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Failed);
+        }
+        if effect.ownership_changed {
+            self.emit(EnvironmentEventKind::InputOwnershipChanged);
+        }
+        for action_id in effect.started_action_ids {
+            self.emit_action_changed(&action_id, EnvironmentActionState::Running);
+        }
+        self.action_ledger.compact_terminal_actions();
     }
 
     fn emit(&mut self, kind: EnvironmentEventKind) {

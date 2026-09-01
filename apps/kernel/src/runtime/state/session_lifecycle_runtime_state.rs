@@ -671,6 +671,8 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        self.stop_managed_environment_for_session_lifecycle(session_id)
+            .await;
         let owned = &self.owned;
         let (session, terminated_run_ids) = owned.end_session(session_id)?;
         for provider_run_id in terminated_run_ids {
@@ -694,6 +696,11 @@ impl KernelRuntimeState {
         session_ref: &str,
         workspace_id: Option<&str>,
     ) -> Result<crate::session::RuntimeSession, DaemonError> {
+        let session_id = self
+            .resolve_session_ref_id(session_ref, workspace_id)
+            .await?;
+        self.stop_managed_environment_for_session_lifecycle(&session_id)
+            .await;
         let owned = &self.owned;
         let (session, terminated_run_ids, removed_project) =
             owned.delete_session_ref(session_ref, workspace_id)?;
@@ -713,6 +720,30 @@ impl KernelRuntimeState {
         }
         self.detach_session_slices(&session).await?;
         Ok(session)
+    }
+
+    async fn stop_managed_environment_for_session_lifecycle(&self, session_id: &str) {
+        if !self.browser_controller_process_enabled() {
+            return;
+        }
+        let result = match self.room_environment_snapshot(session_id) {
+            Ok(_) => self
+                .stop_managed_room_environment_runtime(session_id)
+                .await
+                .map(|_| ()),
+            Err(crate::session::EnvironmentError::EnvironmentNotFound { .. }) => Ok(()),
+            Err(error) => Err(DaemonError::LocalTransport {
+                operation: "environment.stop.session_lifecycle",
+                message: format!("{}: {error:?}", error.code()),
+            }),
+        };
+        if let Err(error) = result {
+            tracing::warn!(
+                session_id,
+                error = %error,
+                "managed browser environment cleanup failed during session teardown"
+            );
+        }
     }
 
     async fn detach_session_slices(

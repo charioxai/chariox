@@ -66,6 +66,10 @@ struct KernelRuntimeOwnedState {
     external_provider_sessions: ExternalProviderSessionIndexStore,
     attached_provider_transcript_cursors: AttachedProviderTranscriptCursorStore,
     slice_store: crate::slice::SliceStore,
+    browser_controller_processes:
+        crate::runtime::browser_controller_process::BrowserControllerProcessStore,
+    browser_controller_generations:
+        Arc<std::sync::Mutex<BTreeMap<String, (u64, bool)>>>,
     session_projection: crate::runtime::projection::SessionStateProjectionStore,
     provider_run_projection: crate::runtime::projection::ProviderRunProjectionStore,
     provider_process_projection: crate::runtime::projection::ProviderProcessProjectionStore,
@@ -198,6 +202,10 @@ mod agent_prompt_schedule_runtime_state;
 mod agent_turn_actions_runtime_state;
 mod agent_utility_runtime_state;
 mod attachment_owned_state;
+mod browser_controller_action_execution_runtime_state;
+mod browser_controller_compatibility_runtime_state;
+pub(crate) use browser_controller_action_execution_runtime_state::BrowserControllerActionExecution;
+mod browser_controller_runtime_state;
 mod capability_owned_state;
 mod owned;
 mod pending_runtime_state;
@@ -463,6 +471,9 @@ impl KernelRuntimeState {
                 external_provider_sessions,
                 attached_provider_transcript_cursors,
                 slice_store,
+                browser_controller_processes:
+                    crate::runtime::browser_controller_process::BrowserControllerProcessStore::from_environment(),
+                browser_controller_generations: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
                 session_projection,
                 provider_run_projection,
                 provider_process_projection,

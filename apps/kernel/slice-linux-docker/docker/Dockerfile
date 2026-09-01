@@ -71,13 +71,20 @@ RUN CARGO_BUILD_JOBS=1 CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_TARGE
   && rm -rf /tmp/chariox-relay-target /home/slice/.cargo/registry /home/slice/.cargo/git
 
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-cdp.mjs /opt/chariox-slice/browser-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-actions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-cdp.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-events.mjs /opt/chariox-slice/browser-controller-events.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-files.mjs /opt/chariox-slice/browser-controller-files.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-permissions.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller-snapshot.mjs /opt/chariox-slice/browser-controller-snapshot.mjs
+COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/browser-controller.mjs /opt/chariox-slice/browser-controller.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/provider-port-bridge.mjs /opt/chariox-slice/provider-port-bridge.mjs
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/slice-screen.sh /opt/chariox-slice/slice-screen.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-providers.sh /opt/chariox-slice/start-providers.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/start-runtime.sh /opt/chariox-slice/start-runtime.sh
 COPY --chown=slice:slice apps/kernel/slice-linux-docker/docker/validate-screen.sh /opt/chariox-slice/validate-screen.sh
 
-RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
+RUN chmod +x /opt/chariox-slice/browser-cdp.mjs /opt/chariox-slice/browser-controller-actions.mjs /opt/chariox-slice/browser-controller-cdp.mjs /opt/chariox-slice/browser-controller-events.mjs /opt/chariox-slice/browser-controller-files.mjs /opt/chariox-slice/browser-controller-permissions.mjs /opt/chariox-slice/browser-controller-snapshot.mjs /opt/chariox-slice/browser-controller.mjs /opt/chariox-slice/provider-port-bridge.mjs /opt/chariox-slice/slice-screen.sh /opt/chariox-slice/start-providers.sh /opt/chariox-slice/start-runtime.sh /opt/chariox-slice/validate-screen.sh
 
 USER root
 RUN apt-get update \

@@ -34,7 +34,6 @@ pub use agent_config::{
     effective_agent_user_authority, EffectiveAgentExecutionConfig, EffectiveAgentUserAuthority,
 };
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
-pub(crate) use room_environment::RoomEnvironmentRegistry;
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
@@ -45,6 +44,10 @@ pub use room_environment::{
     EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
     EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
     InputTarget, PendingInputTakeover, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+};
+pub(crate) use room_environment::{
+    EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
+    RoomEnvironmentRegistry,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,

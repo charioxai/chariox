@@ -1,0 +1,477 @@
+const DEFAULT_ACTION_TIMEOUT_MS = 5_000;
+const MAX_ACTION_TIMEOUT_MS = 5_000;
+const MIN_ACTION_TIMEOUT_MS = 100;
+const ACTION_POLL_INTERVAL_MS = 50;
+const MAX_FILL_TEXT_BYTES = 65_536;
+const DIALOG_OPEN_WAIT_MS = 5_000;
+
+export class BrowserActionError extends Error {
+  constructor(code, message, details = {}) {
+    super(message);
+    this.name = "BrowserActionError";
+    this.code = code;
+    Object.assign(this, details);
+  }
+}
+
+export async function performBrowserAction({
+  connection,
+  sessionId,
+  targetId,
+  documentId,
+  nodeRef,
+  action,
+  timeoutMs,
+  now = Date.now,
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+}) {
+  const backendNodeId = parseBackendNodeReference(nodeRef);
+  const normalizedAction = normalizeAction(action);
+  const boundedTimeoutMs = normalizeTimeout(timeoutMs);
+  const startedAt = now();
+  let attempts = 0;
+  let previousGeometry = null;
+  let lastReason = "not_ready";
+  let releaseInBackground = false;
+
+  while (true) {
+    if (attempts > 0 && now() - startedAt >= boundedTimeoutMs) {
+      throw new BrowserActionError(
+        "browser_action_timeout",
+        `browser ${normalizedAction.kind} did not become actionable within ${boundedTimeoutMs}ms`,
+        { reason: lastReason, attempts, timeoutMs: boundedTimeoutMs },
+      );
+    }
+    attempts += 1;
+    await assertCurrentDocument(connection, sessionId, targetId, documentId);
+    const objectId = await resolveBackendNode(connection, sessionId, backendNodeId);
+    try {
+      const actionability = await inspectActionability(connection, sessionId, objectId);
+      const geometry = readyGeometry(actionability, normalizedAction);
+      lastReason = actionability.state;
+      if (geometry && sameGeometry(previousGeometry, geometry)) {
+        const actionResult = await executeAction(
+          connection,
+          sessionId,
+          objectId,
+          geometry,
+          normalizedAction,
+        );
+        releaseInBackground = actionResult.dialogOpened;
+        return {
+          target_id: targetId,
+          document_id: documentId,
+          action_kind: normalizedAction.kind,
+          dialog_opened: actionResult.dialogOpened,
+          attempts,
+          elapsed_ms: Math.max(0, now() - startedAt),
+        };
+      }
+      previousGeometry = geometry;
+    } finally {
+      if (releaseInBackground) {
+        void releaseObject(connection, sessionId, objectId);
+      } else {
+        await releaseObject(connection, sessionId, objectId);
+      }
+    }
+    await sleep(ACTION_POLL_INTERVAL_MS);
+  }
+}
+
+function normalizeAction(action) {
+  if (action?.kind === "click") {
+    return { kind: "click" };
+  }
+  if (action?.kind === "fill") {
+    if (typeof action.text !== "string") {
+      throw invalidAction("fill text must be a string");
+    }
+    if (utf8ByteLength(action.text) > MAX_FILL_TEXT_BYTES) {
+      throw invalidAction(`fill text exceeds ${MAX_FILL_TEXT_BYTES} UTF-8 bytes`);
+    }
+    return {
+      kind: "fill",
+      text: action.text,
+      append: action.append === true,
+      submit: action.submit === true,
+    };
+  }
+  if (action?.kind === "submit") {
+    return { kind: "submit" };
+  }
+  throw invalidAction(`unsupported browser action ${JSON.stringify(action?.kind ?? null)}`);
+}
+
+function normalizeTimeout(timeoutMs) {
+  if (timeoutMs === undefined) {
+    return DEFAULT_ACTION_TIMEOUT_MS;
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
+    throw invalidAction("browser action timeout must be a positive integer");
+  }
+  return Math.max(MIN_ACTION_TIMEOUT_MS, Math.min(timeoutMs, MAX_ACTION_TIMEOUT_MS));
+}
+
+function parseBackendNodeReference(nodeRef) {
+  if (typeof nodeRef !== "string" || !/^backend:[1-9][0-9]*$/.test(nodeRef)) {
+    throw invalidAction("browser action requires a valid controller node reference");
+  }
+  const backendNodeId = Number(nodeRef.slice("backend:".length));
+  if (!Number.isSafeInteger(backendNodeId)) {
+    throw invalidAction("browser action node reference exceeds the safe integer range");
+  }
+  return backendNodeId;
+}
+
+function invalidAction(message) {
+  return new BrowserActionError("browser_action_invalid", message);
+}
+
+async function assertCurrentDocument(connection, sessionId, targetId, documentId) {
+  const frameTree = await connection.send("Page.getFrameTree", {}, sessionId);
+  const currentDocumentId = frameTree?.frameTree?.frame?.loaderId;
+  if (currentDocumentId !== documentId) {
+    throw new BrowserActionError(
+      "stale_document_reference",
+      `browser target ${JSON.stringify(targetId)} moved away from the requested document`,
+    );
+  }
+}
+
+async function resolveBackendNode(connection, sessionId, backendNodeId) {
+  let resolved;
+  try {
+    resolved = await connection.send(
+      "DOM.resolveNode",
+      { backendNodeId },
+      sessionId,
+    );
+  } catch (error) {
+    if (error?.code !== "browser_cdp_command_failed") {
+      throw error;
+    }
+    throw new BrowserActionError(
+      "stale_element_reference",
+      "browser element is no longer attached to the current document",
+    );
+  }
+  const objectId = resolved?.object?.objectId;
+  if (typeof objectId !== "string" || !objectId) {
+    throw new BrowserActionError(
+      "stale_element_reference",
+      "browser element is no longer attached to the current document",
+    );
+  }
+  return objectId;
+}
+
+async function inspectActionability(connection, sessionId, objectId) {
+  const response = await connection.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      functionDeclaration: actionabilityFunction.toString(),
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  if (response?.exceptionDetails) {
+    throw new BrowserActionError(
+      "browser_action_failed",
+      "browser actionability inspection failed",
+    );
+  }
+  const result = response?.result?.value;
+  if (!result || typeof result.state !== "string") {
+    throw new BrowserActionError(
+      "browser_action_failed",
+      "browser actionability inspection returned an invalid result",
+    );
+  }
+  return result;
+}
+
+export function actionabilityFunction() {
+  if (!this.isConnected) return { state: "detached" };
+  this.scrollIntoView({ block: "center", inline: "center", behavior: "instant" });
+  const ownerDocument = this.ownerDocument;
+  const ownerWindow = ownerDocument.defaultView;
+  const style = ownerWindow.getComputedStyle(this);
+  const rect = this.getBoundingClientRect();
+  if (
+    style.display === "none" ||
+    style.visibility === "hidden" ||
+    Number(style.opacity) === 0 ||
+    rect.width <= 0 ||
+    rect.height <= 0
+  ) {
+    return { state: "not_visible" };
+  }
+  if (
+    this.disabled ||
+    this.matches?.(":disabled") ||
+    this.closest?.("[inert]") ||
+    this.getAttribute?.("aria-disabled") === "true"
+  ) {
+    return { state: "disabled" };
+  }
+  const localX = rect.left + rect.width / 2;
+  const localY = rect.top + rect.height / 2;
+  let hitTarget = ownerDocument.elementFromPoint(localX, localY);
+  while (hitTarget?.shadowRoot?.elementFromPoint) {
+    const nestedTarget = hitTarget.shadowRoot.elementFromPoint(localX, localY);
+    if (!nestedTarget || nestedTarget === hitTarget) break;
+    hitTarget = nestedTarget;
+  }
+  let hitInsideTarget = hitTarget === this || this.contains?.(hitTarget);
+  let hitRoot = hitTarget?.getRootNode?.();
+  while (!hitInsideTarget && hitRoot?.host) {
+    hitInsideTarget = hitRoot.host === this || this.contains?.(hitRoot.host);
+    hitRoot = hitRoot.host.getRootNode?.();
+  }
+  if (!hitTarget || !hitInsideTarget) {
+    return { state: "obscured" };
+  }
+  let x = localX;
+  let y = localY;
+  let currentWindow = ownerWindow;
+  while (currentWindow && currentWindow !== currentWindow.top) {
+    const frameElement = currentWindow.frameElement;
+    if (!frameElement) return { state: "frame_unavailable" };
+    const frameRect = frameElement.getBoundingClientRect();
+    const frameStyle = frameElement.ownerDocument.defaultView.getComputedStyle(frameElement);
+    const paddingLeft = Number.parseFloat(frameStyle.paddingLeft) || 0;
+    const paddingTop = Number.parseFloat(frameStyle.paddingTop) || 0;
+    x += frameRect.left + frameElement.clientLeft + paddingLeft;
+    y += frameRect.top + frameElement.clientTop + paddingTop;
+    currentWindow = frameElement.ownerDocument.defaultView;
+  }
+  const inputType = this.matches?.("input")
+    ? String(this.type || "text").toLowerCase()
+    : null;
+  const editableInput = inputType !== null && ![
+    "button",
+    "checkbox",
+    "color",
+    "file",
+    "hidden",
+    "image",
+    "radio",
+    "range",
+    "reset",
+    "submit",
+  ].includes(inputType);
+  const editable =
+    this.isContentEditable ||
+    ((editableInput || (this.matches?.("textarea") ?? false)) && !this.readOnly);
+  return {
+    state: "ready",
+    x,
+    y,
+    width: rect.width,
+    height: rect.height,
+    editable,
+  };
+}
+
+function readyGeometry(actionability, action) {
+  if (actionability.state !== "ready") {
+    return null;
+  }
+  if (action.kind === "fill" && actionability.editable !== true) {
+    actionability.state = "not_editable";
+    return null;
+  }
+  const geometry = {
+    x: actionability.x,
+    y: actionability.y,
+    width: actionability.width,
+    height: actionability.height,
+  };
+  return Object.values(geometry).every(Number.isFinite) ? geometry : null;
+}
+
+function sameGeometry(left, right) {
+  return left !== null &&
+    left.x === right.x &&
+    left.y === right.y &&
+    left.width === right.width &&
+    left.height === right.height;
+}
+
+async function executeAction(
+  connection,
+  sessionId,
+  objectId,
+  geometry,
+  action,
+) {
+  if (action.kind === "click") {
+    return {
+      dialogOpened: await dispatchClick(connection, sessionId, geometry.x, geometry.y),
+    };
+  }
+  if (action.kind === "submit") {
+    await submitNearestForm(connection, sessionId, objectId);
+    return { dialogOpened: false };
+  }
+  await focusElement(connection, sessionId, objectId, !action.append);
+  if (action.text) {
+    await connection.send("Input.insertText", { text: action.text }, sessionId);
+  } else if (!action.append) {
+    await dispatchBackspace(connection, sessionId);
+  }
+  if (action.submit) {
+    await submitNearestForm(connection, sessionId, objectId);
+  }
+  return { dialogOpened: false };
+}
+
+async function submitNearestForm(connection, sessionId, objectId) {
+  const response = await connection.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      functionDeclaration: `function() {
+        const form = this.form || this.closest?.("form");
+        if (!form) return { ok: false, reason: "form_not_found" };
+        if (typeof form.requestSubmit === "function") form.requestSubmit();
+        else form.submit();
+        return { ok: true };
+      }`,
+      returnByValue: true,
+      awaitPromise: false,
+    },
+    sessionId,
+  );
+  if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
+    throw new BrowserActionError(
+      "browser_submit_failed",
+      "browser element does not belong to a submittable form",
+    );
+  }
+}
+
+async function dispatchClick(connection, sessionId, x, y) {
+  if (await dispatchMouseEvent(connection, sessionId, { type: "mouseMoved", x, y })) {
+    return true;
+  }
+  if (await dispatchMouseEvent(connection, sessionId, {
+    type: "mousePressed",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  })) {
+    return true;
+  }
+  return dispatchMouseEvent(connection, sessionId, {
+    type: "mouseReleased",
+    x,
+    y,
+    button: "left",
+    clickCount: 1,
+  });
+}
+
+async function dispatchMouseEvent(connection, sessionId, params) {
+  const dialogWaiter = typeof connection.waitForEvent === "function"
+    ? connection.waitForEvent("Page.javascriptDialogOpening", DIALOG_OPEN_WAIT_MS, sessionId)
+    : null;
+  const command = connection.send("Input.dispatchMouseEvent", params, sessionId);
+  if (!dialogWaiter) {
+    await command;
+    return false;
+  }
+  const outcome = await Promise.race([
+    command.then(() => ({ kind: "completed" })),
+    dialogWaiter.promise.then((event) => ({
+      kind: event ? "dialog" : "event_timeout",
+    })),
+  ]);
+  if (outcome.kind === "completed") {
+    dialogWaiter.cancel();
+    return false;
+  }
+  if (outcome.kind === "dialog") {
+    void command.catch(() => {});
+    return true;
+  }
+  await command;
+  return false;
+}
+
+async function focusElement(connection, sessionId, objectId, selectAll) {
+  const response = await connection.send(
+    "Runtime.callFunctionOn",
+    {
+      objectId,
+      functionDeclaration: `function(selectAll) {
+        this.focus();
+        const focused = document.activeElement === this || this.contains?.(document.activeElement);
+        if (focused && selectAll) {
+          if (typeof this.select === "function") {
+            this.select();
+          } else {
+            const selection = window.getSelection();
+            const range = document.createRange();
+            range.selectNodeContents(this);
+            selection.removeAllRanges();
+            selection.addRange(range);
+          }
+        }
+        return { ok: Boolean(focused) };
+      }`,
+      arguments: [{ value: selectAll }],
+      returnByValue: true,
+    },
+    sessionId,
+  );
+  if (response?.exceptionDetails || response?.result?.value?.ok !== true) {
+    throw new BrowserActionError(
+      "browser_action_failed",
+      "browser fill target could not receive focus",
+    );
+  }
+}
+
+async function dispatchBackspace(connection, sessionId) {
+  await connection.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyDown", key: "Backspace", code: "Backspace" },
+    sessionId,
+  );
+  await connection.send(
+    "Input.dispatchKeyEvent",
+    { type: "keyUp", key: "Backspace", code: "Backspace" },
+    sessionId,
+  );
+}
+
+async function releaseObject(connection, sessionId, objectId) {
+  try {
+    await connection.send("Runtime.releaseObject", { objectId }, sessionId);
+  } catch {
+    // The page may have navigated after a successful click.
+  }
+}
+
+function utf8ByteLength(value) {
+  let length = 0;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0);
+    length += codePoint <= 0x7f
+      ? 1
+      : codePoint <= 0x7ff
+        ? 2
+        : codePoint <= 0xffff
+          ? 3
+          : 4;
+    if (length > MAX_FILL_TEXT_BYTES) {
+      break;
+    }
+  }
+  return length;
+}

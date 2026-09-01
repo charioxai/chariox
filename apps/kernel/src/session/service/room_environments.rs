@@ -1,6 +1,9 @@
 use super::*;
 use crate::session::{
-    ActionCancellationOutcome, EnvironmentActor, EnvironmentLifecycle, InputTarget, TakeoverOutcome,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentActionRequest,
+    EnvironmentActionTerminal, EnvironmentActor, EnvironmentComponent,
+    EnvironmentComponentHealthState, EnvironmentLifecycle, EnvironmentTabObservation, InputTarget,
+    TakeoverOutcome,
 };
 
 impl SessionService {
@@ -79,6 +82,30 @@ impl SessionService {
         self.room_environments.stop(session_id)
     }
 
+    pub(crate) fn begin_stop_room_environment(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.begin_stop(session_id)
+    }
+
+    pub(crate) fn complete_stop_room_environment(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.complete_stop(session_id)
+    }
+
     pub(crate) fn retry_room_environment(
         &mut self,
         session_id: &str,
@@ -91,8 +118,6 @@ impl SessionService {
         self.room_environments.retry(session_id)
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition_room_environment(
         &mut self,
         session_id: &str,
@@ -104,6 +129,26 @@ impl SessionService {
             });
         }
         self.room_environments.transition(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_component_health(
+        &mut self,
+        session_id: &str,
+        component: EnvironmentComponent,
+        state: EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.update_component_health(
+            session_id,
+            component,
+            state,
+            diagnostic_code,
+        )
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(
@@ -137,6 +182,128 @@ impl SessionService {
             });
         }
         self.room_environments.reconcile_actors(session_id, actors)
+    }
+
+    pub(crate) fn reconcile_room_environment_controller_tabs(
+        &mut self,
+        session_id: &str,
+        tabs: Vec<EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.reconcile_controller_tabs(
+            session_id,
+            tabs,
+            focused_runtime_target_id,
+        )
+    }
+
+    pub(crate) fn room_environment_controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<crate::session::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .controller_tab_binding(session_id, tab_id)
+    }
+
+    pub(crate) fn register_room_environment_element_references(
+        &mut self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<std::collections::BTreeMap<String, String>, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.register_element_references(
+            session_id,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_room_environment_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<crate::session::EnvironmentElementTarget, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .resolve_element_reference(session_id, reference_id)
+    }
+
+    pub(crate) fn submit_room_environment_action(
+        &mut self,
+        session_id: &str,
+        request: EnvironmentActionRequest,
+    ) -> Result<(ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.submit_action(session_id, request)
+    }
+
+    pub(crate) fn finish_room_environment_action(
+        &mut self,
+        session_id: &str,
+        action_id: &str,
+        terminal: EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .finish_action(session_id, action_id, terminal)
+    }
+
+    pub(crate) fn begin_room_environment_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .begin_browser_controller_recovery(session_id)
+    }
+
+    pub(crate) fn complete_room_environment_browser_controller_recovery(
+        &mut self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .complete_browser_controller_recovery(session_id)
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(

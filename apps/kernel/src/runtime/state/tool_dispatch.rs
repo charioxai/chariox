@@ -427,6 +427,7 @@ impl KernelRuntimeState {
 
 fn is_slice_runtime_tool(tool_name: &str) -> bool {
     crate::transport::runtime_tools::canonical_slice_tool_name(tool_name).is_some()
+        || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
 }
 
 fn unambiguous_runtime_tool_provider_run<'a>(
@@ -480,5 +481,12 @@ mod tests {
                 spec.name
             );
         }
+    }
+
+    #[test]
+    fn browser_secret_paste_uses_the_slice_dispatch_path() {
+        assert!(super::is_slice_runtime_tool(
+            crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        ));
     }
 }

@@ -164,6 +164,21 @@ pub struct EnvironmentTab {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvironmentTabObservation {
+    pub(crate) runtime_target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) url: String,
+    pub(crate) title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct EnvironmentTabRuntimeBinding {
+    pub(crate) runtime_target_id: String,
+    pub(crate) document_id: String,
+    pub(crate) document_revision: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnvironmentError {
     InvalidViewport,
     EnvironmentAlreadyExists {
@@ -191,6 +206,12 @@ pub enum EnvironmentError {
         tab_id: String,
         expected: u64,
         actual: u64,
+    },
+    StructuredObservationUnavailable {
+        tab_id: String,
+    },
+    StaleElementReference {
+        reference_id: String,
     },
     UnknownActor {
         actor_id: String,
@@ -247,6 +268,10 @@ impl EnvironmentError {
             Self::StaleRuntimeGeneration { .. } => "environment_stale_runtime_generation",
             Self::UnknownTab { .. } => "environment_unknown_tab",
             Self::StaleDocumentRevision { .. } => "environment_stale_document_revision",
+            Self::StructuredObservationUnavailable { .. } => {
+                "environment_structured_observation_unavailable"
+            }
+            Self::StaleElementReference { .. } => "environment_stale_element_reference",
             Self::UnknownActor { .. } => "environment_unknown_actor",
             Self::StaleViewportRevision { .. } => "environment_stale_viewport_revision",
             Self::EnvironmentNotReady { .. } => "environment_not_ready",

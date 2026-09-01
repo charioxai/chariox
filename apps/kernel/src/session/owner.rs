@@ -247,6 +247,20 @@ impl SessionStateStore {
         self.write().stop_room_environment(session_id)
     }
 
+    pub(crate) fn begin_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().begin_stop_room_environment(session_id)
+    }
+
+    pub(crate) fn complete_stop_room_environment(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().complete_stop_room_environment(session_id)
+    }
+
     pub(crate) fn retry_room_environment(
         &self,
         session_id: &str,
@@ -254,8 +268,6 @@ impl SessionStateStore {
         self.write().retry_room_environment(session_id)
     }
 
-    // The managed controller adapter reports lifecycle completion in Milestone 2.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn transition_room_environment(
         &self,
         session_id: &str,
@@ -263,6 +275,21 @@ impl SessionStateStore {
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.write()
             .transition_room_environment(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_component_health(
+        &self,
+        session_id: &str,
+        component: super::EnvironmentComponent,
+        state: super::EnvironmentComponentHealthState,
+        diagnostic_code: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().update_room_environment_component_health(
+            session_id,
+            component,
+            state,
+            diagnostic_code,
+        )
     }
 
     pub(crate) fn update_room_environment_viewport_as_actor(
@@ -287,6 +314,89 @@ impl SessionStateStore {
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.write()
             .reconcile_room_environment_actors(session_id, actors)
+    }
+
+    pub(crate) fn reconcile_room_environment_controller_tabs(
+        &self,
+        session_id: &str,
+        tabs: Vec<super::EnvironmentTabObservation>,
+        focused_runtime_target_id: Option<&str>,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write().reconcile_room_environment_controller_tabs(
+            session_id,
+            tabs,
+            focused_runtime_target_id,
+        )
+    }
+
+    pub(crate) fn room_environment_controller_tab_binding(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+    ) -> Result<super::EnvironmentTabRuntimeBinding, EnvironmentError> {
+        self.read()
+            .room_environment_controller_tab_binding(session_id, tab_id)
+    }
+
+    pub(crate) fn register_room_environment_element_references(
+        &self,
+        session_id: &str,
+        tab_id: &str,
+        runtime_generation: u64,
+        document_revision: u64,
+        controller_node_refs: impl IntoIterator<Item = String>,
+    ) -> Result<std::collections::BTreeMap<String, String>, EnvironmentError> {
+        self.write().register_room_environment_element_references(
+            session_id,
+            tab_id,
+            runtime_generation,
+            document_revision,
+            controller_node_refs,
+        )
+    }
+
+    pub(crate) fn resolve_room_environment_element_reference(
+        &self,
+        session_id: &str,
+        reference_id: &str,
+    ) -> Result<super::EnvironmentElementTarget, EnvironmentError> {
+        self.read()
+            .resolve_room_environment_element_reference(session_id, reference_id)
+    }
+
+    pub(crate) fn submit_room_environment_action(
+        &self,
+        session_id: &str,
+        request: super::EnvironmentActionRequest,
+    ) -> Result<(super::ActionAdmission, RoomEnvironmentSnapshot), EnvironmentError> {
+        self.write()
+            .submit_room_environment_action(session_id, request)
+    }
+
+    pub(crate) fn finish_room_environment_action(
+        &self,
+        session_id: &str,
+        action_id: &str,
+        terminal: super::EnvironmentActionTerminal,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .finish_room_environment_action(session_id, action_id, terminal)
+    }
+
+    pub(crate) fn begin_room_environment_browser_controller_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .begin_room_environment_browser_controller_recovery(session_id)
+    }
+
+    pub(crate) fn complete_room_environment_browser_controller_recovery(
+        &self,
+        session_id: &str,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.write()
+            .complete_room_environment_browser_controller_recovery(session_id)
     }
 
     pub(crate) fn request_room_environment_takeover_as_actor(
