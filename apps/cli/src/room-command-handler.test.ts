@@ -166,7 +166,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -437,6 +437,55 @@ test("/room save rejects invalid modes and an Environment without a bound slice"
     "usage: /room save restart|shutdown",
     "Room Environment has no bound slice to save",
   ])
+})
+
+test("/room reconnect resumes the attached Room event stream without a kernel mutation", async () => {
+  const requests: unknown[] = []
+  const notices: string[] = []
+  let reconnects = 0
+  const deps = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {} as TResponse
+    },
+    reconnectEventStream: async () => {
+      reconnects += 1
+      return true
+    },
+    appendNotice: (notice: string) => notices.push(notice),
+    flashFooter: () => undefined,
+  }
+  const reconnect = parseSlashCommand("/room reconnect")
+  assert.equal(reconnect?.kind, "room")
+
+  await handleRoomSlashCommand(deps, reconnect)
+
+  assert.equal(reconnects, 1)
+  assert.deepEqual(requests, [])
+  assert.deepEqual(notices, [
+    "Room reconnect requested; events will resume from the last received event.",
+  ])
+})
+
+test("/room reconnect reports polling transports that have no event stream", async () => {
+  const notices: string[] = []
+  const flashes: string[] = []
+  const command = parseSlashCommand("/room reconnect")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>() => ({} as TResponse),
+    reconnectEventStream: async () => false,
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: (message) => flashes.push(message),
+  }, command)
+
+  assert.deepEqual(notices, [])
+  assert.deepEqual(flashes, ["Room reconnect is unavailable on this polling transport"])
 })
 
 function roomEnvironment(): RoomEnvironmentSnapshot {

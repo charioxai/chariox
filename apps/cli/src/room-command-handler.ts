@@ -40,6 +40,7 @@ export type RoomCommandHandlerDeps = {
   isAttached: () => boolean
   sessionId: () => string
   send: <TResponse>(request: unknown) => Promise<TResponse>
+  reconnectEventStream?: () => Promise<boolean>
   appendNotice: (notice: string) => void
   flashFooter: (message: string, tone: "info" | "error") => void
 }
@@ -49,7 +50,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -92,6 +93,18 @@ export async function handleRoomSlashCommand(
     return
   }
   const sessionId = deps.sessionId()
+  if (subcommand === "reconnect") {
+    if (!deps.reconnectEventStream) {
+      deps.flashFooter("Room reconnect is unavailable in this client", "error")
+      return
+    }
+    if (!await deps.reconnectEventStream()) {
+      deps.flashFooter("Room reconnect is unavailable on this polling transport", "error")
+      return
+    }
+    deps.appendNotice("Room reconnect requested; events will resume from the last received event.")
+    return
+  }
   if (!subcommand || subcommand === "status" || subcommand === "show") {
     const response = await deps.send<RoomEnvironmentStateResponse>(
       getRoomEnvironmentStateRequest(sessionId),
@@ -216,7 +229,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomStartUsage(): string {

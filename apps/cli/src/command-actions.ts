@@ -153,6 +153,7 @@ type CommandActionDeps =
   flashFooter: (message: string, tone: FooterTone) => void
   appendNotice: (message: string) => void
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
+  reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -310,6 +311,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
       isAttached: deps.isAttached,
       sessionId: () => deps.sessionState().id,
       send: deps.sendRoomEnvironmentRequest,
+      ...(deps.reconnectRoomEventStream
+        ? { reconnectEventStream: deps.reconnectRoomEventStream }
+        : {}),
       appendNotice: deps.appendNotice,
       flashFooter: deps.flashFooter,
     }, command)

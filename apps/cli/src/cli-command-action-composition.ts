@@ -432,6 +432,11 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
     flashFooter,
     appendNotice,
     sendRoomEnvironmentRequest: (request) => client.send(request),
+    reconnectRoomEventStream: async () => {
+      if (!client.supportsKernelEvents()) return false
+      await client.restartKernelEventStream()
+      return true
+    },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,
     formatError,
