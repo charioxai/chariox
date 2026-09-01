@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::net::IpAddr;
 use std::time::Duration;
 
@@ -68,30 +69,47 @@ pub(super) fn forward_streamable_http_mcp_request(
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
+    if content_type == "text/event-stream" {
+        return read_sse_json_rpc_response(
+            url,
+            BufReader::new(response.into_reader()),
+            request_id.as_ref(),
+        );
+    }
     let text = response
         .into_string()
         .map_err(|error| DaemonError::LocalTransport {
             operation: "mcp.proxy.http.read",
             message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
         })?;
-    if content_type == "text/event-stream" {
-        return parse_sse_json_rpc_response(url, &text, request_id.as_ref());
-    }
     serde_json::from_str(&text).map_err(|error| DaemonError::LocalTransport {
         operation: "mcp.proxy.http.parse",
         message: format!("upstream `{url}` returned invalid JSON: {error}"),
     })
 }
 
-fn parse_sse_json_rpc_response(
+fn read_sse_json_rpc_response(
     url: &str,
-    body: &str,
+    mut reader: impl BufRead,
     request_id: Option<&serde_json::Value>,
 ) -> Result<serde_json::Value, DaemonError> {
     let mut data_lines = Vec::new();
-    for line in body.lines().chain(std::iter::once("")) {
+    let mut line = String::new();
+    loop {
+        line.clear();
+        let bytes_read =
+            reader
+                .read_line(&mut line)
+                .map_err(|error| DaemonError::LocalTransport {
+                    operation: "mcp.proxy.http.read",
+                    message: format!("failed to read MCP HTTP response from `{url}`: {error}"),
+                })?;
+        let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             if data_lines.is_empty() {
+                if bytes_read == 0 {
+                    break;
+                }
                 continue;
             }
             let data = data_lines.join("\n");
@@ -105,10 +123,11 @@ fn parse_sse_json_rpc_response(
             if request_id.is_none() || message.get("id") == request_id {
                 return Ok(message);
             }
-            continue;
-        }
-        if let Some(data) = line.strip_prefix("data:") {
+        } else if let Some(data) = line.strip_prefix("data:") {
             data_lines.push(data.strip_prefix(' ').unwrap_or(data).to_string());
+        }
+        if bytes_read == 0 {
+            break;
         }
     }
     Err(DaemonError::LocalTransport {

@@ -237,6 +237,7 @@ mod tests {
     use serde_json::json;
     use std::ffi::OsString;
     use std::net::TcpListener;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::{Duration, Instant};
 
@@ -392,6 +393,7 @@ mod tests {
     fn streamable_http_proxy_parses_matching_sse_json_rpc_response() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("test listener should bind");
         let address = listener.local_addr().expect("listener address");
+        let (release_server_tx, release_server_rx) = mpsc::channel();
         let server = thread::spawn(move || {
             let (mut stream, _) = listener.accept().expect("proxy should connect");
             let request = read_http_request(&mut stream);
@@ -408,11 +410,16 @@ mod tests {
             );
             write!(
                 stream,
-                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:X}\r\n{}\r\n",
                 body.len(),
                 body
             )
             .expect("response should write");
+            stream.flush().expect("SSE response should flush");
+            release_server_rx
+                .recv_timeout(Duration::from_secs(3))
+                .expect("proxy should return before the SSE stream closes");
+            write!(stream, "0\r\n\r\n").expect("terminating chunk should write");
         });
 
         let config = CharioxMcpServerConfig {
@@ -434,13 +441,25 @@ mod tests {
             tools: BTreeMap::new(),
         };
 
-        let response = dispatch_provider_mcp_proxy_request(
-            "provider-run-http-sse-test",
-            "session-http-sse-test",
-            &config,
-            json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}),
-        )
-        .expect("proxy should parse matching SSE response");
+        let (response_tx, response_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            response_tx
+                .send(dispatch_provider_mcp_proxy_request(
+                    "provider-run-http-sse-test",
+                    "session-http-sse-test",
+                    &config,
+                    json!({"jsonrpc": "2.0", "id": 7, "method": "tools/list"}),
+                ))
+                .expect("test response receiver should remain connected");
+        });
+        let response = response_rx.recv_timeout(Duration::from_secs(1));
+        release_server_tx
+            .send(())
+            .expect("test server should remain connected");
+        client.join().expect("test client should finish");
+        let response = response
+            .expect("proxy should return before the SSE stream closes")
+            .expect("proxy should parse matching SSE response");
         assert_eq!(
             response,
             json!({"jsonrpc": "2.0", "id": 7, "result": {"ok": true}})
