@@ -23,6 +23,20 @@ const kernelPort = 51000 + Math.floor(Math.random() * 1000)
 const relayPort = 53000 + Math.floor(Math.random() * 1000)
 const relayToken = `${runId}-relay-token`
 const homeDaemonId = `${runId}-home`
+const directDaemonEnvironmentNames = [
+  "CHARIOX_DAEMON_SOCKET",
+  "CHARIOX_DAEMON_ID",
+  "CHARIOX_DAEMON_ALIAS",
+  "CHARIOX_KERNEL_PORT",
+  "CHARIOX_MCP_PORT",
+  "CHARIOX_CODEX_PORT",
+  "CHARIOX_OPENCODE_PORT",
+  "CHARIOX_MACHINE_ID",
+  "CHARIOX_MACHINE_ALIAS",
+  "CHARIOX_RELAY_URL",
+  "CHARIOX_RELAY_TOKEN",
+  "CHARIOX_SESSION_HISTORY_DIR",
+]
 const tempRootPromise = mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 const resources = []
@@ -78,6 +92,7 @@ async function run() {
   relay.stderr.pipe(relayLog)
   relay.once("exit", () => relayLog.end())
   children.push(relay)
+  await waitForTcpPort("127.0.0.1", relayPort, 20_000, "relay did not accept connections")
 
   const log = createWriteStream(path.join(evidenceRoot, "kernel.log"), { flags: "a" })
   const kernelEnv = {
@@ -132,7 +147,7 @@ async function run() {
     "SessionCreated",
   ).session
   sessionId = session.id
-  remoteAutomation = await startRemoteTui({ tempRoot, kernelEnv })
+  remoteAutomation = await startRemoteTui({ tempRoot })
   const attachedRemoteTui = await waitForAutomationSnapshot(
     remoteAutomation,
     (snapshot) => snapshot.session?.id === sessionId,
@@ -348,7 +363,7 @@ async function resolveRuntimeBinary(name) {
   return binary
 }
 
-async function startRemoteTui({ tempRoot, kernelEnv }) {
+async function startRemoteTui({ tempRoot }) {
   const automationSocket = path.join(tempRoot, "remote-tui.sock")
   const remoteTuiArgs = [
     "-q",
@@ -366,9 +381,11 @@ async function startRemoteTui({ tempRoot, kernelEnv }) {
     "--model", "room-activity-remote-tui-drill",
     "--client-id", `${runId}-remote-tui`,
   ]
+  const remoteEnv = remoteTuiEnvironment(tempRoot)
+  for (const name of directDaemonEnvironmentNames) assert.equal(name in remoteEnv, false)
   const remoteTui = spawn("script", remoteTuiArgs, {
     cwd: repoRoot,
-    env: kernelEnv,
+    env: remoteEnv,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   })
@@ -396,6 +413,20 @@ async function startRemoteTui({ tempRoot, kernelEnv }) {
   const automation = await createAutomationClient(automationSocket)
   await automation.send("ping")
   return automation
+}
+
+function remoteTuiEnvironment(tempRoot) {
+  const env = { ...process.env }
+  for (const name of directDaemonEnvironmentNames) {
+    delete env[name]
+  }
+  return {
+    ...env,
+    CHARIOX_HOME: path.join(tempRoot, "remote-tui-home"),
+    XDG_CONFIG_HOME: path.join(tempRoot, "remote-tui-xdg-config"),
+    XDG_STATE_HOME: path.join(tempRoot, "remote-tui-xdg-state"),
+    XDG_CACHE_HOME: path.join(tempRoot, "remote-tui-xdg-cache"),
+  }
 }
 
 async function startFixture() {
@@ -485,6 +516,21 @@ async function waitForSocket(socketPath, timeoutMs = 20_000) {
       socket.destroy()
     }
   }, timeoutMs, `automation socket ${socketPath} did not become ready`)
+}
+
+async function waitForTcpPort(host, port, timeoutMs, message) {
+  return await waitFor(async () => {
+    const socket = net.createConnection({ host, port })
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve)
+        socket.once("error", reject)
+      })
+      return true
+    } finally {
+      socket.destroy()
+    }
+  }, timeoutMs, message)
 }
 
 async function createAutomationClient(socketPath) {
