@@ -554,9 +554,9 @@ mod tests {
             std::env::remove_var(name);
         }
         std::env::set_var("HTTP_PROXY", "not-a-valid-proxy://secret@example.invalid");
-        std::env::set_var("NO_PROXY", "::1");
+        std::env::set_var("NO_PROXY", "2001:db8::1");
 
-        let proxy = streamable_http::configured_proxy_for_url("http://[::1]:43120/mcp")
+        let proxy = streamable_http::configured_proxy_for_url("http://[2001:db8::1]:43120/mcp")
             .expect("NO_PROXY should match a bracketed IPv6 URL host");
         assert!(proxy.is_none());
     }
