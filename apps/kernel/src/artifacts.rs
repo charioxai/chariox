@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::fs;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -42,6 +42,8 @@ pub struct StoreArtifactRequest {
     pub source_path: PathBuf,
     pub display_name: String,
     pub source_kind: String,
+    pub media_type: Option<String>,
+    pub enqueue_archive: bool,
     pub session_id: Option<String>,
     pub attachment_id: Option<String>,
     pub workspace_id: Option<String>,
@@ -54,6 +56,12 @@ pub struct ArtifactArchiveOutboxItem {
     pub record: ArtifactRecord,
     pub attempts: u32,
     pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactChunkRead {
+    pub data: Vec<u8>,
+    pub eof: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -110,7 +118,7 @@ impl OperationalArtifactStore {
             artifact_id,
             sha256,
             size_bytes,
-            media_type: None,
+            media_type: request.media_type,
             display_name: request.display_name,
             source_kind: request.source_kind,
             session_id: request.session_id,
@@ -122,8 +130,69 @@ impl OperationalArtifactStore {
             created_at_ms,
             archived_at_ms: None,
         };
-        self.insert_record(&record)?;
+        self.insert_record(&record, request.enqueue_archive)?;
         Ok(record)
+    }
+
+    pub fn load_artifact(&self, artifact_id: &str) -> Result<Option<ArtifactRecord>, DaemonError> {
+        let record_json = {
+            let connection = self.lock("lock operational artifact store")?;
+            connection
+                .query_row(
+                    "SELECT record_json FROM artifacts WHERE artifact_id = ?1",
+                    params![artifact_id],
+                    |row| row.get::<_, String>(0),
+                )
+                .optional()
+                .map_err(|error| artifact_sql_error("load artifact record", error))?
+        };
+        let Some(record_json) = record_json else {
+            return Ok(None);
+        };
+        let mut record = serde_json::from_str::<ArtifactRecord>(&record_json).map_err(|error| {
+            DaemonError::SessionHistoryFailed {
+                session_id: None,
+                operation: "decode artifact record",
+                message: error.to_string(),
+            }
+        })?;
+        if record.artifact_id != artifact_id || !is_sha256_hex(&record.sha256) {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "validate artifact record",
+                message: "artifact index record is inconsistent".to_string(),
+            });
+        }
+        record.operational_path = self.blob_path(&record.sha256);
+        Ok(Some(record))
+    }
+
+    pub fn read_artifact_chunk(
+        &self,
+        record: &ArtifactRecord,
+        offset: u64,
+        max_bytes: usize,
+    ) -> Result<ArtifactChunkRead, DaemonError> {
+        if max_bytes == 0 || offset > record.size_bytes || !is_sha256_hex(&record.sha256) {
+            return Err(DaemonError::SessionHistoryFailed {
+                session_id: record.session_id.clone(),
+                operation: "read artifact chunk",
+                message: "artifact chunk range is invalid".to_string(),
+            });
+        }
+        let remaining = record.size_bytes - offset;
+        let read_len = remaining.min(max_bytes as u64) as usize;
+        let mut file = fs::File::open(self.blob_path(&record.sha256))
+            .map_err(|error| artifact_error("open artifact blob", error))?;
+        file.seek(SeekFrom::Start(offset))
+            .map_err(|error| artifact_error("seek artifact blob", error))?;
+        let mut data = vec![0; read_len];
+        file.read_exact(&mut data)
+            .map_err(|error| artifact_error("read artifact blob chunk", error))?;
+        Ok(ArtifactChunkRead {
+            data,
+            eof: offset + read_len as u64 == record.size_bytes,
+        })
     }
 
     pub fn load_pending_archive_artifacts(
@@ -230,7 +299,11 @@ impl OperationalArtifactStore {
             .join(sha256)
     }
 
-    fn insert_record(&self, record: &ArtifactRecord) -> Result<(), DaemonError> {
+    fn insert_record(
+        &self,
+        record: &ArtifactRecord,
+        enqueue_archive: bool,
+    ) -> Result<(), DaemonError> {
         let record_json =
             serde_json::to_string(record).map_err(|error| DaemonError::SessionHistoryFailed {
                 session_id: record.session_id.clone(),
@@ -270,19 +343,21 @@ impl OperationalArtifactStore {
                 ],
             )
             .map_err(|error| artifact_sql_error("insert artifact record", error))?;
-        connection
-            .execute(
-                "INSERT OR IGNORE INTO artifact_archive_outbox (
-                    artifact_id, record_json, attempts, last_error, archived_at_ms,
-                    created_at_ms, updated_at_ms
-                 ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)",
-                params![
-                    record.artifact_id.as_str(),
-                    record_json,
-                    record.created_at_ms as i64,
-                ],
-            )
-            .map_err(|error| artifact_sql_error("enqueue artifact archive record", error))?;
+        if enqueue_archive {
+            connection
+                .execute(
+                    "INSERT OR IGNORE INTO artifact_archive_outbox (
+                        artifact_id, record_json, attempts, last_error, archived_at_ms,
+                        created_at_ms, updated_at_ms
+                     ) VALUES (?1, ?2, 0, NULL, NULL, ?3, ?3)",
+                    params![
+                        record.artifact_id.as_str(),
+                        record_json,
+                        record.created_at_ms as i64,
+                    ],
+                )
+                .map_err(|error| artifact_sql_error("enqueue artifact archive record", error))?;
+        }
         Ok(())
     }
 
@@ -325,6 +400,13 @@ fn hex_lower(bytes: &[u8]) -> String {
         write!(&mut output, "{byte:02x}").expect("writing hex to string should not fail");
     }
     output
+}
+
+fn is_sha256_hex(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 fn unix_epoch_ms() -> u64 {
@@ -409,6 +491,8 @@ mod tests {
                 source_path: source,
                 display_name: "source.txt".to_string(),
                 source_kind: "transfer".to_string(),
+                media_type: None,
+                enqueue_archive: true,
                 session_id: Some("session-1".to_string()),
                 attachment_id: Some("attachment-1".to_string()),
                 workspace_id: Some("workspace-1".to_string()),
@@ -431,6 +515,59 @@ mod tests {
             .load_pending_archive_artifacts(10)
             .expect("pending should reload")
             .is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn loads_artifact_records_and_reads_bounded_chunks() {
+        let root = std::env::temp_dir().join(format!(
+            "chariox-artifact-read-{}-{}",
+            std::process::id(),
+            unix_epoch_ms()
+        ));
+        let source = root.join("screenshot.png");
+        fs::create_dir_all(&root).expect("root should exist");
+        fs::write(&source, b"hello artifact").expect("source should write");
+        let store = OperationalArtifactStore::open(root.join("store"), root.join("index.db"))
+            .expect("store should open");
+        let record = store
+            .store_existing_file(StoreArtifactRequest {
+                source_path: source,
+                display_name: "room-screenshot.png".to_string(),
+                source_kind: "room_environment_screenshot".to_string(),
+                media_type: Some("image/png".to_string()),
+                enqueue_archive: false,
+                session_id: Some("room-1".to_string()),
+                attachment_id: None,
+                workspace_id: None,
+                worktree_path: None,
+                metadata: BTreeMap::from([(
+                    "slice_id".to_string(),
+                    serde_json::Value::String("slice-1".to_string()),
+                )]),
+            })
+            .expect("artifact should store");
+
+        let loaded = store
+            .load_artifact(&record.artifact_id)
+            .expect("artifact lookup should succeed")
+            .expect("artifact should exist");
+        assert_eq!(loaded, record);
+        assert!(store
+            .load_pending_archive_artifacts(10)
+            .expect("operational-only artifact should not enqueue")
+            .is_empty());
+        let first = store
+            .read_artifact_chunk(&loaded, 0, 5)
+            .expect("first chunk should read");
+        assert_eq!(first.data, b"hello");
+        assert!(!first.eof);
+        let second = store
+            .read_artifact_chunk(&loaded, 5, 32)
+            .expect("second chunk should read");
+        assert_eq!(second.data, b" artifact");
+        assert!(second.eof);
+
         let _ = fs::remove_dir_all(&root);
     }
 }

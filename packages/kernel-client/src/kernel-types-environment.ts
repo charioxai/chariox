@@ -177,6 +177,33 @@ export type RoomEnvironmentSliceResponse = {
   RoomEnvironmentSlice: { binding: RoomEnvironmentSliceBinding | null }
 }
 
+export type RoomEnvironmentScreenshotArtifact = {
+  artifact_id: string
+  sha256: string
+  size_bytes: number
+  media_type: "image/png"
+  display_name: string
+}
+
+export type RoomEnvironmentScreenshotCapturedResponse = {
+  RoomEnvironmentScreenshotCaptured: {
+    artifact: RoomEnvironmentScreenshotArtifact
+  }
+}
+
+export type RoomEnvironmentScreenshotChunk = {
+  artifact_id: string
+  offset: number
+  data_base64: string
+  eof: boolean
+}
+
+export type RoomEnvironmentScreenshotChunkResponse = {
+  RoomEnvironmentScreenshotChunk: {
+    chunk: RoomEnvironmentScreenshotChunk
+  }
+}
+
 export type RoomEnvironmentEventsResponse = {
   RoomEnvironmentEvents: {
     replay: RoomEnvironmentReplay

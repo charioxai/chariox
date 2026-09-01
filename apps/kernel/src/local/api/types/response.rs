@@ -40,6 +40,8 @@ pub enum LocalDaemonResponse {
     },
     RoomEnvironmentState { environment: crate::session::RoomEnvironmentSnapshot, },
     RoomEnvironmentSlice { binding: Option<RoomEnvironmentSliceBinding>, },
+    RoomEnvironmentScreenshotCaptured { artifact: RoomEnvironmentScreenshotArtifact, },
+    RoomEnvironmentScreenshotChunk { chunk: RoomEnvironmentScreenshotChunk, },
     RoomEnvironmentEvents { replay: crate::session::EnvironmentReplay, },
     RoomEnvironmentActionHistoryListed { page: crate::session::EnvironmentActionHistoryPage, },
     RoomEnvironmentUpdated { environment: crate::session::RoomEnvironmentSnapshot, },

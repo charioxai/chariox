@@ -241,6 +241,7 @@ mod tests {
                 "/room retry",
                 "/room reconnect",
                 "/room view",
+                "/room screenshot",
                 "/room takeover ",
                 "/room release ",
                 "/room cancel ",

@@ -108,6 +108,20 @@ impl CommandRouter {
             LocalDaemonRequest::LaunchProviderRuns(request) => {
                 execute_provider_batch_launch_command(&self.runtime_state, &command, request).await
             }
+            LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+                let artifact = self
+                    .runtime_state
+                    .capture_room_environment_screenshot(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotCaptured { artifact })
+            }
+            LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
+                let chunk = self
+                    .runtime_state
+                    .read_room_environment_screenshot_chunk(&command.caller, request)
+                    .await?;
+                Ok(LocalDaemonResponse::RoomEnvironmentScreenshotChunk { chunk })
+            }
             request @ (LocalDaemonRequest::ListSessions(_)
             | LocalDaemonRequest::ResolveSession(_)
             | LocalDaemonRequest::GetSessionState(_)

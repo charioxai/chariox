@@ -3,6 +3,7 @@ import test from "node:test"
 
 import {
   bindRoomEnvironmentSliceRequest,
+  captureRoomEnvironmentScreenshotRequest,
   getRoomEnvironmentSliceRequest,
   cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentEventsRequest,
@@ -10,6 +11,7 @@ import {
   listRoomEnvironmentActionHistoryRequest,
   requestRoomEnvironmentInputTakeoverRequest,
   releaseRoomEnvironmentInputRequest,
+  readRoomEnvironmentScreenshotChunkRequest,
   submitRoomEnvironmentActionRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
@@ -35,8 +37,39 @@ test("Room Environment placement uses shared requests", () => {
   })
 })
 
-test("Room Environment state request matches protocol 295", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
+test("Room Environment screenshot transfer uses bounded protocol 296 requests", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 296)
+  assert.deepEqual(
+    captureRoomEnvironmentScreenshotRequest("session-1", "attachment-1"),
+    {
+      CaptureRoomEnvironmentScreenshot: {
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+      },
+    },
+  )
+  assert.deepEqual(
+    readRoomEnvironmentScreenshotChunkRequest(
+      "session-1",
+      "attachment-1",
+      "artifact-1",
+      131_072,
+      131_072,
+    ),
+    {
+      ReadRoomEnvironmentScreenshotChunk: {
+        session_id: "session-1",
+        attachment_id: "attachment-1",
+        artifact_id: "artifact-1",
+        offset: 131_072,
+        max_bytes: 131_072,
+      },
+    },
+  )
+})
+
+test("Room Environment state request matches protocol 296", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 296)
   assert.deepEqual(getRoomEnvironmentStateRequest("session-1"), {
     GetRoomEnvironmentState: {
       session_id: "session-1",
@@ -160,8 +193,8 @@ test("Room Environment state request matches protocol 295", () => {
   })
 })
 
-test("Room Environment event replay request matches protocol 295", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
+test("Room Environment event replay request matches protocol 296", () => {
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 296)
   assert.deepEqual(getRoomEnvironmentEventsRequest("session-1", 41), {
     GetRoomEnvironmentEvents: {
       session_id: "session-1",
@@ -213,7 +246,7 @@ test("Room Environment event replay request matches protocol 295", () => {
   })
 })
 
-test("Room Environment Action history request matches protocol 295", () => {
+test("Room Environment Action history request matches protocol 296", () => {
   assert.deepEqual(listRoomEnvironmentActionHistoryRequest("session-1", 42, 25), {
     ListRoomEnvironmentActionHistory: {
       session_id: "session-1",
@@ -333,7 +366,7 @@ test("Room Environment viewport update carries only dimensions and observed revi
 })
 
 test("Room Environment pointer update carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 296)
   assert.deepEqual(updateRoomEnvironmentPointerRequest("session-1", 3, 7, { x: 320, y: 180 }), {
     UpdateRoomEnvironmentPointer: {
       session_id: "session-1",
@@ -391,7 +424,7 @@ test("Room Environment Action cancellation request cannot forge Actor identity",
 })
 
 test("Room Environment pointer click submission carries observed generations but no Actor identity", () => {
-  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 295)
+  assert.equal(LOCAL_DAEMON_PROTOCOL_VERSION, 296)
   assert.deepEqual(
     submitRoomEnvironmentActionRequest("session-1", 4, 9, "input-1", {
       kind: "pointer_click",

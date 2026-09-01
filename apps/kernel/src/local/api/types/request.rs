@@ -28,6 +28,8 @@ pub enum LocalDaemonRequest {
     GetRoomEnvironmentState(GetRoomEnvironmentStateRequest),
     GetRoomEnvironmentSlice(GetRoomEnvironmentSliceRequest),
     BindRoomEnvironmentSlice(BindRoomEnvironmentSliceRequest),
+    CaptureRoomEnvironmentScreenshot(CaptureRoomEnvironmentScreenshotRequest),
+    ReadRoomEnvironmentScreenshotChunk(ReadRoomEnvironmentScreenshotChunkRequest),
     GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest),
     ListRoomEnvironmentActionHistory(ListRoomEnvironmentActionHistoryRequest),
     StartRoomEnvironment(StartRoomEnvironmentRequest),

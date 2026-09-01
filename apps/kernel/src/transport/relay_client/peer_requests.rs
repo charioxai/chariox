@@ -126,6 +126,61 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::CaptureRoomScreenshot {
+            session_id,
+            slice_id,
+        } => {
+            match router
+                .relay_capture_room_screenshot(
+                    stable_peer_daemon_id(from_daemon_id),
+                    &requester_public_key,
+                    &session_id,
+                    &slice_id,
+                )
+                .await
+            {
+                Ok(artifact) => RelayPeerResponse::RoomScreenshotCaptured {
+                    session_id,
+                    slice_id,
+                    artifact,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
+        RelayPeerRequest::ReadRoomScreenshotChunk {
+            session_id,
+            slice_id,
+            artifact_id,
+            offset,
+            max_bytes,
+        } => {
+            match router.relay_read_room_screenshot_chunk(
+                stable_peer_daemon_id(from_daemon_id),
+                &requester_public_key,
+                &session_id,
+                &slice_id,
+                &artifact_id,
+                offset,
+                max_bytes,
+            ) {
+                Ok(chunk) => RelayPeerResponse::RoomScreenshotChunk {
+                    session_id,
+                    slice_id,
+                    chunk,
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    }
+                }
+            }
+        }
         RelayPeerRequest::Ping { value } => RelayPeerResponse::Pong { value, daemon_id },
         RelayPeerRequest::CreateExecutionLease {
             home_kernel_id,

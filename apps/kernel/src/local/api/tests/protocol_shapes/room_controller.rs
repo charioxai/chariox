@@ -1,4 +1,5 @@
 use super::*;
+use crate::local::RoomEnvironmentScreenshotChunk;
 use crate::transport::relay_peer::{
     RelayPeerRequest, RelayPeerResponse, RemoteExtensionInvocationContext,
     RemoteRoomBrowserRuntimeToolCall, RemoteRoomBrowserRuntimeToolResult,
@@ -10,9 +11,51 @@ use crate::transport::room_browser_controller::{
 };
 
 #[test]
+fn room_screenshot_peer_protocol_is_bounded_and_versioned() {
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 32);
+
+    let request = RelayPeerRequest::ReadRoomScreenshotChunk {
+        session_id: "session-1".to_string(),
+        slice_id: "slice-1".to_string(),
+        artifact_id: "artifact-1".to_string(),
+        offset: 131_072,
+        max_bytes: 131_072,
+    };
+    assert_eq!(
+        serde_json::to_value(&request).expect("Room screenshot peer request should encode"),
+        serde_json::json!({
+            "kind": "read_room_screenshot_chunk",
+            "session_id": "session-1",
+            "slice_id": "slice-1",
+            "artifact_id": "artifact-1",
+            "offset": 131072,
+            "max_bytes": 131072
+        })
+    );
+
+    let response = RelayPeerResponse::RoomScreenshotChunk {
+        session_id: "session-1".to_string(),
+        slice_id: "slice-1".to_string(),
+        chunk: RoomEnvironmentScreenshotChunk {
+            artifact_id: "artifact-1".to_string(),
+            offset: 0,
+            data_base64: "YWJj".to_string(),
+            eof: false,
+        },
+    };
+    let response_value =
+        serde_json::to_value(&response).expect("Room screenshot peer response should encode");
+    assert_eq!(
+        serde_json::from_value::<RelayPeerResponse>(response_value)
+            .expect("Room screenshot peer response should decode"),
+        response
+    );
+}
+
+#[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 295);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 31);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 296);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 32);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {

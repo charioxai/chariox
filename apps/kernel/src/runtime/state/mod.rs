@@ -51,6 +51,7 @@ mod room_browser_controller;
 mod room_display;
 mod room_environment_placement;
 mod room_environment_state;
+mod room_screenshot;
 
 #[derive(Clone)]
 pub(crate) struct KernelRuntimeState {

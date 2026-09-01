@@ -10,6 +10,36 @@ export function getRoomEnvironmentSliceRequest(sessionId: string) {
   return { GetRoomEnvironmentSlice: { session_id: sessionId } }
 }
 
+export function captureRoomEnvironmentScreenshotRequest(
+  sessionId: string,
+  attachmentId: string,
+) {
+  return {
+    CaptureRoomEnvironmentScreenshot: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+    },
+  }
+}
+
+export function readRoomEnvironmentScreenshotChunkRequest(
+  sessionId: string,
+  attachmentId: string,
+  artifactId: string,
+  offset: number,
+  maxBytes: number,
+) {
+  return {
+    ReadRoomEnvironmentScreenshotChunk: {
+      session_id: sessionId,
+      attachment_id: attachmentId,
+      artifact_id: artifactId,
+      offset,
+      max_bytes: maxBytes,
+    },
+  }
+}
+
 export function bindRoomEnvironmentSliceRequest(sessionId: string, sliceRef: string) {
   return { BindRoomEnvironmentSlice: { session_id: sessionId, slice_ref: sliceRef } }
 }

@@ -79,6 +79,14 @@ pub(super) fn local_request_metadata(request: &LocalDaemonRequest) -> LocalReque
         LocalDaemonRequest::GetRoomEnvironmentSlice(request) => {
             LocalRequestMetadata::new("environment.slice.get", Normal).session(&request.session_id)
         }
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(request) => {
+            LocalRequestMetadata::new("environment.screenshot.capture", Normal)
+                .session(&request.session_id)
+        }
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(request) => {
+            LocalRequestMetadata::new("environment.screenshot.read", Normal)
+                .session(&request.session_id)
+        }
         LocalDaemonRequest::CreateSession(_) => {
             LocalRequestMetadata::new("session.create", Interactive)
         }
@@ -431,6 +439,8 @@ fn local_request_command_type(request: &LocalDaemonRequest) -> &'static str {
         LocalDaemonRequest::GetRoomEnvironmentState(_) => "environment.state.get",
         LocalDaemonRequest::GetRoomEnvironmentSlice(_) => "environment.slice.get",
         LocalDaemonRequest::BindRoomEnvironmentSlice(_) => "environment.slice.bind",
+        LocalDaemonRequest::CaptureRoomEnvironmentScreenshot(_) => "environment.screenshot.capture",
+        LocalDaemonRequest::ReadRoomEnvironmentScreenshotChunk(_) => "environment.screenshot.read",
         LocalDaemonRequest::GetRoomEnvironmentEvents(_) => "environment.events.get",
         LocalDaemonRequest::ListRoomEnvironmentActionHistory(_) => "environment.history.list",
         LocalDaemonRequest::StartRoomEnvironment(_) => "environment.start",

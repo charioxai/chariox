@@ -166,7 +166,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -526,6 +526,39 @@ test("/room view reports missing focus, slice, and Cloud configuration", async (
     "focus an agent before opening the Room Environment",
     "Room Environment has no bound slice to view",
     "Chariox Cloud Web View is not configured; run /cloud link first",
+  ])
+})
+
+test("/room screenshot saves the Room Environment image on the TUI host", async () => {
+  const notices: string[] = []
+  let captures = 0
+  const command = parseSlashCommand("/room screenshot")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>() => ({} as TResponse),
+    captureScreenshot: async () => {
+      captures += 1
+      return {
+        artifact: {
+          artifact_id: "artifact-1",
+          sha256: "bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
+          size_bytes: 6,
+          media_type: "image/png",
+          display_name: "capture.png",
+        },
+        path: "/Users/example/Downloads/capture.png",
+      }
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.equal(captures, 1)
+  assert.deepEqual(notices, [
+    "Room Environment screenshot saved.\npath=/Users/example/Downloads/capture.png\nartifact=artifact-1\nsha256=bef57ec7f53a6d40beb640a780a639c83bc29ac8a9816f1fc6c5c6dcd93c4721",
   ])
 })
 
