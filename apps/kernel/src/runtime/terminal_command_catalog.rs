@@ -234,7 +234,15 @@ mod tests {
                 .iter()
                 .map(|node| node.value.as_str())
                 .collect::<Vec<_>>(),
-            vec!["/room status", "/room start ", "/room stop", "/room retry",]
+            vec![
+                "/room status",
+                "/room start ",
+                "/room stop",
+                "/room retry",
+                "/room takeover ",
+                "/room release ",
+                "/room cancel ",
+            ]
         );
     }
 

@@ -1,5 +1,8 @@
 import {
+  cancelRoomEnvironmentActionRequest,
   getRoomEnvironmentStateRequest,
+  releaseRoomEnvironmentInputRequest,
+  requestRoomEnvironmentInputTakeoverRequest,
   retryRoomEnvironmentRequest,
   startRoomEnvironmentRequest,
   stopRoomEnvironmentRequest,
@@ -7,8 +10,13 @@ import {
 } from "@chariox/kernel-client/ipc-requests"
 import type {
   RoomEnvironmentAction,
+  RoomEnvironmentActionCancellationOutcome,
+  RoomEnvironmentActionCancellationUpdatedResponse,
+  RoomEnvironmentInputReleasedResponse,
+  RoomEnvironmentInputTarget,
   RoomEnvironmentSnapshot,
   RoomEnvironmentStateResponse,
+  RoomEnvironmentTakeoverUpdatedResponse,
   RoomEnvironmentUpdatedResponse,
 } from "@chariox/kernel-client/kernel-types"
 
@@ -29,11 +37,13 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "start", "stop", "retry", "takeover", "release", "cancel"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
   let startViewport: RoomEnvironmentViewportRequest | undefined
+  let inputTarget: RoomEnvironmentInputTarget | undefined
+  let actionId: string | undefined
   if (subcommand === "start") {
     const parsedViewport = parseStartViewport(command.args.slice(1))
     if (typeof parsedViewport === "string") {
@@ -41,6 +51,19 @@ export async function handleRoomSlashCommand(
       return
     }
     startViewport = parsedViewport
+  } else if (subcommand === "takeover" || subcommand === "release") {
+    const parsedTarget = parseInputTarget(command.args.slice(1))
+    if (typeof parsedTarget === "string") {
+      deps.flashFooter(parsedTarget, "error")
+      return
+    }
+    inputTarget = parsedTarget
+  } else if (subcommand === "cancel") {
+    if (command.args.length !== 2 || !command.args[1]) {
+      deps.flashFooter(roomCancelUsage(), "error")
+      return
+    }
+    actionId = command.args[1]
   } else if (command.args.length > 1) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
@@ -61,6 +84,45 @@ export async function handleRoomSlashCommand(
     return
   }
 
+  if (subcommand === "takeover") {
+    if (!inputTarget) throw new Error("Room Environment takeover target is missing")
+    const response = await deps.send<RoomEnvironmentTakeoverUpdatedResponse>(
+      requestRoomEnvironmentInputTakeoverRequest(sessionId, inputTarget),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentTakeoverUpdated" in response)) {
+      throw new Error("Room Environment takeover response is malformed")
+    }
+    const { environment, outcome } = response.RoomEnvironmentTakeoverUpdated
+    const result = outcome.state === "granted"
+      ? "Room takeover granted"
+      : `Room takeover requires cancellation: ${outcome.action_ids.join(", ") || "pending actions"}`
+    deps.appendNotice(`${result}\n${formatRoomEnvironmentStatus(environment)}`)
+    return
+  }
+  if (subcommand === "release") {
+    if (!inputTarget) throw new Error("Room Environment release target is missing")
+    const response = await deps.send<RoomEnvironmentInputReleasedResponse>(
+      releaseRoomEnvironmentInputRequest(sessionId, inputTarget),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentInputReleased" in response)) {
+      throw new Error("Room Environment input release response is malformed")
+    }
+    deps.appendNotice(`Room input released\n${formatRoomEnvironmentStatus(response.RoomEnvironmentInputReleased.environment)}`)
+    return
+  }
+  if (subcommand === "cancel") {
+    if (!actionId) throw new Error("Room Environment action ID is missing")
+    const response = await deps.send<RoomEnvironmentActionCancellationUpdatedResponse>(
+      cancelRoomEnvironmentActionRequest(sessionId, actionId),
+    )
+    if (!response || typeof response !== "object" || !("RoomEnvironmentActionCancellationUpdated" in response)) {
+      throw new Error("Room Environment action cancellation response is malformed")
+    }
+    const { environment, outcome } = response.RoomEnvironmentActionCancellationUpdated
+    deps.appendNotice(`Room action ${actionId} ${formatCancellationOutcome(outcome)}\n${formatRoomEnvironmentStatus(environment)}`)
+    return
+  }
+
   let request: unknown
   if (subcommand === "start") {
     if (!startViewport) throw new Error("Room Environment start viewport is missing")
@@ -75,6 +137,16 @@ export async function handleRoomSlashCommand(
     throw new Error("Room Environment lifecycle response is malformed")
   }
   deps.appendNotice(formatRoomEnvironmentStatus(response.RoomEnvironmentUpdated.environment))
+}
+
+function parseInputTarget(args: string[]): RoomEnvironmentInputTarget | string {
+  if (args.length === 0 || (args.length === 1 && args[0] === "desktop")) {
+    return { kind: "desktop" }
+  }
+  if (args.length === 2 && args[0] === "tab" && args[1]) {
+    return { kind: "browser_tab", id: args[1] }
+  }
+  return roomInputUsage()
 }
 
 function parseStartViewport(args: string[]): RoomEnvironmentViewportRequest | string {
@@ -103,11 +175,30 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry"
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID"
 }
 
 function roomStartUsage(): string {
   return "usage: /room start [WIDTHxHEIGHT] [SCALE]"
+}
+
+function roomInputUsage(): string {
+  return "usage: /room takeover|release [desktop|tab TAB_ID]"
+}
+
+function roomCancelUsage(): string {
+  return "usage: /room cancel ACTION_ID"
+}
+
+function formatCancellationOutcome(outcome: RoomEnvironmentActionCancellationOutcome): string {
+  switch (outcome.state) {
+    case "cancelled":
+      return "cancelled"
+    case "cancellation_requested":
+      return "cancellation requested"
+    case "already_terminal":
+      return `already ${outcome.action_state}`
+  }
 }
 
 export function formatRoomEnvironmentStatus(environment: RoomEnvironmentSnapshot): string {

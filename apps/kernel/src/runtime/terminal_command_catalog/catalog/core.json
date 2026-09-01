@@ -195,6 +195,50 @@
           "retry computer",
           "recover environment"
         ]
+      },
+      {
+        "id": "room-takeover",
+        "label": "takeover",
+        "description": "Request authenticated human input ownership; defaults to desktop or append tab TAB_ID",
+        "value": "/room takeover ",
+        "examples": [
+          "/room takeover",
+          "/room takeover tab tab-1"
+        ],
+        "searchAliases": [
+          "take control",
+          "input ownership",
+          "control browser",
+          "control computer"
+        ]
+      },
+      {
+        "id": "room-release",
+        "label": "release",
+        "description": "Release authenticated human input ownership; defaults to desktop or append tab TAB_ID",
+        "value": "/room release ",
+        "examples": [
+          "/room release",
+          "/room release tab tab-1"
+        ],
+        "searchAliases": [
+          "release control",
+          "release input",
+          "unlock browser",
+          "unlock computer"
+        ]
+      },
+      {
+        "id": "room-cancel",
+        "label": "cancel",
+        "description": "Cancel or request cancellation of an active Room Action by ID",
+        "value": "/room cancel ",
+        "searchAliases": [
+          "cancel browser action",
+          "cancel computer action",
+          "stop agent input",
+          "complete takeover"
+        ]
       }
     ]
   },
