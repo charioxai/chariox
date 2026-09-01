@@ -179,12 +179,11 @@ impl CommandRouter {
             | LocalDaemonRequest::GetSliceStateStatus(_)
             | LocalDaemonRequest::ResetSliceState(_)
             | LocalDaemonRequest::CreateSliceBackup(_)) => {
-                let caller_user_id = command_caller_user_id(&command);
                 execute_slice_request(
                     &self.runtime_state,
                     &self.config_projection,
                     Some(Arc::clone(&self.relay_state)),
-                    &caller_user_id,
+                    &command.caller,
                     request,
                 )
                 .await

@@ -84,8 +84,26 @@ export function startSliceProviderLoginRequest(sliceRef: string, provider: strin
   }
 }
 
-export function getSliceDisplayEndpointRequest(sliceRef: string) {
-  return { GetSliceDisplayEndpoint: { slice_ref: sliceRef } }
+export function getSliceDisplayEndpointRequest(
+  sliceRef: string,
+  room?: {
+    sessionId: string
+    attachmentId: string
+    viewerPublicKey: string
+  },
+) {
+  return {
+    GetSliceDisplayEndpoint: {
+      slice_ref: sliceRef,
+      ...(room === undefined
+        ? {}
+        : {
+            session_id: room.sessionId,
+            attachment_id: room.attachmentId,
+            viewer_public_key: room.viewerPublicKey,
+          }),
+    },
+  }
 }
 
 export function getSliceLogsRequest(sliceRef: string, tailLines?: number | null) {

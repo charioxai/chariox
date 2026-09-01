@@ -358,6 +358,7 @@ pub(crate) enum DisplayTunnelLookup {
     Active {
         daemon_key: DaemonKey,
         daemon_sender: Option<RelaySender>,
+        capabilities: Vec<String>,
     },
     Expired,
     Missing,
@@ -507,6 +508,7 @@ impl RelayRegistry {
         DisplayTunnelLookup::Active {
             daemon_key: registration.daemon_key.clone(),
             daemon_sender: self.resolve_daemon_sender(&registration.daemon_key),
+            capabilities: registration.capabilities.clone(),
         }
     }
 

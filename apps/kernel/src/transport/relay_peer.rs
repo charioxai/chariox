@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 29 reports an implicit worker-controller restart with its new
-/// process generation so the home can reconcile before accepting fresh input.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 29;
+/// Version 30 lets the home ask its bound worker to admit one encrypted,
+/// single-use Room display stream without making the relay an authority.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 30;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -258,6 +258,11 @@ pub enum RelayPeerRequest {
         slice_id: String,
         command: super::room_browser_controller::RoomBrowserControllerCommand,
     },
+    OpenRoomDisplay {
+        session_id: String,
+        slice_id: String,
+        viewer_public_key: String,
+    },
     Ping {
         value: String,
     },
@@ -492,6 +497,11 @@ pub enum RelayPeerResponse {
         session_id: String,
         slice_id: String,
         result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
+    RoomDisplayOpened {
+        session_id: String,
+        slice_id: String,
+        endpoint: crate::slice::SliceDisplayEndpoint,
     },
     Pong {
         value: String,

@@ -123,6 +123,22 @@ impl RelayClientState {
             .cloned()
     }
 
+    pub(crate) fn claim_display_tunnel_for_open(
+        &mut self,
+        tunnel_id: &str,
+        now_ms: u64,
+    ) -> Option<RelayDisplayTunnelTarget> {
+        let target = self
+            .display_tunnels
+            .get(tunnel_id)
+            .filter(|target| target.expires_at_ms > now_ms)?;
+        if matches!(&target.kind, RelayDisplayTunnelTargetKind::Selkies { .. }) {
+            self.display_tunnels.remove(tunnel_id)
+        } else {
+            Some(target.clone())
+        }
+    }
+
     pub(crate) fn display_tunnel_for_slice(
         &self,
         slice_id: &str,
@@ -130,7 +146,9 @@ impl RelayClientState {
     ) -> Option<RelayDisplayTunnelTarget> {
         self.display_tunnels
             .values()
-            .find(|target| target.slice_id == slice_id && target.local_base_url == local_base_url)
+            .find(|target| {
+                target.slice_id == slice_id && target.kind.local_base_url() == Some(local_base_url)
+            })
             .cloned()
     }
 
@@ -161,6 +179,24 @@ impl RelayClientState {
         stream_id: &str,
     ) -> Option<mpsc::Sender<RelayDisplayTunnelClientEvent>> {
         self.display_streams.get(stream_id).cloned()
+    }
+
+    pub(crate) fn try_send_display_stream_event(
+        &mut self,
+        stream_id: &str,
+        event: RelayDisplayTunnelClientEvent,
+    ) -> bool {
+        let Some(sender) = self.display_streams.get(stream_id) else {
+            return false;
+        };
+        if sender.try_send(event).is_ok() {
+            return true;
+        }
+        // Never drop an encrypted fragment and leave the channel alive: the
+        // next packet would be out of sequence. Removing the only state-owned
+        // sender closes the bounded ingress after already-queued work drains.
+        self.display_streams.remove(stream_id);
+        false
     }
 
     #[cfg(test)]
@@ -194,9 +230,30 @@ impl RelayClientState {
 pub(crate) struct RelayDisplayTunnelTarget {
     pub(crate) tunnel_id: String,
     pub(crate) slice_id: String,
-    pub(crate) local_base_url: String,
+    pub(crate) kind: RelayDisplayTunnelTargetKind,
     pub(crate) expires_at_ms: u64,
     pub(crate) capabilities: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RelayDisplayTunnelTargetKind {
+    HttpProxy {
+        local_base_url: String,
+    },
+    Selkies {
+        viewer_public_key: String,
+        command_program: String,
+        command_args: Vec<String>,
+    },
+}
+
+impl RelayDisplayTunnelTargetKind {
+    pub(crate) fn local_base_url(&self) -> Option<&str> {
+        match self {
+            Self::HttpProxy { local_base_url } => Some(local_base_url),
+            Self::Selkies { .. } => None,
+        }
+    }
 }
 
 impl RelayDisplayTunnelTarget {
@@ -403,7 +460,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-live".to_string(),
                 slice_id: "publication:session-1:public-api".to_string(),
-                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43100/".to_string(),
+                },
                 expires_at_ms: u64::MAX,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });
@@ -415,9 +474,32 @@ mod tests {
                 .read()
                 .await
                 .display_tunnel("publication-live", 1)
-                .map(|target| target.local_base_url),
+                .and_then(|target| target.kind.local_base_url().map(str::to_string)),
             Some("http://127.0.0.1:43100/".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn saturated_display_ingress_closes_instead_of_dropping_a_fragment() {
+        let mut state = RelayClientState::default();
+        let (sender, mut receiver) = mpsc::channel(1);
+        state.insert_display_stream("stream-1".to_string(), sender);
+        let chunk = |data: &str| {
+            RelayDisplayTunnelClientEvent::Chunk(RelayDisplayTunnelStreamChunk {
+                stream_id: "stream-1".to_string(),
+                data: data.to_string(),
+                message_kind: Some("binary".to_string()),
+            })
+        };
+
+        assert!(state.try_send_display_stream_event("stream-1", chunk("first")));
+        assert!(!state.try_send_display_stream_event("stream-1", chunk("second")));
+        assert!(state.display_stream_sender("stream-1").is_none());
+        assert!(matches!(
+            receiver.recv().await,
+            Some(RelayDisplayTunnelClientEvent::Chunk(chunk)) if chunk.data == "first"
+        ));
+        assert!(receiver.recv().await.is_none());
     }
 
     #[tokio::test]
@@ -429,7 +511,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-live".to_string(),
                 slice_id: "publication:session-1:public-api".to_string(),
-                local_base_url: "http://127.0.0.1:43100/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43100/".to_string(),
+                },
                 expires_at_ms: u64::MAX,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });
@@ -439,7 +523,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: "publication-expired".to_string(),
                 slice_id: "publication:session-1:expired".to_string(),
-                local_base_url: "http://127.0.0.1:43101/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:43101/".to_string(),
+                },
                 expires_at_ms: 1,
                 capabilities: vec!["http".to_string(), "publication".to_string()],
             });

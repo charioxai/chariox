@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn slice_creation_preserves_explicit_display_backend_on_the_wire() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
     let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
         "CreateSlice": {
             "name": "headed", "display_mode": "headed", "display_backend": "selkies"
@@ -37,7 +37,7 @@ fn legacy_slice_requests_keep_novnc_and_unknown_backends_fail_closed() {
 
 #[test]
 fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
     let response = LocalDaemonResponse::SliceDisplayEndpoint {
         endpoint: crate::slice::SliceDisplayEndpoint {
             slice_id: "slice-1".to_string(),
@@ -49,6 +49,9 @@ fn local_daemon_protocol_selkies_endpoint_shape_is_versioned() {
                 .into_iter()
                 .map(str::to_string)
                 .collect(),
+            stream_protocol: None,
+            stream_id: None,
+            peer_public_key: None,
         },
     };
     let value = serde_json::to_value(response).expect("endpoint should encode");
@@ -71,7 +74,7 @@ fn encrypted_display_fragment_contract_is_versioned() {
     use crate::transport::relay_crypto;
     use crate::transport::secure_display::{DisplayMessageKind, DisplayPeer, SecureDisplayChannel};
 
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
     let kernel_key = relay_crypto::generate_private_key_base64();
     let viewer_key = relay_crypto::generate_private_key_base64();
     let viewer_public = relay_crypto::public_key_from_private_key_base64(&viewer_key).unwrap();
@@ -95,5 +98,123 @@ fn encrypted_display_fragment_contract_is_versioned() {
     assert_eq!(
         format!("{hash:x}"),
         "9a6f015a6a9bdcf89322c15e1ccba68f37b88e72d832868f22b9d2684c4123c8"
+    );
+}
+
+#[test]
+fn room_selkies_viewer_admission_contract_is_versioned() {
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 293);
+    let request: LocalDaemonRequest = serde_json::from_value(serde_json::json!({
+        "GetSliceDisplayEndpoint": {
+            "slice_ref": "slice-1",
+            "session_id": "room-1",
+            "attachment_id": "attachment-1",
+            "viewer_public_key": "viewer-public-key"
+        }
+    }))
+    .expect("Room Selkies viewer request should decode");
+    let value = serde_json::to_value(request).expect("viewer request should encode");
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "GetSliceDisplayEndpoint": {
+                "slice_ref": "slice-1",
+                "session_id": "room-1",
+                "attachment_id": "attachment-1",
+                "viewer_public_key": "viewer-public-key"
+            }
+        })
+    );
+
+    let endpoint = crate::slice::SliceDisplayEndpoint {
+        slice_id: "slice-1".to_string(),
+        kind: crate::slice::SliceDisplayEndpointKind::Selkies,
+        url: "wss://relay.example.test/display/display-1/stream".to_string(),
+        access: crate::slice::SliceDisplayEndpointAccess::Tunnel,
+        expires_at_ms: Some(60_000),
+        capabilities: vec![
+            "view".to_string(),
+            "websocket".to_string(),
+            "h264".to_string(),
+            "software_encoding".to_string(),
+            "encrypted".to_string(),
+            "single_use".to_string(),
+        ],
+        stream_protocol: Some("chariox-display-v1".to_string()),
+        stream_id: Some("display-1".to_string()),
+        peer_public_key: Some("worker-public-key".to_string()),
+    };
+    let value = serde_json::to_value(LocalDaemonResponse::SliceDisplayEndpoint { endpoint })
+        .expect("viewer endpoint should encode");
+    assert_eq!(
+        value.pointer("/SliceDisplayEndpoint/endpoint/stream_protocol"),
+        Some(&serde_json::json!("chariox-display-v1"))
+    );
+    assert_eq!(
+        value.pointer("/SliceDisplayEndpoint/endpoint/stream_id"),
+        Some(&serde_json::json!("display-1"))
+    );
+    assert_eq!(
+        value.pointer("/SliceDisplayEndpoint/endpoint/peer_public_key"),
+        Some(&serde_json::json!("worker-public-key"))
+    );
+}
+
+#[test]
+fn room_selkies_worker_admission_contract_is_versioned() {
+    use crate::transport::relay_peer::{
+        RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    };
+
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 30);
+    let endpoint = crate::slice::SliceDisplayEndpoint {
+        slice_id: "slice-1".to_string(),
+        kind: crate::slice::SliceDisplayEndpointKind::Selkies,
+        url: "wss://relay.example.test/display/display-1/stream".to_string(),
+        access: crate::slice::SliceDisplayEndpointAccess::Tunnel,
+        expires_at_ms: Some(60_000),
+        capabilities: vec!["encrypted".to_string(), "single_use".to_string()],
+        stream_protocol: Some("chariox-display-v1".to_string()),
+        stream_id: Some("display-1".to_string()),
+        peer_public_key: Some("worker-public-key".to_string()),
+    };
+    assert_eq!(
+        serde_json::to_value((
+            RelayPeerRequest::OpenRoomDisplay {
+                session_id: "room-1".to_string(),
+                slice_id: "slice-1".to_string(),
+                viewer_public_key: "viewer-public-key".to_string(),
+            },
+            RelayPeerResponse::RoomDisplayOpened {
+                session_id: "room-1".to_string(),
+                slice_id: "slice-1".to_string(),
+                endpoint,
+            },
+        ))
+        .expect("Room display relay contract should encode"),
+        serde_json::json!([
+            {
+                "kind": "open_room_display",
+                "session_id": "room-1",
+                "slice_id": "slice-1",
+                "viewer_public_key": "viewer-public-key"
+            },
+            {
+                "kind": "room_display_opened",
+                "session_id": "room-1",
+                "slice_id": "slice-1",
+                "endpoint": {
+                    "slice_id": "slice-1",
+                    "kind": "selkies",
+                    "url": "wss://relay.example.test/display/display-1/stream",
+                    "access": "tunnel",
+                    "expires_at_ms": 60_000,
+                    "capabilities": ["encrypted", "single_use"],
+                    "stream_protocol": "chariox-display-v1",
+                    "stream_id": "display-1",
+                    "peer_public_key": "worker-public-key"
+                }
+            }
+        ])
     );
 }

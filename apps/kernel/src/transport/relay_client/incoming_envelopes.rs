@@ -187,8 +187,9 @@ pub(super) async fn handle_incoming_envelope(
         RelayEnvelope::DaemonDisplayTunnelOpen { request } => {
             let state = Arc::clone(state);
             let outgoing_tx = outgoing_tx.clone();
+            let daemon_private_key = router.relay_private_key();
             tokio::spawn(async move {
-                handle_display_tunnel_open(state, outgoing_tx, request).await;
+                handle_display_tunnel_open(state, outgoing_tx, request, daemon_private_key).await;
             });
         }
         RelayEnvelope::DaemonDisplayTunnelRegistered {
@@ -200,22 +201,17 @@ pub(super) async fn handle_incoming_envelope(
                 .resolve_display_tunnel_registration(&tunnel_id, error);
         }
         RelayEnvelope::DaemonDisplayTunnelClientChunk { chunk } => {
-            let sender = {
-                let guard = state.read().await;
-                guard.display_stream_sender(&chunk.stream_id)
-            };
-            if let Some(sender) = sender {
-                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Chunk(chunk));
-            }
+            let stream_id = chunk.stream_id.clone();
+            state.write().await.try_send_display_stream_event(
+                &stream_id,
+                RelayDisplayTunnelClientEvent::Chunk(chunk),
+            );
         }
         RelayEnvelope::DaemonDisplayTunnelClientClose { stream_id, .. } => {
-            let sender = {
-                let guard = state.read().await;
-                guard.display_stream_sender(&stream_id)
-            };
-            if let Some(sender) = sender {
-                let _ = sender.try_send(RelayDisplayTunnelClientEvent::Close);
-            }
+            state
+                .write()
+                .await
+                .try_send_display_stream_event(&stream_id, RelayDisplayTunnelClientEvent::Close);
         }
         RelayEnvelope::ClientMetadataResponse { .. } => {}
         RelayEnvelope::Close { reason } => {

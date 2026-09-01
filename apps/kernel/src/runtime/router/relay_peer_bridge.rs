@@ -20,6 +20,25 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn relay_open_room_display(
+        &self,
+        kernel_id: &str,
+        public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+        viewer_public_key: String,
+    ) -> Result<crate::slice::SliceDisplayEndpoint, DaemonError> {
+        self.runtime_state
+            .execute_bound_room_display_open(
+                kernel_id,
+                public_key,
+                session_id,
+                slice_id,
+                viewer_public_key,
+            )
+            .await
+    }
+
     pub(crate) fn relay_daemon_id(&self) -> String {
         self.config_projection.snapshot().daemon_id
     }

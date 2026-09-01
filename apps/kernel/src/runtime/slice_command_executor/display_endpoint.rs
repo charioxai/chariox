@@ -5,11 +5,14 @@ use tokio::sync::RwLock;
 use tokio::time::{timeout, Duration};
 
 use crate::error::DaemonError;
-use crate::local::{LocalDaemonResponse, SliceRefRequest};
+use crate::local::{GetSliceDisplayEndpointRequest, LocalDaemonResponse};
+use crate::runtime::command::KernelCaller;
 use crate::runtime::projection::DaemonConfigProjectionStore;
 use crate::runtime::state::KernelRuntimeState;
 use crate::slice::{SliceDisplayEndpoint, SliceDisplayEndpointAccess, SliceDisplayEndpointKind};
-use crate::transport::relay_client::{RelayClientState, RelayDisplayTunnelTarget};
+use crate::transport::relay_client::{
+    RelayClientState, RelayDisplayTunnelTarget, RelayDisplayTunnelTargetKind,
+};
 use chariox_relay::protocol::{RelayDisplayTunnelRegistration, RelayEnvelope};
 
 const DISPLAY_TUNNEL_TTL_MS: u64 = 60_000;
@@ -20,9 +23,19 @@ pub(super) async fn execute_get_slice_display_endpoint_request(
     runtime_state: &KernelRuntimeState,
     config_projection: &DaemonConfigProjectionStore,
     relay_state: Option<Arc<RwLock<RelayClientState>>>,
-    request: SliceRefRequest,
+    caller: &KernelCaller,
+    request: GetSliceDisplayEndpointRequest,
 ) -> Result<LocalDaemonResponse, DaemonError> {
     let endpoint = runtime_state.slice_display_endpoint(&request.slice_ref)?;
+    if endpoint.kind == SliceDisplayEndpointKind::Selkies {
+        let _relay_state = relay_state.ok_or_else(|| {
+            display_tunnel_error("open Room Selkies display", "relay state is unavailable")
+        })?;
+        let endpoint = runtime_state
+            .open_room_selkies_display(caller, request)
+            .await?;
+        return Ok(LocalDaemonResponse::SliceDisplayEndpoint { endpoint });
+    }
     let endpoint = match relay_state {
         Some(relay_state) => tunneled_display_endpoint(
             endpoint.clone(),
@@ -139,7 +152,7 @@ async fn tunneled_display_endpoint(
     let target = RelayDisplayTunnelTarget {
         tunnel_id,
         slice_id: local_endpoint.slice_id.clone(),
-        local_base_url,
+        kind: RelayDisplayTunnelTargetKind::HttpProxy { local_base_url },
         expires_at_ms,
         capabilities: local_endpoint.capabilities.clone(),
     };
@@ -168,6 +181,9 @@ fn relay_tunneled_endpoint(
         access: SliceDisplayEndpointAccess::Tunnel,
         expires_at_ms: Some(target.expires_at_ms),
         capabilities: local_endpoint.capabilities,
+        stream_protocol: None,
+        stream_id: None,
+        peer_public_key: None,
     })
 }
 
@@ -176,6 +192,125 @@ fn display_tunnel_error(operation: &'static str, message: impl Into<String>) -> 
         operation,
         message: message.into(),
     }
+}
+
+pub(crate) async fn register_room_selkies_display_endpoint(
+    relay_state: Arc<RwLock<RelayClientState>>,
+    config_relay_url: Option<String>,
+    slice_id: &str,
+    viewer_public_key: String,
+    worker_public_key: String,
+) -> Result<SliceDisplayEndpoint, DaemonError> {
+    crate::transport::relay_crypto::decode_public_key(&viewer_public_key).map_err(|_| {
+        display_tunnel_error(
+            "register Room Selkies display",
+            "viewer public key is invalid",
+        )
+    })?;
+    let now_ms = crate::session::unix_epoch_ms();
+    let expires_at_ms = now_ms.saturating_add(DISPLAY_TUNNEL_TTL_MS);
+    let tunnel_id = format!("display-{}", random_hex_id());
+    let capabilities = vec![
+        "view".to_string(),
+        "websocket".to_string(),
+        "h264".to_string(),
+        "software_encoding".to_string(),
+        "encrypted".to_string(),
+        "single_use".to_string(),
+    ];
+    let (outgoing_tx, mut relay_base_url, registration_rx) = {
+        let mut guard = relay_state.write().await;
+        let relay_url = guard
+            .connected_relay_url()
+            .or(config_relay_url)
+            .ok_or_else(|| {
+                display_tunnel_error(
+                    "register Room Selkies display",
+                    "hosted relay is not connected",
+                )
+            })?;
+        let relay_base_url = relay_display_stream_base_url(&relay_url).ok_or_else(|| {
+            display_tunnel_error(
+                "register Room Selkies display",
+                "Selkies display requires wss, except for a loopback ws relay",
+            )
+        })?;
+        let outgoing_tx = guard.outgoing_sender().ok_or_else(|| {
+            display_tunnel_error(
+                "register Room Selkies display",
+                "hosted relay is not accepting display registrations",
+            )
+        })?;
+        let (registration_tx, registration_rx) = oneshot::channel();
+        guard.insert_pending_display_tunnel_registration(tunnel_id.clone(), registration_tx);
+        (outgoing_tx, relay_base_url, registration_rx)
+    };
+    if outgoing_tx
+        .try_send(RelayEnvelope::DaemonDisplayTunnelRegister {
+            registration: RelayDisplayTunnelRegistration {
+                tunnel_id: tunnel_id.clone(),
+                expires_at_ms,
+                capabilities: capabilities.clone(),
+            },
+        })
+        .is_err()
+    {
+        relay_state
+            .write()
+            .await
+            .cancel_display_tunnel_registration(&tunnel_id);
+        return Err(display_tunnel_error(
+            "register Room Selkies display",
+            "relay connection is not accepting display registrations",
+        ));
+    }
+    let registration_error = match timeout(DISPLAY_TUNNEL_REGISTRATION_TIMEOUT, registration_rx)
+        .await
+    {
+        Ok(Ok(None)) => None,
+        Ok(Ok(Some(error))) => Some(error.message),
+        Ok(Err(_)) => Some("relay closed the display registration acknowledgment".to_string()),
+        Err(_) => Some("relay did not acknowledge the display registration in time".to_string()),
+    };
+    if let Some(message) = registration_error {
+        relay_state
+            .write()
+            .await
+            .cancel_display_tunnel_registration(&tunnel_id);
+        let _ = outgoing_tx.try_send(RelayEnvelope::DaemonDisplayTunnelRevoke {
+            tunnel_id: tunnel_id.clone(),
+        });
+        return Err(display_tunnel_error(
+            "register Room Selkies display",
+            message,
+        ));
+    }
+    relay_state
+        .write()
+        .await
+        .upsert_display_tunnel(RelayDisplayTunnelTarget {
+            tunnel_id: tunnel_id.clone(),
+            slice_id: slice_id.to_string(),
+            kind: RelayDisplayTunnelTargetKind::Selkies {
+                viewer_public_key,
+                command_program: "/opt/chariox-selkies/bin/python".to_string(),
+                command_args: vec!["/opt/chariox-slice/slice-selkies-stream.py".to_string()],
+            },
+            expires_at_ms,
+            capabilities: capabilities.clone(),
+        });
+    relay_base_url.set_path(&format!("/display/{tunnel_id}/stream"));
+    Ok(SliceDisplayEndpoint {
+        slice_id: slice_id.to_string(),
+        kind: SliceDisplayEndpointKind::Selkies,
+        url: relay_base_url.to_string(),
+        access: SliceDisplayEndpointAccess::Tunnel,
+        expires_at_ms: Some(expires_at_ms),
+        capabilities,
+        stream_protocol: Some("chariox-display-v1".to_string()),
+        stream_id: Some(tunnel_id),
+        peer_public_key: Some(worker_public_key),
+    })
 }
 
 pub(super) async fn revoke_display_tunnels_for_slice(
@@ -212,6 +347,26 @@ fn relay_display_base_url(relay_url: &str) -> Option<url::Url> {
     url.set_query(None);
     url.set_fragment(None);
     Some(url)
+}
+
+fn relay_display_stream_base_url(relay_url: &str) -> Option<url::Url> {
+    let mut url = url::Url::parse(relay_url).ok()?;
+    match url.scheme() {
+        "wss" => {}
+        "ws" if url.host_str().is_some_and(is_loopback_relay_host) => {}
+        _ => return None,
+    }
+    url.set_path("");
+    url.set_query(None);
+    url.set_fragment(None);
+    Some(url)
+}
+
+fn is_loopback_relay_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
 }
 
 fn local_display_base_url(local_url: &str) -> Option<String> {
@@ -266,6 +421,147 @@ fn random_hex_id() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn room_selkies_registration_is_key_bound_single_use_over_wss() {
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "wss://relay.example.test");
+        let relay_state = Arc::new(RwLock::new(state));
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let task = tokio::spawn(register_room_selkies_display_endpoint(
+            Arc::clone(&relay_state),
+            Some("wss://relay.example.test".to_string()),
+            "slice-1",
+            viewer_public.clone(),
+            "worker-public-key".to_string(),
+        ));
+        let registration = match priority_rx
+            .recv()
+            .await
+            .expect("Selkies display registration should be queued")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => registration,
+            other => panic!("unexpected relay envelope: {other:?}"),
+        };
+        assert!(registration.capabilities.contains(&"encrypted".to_string()));
+        assert!(registration
+            .capabilities
+            .contains(&"single_use".to_string()));
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(&registration.tunnel_id, None);
+        let endpoint = task
+            .await
+            .expect("registration task should finish")
+            .expect("registration should succeed");
+        assert_eq!(
+            endpoint.url,
+            format!(
+                "wss://relay.example.test/display/{}/stream",
+                registration.tunnel_id
+            )
+        );
+        assert_eq!(endpoint.stream_id, Some(registration.tunnel_id.clone()));
+        assert_eq!(
+            endpoint.peer_public_key.as_deref(),
+            Some("worker-public-key")
+        );
+        let target = relay_state
+            .write()
+            .await
+            .claim_display_tunnel_for_open(&registration.tunnel_id, crate::session::unix_epoch_ms())
+            .expect("single-use target should be claimable once");
+        assert!(matches!(
+            target.kind,
+            RelayDisplayTunnelTargetKind::Selkies {
+                viewer_public_key: key,
+                ..
+            } if key == viewer_public
+        ));
+        assert!(
+            relay_state
+                .write()
+                .await
+                .claim_display_tunnel_for_open(
+                    &registration.tunnel_id,
+                    crate::session::unix_epoch_ms(),
+                )
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn room_selkies_registration_accepts_a_loopback_ws_relay_for_local_drills() {
+        let (outgoing_tx, mut priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "ws://127.0.0.1:43130");
+        let relay_state = Arc::new(RwLock::new(state));
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let task = tokio::spawn(register_room_selkies_display_endpoint(
+            Arc::clone(&relay_state),
+            Some("ws://127.0.0.1:43130".to_string()),
+            "slice-1",
+            viewer_public,
+            "worker-public-key".to_string(),
+        ));
+        let registration = match timeout(Duration::from_millis(100), priority_rx.recv())
+            .await
+            .expect("loopback relay should accept a display registration promptly")
+            .expect("local display registration should be queued")
+        {
+            RelayEnvelope::DaemonDisplayTunnelRegister { registration } => registration,
+            other => panic!("unexpected relay envelope: {other:?}"),
+        };
+        relay_state
+            .write()
+            .await
+            .resolve_display_tunnel_registration(&registration.tunnel_id, None);
+        let endpoint = task
+            .await
+            .expect("registration task should finish")
+            .expect("loopback ws relay should be accepted");
+        assert_eq!(
+            endpoint.url,
+            format!(
+                "ws://127.0.0.1:43130/display/{}/stream",
+                registration.tunnel_id
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn room_selkies_registration_rejects_remote_plaintext_ws() {
+        let (outgoing_tx, _priority_rx, _event_rx) =
+            crate::transport::relay_client::RelayOutgoingSender::channel(4);
+        let mut state = RelayClientState::default();
+        state.test_set_connected_sender(outgoing_tx, "ws://relay.example.test");
+        let viewer_private = crate::transport::relay_crypto::generate_private_key_base64();
+        let viewer_public =
+            crate::transport::relay_crypto::public_key_from_private_key_base64(&viewer_private)
+                .expect("viewer public key should derive");
+        let error = register_room_selkies_display_endpoint(
+            Arc::new(RwLock::new(state)),
+            Some("ws://relay.example.test".to_string()),
+            "slice-1",
+            viewer_public,
+            "worker-public-key".to_string(),
+        )
+        .await
+        .expect_err("remote plaintext display relays must be rejected");
+        assert!(error
+            .to_string()
+            .contains("requires wss, except for a loopback ws relay"));
+    }
 
     #[tokio::test]
     async fn display_endpoint_returns_tunnel_when_wss_relay_is_connected() {
@@ -423,7 +719,9 @@ mod tests {
             .upsert_display_tunnel(RelayDisplayTunnelTarget {
                 tunnel_id: first_registration.tunnel_id.clone(),
                 slice_id: "slice-1".to_string(),
-                local_base_url: "http://127.0.0.1:5901/".to_string(),
+                kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                    local_base_url: "http://127.0.0.1:5901/".to_string(),
+                },
                 expires_at_ms: expiring_at_ms,
                 capabilities: first_registration.capabilities.clone(),
             });
@@ -526,6 +824,9 @@ mod tests {
                 "keyboard".to_string(),
                 "mouse".to_string(),
             ],
+            stream_protocol: None,
+            stream_id: None,
+            peer_public_key: None,
         }
     }
 
@@ -533,7 +834,9 @@ mod tests {
         RelayDisplayTunnelTarget {
             tunnel_id: tunnel_id.to_string(),
             slice_id: slice_id.to_string(),
-            local_base_url: "http://127.0.0.1:5901/".to_string(),
+            kind: RelayDisplayTunnelTargetKind::HttpProxy {
+                local_base_url: "http://127.0.0.1:5901/".to_string(),
+            },
             expires_at_ms: crate::session::unix_epoch_ms().saturating_add(60_000),
             capabilities: vec!["view".to_string()],
         }

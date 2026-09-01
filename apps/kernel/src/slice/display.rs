@@ -33,5 +33,8 @@ pub(super) fn display_endpoint_for_slice(
         access: SliceDisplayEndpointAccess::Local,
         expires_at_ms: None,
         capabilities: capabilities.into_iter().map(str::to_string).collect(),
+        stream_protocol: None,
+        stream_id: None,
+        peer_public_key: None,
     })
 }

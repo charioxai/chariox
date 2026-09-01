@@ -134,10 +134,12 @@ forbidden input rejection, dead-owner cleanup, streamer-generation isolation,
 stalled-reader termination, and complete records when closing during a frame.
 Use the same unprivileged, network-disabled limits as the packaging drill.
 
-This pipe is not public viewer admission. Only the kernel may launch it after
-authorizing the Room, attachment, and viewer key. The encrypted relay channel,
-Room-level admission/revocation, and released Web/TUI clients must still be
-connected and validated before enabling Selkies viewing.
+This private pipe is not itself public viewer admission. Protocol v293 connects
+it to kernel-owned Room admission and the encrypted relay display channel. The
+home authorizes the Room, attachment owner, placement, slice state, backend, and
+viewer key; the bound worker verifies the authenticated home binding before it
+launches the pipe. Released Web/TUI clients must still decode or launch the
+result and pass their full product validation before enabling Selkies viewing.
 
 ### Encrypted kernel adapter
 
@@ -151,18 +153,22 @@ but cannot renew their own viewing permission or send keyboard, mouse, settings,
 or clipboard input.
 
 The caller retains Room authorization and supplies a monotonic viewing deadline.
-Revocation, expiry, or loss of that authority cancels blocked I/O too. Cleanup
+The one-time relay target expires after 60 seconds if it is not opened. Once
+claimed, the live WebSocket receives a separate short lease that only the worker
+kernel renews; a viewer cannot extend it. Viewer close, relay loss, revocation,
+expiry, or loss of the kernel-owned channel cancels blocked I/O too. Cleanup
 closes private stdin, drains output, and reaps the owned process within a bounded
-wait. Kernel-side permission renewal is separate from keeping the private pipe
-alive. This module does not accept a command or target from a viewer.
+wait. This module does not accept a command or target from a viewer.
 
 The ignored `transport::selkies_stream` tests use an explicitly selected local
 image and Docker context. Run them serially with `--ignored --test-threads=1`.
 They receive real Xvfb H.264 through the kernel adapter and a real local relay's
 WebSocket display route, send an encrypted stop command back, reject encrypted
 keyboard input, and prove kernel permission expiry, renewal, and revocation.
-They create and remove one bounded desktop container per test. Their relay
-registration is test setup, not evidence that released Room viewer admission or
+They create and remove one bounded desktop container per test. Separate public
+home-relay-worker tests exercise Room admission, key binding, worker binding,
+single-use registration, fresh-stream reconnect, denial paths, and bounded
+cleanup with a deterministic adapter. Neither suite is evidence that released
 Web video decoding is already connected.
 
 `CHARIOX_SLICE_VIEWER_BACKEND=selkies` selects it in `slice-screen.sh`.
@@ -177,8 +183,9 @@ dependencies without building provider CLIs or the Rust kernel. Run
 `validate-slice-viewer.py` inside it to exercise the actual desktop launcher,
 streamer crash with continuing Browser tools/screenshots, failed startup,
 explicit noVNC rollback, and final listener cleanup. Use one CPU and 1 GiB
-memory for this drill. The full kernel image and shared transport still need
-their separate end-to-end validation.
+memory for this drill. The full kernel image, released clients, and complete
+local and managed-machine product paths still need their separate end-to-end
+validation.
 
 The slice owns Selkies as a display process. The kernel retains Room, actor,
 input-ownership, and action authority. The relay forwards scoped display
