@@ -24,6 +24,11 @@ export function redactCliStartupArgs(argv: readonly string[]): string[] {
       redactNext = true
       return arg
     }
+    const inlineSecretOption = [...SECRET_VALUE_OPTIONS]
+      .find((option) => arg.startsWith(`${option}=`))
+    if (inlineSecretOption) {
+      return `${inlineSecretOption}=[redacted]`
+    }
     if (arg.startsWith("chariox-terminal-pair-v1.")) {
       return "[redacted-terminal-pairing-link]"
     }

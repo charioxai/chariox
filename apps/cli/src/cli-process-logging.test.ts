@@ -62,3 +62,15 @@ test("CLI startup logging redacts relay credentials and terminal pairing links",
     "client-1",
   ])
 })
+
+test("CLI startup logging redacts secret options before malformed equals syntax is rejected", () => {
+  assert.deepEqual(redactCliStartupArgs([
+    "--relay-token=secret-relay-token",
+    "--terminal-pairing-link=chariox-terminal-pair-v1.named-secret",
+    "--pairing-link=chariox-terminal-pair-v1.alias-secret",
+  ]), [
+    "--relay-token=[redacted]",
+    "--terminal-pairing-link=[redacted]",
+    "--pairing-link=[redacted]",
+  ])
+})
