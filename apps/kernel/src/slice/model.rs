@@ -148,8 +148,43 @@ pub struct SliceLocalDockerPorts {
 #[serde(rename_all = "snake_case")]
 pub enum SliceDisplayEndpointKind {
     Novnc,
+    Selkies,
     CharioxViewer,
     External,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SliceDisplayBackend {
+    #[default]
+    Novnc,
+    Selkies,
+}
+
+impl SliceDisplayBackend {
+    pub fn is_novnc(&self) -> bool {
+        *self == Self::Novnc
+    }
+
+    pub fn as_env_value(self) -> &'static str {
+        match self {
+            Self::Novnc => "novnc",
+            Self::Selkies => "selkies",
+        }
+    }
+}
+
+impl SliceRecord {
+    pub fn display_backend(&self) -> SliceDisplayBackend {
+        match self
+            .display_endpoint
+            .as_ref()
+            .map(|endpoint| &endpoint.kind)
+        {
+            Some(SliceDisplayEndpointKind::Selkies) => SliceDisplayBackend::Selkies,
+            _ => SliceDisplayBackend::Novnc,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -224,6 +259,7 @@ pub struct CreateSliceInput {
     pub backend: SliceBackendKind,
     pub os: String,
     pub display_mode: SliceDisplayMode,
+    pub display_backend: SliceDisplayBackend,
     pub workspace_id: Option<String>,
     pub worktree_id: Option<String>,
     pub workspace_mount: Option<String>,

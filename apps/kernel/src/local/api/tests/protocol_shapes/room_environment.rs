@@ -9,7 +9,7 @@ use crate::session::{
 
 #[test]
 fn room_environment_state_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentState(GetRoomEnvironmentStateRequest {
         session_id: "session-1".to_string(),
@@ -266,7 +266,7 @@ fn room_environment_state_shape_is_versioned() {
 
 #[test]
 fn room_environment_event_replay_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::GetRoomEnvironmentEvents(GetRoomEnvironmentEventsRequest {
         session_id: "session-1".to_string(),
@@ -376,7 +376,7 @@ fn room_environment_event_replay_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_history_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::ListRoomEnvironmentActionHistory(
         ListRoomEnvironmentActionHistoryRequest {
@@ -459,7 +459,7 @@ fn room_environment_action_history_shape_is_versioned() {
 
 #[test]
 fn room_environment_start_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::StartRoomEnvironment(StartRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -545,7 +545,7 @@ fn room_environment_start_shape_is_versioned() {
 
 #[test]
 fn room_environment_stop_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::StopRoomEnvironment(StopRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -568,7 +568,7 @@ fn room_environment_stop_shape_is_versioned() {
 
 #[test]
 fn room_environment_retry_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::RetryRoomEnvironment(RetryRoomEnvironmentRequest {
         session_id: "session-1".to_string(),
@@ -591,7 +591,7 @@ fn room_environment_retry_shape_is_versioned() {
 
 #[test]
 fn room_environment_viewport_update_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request =
         LocalDaemonRequest::UpdateRoomEnvironmentViewport(UpdateRoomEnvironmentViewportRequest {
@@ -631,7 +631,7 @@ fn room_environment_viewport_update_shape_is_versioned() {
 
 #[test]
 fn room_environment_takeover_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request = LocalDaemonRequest::RequestRoomEnvironmentInputTakeover(
         RequestRoomEnvironmentInputTakeoverRequest {
@@ -713,7 +713,7 @@ fn room_environment_takeover_shape_is_versioned() {
 
 #[test]
 fn room_environment_input_release_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request =
         LocalDaemonRequest::ReleaseRoomEnvironmentInput(ReleaseRoomEnvironmentInputRequest {
@@ -771,7 +771,7 @@ fn room_environment_input_release_shape_is_versioned() {
 
 #[test]
 fn room_environment_action_cancellation_shape_is_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 279);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 281);
 
     let request =
         LocalDaemonRequest::CancelRoomEnvironmentAction(CancelRoomEnvironmentActionRequest {

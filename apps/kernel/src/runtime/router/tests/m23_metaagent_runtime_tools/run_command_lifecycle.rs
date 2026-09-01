@@ -472,6 +472,7 @@ async fn metaagent_run_command_allows_agent_slice_placement_and_safe_lifecycle_c
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: crate::slice::SliceDisplayMode::Headless,
+                display_backend: Default::default(),
                 workspace_id: Some(session.workspace_id().to_string()),
                 worktree_id: Some(session.worktree_id().to_string()),
                 workspace_mount: Some(session.worktree_id().to_string()),

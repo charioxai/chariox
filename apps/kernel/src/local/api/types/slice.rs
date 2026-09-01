@@ -12,6 +12,11 @@ pub struct CreateSliceRequest {
     pub os: String,
     #[serde(default)]
     pub display_mode: crate::slice::SliceDisplayMode,
+    #[serde(
+        default,
+        skip_serializing_if = "crate::slice::SliceDisplayBackend::is_novnc"
+    )]
+    pub display_backend: crate::slice::SliceDisplayBackend,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

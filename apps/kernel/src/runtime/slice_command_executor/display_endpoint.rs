@@ -41,6 +41,12 @@ async fn tunneled_display_endpoint(
     config_relay_url: Option<String>,
     relay_state: Arc<RwLock<RelayClientState>>,
 ) -> Result<Option<SliceDisplayEndpoint>, DaemonError> {
+    if local_endpoint.kind == SliceDisplayEndpointKind::Selkies {
+        return Err(display_tunnel_error(
+            "register slice display tunnel",
+            "Selkies requires encrypted kernel display transport; the legacy HTTP display tunnel is not permitted",
+        ));
+    }
     if local_endpoint.access != SliceDisplayEndpointAccess::Local {
         return Ok(None);
     }

@@ -1,8 +1,41 @@
-FROM debian:bookworm-slim
+# syntax=docker/dockerfile:1
+FROM node:26-bookworm-slim@sha256:367679cf9792759492a486e4aa4b421764d71a9546a6dae8aab81a99eb797b3e AS selkies-build
+
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
+  && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY apps/kernel/slice-linux-docker/fetch-selkies.mjs apps/kernel/slice-linux-docker/selkies.lock.json ./
+COPY apps/kernel/slice-linux-docker/selkies-build/ ./locks/
+ARG TARGETARCH
+RUN bash /build/locks/build.sh "$TARGETARCH"
+
+FROM debian:bookworm-slim AS selkies-runtime
 
 ENV DEBIAN_FRONTEND=noninteractive
-ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates python3 python3-venv \
+    libdrm2 libegl1 libgbm1 libpixman-1-0 libpulse0 \
+    libva2 libva-drm2 libva-x11-2 libwayland-server0 libxkbcommon0 \
+    pulseaudio x11-utils x11-xserver-utils xvfb \
+  && rm -rf /var/lib/apt/lists/*
+RUN --mount=type=bind,from=selkies-build,source=/out,target=/tmp/selkies-package \
+    --mount=type=bind,source=apps/kernel/slice-linux-docker/selkies-runtime.requirements.txt,target=/tmp/selkies-requirements.txt \
+    python3 -m venv /opt/chariox-selkies \
+  && /opt/chariox-selkies/bin/pip install --no-cache-dir --only-binary=:all: \
+    --require-hashes --requirement /tmp/selkies-requirements.txt \
+  && /opt/chariox-selkies/bin/pip install --no-cache-dir --no-index --no-deps \
+    /tmp/selkies-package/selkies-*.whl /tmp/selkies-package/wheels/*.whl \
+  && /opt/chariox-selkies/bin/pip check \
+  && mkdir -p /usr/share/doc/chariox-selkies \
+  && cp -a /tmp/selkies-package/licenses/. /usr/share/doc/chariox-selkies/ \
+  && cp /tmp/selkies-requirements.txt /usr/share/doc/chariox-selkies/python-requirements.txt
+ENV CHARIOX_SLICE_SELKIES_BIN=/opt/chariox-selkies/bin/selkies
+COPY apps/kernel/slice-linux-docker/docker/slice-selkies.py \
+     apps/kernel/slice-linux-docker/docker/slice-selkies-stream.py \
+     apps/kernel/slice-linux-docker/docker/selkies_viewers.py /opt/chariox-slice/
 
+FROM selkies-runtime AS slice-runtime-deps
+ENV CHARIOX_SLICE_ROOT=/opt/chariox-slice
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     chromium \
@@ -30,11 +63,9 @@ RUN apt-get update && apt-get install -y \
     lsof \
     unzip \
     websockify \
-    x11-utils \
     x11vnc \
     xclip \
     xdotool \
-    xvfb \
     zstd \
   && rm -rf /var/lib/apt/lists/*
 
@@ -43,6 +74,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
   && apt-get install -y nodejs \
   && rm -rf /var/lib/apt/lists/*
 
+FROM slice-runtime-deps AS slice-runtime
 RUN npm install -g @openai/codex opencode-ai @anthropic-ai/claude-code
 
 RUN useradd -m -s /bin/bash slice

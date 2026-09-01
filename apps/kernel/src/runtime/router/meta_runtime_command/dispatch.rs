@@ -498,6 +498,7 @@ impl CommandRouter {
                 backend: crate::slice::SliceBackendKind::LocalDocker,
                 os: "linux".to_string(),
                 display_mode: slice_create.display_mode,
+                display_backend: Default::default(),
                 workspace_id: Some(session.workspace_id().to_string()),
                 worktree_id: Some(worktree_id.clone()),
                 workspace_mount: Some(worktree_id),

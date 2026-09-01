@@ -221,9 +221,11 @@ export type SliceRelayEndpoint = {
   private?: boolean
 }
 
+export type SliceDisplayBackend = "novnc" | "selkies"
+
 export type SliceDisplayEndpoint = {
   slice_id: string
-  kind: "novnc" | "chariox_viewer" | "external"
+  kind: SliceDisplayBackend | "chariox_viewer" | "external"
   url: string
   access: "local" | "tunnel" | "public"
   expires_at_ms?: number | null

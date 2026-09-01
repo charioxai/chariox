@@ -639,6 +639,10 @@ fn configure_local_docker_slice_command(
         .env("CHARIOX_SLICE_RELAY_PORT", ports.relay.to_string())
         .env("CHARIOX_SLICE_NOVNC_PORT", ports.novnc.to_string())
         .env(
+            "CHARIOX_SLICE_VIEWER_BACKEND",
+            record.display_backend().as_env_value(),
+        )
+        .env(
             "CHARIOX_SLICE_DISPLAY_MODE",
             match record.display_mode {
                 SliceDisplayMode::Headed => "headed",
@@ -884,8 +888,14 @@ pub(super) fn run_local_docker_slice_screen(
 ) -> Result<(), DaemonError> {
     let container = local_docker_container_name(record);
     let status = Command::new("docker")
+        .env(
+            "CHARIOX_SLICE_VIEWER_BACKEND",
+            record.display_backend().as_env_value(),
+        )
         .args([
             "exec",
+            "-e",
+            "CHARIOX_SLICE_VIEWER_BACKEND",
             "-u",
             "slice",
             &container,

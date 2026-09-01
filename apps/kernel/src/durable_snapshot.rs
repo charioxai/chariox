@@ -529,6 +529,7 @@ mod tests {
                     backend: crate::slice::SliceBackendKind::LocalDocker,
                     os: "linux".to_string(),
                     display_mode: crate::slice::SliceDisplayMode::Headed,
+                    display_backend: Default::default(),
                     workspace_id: None,
                     worktree_id: None,
                     workspace_mount: Some("/repo".to_string()),
