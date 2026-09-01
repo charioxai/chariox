@@ -244,6 +244,12 @@ mod tests {
                 "/room cancel ",
             ]
         );
+        let cancel = room
+            .children
+            .iter()
+            .find(|node| node.id == "room-cancel")
+            .expect("Room action cancellation command should be present");
+        assert_eq!(cancel.examples, vec!["/room cancel action-7"]);
     }
 
     #[test]

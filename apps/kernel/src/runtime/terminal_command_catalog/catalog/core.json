@@ -233,6 +233,9 @@
         "label": "cancel",
         "description": "Cancel or request cancellation of an active Room Action by ID",
         "value": "/room cancel ",
+        "examples": [
+          "/room cancel action-7"
+        ],
         "searchAliases": [
           "cancel browser action",
           "cancel computer action",

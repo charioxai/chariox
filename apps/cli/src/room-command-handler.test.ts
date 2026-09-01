@@ -309,6 +309,37 @@ test("/room cancel uses the authenticated action-cancellation request", async ()
   assert.match(notices[0] ?? "", /^Room action action-7 cancelled\nRoom environment environment-1/)
 })
 
+test("/room cancel renders every authoritative cancellation outcome", async () => {
+  const outcomes = [
+    [{ state: "cancellation_requested" }, "cancellation requested"],
+    [{ state: "already_terminal", action_state: "failed" }, "already failed"],
+  ] as const
+
+  for (const [outcome, expected] of outcomes) {
+    const notices: string[] = []
+    const command = parseSlashCommand("/room cancel action-7")
+    assert.equal(command?.kind, "room")
+
+    await handleRoomSlashCommand({
+      isAttached: () => true,
+      sessionId: () => "session-1",
+      send: async <TResponse>() => ({
+        RoomEnvironmentActionCancellationUpdated: {
+          outcome,
+          environment: roomEnvironment(),
+        },
+      }) as TResponse,
+      appendNotice: (notice) => notices.push(notice),
+      flashFooter: () => undefined,
+    }, command)
+
+    assert.match(
+      notices[0] ?? "",
+      new RegExp(`^Room action action-7 ${expected}\\nRoom environment environment-1`),
+    )
+  }
+})
+
 function roomEnvironment(): RoomEnvironmentSnapshot {
   return {
     session_id: "session-1",
