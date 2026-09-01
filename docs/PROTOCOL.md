@@ -725,17 +725,37 @@ one through twenty bounded absolute paths inside the slice. Upload paths remain
 out of Debug output, relay diagnostics, and tool results. These tools are
 advertised to an authenticated home agent only when its Room has a bound
 long-running controller route. They have no one-shot helper fallback. This MCP
-adapter adds no local-daemon or relay serialization, so protocol v290 and relay
-peer v26 remain current. The encrypted home-to-worker drill invokes every tool
+adapter added no local-daemon or relay serialization, so that checkpoint
+remained at protocol v290 and relay peer v26. The encrypted home-to-worker drill invokes every tool
 through the authenticated runtime MCP route and verifies stable Tab projection,
 physical controller effects, path redaction, cursor resume, and cleanup.
+
+Protocol v291 and relay peer v27 route the remaining legacy browser
+compatibility tools through the authenticated Room worker. `slice_open_url`
+normalizes an HTTP or HTTPS URL, submits one kernel-owned `navigate` Action for
+the authenticated agent and focused stable Tab, sends one physical navigation
+request, reconciles the resulting document identity, and records the terminal
+Action outcome. A lost navigation response is not retried because repeating a
+mutation without a durable receipt could duplicate physical work.
+`slice_browser_wait_for_selector` and `slice_browser_wait_for_idle` are bounded
+read operations against the same worker controller and document identity.
+Navigation URLs and selector values cross the encrypted wire but remain out of
+request and response Debug output. Worker deserialization and the controller
+both enforce URL, selector, and timeout bounds. These old public tool names are
+advertised to a home provider only after this physical route exists; slice-local
+one-shot behavior remains available during migration. The real encrypted-relay
+drill discovers and invokes all three tools, checks the external browser state,
+stable Tab reconciliation, agent attribution, completed navigation Action,
+caller isolation, redaction, and controller cleanup. Existing clients' minimum
+versions remain unchanged because this is a home-worker transport change, not a
+new public local-daemon request.
 
 Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.
 
-The remaining one-shot compatibility audit, worker-agent MCP forwarding, and
-secure viewers still require work before product enablement. Existing clients'
+Worker-agent MCP forwarding and secure viewers still require work before
+product enablement. Existing clients'
 minimum versions remain unchanged because their public request shapes have not
 changed.
 

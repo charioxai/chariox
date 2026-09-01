@@ -1,7 +1,10 @@
 use crate::error::DaemonError;
 use crate::runtime::browser_controller_compatibility::{
-    normalize_browser_navigation_url, BrowserCompatibilityWait,
-    BrowserControllerCompatibilityWaitResult, BrowserControllerNavigationResult,
+    BrowserCompatibilityWait, BrowserControllerCompatibilityWaitResult,
+    BrowserControllerNavigationResult, BrowserNavigationUrl,
+};
+use crate::transport::room_browser_controller::{
+    RoomBrowserControllerCommand, RoomBrowserControllerResult,
 };
 
 use super::KernelRuntimeState;
@@ -54,32 +57,41 @@ impl KernelRuntimeState {
         session_id: &str,
         url: &str,
     ) -> Result<BrowserControllerNavigationResult, DaemonError> {
-        let url = normalize_browser_navigation_url(url).map_err(|message| {
-            DaemonError::LocalTransport {
+        let url =
+            BrowserNavigationUrl::new(url).map_err(|message| DaemonError::LocalTransport {
                 operation: "browser_controller.compatibility.navigate",
                 message,
-            }
-        })?;
+            })?;
+        let expected_url = url.as_str().to_string();
         let (target_id, document_id) =
             self.focused_browser_controller_identity(session_id, "navigate")?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let result = tokio::task::spawn_blocking(move || {
-            processes.navigate_browser(&owned_session_id, &target_id, &document_id, &url)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.compatibility.navigate",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.compatibility.navigate",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+        let RoomBrowserControllerResult::Navigation { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Navigate {
+                    target_id: target_id.clone(),
+                    document_id,
+                    url,
+                },
+            )
+            .await?
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message: "browser controller returned an unexpected navigation response"
+                    .to_string(),
+            });
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.compatibility.navigate",
             message: "browser controller is not enabled".to_string(),
         })?;
+        result
+            .validate(&target_id, &expected_url)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.navigate",
+                message,
+            })?;
         self.reconcile_browser_controller_environment(session_id)
             .await?;
         Ok(result)
@@ -98,30 +110,34 @@ impl KernelRuntimeState {
             })?;
         let (target_id, document_id) =
             self.focused_browser_controller_identity(session_id, "wait")?;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        tokio::task::spawn_blocking(move || {
-            processes.wait_for_browser(
-                &owned_session_id,
-                &target_id,
-                &document_id,
-                &wait,
-                timeout_ms,
+        let RoomBrowserControllerResult::Wait { result } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Wait {
+                    target_id: target_id.clone(),
+                    document_id: document_id.clone(),
+                    wait: wait.clone(),
+                    timeout_ms,
+                },
             )
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.compatibility.wait",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.compatibility.wait",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+            .await?
+        else {
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.wait",
+                message: "browser controller returned an unexpected wait response".to_string(),
+            });
+        };
+        let result = result.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.compatibility.wait",
             message: "browser controller is not enabled".to_string(),
-        })
+        })?;
+        result
+            .validate(&target_id, &document_id, &wait)
+            .map_err(|message| DaemonError::LocalTransport {
+                operation: "browser_controller.compatibility.wait",
+                message,
+            })?;
+        Ok(result)
     }
 
     fn focused_browser_controller_identity(
