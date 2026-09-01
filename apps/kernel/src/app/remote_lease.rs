@@ -997,6 +997,7 @@ mod cleanup_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::provider::LaunchProviderRequest;
 
     #[test]
     fn leased_agent_config_update_ignores_legacy_processing_without_active_prompt() {
@@ -1056,6 +1057,42 @@ mod tests {
             .expect_err("active prompt ownership should block leased config update");
 
         assert_active_turn_error(error, "update leased agent config");
+    }
+
+    #[test]
+    fn leased_agent_cleanup_accepts_an_already_ended_provider_run() {
+        let (mut app, leased_agent) = leased_agent_fixture(false);
+        let run = app
+            .providers
+            .launch_run_detached(
+                LaunchProviderRequest::new(
+                    &leased_agent.backing_session_id,
+                    "managed-dev-stub",
+                    "managed-dev-stub",
+                    "default",
+                    "sonnet",
+                )
+                .with_agent_id(&leased_agent.backing_agent_id),
+            )
+            .expect("provider run should launch");
+        let ended = app
+            .providers
+            .terminate_run_provider_only(run.session_id(), run.id())
+            .expect("provider run should end before leased cleanup");
+        assert!(ended.run().state() == ProviderRunState::Ended);
+
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent(&leased_agent.id)
+            .expect("already-ended provider run should count as cleanup progress");
+
+        assert!(!app.leased_agents.contains_key(&leased_agent.id));
+        assert!(app
+            .completed_leased_agent_deletions
+            .contains(&leased_agent.id));
+        assert!(matches!(
+            app.sessions.get_session(&leased_agent.backing_session_id),
+            Err(DaemonError::SessionNotFound { .. })
+        ));
     }
 
     fn leased_agent_fixture(home_agent_metaagent: bool) -> (DaemonApp, LeasedAgent) {
