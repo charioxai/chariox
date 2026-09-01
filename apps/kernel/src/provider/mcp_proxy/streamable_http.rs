@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::net::IpAddr;
 use std::time::Duration;
 
 use crate::error::DaemonError;
@@ -16,7 +17,7 @@ pub(super) fn forward_streamable_http_mcp_request(
         message: error.to_string(),
     })?;
     let timeout = Duration::from_secs(timeout_sec.unwrap_or(30).max(1));
-    let agent = ureq::AgentBuilder::new().timeout(timeout).build();
+    let agent = streamable_http_agent(url, timeout)?;
     let mut request = agent
         .post(url)
         .set("Content-Type", "application/json")
@@ -68,6 +69,113 @@ pub(super) fn forward_streamable_http_mcp_request(
         operation: "mcp.proxy.http.parse",
         message: format!("upstream `{url}` returned invalid JSON: {error}"),
     })
+}
+
+fn streamable_http_agent(url: &str, timeout: Duration) -> Result<ureq::Agent, DaemonError> {
+    let mut builder = ureq::AgentBuilder::new().timeout(timeout);
+    if let Some(proxy) = configured_proxy_for_url(url)? {
+        builder = builder.proxy(proxy);
+    }
+    Ok(builder.build())
+}
+
+pub(super) fn configured_proxy_for_url(url: &str) -> Result<Option<ureq::Proxy>, DaemonError> {
+    let parsed = url::Url::parse(url).map_err(|error| DaemonError::LocalTransport {
+        operation: "mcp.proxy.http.proxy",
+        message: format!("failed to parse MCP HTTP URL: {error}"),
+    })?;
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.proxy",
+            message: "MCP HTTP URL does not contain a host".to_string(),
+        })?;
+    let port = parsed.port_or_known_default();
+    if is_loopback_host(host) || no_proxy_matches(host, port) {
+        return Ok(None);
+    }
+
+    let proxy_env_names: &[&str] = match parsed.scheme() {
+        "https" => &[
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+            "HTTP_PROXY",
+            "http_proxy",
+        ],
+        "http" => &["HTTP_PROXY", "http_proxy", "ALL_PROXY", "all_proxy"],
+        _ => return Ok(None),
+    };
+    for name in proxy_env_names {
+        let Ok(value) = std::env::var(name) else {
+            continue;
+        };
+        if value.trim().is_empty() {
+            continue;
+        }
+        let proxy = ureq::Proxy::new(&value).map_err(|error| DaemonError::LocalTransport {
+            operation: "mcp.proxy.http.proxy",
+            message: format!("MCP HTTP proxy configured by {name} is invalid: {error}"),
+        })?;
+        return Ok(Some(proxy));
+    }
+    Ok(None)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
+}
+
+fn no_proxy_matches(host: &str, port: Option<u16>) -> bool {
+    let no_proxy = std::env::var("NO_PROXY")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| std::env::var("no_proxy").ok());
+    let Some(no_proxy) = no_proxy else {
+        return false;
+    };
+    no_proxy.split(',').any(|entry| {
+        let entry = entry.trim();
+        if entry == "*" {
+            return true;
+        }
+        let (entry_host, entry_port) = split_no_proxy_entry(entry);
+        if entry_host.is_empty() || entry_port.is_some_and(|entry_port| Some(entry_port) != port) {
+            return false;
+        }
+        let entry_host = entry_host
+            .trim_start_matches('.')
+            .trim_end_matches('.')
+            .trim_matches(['[', ']']);
+        let host = host.trim_end_matches('.');
+        host.eq_ignore_ascii_case(entry_host)
+            || host
+                .to_ascii_lowercase()
+                .ends_with(&format!(".{}", entry_host.to_ascii_lowercase()))
+    })
+}
+
+fn split_no_proxy_entry(entry: &str) -> (&str, Option<u16>) {
+    if let Some(rest) = entry.strip_prefix('[') {
+        if let Some((host, suffix)) = rest.split_once(']') {
+            return (
+                host,
+                suffix.strip_prefix(':').and_then(|port| port.parse().ok()),
+            );
+        }
+    }
+    if entry.matches(':').count() == 1 {
+        if let Some((host, port)) = entry.rsplit_once(':') {
+            if let Ok(port) = port.parse() {
+                return (host, Some(port));
+            }
+        }
+    }
+    (entry, None)
 }
 
 fn reserved_header(name: &str) -> bool {
