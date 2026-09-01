@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(
             batch.terminal_failure.as_deref(),
             Some(
-                "Provider reported a resource limit: You've hit your usage limit. Your limit will reset later."
+                "Provider reported a substitutable resource limit: You've hit your usage limit. Your limit will reset later."
             )
         );
     }

@@ -401,6 +401,7 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
         let app = Arc::new(Mutex::new(
             DaemonApp::bootstrap(config.clone()).expect("daemon should boot"),
         ));
+        let app_dropped = Arc::downgrade(&app);
         let (session_id, terminal_stream) = {
             let mut app_locked = app.lock().await;
             let (session, _agent) = crate::app::KernelSessionService::new(&mut app_locked)
@@ -458,11 +459,21 @@ async fn local_spawn_agents_batch_restores_from_compact_durable_event() {
         let LocalDaemonResponse::AgentsSpawned { agents } = response else {
             panic!("unexpected response");
         };
-        (
+        let restored_ids = (
             session_id,
             agents[0].id().to_string(),
             agents[1].id().to_string(),
-        )
+        );
+        drop(runtime);
+        drop(app);
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while app_dropped.upgrade().is_some() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("session lane should release the first daemon");
+        restored_ids
     };
 
     let app = DaemonApp::bootstrap(config).expect("daemon should restore");

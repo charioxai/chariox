@@ -682,6 +682,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.sessions().list_sessions().is_empty());
+        drop(app_b);
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert!(app_a.sessions().get_session(&session_id).is_ok());
@@ -768,6 +769,7 @@ mod tests {
         config_b.user_config.state.path = Some(state_path.display().to_string());
         let app_b = DaemonApp::bootstrap(config_b).expect("kernel b should boot");
         assert!(app_b.slices().list().is_empty());
+        drop(app_b);
 
         let app_a = DaemonApp::bootstrap(config_a).expect("kernel a should reboot");
         assert_eq!(
