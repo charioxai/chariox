@@ -5,8 +5,9 @@ use crate::local::{
     RoomEnvironmentHumanAction, RoomEnvironmentPointerButton, SubmitRoomEnvironmentActionRequest,
 };
 use crate::session::{
-    ActionAdmission, EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal,
-    EnvironmentActor, EnvironmentError, InputTarget, RoomEnvironmentSnapshot,
+    ActionAdmission, EnvironmentActionArguments, EnvironmentActionRequest, EnvironmentActionState,
+    EnvironmentActionTerminal, EnvironmentActor, EnvironmentError, InputTarget,
+    RoomEnvironmentSnapshot,
 };
 use crate::transport::room_browser_controller::{
     RoomBrowserControllerCommand, RoomBrowserControllerResult, RoomComputerInputAction,
@@ -30,7 +31,8 @@ impl KernelRuntimeState {
             .map_err(human_action_environment_error)?;
         validate_human_action_idempotency_key(&request).map_err(human_action_environment_error)?;
 
-        let (input_action, operation_fingerprint) = computer_input_action(&request.action);
+        let (input_action, arguments) =
+            computer_input_action(&request.action, request.viewport_revision);
         let action_request = EnvironmentActionRequest::computer_mutation(
             &actor.actor_id,
             request.runtime_generation,
@@ -38,7 +40,7 @@ impl KernelRuntimeState {
             environment.focused_tab_id.as_deref(),
         )
         .with_idempotency_key(request.idempotency_key.trim())
-        .with_operation_fingerprint(operation_fingerprint);
+        .with_arguments(arguments);
         if let Some(ActionAdmission::Existing { action_id, .. }) = self
             .existing_room_environment_action(&request.session_id, &action_request)
             .map_err(human_action_environment_error)?
@@ -255,7 +257,10 @@ fn validate_human_action_freshness(
     Ok(())
 }
 
-fn computer_input_action(action: &RoomEnvironmentHumanAction) -> (RoomComputerInputAction, String) {
+fn computer_input_action(
+    action: &RoomEnvironmentHumanAction,
+    viewport_revision: u64,
+) -> (RoomComputerInputAction, EnvironmentActionArguments) {
     match action {
         RoomEnvironmentHumanAction::PointerClick {
             x,
@@ -263,7 +268,7 @@ fn computer_input_action(action: &RoomEnvironmentHumanAction) -> (RoomComputerIn
             button,
             click_count,
         } => {
-            let button = match button {
+            let transport_button = match button {
                 RoomEnvironmentPointerButton::Left => RoomComputerPointerButton::Left,
                 RoomEnvironmentPointerButton::Middle => RoomComputerPointerButton::Middle,
                 RoomEnvironmentPointerButton::Right => RoomComputerPointerButton::Right,
@@ -272,10 +277,16 @@ fn computer_input_action(action: &RoomEnvironmentHumanAction) -> (RoomComputerIn
                 RoomComputerInputAction::PointerClick {
                     x: *x,
                     y: *y,
-                    button,
+                    button: transport_button,
                     click_count: *click_count,
                 },
-                format!("pointer_click:{x}:{y}:{button:?}:{click_count}"),
+                EnvironmentActionArguments::PointerClick {
+                    x: *x,
+                    y: *y,
+                    button: *button,
+                    click_count: *click_count,
+                    viewport_revision,
+                },
             )
         }
     }

@@ -37,13 +37,14 @@ pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore}
 pub use room_environment::{
     agent_environment_actor_id, human_environment_actor_id, human_environment_actor_label,
     ActionAdmission, ActionCancellationOutcome, CanonicalViewport, EnvironmentAction,
-    EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
+    EnvironmentActionArguments, EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
     EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
     EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
     EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
     EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
-    EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
-    InputTarget, PendingInputTakeover, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    EnvironmentLifecycle, EnvironmentMode, EnvironmentPointerButton, EnvironmentReplay,
+    EnvironmentTab, InputOwnership, InputTarget, PendingInputTakeover, RoomEnvironment,
+    RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub(crate) use room_environment::{
     EnvironmentElementTarget, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,

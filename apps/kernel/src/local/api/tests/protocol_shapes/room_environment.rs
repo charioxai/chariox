@@ -68,6 +68,7 @@ fn room_environment_state_shape_is_versioned() {
                     runtime_generation: 1,
                     mode: EnvironmentMode::Browser,
                     kind: "click".to_string(),
+                    arguments: None,
                     targets: vec![
                         InputTarget::Desktop,
                         InputTarget::BrowserTab("tab-1".to_string()),
@@ -87,6 +88,7 @@ fn room_environment_state_shape_is_versioned() {
                     runtime_generation: 1,
                     mode: EnvironmentMode::Browser,
                     kind: "second-click".to_string(),
+                    arguments: None,
                     targets: vec![InputTarget::BrowserTab("tab-1".to_string())],
                     state: EnvironmentActionState::Queued,
                     cancellation_requested: false,
@@ -412,6 +414,7 @@ fn room_environment_action_history_shape_is_versioned() {
                 runtime_generation: 2,
                 mode: EnvironmentMode::Computer,
                 kind: "key-chord".to_string(),
+                arguments: None,
                 targets: vec![InputTarget::Desktop],
                 state: EnvironmentActionState::Completed,
                 cancellation_requested: false,
@@ -881,7 +884,29 @@ fn room_environment_action_submission_shape_is_versioned() {
             actors: Vec::new(),
             tabs: Vec::new(),
             focused_tab_id: None,
-            actions: Vec::new(),
+            actions: vec![EnvironmentAction {
+                action_id: "action-7".to_string(),
+                sequence: 7,
+                idempotency_key: Some("input-1".to_string()),
+                actor_id: "user:owner-1".to_string(),
+                runtime_generation: 4,
+                mode: EnvironmentMode::Computer,
+                kind: "pointer_click".to_string(),
+                arguments: Some(crate::session::EnvironmentActionArguments::PointerClick {
+                    x: 320,
+                    y: 180,
+                    button: crate::session::EnvironmentPointerButton::Left,
+                    click_count: 1,
+                    viewport_revision: 9,
+                }),
+                targets: vec![InputTarget::Desktop],
+                state: EnvironmentActionState::Completed,
+                cancellation_requested: false,
+                submitted_at_ms: 100,
+                started_at_ms: Some(101),
+                finished_at_ms: Some(102),
+                outcome: Some(crate::session::EnvironmentActionOutcome::Completed),
+            }],
             input_ownership: Vec::new(),
             pending_input_takeovers: Vec::new(),
             event_cursor: 5,
@@ -892,6 +917,17 @@ fn room_environment_action_submission_shape_is_versioned() {
     assert_eq!(
         response_value.pointer("/RoomEnvironmentActionSubmitted/action_id"),
         Some(&serde_json::json!("action-7"))
+    );
+    assert_eq!(
+        response_value.pointer("/RoomEnvironmentActionSubmitted/environment/actions/0/arguments"),
+        Some(&serde_json::json!({
+            "kind": "pointer_click",
+            "x": 320,
+            "y": 180,
+            "button": "left",
+            "click_count": 1,
+            "viewport_revision": 9,
+        }))
     );
     assert_eq!(
         serde_json::from_value::<LocalDaemonResponse>(response_value)

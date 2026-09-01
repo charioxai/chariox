@@ -26,6 +26,26 @@ pub enum EnvironmentActionState {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EnvironmentPointerButton {
+    Left,
+    Middle,
+    Right,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EnvironmentActionArguments {
+    PointerClick {
+        x: u32,
+        y: u32,
+        button: EnvironmentPointerButton,
+        click_count: u8,
+        viewport_revision: u64,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EnvironmentActionTerminal {
     Completed,
@@ -53,6 +73,8 @@ pub struct EnvironmentAction {
     pub runtime_generation: u64,
     pub mode: EnvironmentMode,
     pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<EnvironmentActionArguments>,
     pub targets: Vec<InputTarget>,
     pub state: EnvironmentActionState,
     #[serde(default)]
@@ -103,7 +125,7 @@ pub enum EnvironmentActionCancellationReason {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EnvironmentActionRequest {
     pub(crate) idempotency_key: Option<String>,
-    pub(crate) operation_fingerprint: Option<String>,
+    pub(crate) arguments: Option<EnvironmentActionArguments>,
     pub(crate) actor_id: String,
     pub(crate) runtime_generation: u64,
     pub(crate) mode: EnvironmentMode,
@@ -124,7 +146,7 @@ impl EnvironmentActionRequest {
         let tab_id = tab_id.into();
         Self {
             idempotency_key: None,
-            operation_fingerprint: None,
+            arguments: None,
             actor_id: actor_id.into(),
             runtime_generation,
             mode: EnvironmentMode::Browser,
@@ -165,7 +187,7 @@ impl EnvironmentActionRequest {
         }
         Self {
             idempotency_key: None,
-            operation_fingerprint: None,
+            arguments: None,
             actor_id: actor_id.into(),
             runtime_generation,
             mode: EnvironmentMode::Computer,
@@ -181,22 +203,19 @@ impl EnvironmentActionRequest {
         self
     }
 
-    pub(crate) fn with_operation_fingerprint(
-        mut self,
-        operation_fingerprint: impl Into<String>,
-    ) -> Self {
-        self.operation_fingerprint = Some(operation_fingerprint.into());
+    pub(crate) fn with_arguments(mut self, arguments: EnvironmentActionArguments) -> Self {
+        self.arguments = Some(arguments);
         self
     }
 
     pub(crate) fn matches_idempotent_operation(&self, other: &Self) -> bool {
         self.idempotency_key == other.idempotency_key
-            && self.operation_fingerprint == other.operation_fingerprint
+            && self.arguments == other.arguments
             && self.actor_id == other.actor_id
             && self.mode == other.mode
             && self.kind == other.kind
             && self.mutates == other.mutates
-            && (self.operation_fingerprint.is_some()
+            && (self.arguments.is_some()
                 || (self.targets == other.targets
                     && self
                         .tab_preconditions

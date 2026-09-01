@@ -90,8 +90,16 @@ test("Room Environment state request matches protocol 290", () => {
             idempotency_key: "idempotency-1",
             actor_id: "human-1",
             runtime_generation: 1,
-            mode: "browser",
-            kind: "click",
+            mode: "computer",
+            kind: "pointer_click",
+            arguments: {
+              kind: "pointer_click",
+              x: 320,
+              y: 180,
+              button: "left",
+              click_count: 1,
+              viewport_revision: 1,
+            },
             targets: [
               { kind: "desktop" },
               { kind: "browser_tab", id: "tab-1" },
@@ -132,6 +140,14 @@ test("Room Environment state request matches protocol 290", () => {
     },
   }
   assert.equal(response.RoomEnvironmentState.environment.tabs[0]?.tab_id, "tab-1")
+  assert.deepEqual(response.RoomEnvironmentState.environment.actions[0]?.arguments, {
+    kind: "pointer_click",
+    x: 320,
+    y: 180,
+    button: "left",
+    click_count: 1,
+    viewport_revision: 1,
+  })
 })
 
 test("Room Environment event replay request matches protocol 290", () => {
@@ -357,4 +373,5 @@ test("Room Environment pointer click submission carries observed generations but
       },
     },
   )
+
 })

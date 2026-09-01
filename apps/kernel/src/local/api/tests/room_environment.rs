@@ -414,6 +414,20 @@ fn room_environment_pointer_click_executes_once_and_returns_terminal_state() {
             .map(|action| action.state),
         Some(crate::session::EnvironmentActionState::Completed)
     );
+    assert_eq!(
+        environment
+            .actions
+            .iter()
+            .find(|action| action.action_id == action_id)
+            .and_then(|action| action.arguments.clone()),
+        Some(crate::session::EnvironmentActionArguments::PointerClick {
+            x: 320,
+            y: 180,
+            button: crate::session::EnvironmentPointerButton::Right,
+            click_count: 2,
+            viewport_revision: environment.viewport.revision,
+        })
+    );
 
     harness
         .dispatch_as_user(

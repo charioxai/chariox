@@ -1868,7 +1868,13 @@ fn physical_input_idempotency_survives_a_changed_focused_tab() {
         Some(&first_tab),
     )
     .with_idempotency_key("pointer-click-1")
-    .with_operation_fingerprint("pointer_click:20:30:Left:1");
+    .with_arguments(EnvironmentActionArguments::PointerClick {
+        x: 20,
+        y: 30,
+        button: EnvironmentPointerButton::Left,
+        click_count: 1,
+        viewport_revision: 1,
+    });
     let action_id = accepted_action_id(environment.submit_action(request).unwrap());
 
     let retry = EnvironmentActionRequest::computer_mutation(
@@ -1878,7 +1884,13 @@ fn physical_input_idempotency_survives_a_changed_focused_tab() {
         Some(&second_tab),
     )
     .with_idempotency_key("pointer-click-1")
-    .with_operation_fingerprint("pointer_click:20:30:Left:1");
+    .with_arguments(EnvironmentActionArguments::PointerClick {
+        x: 20,
+        y: 30,
+        button: EnvironmentPointerButton::Left,
+        click_count: 1,
+        viewport_revision: 1,
+    });
     assert_eq!(
         environment.submit_action(retry).unwrap(),
         ActionAdmission::Existing {

@@ -10,10 +10,11 @@ mod state;
 mod tabs;
 
 pub use action::{
-    ActionAdmission, ActionCancellationOutcome, EnvironmentAction,
+    ActionAdmission, ActionCancellationOutcome, EnvironmentAction, EnvironmentActionArguments,
     EnvironmentActionCancellationReason, EnvironmentActionFailureCode,
     EnvironmentActionHistoryPage, EnvironmentActionOutcome, EnvironmentActionRequest,
-    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, InputTarget,
+    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentMode, EnvironmentPointerButton,
+    InputTarget,
 };
 pub(crate) use elements::EnvironmentElementTarget;
 pub use event::{EnvironmentEvent, EnvironmentEventKind, EnvironmentReplay};

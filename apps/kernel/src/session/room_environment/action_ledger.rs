@@ -270,6 +270,7 @@ impl EnvironmentActionLedger {
             runtime_generation: request.runtime_generation,
             mode: request.mode,
             kind: request.kind,
+            arguments: request.arguments,
             targets: targets.clone(),
             state: if queued {
                 EnvironmentActionState::Queued
