@@ -19,14 +19,7 @@ pub(super) fn map_relay_error(error: &DaemonError) -> RelayError {
         DaemonError::NoActiveProviderRun { .. } => {
             relay_error("no_active_provider_run", &error.to_string(), false)
         }
-        DaemonError::LocalTransport { operation, message }
-            if operation.starts_with("environment.") =>
-        {
-            let code = message
-                .split_once(':')
-                .map_or(message.as_str(), |(code, _)| code);
-            relay_error(code, &error.to_string(), false)
-        }
+        DaemonError::RoomEnvironment { code, .. } => relay_error(code, &error.to_string(), false),
         DaemonError::LocalTransport { .. } => {
             relay_error("transport_error", &error.to_string(), true)
         }
@@ -156,13 +149,29 @@ mod tests {
 
     #[test]
     fn room_environment_control_errors_keep_stable_relay_codes() {
-        let error = DaemonError::LocalTransport {
+        let error = DaemonError::RoomEnvironment {
             operation: "environment.start",
-            message: "environment_invalid_lifecycle_transition: invalid transition".to_string(),
+            code: "environment_invalid_lifecycle_transition",
+            message: "invalid transition: detail may contain colons".to_string(),
         };
 
         let relay_error = map_relay_error(&error);
         assert_eq!(relay_error.code, "environment_invalid_lifecycle_transition");
         assert!(!relay_error.retryable);
+    }
+
+    #[test]
+    fn room_environment_read_errors_keep_structured_relay_codes() {
+        for code in ["environment_not_found", "environment_state_unavailable"] {
+            let error = DaemonError::RoomEnvironment {
+                operation: "environment.state.get",
+                code,
+                message: "read failure: detail may contain colons".to_string(),
+            };
+
+            let relay_error = map_relay_error(&error);
+            assert_eq!(relay_error.code, code);
+            assert!(!relay_error.retryable);
+        }
     }
 }

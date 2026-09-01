@@ -1,4 +1,8 @@
 use super::*;
+use crate::local::{
+    GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest,
+    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+};
 use crate::session::{
     CanonicalViewport, EnvironmentAction, EnvironmentActionState, EnvironmentActor,
     EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
