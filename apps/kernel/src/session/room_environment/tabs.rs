@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
 use super::model::{
     EnvironmentError, EnvironmentTab, EnvironmentTabObservation, EnvironmentTabRuntimeBinding,
@@ -15,12 +15,16 @@ struct TabState {
 pub(crate) struct TabRegistry {
     tabs: BTreeMap<String, TabState>,
     tab_id_by_controller_target: BTreeMap<String, String>,
+    retired_tab_id_by_controller_target: BTreeMap<String, String>,
+    retired_controller_targets: VecDeque<String>,
     order: Vec<String>,
     focused_tab_id: Option<String>,
     next_sequence: u64,
 }
 
 impl TabRegistry {
+    const MAX_RETIRED_CONTROLLER_TARGETS: usize = 2_048;
+
     pub(crate) fn new() -> Self {
         Self {
             next_sequence: 1,
@@ -51,6 +55,7 @@ impl TabRegistry {
         if let Some(tab_id) = self.tab_id_by_controller_target.get(&controller_target_id) {
             return (tab_id.clone(), false);
         }
+        self.forget_retired_controller_target(&controller_target_id);
         let tab_id = format!("tab-{}", self.next_sequence);
         self.next_sequence += 1;
         let focused = self.focused_tab_id.is_none();
@@ -116,6 +121,7 @@ impl TabRegistry {
                     }
                 }
                 None => {
+                    self.forget_retired_controller_target(&observation.runtime_target_id);
                     let tab_id = format!("tab-{}", self.next_sequence);
                     self.next_sequence = self.next_sequence.saturating_add(1);
                     self.tabs.insert(
@@ -150,6 +156,7 @@ impl TabRegistry {
             if let Some(state) = self.tabs.remove(&tab_id) {
                 self.tab_id_by_controller_target
                     .remove(&state.controller_target_id);
+                self.remember_retired_controller_target(state.controller_target_id, tab_id.clone());
                 self.order.retain(|candidate| candidate != &tab_id);
                 changed = true;
             }
@@ -170,6 +177,39 @@ impl TabRegistry {
             changed = true;
         }
         changed
+    }
+
+    pub(crate) fn tab_id_for_controller_target(
+        &self,
+        controller_target_id: &str,
+    ) -> Option<String> {
+        self.tab_id_by_controller_target
+            .get(controller_target_id)
+            .or_else(|| {
+                self.retired_tab_id_by_controller_target
+                    .get(controller_target_id)
+            })
+            .cloned()
+    }
+
+    fn remember_retired_controller_target(&mut self, controller_target_id: String, tab_id: String) {
+        self.forget_retired_controller_target(&controller_target_id);
+        self.retired_controller_targets
+            .push_back(controller_target_id.clone());
+        self.retired_tab_id_by_controller_target
+            .insert(controller_target_id, tab_id);
+        while self.retired_controller_targets.len() > Self::MAX_RETIRED_CONTROLLER_TARGETS {
+            if let Some(target_id) = self.retired_controller_targets.pop_front() {
+                self.retired_tab_id_by_controller_target.remove(&target_id);
+            }
+        }
+    }
+
+    fn forget_retired_controller_target(&mut self, controller_target_id: &str) {
+        self.retired_tab_id_by_controller_target
+            .remove(controller_target_id);
+        self.retired_controller_targets
+            .retain(|candidate| candidate != controller_target_id);
     }
 
     pub(crate) fn record_navigation(
@@ -198,6 +238,7 @@ impl TabRegistry {
         };
         self.tab_id_by_controller_target
             .remove(&state.controller_target_id);
+        self.remember_retired_controller_target(state.controller_target_id, tab_id.to_string());
         self.order.retain(|candidate| candidate != tab_id);
         if self.focused_tab_id.as_deref() == Some(tab_id) {
             self.focused_tab_id = self.order.first().cloned();
@@ -263,6 +304,8 @@ impl TabRegistry {
     pub(crate) fn clear(&mut self) {
         self.tabs.clear();
         self.tab_id_by_controller_target.clear();
+        self.retired_tab_id_by_controller_target.clear();
+        self.retired_controller_targets.clear();
         self.order.clear();
         self.focused_tab_id = None;
     }

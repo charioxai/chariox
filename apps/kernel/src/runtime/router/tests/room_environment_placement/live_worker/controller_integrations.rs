@@ -121,28 +121,6 @@ pub(super) async fn check(fixture: &LiveWorker, token: &str, status: &Value) {
     assert_eq!(permission.permission, "geolocation");
     assert_eq!(permission.setting, "denied");
 
-    let popup_environment = dispatch_json(
-        &fixture.home,
-        json!({"StartRoomEnvironment": {
-            "session_id": room,
-            "viewport": {
-                "css_width": 1280, "css_height": 800, "device_scale_factor": 1,
-                "desktop_pixel_width": 1280, "desktop_pixel_height": 800
-            }
-        }}),
-    )
-    .await
-    .expect("popup target reconciles through the bound worker");
-    assert!(
-        popup_environment["RoomEnvironmentUpdated"]["environment"]["tabs"]
-            .as_array()
-            .expect("Room tabs")
-            .iter()
-            .any(|tab| {
-                tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
-            })
-    );
-
     let physical = std::fs::read_to_string(fixture._worker_state.root.join("chromium-state.json"))
         .expect("worker browser state");
     let physical: Value = serde_json::from_str(&physical).expect("worker browser state JSON");

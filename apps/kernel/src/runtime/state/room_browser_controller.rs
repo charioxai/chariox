@@ -222,6 +222,13 @@ async fn execute_local(
         } => processes
             .set_browser_permission(&session_id, &target_id, &document_id, permission, setting)
             .map(|result| Response::Permission { result }),
+        Command::PollEvents {
+            browser_generation,
+            cursor,
+            limit,
+        } => processes
+            .poll_browser_events(&session_id, browser_generation, cursor, limit)
+            .map(|batch| Response::Events { batch }),
         Command::Action {
             execution_id,
             target_id,

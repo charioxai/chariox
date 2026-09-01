@@ -216,6 +216,20 @@ impl SessionService {
             .controller_tab_binding(session_id, tab_id)
     }
 
+    pub(crate) fn room_environment_tab_id_for_controller_target(
+        &self,
+        session_id: &str,
+        controller_target_id: &str,
+    ) -> Result<Option<String>, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments
+            .tab_id_for_controller_target(session_id, controller_target_id)
+    }
+
     pub(crate) fn register_room_environment_element_references(
         &mut self,
         session_id: &str,

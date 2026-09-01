@@ -159,6 +159,14 @@ fn controller_tab_reconciliation_retires_missing_targets_and_detects_same_url_re
         Some("missing-target"),
     );
 
+    assert_eq!(
+        environment
+            .tab_id_for_controller_target("target-a")
+            .as_deref(),
+        Some("tab-1"),
+        "retired controller targets keep their stable Room identity for delayed lifecycle events"
+    );
+
     let snapshot = environment.snapshot();
     assert_eq!(snapshot.tabs.len(), 1);
     assert_eq!(snapshot.tabs[0].tab_id, "tab-2");

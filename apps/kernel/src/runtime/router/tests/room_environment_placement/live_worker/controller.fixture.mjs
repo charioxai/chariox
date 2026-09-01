@@ -18,9 +18,17 @@ let state = existsSync(stateFile)
   : { open: true, saved: false, clickCount: 0, pressed: false, note: "", submitted: null, focused: "worker-save" };
 state.clickCount ??= 0;
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
+const subscribers = new Set();
+const emit = (message) => {
+  for (const subscriber of subscribers) subscriber(message);
+};
 persist();
 const chromium = {
   isOpen: () => state.open,
+  subscribe(listener) {
+    subscribers.add(listener);
+    return () => subscribers.delete(listener);
+  },
   close: async () => { state.open = false; persist(); },
   async send(method, params = {}, sessionId) {
     switch (method) {
@@ -112,7 +120,16 @@ const chromium = {
           if (params.y === 125) state.frameClicked = true;
           if (params.y === 165) {
             state.shadowClicked = true;
-            state.popup = true;
+            if (!state.popup) {
+              state.popup = true;
+              emit({
+                method: "Target.targetCreated",
+                params: { targetInfo: {
+                  type: "page", targetId: "worker-popup",
+                  url: "https://popup.worker.test/?secret=must-not-cross-relay",
+                } },
+              });
+            }
           }
           state.clickCount += 1;
           state.submitted = null;
@@ -121,10 +138,59 @@ const chromium = {
         persist();
         return {};
       }
-      case "Page.handleJavaScriptDialog": state.dialog = params; persist(); return {};
-      case "Browser.setDownloadBehavior": state.downloads = params; persist(); return {};
+      case "Page.handleJavaScriptDialog":
+        emit({ method: "Page.javascriptDialogOpening", sessionId, params: {
+          type: "prompt", message: "must-not-cross-relay", defaultPrompt: "must-not-cross-relay",
+        } });
+        state.dialog = params;
+        persist();
+        emit({ method: "Page.javascriptDialogClosed", sessionId, params: {
+          result: params.accept === true, userInput: params.promptText,
+        } });
+        return {};
+      case "Browser.setDownloadBehavior":
+        state.downloads = params;
+        persist();
+        emit({ method: "Browser.downloadWillBegin", params: {
+          frameId: "worker-frame", guid: "worker-download",
+          url: "https://worker.test/report?secret=must-not-cross-relay",
+          suggestedFilename: "report.txt",
+        } });
+        emit({ method: "Browser.downloadProgress", params: {
+          guid: "worker-download", state: "completed", receivedBytes: 12, totalBytes: 12,
+        } });
+        return {};
       case "DOM.setFileInputFiles": state.upload = { backendNodeId: params.backendNodeId, fileCount: params.files.length }; persist(); return {};
-      case "Browser.setPermission": state.permission = params; persist(); return {};
+      case "Browser.setPermission":
+        state.permission = params;
+        persist();
+        emit({ method: "Runtime.consoleAPICalled", sessionId: "worker-cdp-session", params: {
+          type: "warning", args: [{ value: "must-not-cross-relay" }],
+        } });
+        emit({ method: "Network.requestWillBeSent", sessionId: "worker-cdp-session", params: {
+          requestId: "worker-request", type: "Fetch",
+          request: {
+            method: "POST",
+            url: "https://worker.test/api?secret=must-not-cross-relay",
+            headers: { authorization: "Bearer must-not-cross-relay" },
+            postData: "must-not-cross-relay",
+          },
+        } });
+        emit({ method: "Network.responseReceived", sessionId: "worker-cdp-session", params: {
+          requestId: "worker-request", type: "Fetch",
+          response: {
+            status: 204,
+            url: "https://worker.test/api?secret=must-not-cross-relay",
+            mimeType: "application/json",
+          },
+        } });
+        emit({ method: "Page.frameNavigated", sessionId: "worker-cdp-session", params: { frame: {
+          id: "worker-frame", loaderId: "worker-navigation-document",
+          url: "https://worker.test/next?secret=must-not-cross-relay",
+        } } });
+        emit({ method: "Page.domContentEventFired", sessionId: "worker-cdp-session", params: {} });
+        emit({ method: "Page.loadEventFired", sessionId: "worker-cdp-session", params: {} });
+        return {};
       case "Target.setDiscoverTargets":
       case "Page.enable":
       case "Page.setLifecycleEventsEnabled":

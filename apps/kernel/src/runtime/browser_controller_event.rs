@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const MAX_BROWSER_EVENT_POLL_LIMIT: u16 = 200;
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerEventBatch {
     pub(crate) browser_generation: u64,
     pub(crate) events: Vec<BrowserControllerEvent>,
@@ -12,7 +12,7 @@ pub(crate) struct BrowserControllerEventBatch {
     pub(crate) replay_gap: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerEvent {
     pub(crate) event_id: u64,
     pub(crate) browser_generation: u64,
@@ -30,13 +30,40 @@ pub(crate) struct RoomBrowserEventBatch {
     pub(crate) replay_gap: bool,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub(crate) struct RoomBrowserEvent {
     pub(crate) event_id: u64,
     pub(crate) kind: String,
     pub(crate) tab_id: Option<String>,
     pub(crate) document_id: Option<String>,
     pub(crate) data: BTreeMap<String, serde_json::Value>,
+}
+
+impl std::fmt::Debug for BrowserControllerEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserControllerEvent")
+            .field("event_id", &self.event_id)
+            .field("browser_generation", &self.browser_generation)
+            .field("kind", &self.kind)
+            .field("target_id", &self.target_id)
+            .field("document_id", &self.document_id)
+            .field("data_keys", &self.data.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
+
+impl std::fmt::Debug for RoomBrowserEvent {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RoomBrowserEvent")
+            .field("event_id", &self.event_id)
+            .field("kind", &self.kind)
+            .field("tab_id", &self.tab_id)
+            .field("document_id", &self.document_id)
+            .field("data_keys", &self.data.keys().collect::<Vec<_>>())
+            .finish()
+    }
 }
 
 impl BrowserControllerEventBatch {

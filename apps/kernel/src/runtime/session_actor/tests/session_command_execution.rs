@@ -63,7 +63,7 @@ while IFS= read -r request; do
       ;;
     *'"method":"browser.events.poll"'*)
       printf 'events\n' >> '__LOG__'
-      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"events":[{"event_id":2,"browser_generation":1,"kind":"console","target_id":"target-a","document_id":"loader-a","data":{"console_type":"warning","argument_count":1}},{"event_id":3,"browser_generation":1,"kind":"target_created","target_id":"other-room-target","document_id":null,"data":{"url":"https://other.test/"}},{"event_id":4,"browser_generation":1,"kind":"browser_connected","target_id":null,"document_id":null,"data":{}}],"next_cursor":4,"replay_gap":false}}\n' "$id"
+      printf '{"id":%s,"ok":true,"result":{"browser_generation":1,"events":[{"event_id":2,"browser_generation":1,"kind":"console","target_id":"target-a","document_id":"loader-a","data":{"console_type":"warning","argument_count":1}},{"event_id":3,"browser_generation":1,"kind":"target_destroyed","target_id":"target-a","document_id":null,"data":{}},{"event_id":4,"browser_generation":1,"kind":"console","target_id":"other-room-target","document_id":null,"data":{"console_type":"log","argument_count":1}},{"event_id":5,"browser_generation":1,"kind":"browser_connected","target_id":null,"document_id":null,"data":{}}],"next_cursor":5,"replay_gap":false}}\n' "$id"
       ;;
     *'"method":"shutdown"'*)
       printf 'shutdown\n' >> '__LOG__'
@@ -283,24 +283,29 @@ async fn room_environment_lifecycle_drives_the_managed_browser_controller() {
     assert_eq!(permission.permission, "geolocation");
     assert_eq!(permission.setting, "denied");
     assert_eq!(permission.tab_id, "tab-1");
+    validation_state
+        .reconcile_room_environment_controller_tabs(&session_id, Vec::new(), None)
+        .expect("retire the controller target before delayed events arrive");
     let events = validation_state
         .poll_browser_environment_events(&session_id, 1, 1, 10)
         .await
         .expect("event polling should cross the controller boundary");
     assert_eq!(events.browser_generation, 1);
-    assert_eq!(events.next_cursor, 4);
+    assert_eq!(events.next_cursor, 5);
     assert!(!events.replay_gap);
     assert_eq!(
         events.events.len(),
-        2,
+        3,
         "other Room targets must stay isolated"
     );
     assert_eq!(events.events[0].event_id, 2);
     assert_eq!(events.events[0].kind, "console");
     assert_eq!(events.events[0].tab_id.as_deref(), Some("tab-1"));
     assert_eq!(events.events[0].document_id.as_deref(), Some("loader-a"));
-    assert_eq!(events.events[1].kind, "browser_connected");
-    assert_eq!(events.events[1].tab_id, None);
+    assert_eq!(events.events[1].kind, "target_destroyed");
+    assert_eq!(events.events[1].tab_id.as_deref(), Some("tab-1"));
+    assert_eq!(events.events[2].kind, "browser_connected");
+    assert_eq!(events.events[2].tab_id, None);
 
     let stop_request =
         LocalDaemonRequest::StopRoomEnvironment(crate::local::StopRoomEnvironmentRequest {

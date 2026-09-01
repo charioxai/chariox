@@ -232,6 +232,20 @@ impl RoomEnvironmentRegistry {
             .controller_tab_binding(tab_id)
     }
 
+    pub(crate) fn tab_id_for_controller_target(
+        &self,
+        session_id: &str,
+        controller_target_id: &str,
+    ) -> Result<Option<String>, EnvironmentError> {
+        Ok(self
+            .environments_by_session
+            .get(session_id)
+            .ok_or_else(|| EnvironmentError::EnvironmentNotFound {
+                session_id: session_id.to_string(),
+            })?
+            .tab_id_for_controller_target(controller_target_id))
+    }
+
     pub(crate) fn register_element_references(
         &mut self,
         session_id: &str,
