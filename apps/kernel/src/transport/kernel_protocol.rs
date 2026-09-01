@@ -733,6 +733,7 @@ fn terminal_output_event_json_bytes_for_records(record_bytes: usize, record_coun
 
 pub(crate) fn map_kernel_error(error: &DaemonError) -> KernelTransportError {
     match error {
+        DaemonError::RoomEnvironment { code, .. } => kernel_error(code, error, false),
         DaemonError::SessionNotFound { .. } => kernel_error("session_not_found", error, false),
         DaemonError::AttachmentNotFound { .. } => {
             kernel_error("attachment_not_found", error, false)

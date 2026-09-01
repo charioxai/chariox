@@ -526,9 +526,10 @@ fn room_environment_control_error(
         crate::session::EnvironmentError::RoomNotFound { session_id } => {
             DaemonError::SessionNotFound { session_id }
         }
-        other => DaemonError::LocalTransport {
+        other => DaemonError::RoomEnvironment {
             operation,
-            message: format!("{}: {other:?}", other.code()),
+            code: other.code(),
+            message: format!("{other:?}"),
         },
     }
 }

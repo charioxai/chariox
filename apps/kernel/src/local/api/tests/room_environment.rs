@@ -1,4 +1,8 @@
 use super::*;
+use crate::local::{
+    GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest,
+    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
+};
 use crate::session::CanonicalViewport;
 
 #[test]
@@ -85,8 +89,9 @@ fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
         .expect_err("a stale viewport revision must fail");
     assert!(matches!(
         error,
-        DaemonError::LocalTransport {
+        DaemonError::RoomEnvironment {
             operation: "environment.viewport.update",
+            code: "environment_stale_viewport_revision",
             ..
         }
     ));
@@ -123,9 +128,14 @@ fn room_environment_start_rejects_invalid_initial_viewport_with_stable_code() {
         ))
         .expect_err("an initial zero-width viewport must be rejected");
     match error {
-        DaemonError::LocalTransport { operation, message } => {
+        DaemonError::RoomEnvironment {
+            operation,
+            code,
+            message,
+        } => {
             assert_eq!(operation, "environment.start");
-            assert!(message.starts_with("environment_invalid_viewport:"));
+            assert_eq!(code, "environment_invalid_viewport");
+            assert!(message.contains("InvalidViewport"));
         }
         other => panic!("unexpected error: {other:?}"),
     }

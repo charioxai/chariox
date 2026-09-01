@@ -1,4 +1,5 @@
 use super::*;
+use crate::session::{EnvironmentActor, EnvironmentLifecycle};
 
 impl SessionService {
     pub(crate) fn create_room_environment(
