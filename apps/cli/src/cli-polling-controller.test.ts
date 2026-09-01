@@ -114,6 +114,15 @@ test("cli polling controller suppresses queued prompt lifecycle notices", async 
   ])
 })
 
+test("cli polling controller runs Room activity on the same local-or-relay client loop", async () => {
+  const harness = createHarness()
+
+  await harness.controller.pollRoomEnvironmentActivity()
+
+  assert.deepEqual(harness.loopOperations, ["polling Room environment activity"])
+  assert.deepEqual(harness.calls, ["synchronizeRoomEnvironmentActivity"])
+})
+
 test("cli polling controller refreshes session state and provider run metadata", async () => {
   const refreshedRun = providerRun("run-2", { model: "next-model" })
   const nextSession = session({
@@ -239,6 +248,9 @@ function createHarness(options: {
     pollRuntimeNotices: async (sessionId, attachmentId) => {
       calls.push(`pollRuntimeNotices:${sessionId}:${attachmentId}`)
       return options.pollRuntimeNotices?.() ?? []
+    },
+    synchronizeRoomEnvironmentActivity: async () => {
+      calls.push("synchronizeRoomEnvironmentActivity")
     },
     appendNotice: (message) => calls.push(`notice:${message}`),
     getSessionState: async (sessionId) => {
