@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 28 forwards worker-agent Room browser runtime tools to the
-/// authenticated home kernel that owns Room action authority.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 28;
+/// Version 29 reports an implicit worker-controller restart with its new
+/// process generation so the home can reconcile before accepting fresh input.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 29;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {

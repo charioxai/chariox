@@ -2,6 +2,7 @@ use std::future::Future;
 use std::time::{Duration, Instant};
 
 use crate::error::DaemonError;
+use crate::runtime::browser_controller_process::CONTROLLER_RESTARTED_BEFORE_OPERATION;
 use crate::session::{
     agent_environment_actor_id, ActionAdmission, EnvironmentActionRequest, EnvironmentActionState,
     EnvironmentActionTerminal, EnvironmentError,
@@ -105,6 +106,20 @@ impl KernelRuntimeState {
             }
             None => execution.await,
         };
+        let controller_restart_generation = match &result {
+            Err(DaemonError::BrowserControllerRecoveryRequired { runtime_generation }) => {
+                Some(*runtime_generation)
+            }
+            _ => None,
+        };
+        if let Some(runtime_generation) = controller_restart_generation {
+            self.recover_browser_controller_after_restart(session_id, runtime_generation)
+                .await?;
+            return Err(DaemonError::LocalTransport {
+                operation: "browser_controller.route",
+                message: CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string(),
+            });
+        }
         let controller_fenced = matches!(
             &result,
             Err(DaemonError::BrowserControllerActionCancelled {

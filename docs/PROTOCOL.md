@@ -741,6 +741,19 @@ their Debug representations redact URLs, selectors, fill text, and upload
 paths. `slice_paste_secret` stays on its dedicated vault path and is not part of
 this forwarding contract.
 
+Relay peer v29 adds `recovery_required` to the physical Room controller
+response. When a worker discovers that its controller restarted before an
+operation, it returns the new controller process generation instead of only an
+error string. The home finishes an admitted mutation as failed, starts
+controller recovery, invalidates every old element reference, reconciles the
+kernel-owned Tab registry, and restores Browser and Browser Controller health
+before returning the retry error. The failed mutation is never replayed. A
+caller must rediscover elements before retrying, and repeating the old opaque
+reference fails locally as stale. Stable Tabs and existing input ownership are
+preserved when reconciliation can prove their physical identities. This is a
+home-worker transport addition, so local daemon protocol v292 and existing
+client minimum versions do not change.
+
 The previous protocol milestone routes the remaining legacy browser
 compatibility tools through the authenticated Room worker. `slice_open_url`
 normalizes an HTTP or HTTPS URL, submits one kernel-owned `navigate` Action for

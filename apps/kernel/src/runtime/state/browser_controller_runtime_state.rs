@@ -391,6 +391,37 @@ impl KernelRuntimeState {
         }
     }
 
+    pub(crate) async fn recover_browser_controller_after_restart(
+        &self,
+        session_id: &str,
+        runtime_generation: u64,
+    ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
+        self.observe_browser_controller_generation(session_id, runtime_generation)?;
+        match self
+            .reconcile_browser_controller_environment(session_id)
+            .await
+        {
+            Ok(environment) => Ok(environment),
+            Err(error) => {
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::BrowserController,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_recovery_failed"),
+                );
+                let _ = self.update_room_environment_component_health(
+                    session_id,
+                    EnvironmentComponent::Browser,
+                    EnvironmentComponentHealthState::Unavailable,
+                    Some("controller_recovery_failed"),
+                );
+                let _ =
+                    self.transition_room_environment(session_id, EnvironmentLifecycle::Degraded);
+                Err(error)
+            }
+        }
+    }
+
     pub(crate) async fn perform_browser_environment_locator_action_as_agent(
         &self,
         session_id: &str,

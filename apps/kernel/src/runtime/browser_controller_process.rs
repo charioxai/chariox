@@ -33,6 +33,8 @@ const DEFAULT_CONTROLLER_COMMAND_TIMEOUT_MS: u64 = 10_000;
 const CONTROLLER_SCRIPT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_SCRIPT";
 const CONTROLLER_NODE_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_NODE";
 const CONTROLLER_COMMAND_TIMEOUT_ENV: &str = "CHARIOX_BROWSER_CONTROLLER_COMMAND_TIMEOUT_MS";
+pub(crate) const CONTROLLER_RESTARTED_BEFORE_OPERATION: &str =
+    "browser controller restarted before the operation; reconcile and retry with fresh references";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -851,6 +853,7 @@ fn kill_child(child: &mut Child) {
 pub(crate) struct BrowserControllerProcessSupervisor<B> {
     backend: B,
     snapshot: BrowserControllerProcessSnapshot,
+    recovery_pending: bool,
 }
 
 type StdioOwnership = BrowserControllerProcessOwnership<BrowserControllerProcessStdioBackend>;
@@ -1311,6 +1314,16 @@ impl BrowserControllerProcessStore {
             .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
         ownership.shutdown().map(Some)
     }
+
+    pub(crate) fn snapshot(&self) -> Result<Option<BrowserControllerProcessSnapshot>, String> {
+        let Some(ownership) = &self.ownership else {
+            return Ok(None);
+        };
+        let ownership = ownership
+            .lock()
+            .map_err(|_| "browser controller supervisor lock poisoned".to_string())?;
+        Ok(Some(ownership.supervisor.snapshot().clone()))
+    }
 }
 
 impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
@@ -1324,6 +1337,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                 runtime_generation: 1,
                 restart_count: 0,
             },
+            recovery_pending: false,
         }
     }
 
@@ -1344,6 +1358,14 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
                     BrowserControllerProcessState::Unhealthy
                         | BrowserControllerProcessState::Failed
                 ) =>
+            {
+                self.apply_health(health);
+                self.restart()?;
+                return Ok(&self.snapshot);
+            }
+            Ok(health)
+                if health.state == BrowserControllerProcessState::Stopped
+                    && self.snapshot.state != BrowserControllerProcessState::Stopped =>
             {
                 self.apply_health(health);
                 self.restart()?;
@@ -1377,6 +1399,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     ) -> Result<BrowserControllerReconciliation, String> {
         let process = self.ensure_started()?.clone();
         let browser = self.backend.reconcile_browser(viewport)?;
+        self.recovery_pending = false;
         Ok(BrowserControllerReconciliation { process, browser })
     }
 
@@ -1482,13 +1505,13 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
     }
 
     fn ensure_started_without_transparent_restart(&mut self) -> Result<(), String> {
+        if self.recovery_pending {
+            return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
+        }
         let generation = self.snapshot.runtime_generation;
         self.ensure_started()?;
-        if self.snapshot.runtime_generation != generation {
-            return Err(
-                "browser controller restarted before the operation; reconcile and retry with fresh references"
-                    .to_string(),
-            );
+        if self.snapshot.runtime_generation != generation || self.recovery_pending {
+            return Err(CONTROLLER_RESTARTED_BEFORE_OPERATION.to_string());
         }
         Ok(())
     }
@@ -1521,6 +1544,7 @@ impl<B: BrowserControllerProcessBackend> BrowserControllerProcessSupervisor<B> {
         self.backend.stop()?;
         self.snapshot.runtime_generation = self.snapshot.runtime_generation.saturating_add(1);
         self.snapshot.restart_count = self.snapshot.restart_count.saturating_add(1);
+        self.recovery_pending = true;
         self.snapshot.process_id = None;
         self.start()
     }
@@ -1550,6 +1574,7 @@ mod tests {
         BrowserControllerProcessBackend, BrowserControllerProcessHealth,
         BrowserControllerProcessState, BrowserControllerProcessStdioBackend,
         BrowserControllerProcessStore, BrowserControllerProcessSupervisor,
+        CONTROLLER_RESTARTED_BEFORE_OPERATION,
     };
     use crate::runtime::browser_controller_action::{BrowserDialogAction, BrowserLocatorAction};
     use crate::session::CanonicalViewport;
@@ -1683,6 +1708,55 @@ mod tests {
         );
         assert_eq!(supervisor.snapshot().runtime_generation, 2);
         assert_eq!(supervisor.snapshot().restart_count, 1);
+
+        let repeated_error = supervisor
+            .perform_browser_action(
+                "target-a",
+                "loader-a",
+                "backend:103",
+                &BrowserLocatorAction::Click,
+                1_000,
+            )
+            .expect_err("the restarted controller stays fenced until reconciliation");
+
+        assert_eq!(repeated_error, error);
+        assert_eq!(supervisor.backend().start_count, 1);
+        assert_eq!(supervisor.backend().stop_count, 1);
+    }
+
+    #[test]
+    fn mutation_does_not_run_when_a_ready_controller_disappears() {
+        let mut backend = FakeBackend::default();
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(43))));
+        backend
+            .health
+            .push_back(Ok(health(BrowserControllerProcessState::Stopped, None)));
+        backend
+            .starts
+            .push_back(Ok(health(BrowserControllerProcessState::Ready, Some(44))));
+        let mut supervisor = BrowserControllerProcessSupervisor::new(backend);
+        supervisor.ensure_started().expect("controller starts");
+
+        let error = supervisor
+            .perform_browser_action(
+                "target-a",
+                "loader-a",
+                "backend:103",
+                &BrowserLocatorAction::Click,
+                1_000,
+            )
+            .expect_err("a disappeared ready controller requires reconciliation");
+
+        assert_eq!(error, CONTROLLER_RESTARTED_BEFORE_OPERATION);
+        assert_eq!(supervisor.snapshot().runtime_generation, 2);
+        assert_eq!(supervisor.snapshot().restart_count, 1);
+        assert_eq!(supervisor.backend().start_count, 2);
+        assert_eq!(supervisor.backend().stop_count, 1);
     }
 
     #[test]

@@ -79,6 +79,9 @@ pub(crate) enum RoomBrowserControllerCommand {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub(crate) enum RoomBrowserControllerResult {
+    RecoveryRequired {
+        process: BrowserControllerProcessSnapshot,
+    },
     ActionCancelled {
         controller_fenced: bool,
     },

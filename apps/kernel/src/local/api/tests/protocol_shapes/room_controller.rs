@@ -9,7 +9,7 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
     assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 28);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 29);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -184,6 +184,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         );
     }
     for result in [
+        serde_json::json!({"kind":"recovery_required","process":{
+            "state":"ready","process_id":124,"diagnostic_code":null,
+            "runtime_generation":3,"restart_count":2
+        }}),
         serde_json::json!({"kind":"cancellation_requested","accepted":true}),
         serde_json::json!({"kind":"cancellation_requested","accepted":false}),
         serde_json::json!({"kind":"action_cancelled","controller_fenced":false}),
