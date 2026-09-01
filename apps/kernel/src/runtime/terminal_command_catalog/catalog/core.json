@@ -158,6 +158,43 @@
           "shared browser",
           "input owner"
         ]
+      },
+      {
+        "id": "room-start",
+        "label": "start",
+        "description": "Start the Room Environment; optionally append WIDTHxHEIGHT and display scale",
+        "value": "/room start ",
+        "examples": [
+          "/room start",
+          "/room start 1440x900 2"
+        ],
+        "searchAliases": [
+          "start browser",
+          "start computer",
+          "start environment"
+        ]
+      },
+      {
+        "id": "room-stop",
+        "label": "stop",
+        "description": "Stop the Room Environment while preserving its identity",
+        "value": "/room stop",
+        "searchAliases": [
+          "stop browser",
+          "stop computer",
+          "stop environment"
+        ]
+      },
+      {
+        "id": "room-retry",
+        "label": "retry",
+        "description": "Retry a failed Room Environment with a fresh runtime generation",
+        "value": "/room retry",
+        "searchAliases": [
+          "restart browser",
+          "retry computer",
+          "recover environment"
+        ]
       }
     ]
   },

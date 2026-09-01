@@ -211,6 +211,11 @@ mod tests {
         let mut nodes = Vec::new();
         collect(&catalog.nodes, &mut nodes);
 
+        let room = catalog
+            .nodes
+            .iter()
+            .find(|node| node.id == "room")
+            .expect("Room environment commands should be present");
         let status = nodes
             .into_iter()
             .find(|node| node.id == "room-status")
@@ -223,6 +228,13 @@ mod tests {
         assert_eq!(
             status.surfaces,
             vec![TerminalCommandCatalogSurface::Session]
+        );
+        assert_eq!(
+            room.children
+                .iter()
+                .map(|node| node.value.as_str())
+                .collect::<Vec<_>>(),
+            vec!["/room status", "/room start ", "/room stop", "/room retry",]
         );
     }
 
