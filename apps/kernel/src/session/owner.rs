@@ -338,6 +338,15 @@ impl SessionStateStore {
             .room_environment_controller_tab_binding(session_id, tab_id)
     }
 
+    pub(crate) fn room_environment_tab_id_for_controller_target(
+        &self,
+        session_id: &str,
+        controller_target_id: &str,
+    ) -> Result<Option<String>, EnvironmentError> {
+        self.read()
+            .room_environment_tab_id_for_controller_target(session_id, controller_target_id)
+    }
+
     pub(crate) fn register_room_environment_element_references(
         &self,
         session_id: &str,

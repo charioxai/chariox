@@ -673,40 +673,51 @@ impl KernelRuntimeState {
         cursor: u64,
         limit: u16,
     ) -> Result<RoomBrowserEventBatch, DaemonError> {
-        let environment = self
-            .room_environment_snapshot(session_id)
-            .map_err(|error| environment_runtime_error("browser_controller.events", error))?;
-        let mut tab_ids_by_target = std::collections::BTreeMap::new();
-        for tab in &environment.tabs {
-            let binding = self
-                .room_environment_controller_tab_binding(session_id, &tab.tab_id)
-                .map_err(|error| environment_runtime_error("browser_controller.events", error))?;
-            tab_ids_by_target.insert(binding.runtime_target_id, tab.tab_id.clone());
-        }
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let batch = tokio::task::spawn_blocking(move || {
-            processes.poll_browser_events(&owned_session_id, browser_generation, cursor, limit)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.events",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.events",
-            message,
-        })?
-        .ok_or_else(|| DaemonError::LocalTransport {
+        let RoomBrowserControllerResult::Events { batch } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::PollEvents {
+                    browser_generation,
+                    cursor,
+                    limit,
+                },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller events response",
+            ));
+        };
+        let batch = batch.ok_or_else(|| DaemonError::LocalTransport {
             operation: "browser_controller.events",
             message: "browser controller is not enabled".to_string(),
         })?;
+        let browser_disconnected = batch
+            .events
+            .iter()
+            .any(|event| event.kind == "browser_disconnected");
+        let unknown_live_target = batch.events.iter().any(|event| {
+            matches!(event.kind.as_str(), "target_created" | "target_changed")
+                && event.target_id.as_deref().is_some_and(|target_id| {
+                    self.room_environment_tab_id_for_controller_target(session_id, target_id)
+                        .ok()
+                        .flatten()
+                        .is_none()
+                })
+        });
+        if unknown_live_target && !browser_disconnected {
+            self.reconcile_browser_controller_environment(session_id)
+                .await?;
+        }
         let events = batch
             .events
             .into_iter()
             .filter_map(|event| {
                 let tab_id = match event.target_id.as_deref() {
-                    Some(target_id) => Some(tab_ids_by_target.get(target_id)?.clone()),
+                    Some(target_id) => Some(
+                        self.room_environment_tab_id_for_controller_target(session_id, target_id)
+                            .ok()??,
+                    ),
                     None if matches!(
                         event.kind.as_str(),
                         "browser_connected" | "browser_disconnected"

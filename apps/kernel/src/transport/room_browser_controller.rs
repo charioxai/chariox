@@ -38,6 +38,11 @@ pub(crate) enum RoomBrowserControllerCommand {
         permission: crate::runtime::browser_controller_permission::BrowserPermissionName,
         setting: crate::runtime::browser_controller_permission::BrowserPermissionSetting,
     },
+    PollEvents {
+        browser_generation: u64,
+        cursor: u64,
+        limit: u16,
+    },
     Action {
         execution_id: String,
         target_id: String,
@@ -93,6 +98,9 @@ pub(crate) enum RoomBrowserControllerResult {
         result: Option<
             crate::runtime::browser_controller_permission::BrowserControllerPermissionResult,
         >,
+    },
+    Events {
+        batch: Option<crate::runtime::browser_controller_event::BrowserControllerEventBatch>,
     },
     Process {
         snapshot: Option<BrowserControllerProcessSnapshot>,

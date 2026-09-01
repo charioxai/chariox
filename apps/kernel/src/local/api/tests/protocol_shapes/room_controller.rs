@@ -6,8 +6,8 @@ use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 289);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 25);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 290);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 26);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -98,6 +98,14 @@ fn room_controller_protocol_shapes_are_versioned() {
                 "permission":"geolocation","setting":"denied"}),
         ),
         (
+            RoomBrowserControllerCommand::PollEvents {
+                browser_generation: 3,
+                cursor: 4,
+                limit: 20,
+            },
+            serde_json::json!({"kind":"poll_events","browser_generation":3,"cursor":4,"limit":20}),
+        ),
+        (
             RoomBrowserControllerCommand::Acquire,
             serde_json::json!({"kind":"acquire"}),
         ),
@@ -169,6 +177,15 @@ fn room_controller_protocol_shapes_are_versioned() {
             "browser_generation":1,"target_id":"target-1","document_id":"doc-1",
             "permission":"geolocation","setting":"denied"
         }}),
+        serde_json::json!({"kind":"events","batch":{
+            "browser_generation":3,
+            "events":[{"event_id":5,"browser_generation":3,"kind":"network_request",
+                "target_id":"target-1","document_id":"doc-1","data":{
+                    "request_id":"sensitive-event-fixture","method":"GET","url":"https://example.test/path",
+                    "resource_type":"Document"
+                }}],
+            "next_cursor":5,"replay_gap":false
+        }}),
         serde_json::json!({"kind":"process","snapshot":{
             "state":"ready","process_id":123,"diagnostic_code":null,
             "runtime_generation":2,"restart_count":1
@@ -187,6 +204,10 @@ fn room_controller_protocol_shapes_are_versioned() {
         let wire = serde_json::json!({"kind":"room_browser_controller", "session_id":"room-1",
             "slice_id":"slice-1","result":result});
         let response: RelayPeerResponse = serde_json::from_value(wire.clone()).unwrap();
+        assert!(
+            !format!("{response:?}").contains("sensitive-event-fixture"),
+            "relay diagnostics must not print browser event data values"
+        );
         assert_eq!(serde_json::to_value(response).unwrap(), wire);
     }
     assert!(

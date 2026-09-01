@@ -217,6 +217,13 @@ impl RoomEnvironment {
         self.tabs.controller_binding(tab_id)
     }
 
+    pub(crate) fn tab_id_for_controller_target(
+        &self,
+        controller_target_id: &str,
+    ) -> Option<String> {
+        self.tabs.tab_id_for_controller_target(controller_target_id)
+    }
+
     pub(crate) fn register_element_references(
         &mut self,
         tab_id: &str,

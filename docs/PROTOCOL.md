@@ -696,11 +696,27 @@ permission changes, caller isolation for every new command, and process cleanup.
 Existing clients' minimum versions remain unchanged because these are
 home-worker transport additions, not new public local-daemon request shapes.
 
+Protocol v290 and relay peer v26 route bounded browser-event polling through
+the authenticated Room worker that owns the browser controller and event
+journal. The worker validates generation, cursor, and batch limits before
+returning strictly ordered console, network, page, target, dialog, download,
+crash, and browser lifecycle events. The controller removes console arguments,
+request headers and bodies, URL credentials/query/fragment data, dialog text,
+and unsafe network errors before an event enters the journal. Relay diagnostics
+expose event identity and data-field names but redact all event data values.
+The home maps controller target IDs to kernel-owned stable Tab IDs and drops
+events for targets outside that Room. Cursor catch-up and replay gaps remain
+explicit, bounded outcomes rather than implicit loss. The real encrypted-relay
+drill covers event routing, stable Tab projection, secret-canary exclusion,
+cursor resume, caller isolation, and controller cleanup. Existing clients'
+minimum versions remain unchanged because the public local-daemon request shape
+does not change.
+
 Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.
 
-Navigation, events, public file/permission tool adapters, worker-agent MCP forwarding, and
+Navigation, public event/file/permission tool adapters, worker-agent MCP forwarding, and
 secure viewers still require the remaining routing work before product enablement.
 Existing clients' minimum
 versions remain unchanged because their public request shapes have not changed.
