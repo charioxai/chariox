@@ -398,15 +398,17 @@ impl KernelRuntimeState {
                     .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
-                if let Some(result) = self
-                    .try_dispatch_remote_room_browser_runtime_tool_call(
-                        provider_run.expect("non-workflow tool should have provider run"),
-                        canonical_tool_name,
-                        arguments.clone(),
-                    )
-                    .await?
-                {
-                    return Ok(result);
+                if is_room_browser_controller_runtime_tool(canonical_tool_name) {
+                    if let Some(result) = self
+                        .try_dispatch_remote_room_browser_runtime_tool_call(
+                            provider_run.expect("non-workflow tool should have provider run"),
+                            canonical_tool_name,
+                            arguments.clone(),
+                        )
+                        .await?
+                    {
+                        return Ok(result);
+                    }
                 }
                 return self
                     .dispatch_slice_runtime_tool_call(
