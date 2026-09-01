@@ -155,6 +155,7 @@ type CommandActionDeps =
   sendRoomEnvironmentRequest?: RoomCommandHandlerDeps["send"]
   reconnectRoomEventStream?: RoomCommandHandlerDeps["reconnectEventStream"]
   openRoomViewer?: RoomCommandHandlerDeps["openViewer"]
+  captureRoomScreenshot?: RoomCommandHandlerDeps["captureScreenshot"]
   formatError: (error: unknown) => string
   prepareLocalGitWorktree?: (options: LocalGitWorktreeOptions) => Promise<string>
   attachBinding: (
@@ -317,6 +318,9 @@ export function createCommandActionHandlers(deps: CommandActionDeps) {
         ? { reconnectEventStream: deps.reconnectRoomEventStream }
         : {}),
       ...(deps.openRoomViewer ? { openViewer: deps.openRoomViewer } : {}),
+      ...(deps.captureRoomScreenshot
+        ? { captureScreenshot: deps.captureRoomScreenshot }
+        : {}),
       appendNotice: deps.appendNotice,
       flashFooter: deps.flashFooter,
     }, command)

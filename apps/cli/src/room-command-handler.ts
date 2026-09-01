@@ -26,6 +26,7 @@ import type {
 } from "@chariox/kernel-client/kernel-types"
 
 import type { ParsedSlashCommand } from "./commands.js"
+import type { DownloadedRoomEnvironmentScreenshot } from "./room-screenshot-api.js"
 import { formatSliceStateSaved } from "./slice-command-handlers.js"
 
 type RoomCommand = Extract<ParsedSlashCommand, { kind: "room" }>
@@ -54,6 +55,7 @@ export type RoomCommandHandlerDeps = {
   send: <TResponse>(request: unknown) => Promise<TResponse>
   reconnectEventStream?: () => Promise<boolean>
   openViewer?: (target: RoomViewerTarget) => Promise<RoomViewerOpenResult | null>
+  captureScreenshot?: () => Promise<DownloadedRoomEnvironmentScreenshot>
   appendNotice: (notice: string) => void
   flashFooter: (message: string, tone: "info" | "error") => void
 }
@@ -63,7 +65,7 @@ export async function handleRoomSlashCommand(
   command: RoomCommand,
 ): Promise<void> {
   const [subcommand] = command.args
-  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "view", "takeover", "release", "cancel", "save"].includes(subcommand)) {
+  if (subcommand && !["status", "show", "start", "stop", "retry", "reconnect", "view", "screenshot", "takeover", "release", "cancel", "save"].includes(subcommand)) {
     deps.flashFooter(roomCommandUsage(), "error")
     return
   }
@@ -116,6 +118,20 @@ export async function handleRoomSlashCommand(
       return
     }
     deps.appendNotice("Room reconnect requested; events will resume from the last received event.")
+    return
+  }
+  if (subcommand === "screenshot") {
+    if (!deps.captureScreenshot) {
+      deps.flashFooter("Room Environment screenshot capture is unavailable in this client", "error")
+      return
+    }
+    const screenshot = await deps.captureScreenshot()
+    deps.appendNotice([
+      "Room Environment screenshot saved.",
+      `path=${screenshot.path}`,
+      `artifact=${screenshot.artifact.artifact_id}`,
+      `sha256=${screenshot.artifact.sha256}`,
+    ].join("\n"))
     return
   }
   if (subcommand === "view") {
@@ -275,7 +291,7 @@ function isU32(value: number): boolean {
 }
 
 function roomCommandUsage(): string {
-  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
+  return "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|screenshot|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown"
 }
 
 function roomStartUsage(): string {

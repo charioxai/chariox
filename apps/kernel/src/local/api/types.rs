@@ -62,6 +62,5 @@ pub use waiting_room::*;
 pub use workflow::*;
 pub use workspace::*;
 
-/// Version 295 projects Actor presentation colors and pointer presence and
-/// accepts authenticated pointer updates without a client-supplied Actor identity.
-pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 295;
+/// Version 296 adds bounded Room Environment screenshot artifact transfer.
+pub const LOCAL_DAEMON_PROTOCOL_VERSION: u32 = 296;

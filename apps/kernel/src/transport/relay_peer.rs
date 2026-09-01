@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 31 carries one kernel-admitted human Computer input action to the
-/// Room's bound worker without granting input authority to the relay.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 31;
+/// Version 32 adds bounded Room Environment screenshot artifact transfer
+/// between a home kernel and its provisioned slice worker.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -263,6 +263,17 @@ pub enum RelayPeerRequest {
         slice_id: String,
         viewer_public_key: String,
     },
+    CaptureRoomScreenshot {
+        session_id: String,
+        slice_id: String,
+    },
+    ReadRoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        artifact_id: String,
+        offset: u64,
+        max_bytes: u32,
+    },
     Ping {
         value: String,
     },
@@ -502,6 +513,16 @@ pub enum RelayPeerResponse {
         session_id: String,
         slice_id: String,
         endpoint: crate::slice::SliceDisplayEndpoint,
+    },
+    RoomScreenshotCaptured {
+        session_id: String,
+        slice_id: String,
+        artifact: crate::local::RoomEnvironmentScreenshotArtifact,
+    },
+    RoomScreenshotChunk {
+        session_id: String,
+        slice_id: String,
+        chunk: crate::local::RoomEnvironmentScreenshotChunk,
     },
     Pong {
         value: String,

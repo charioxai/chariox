@@ -39,6 +39,39 @@ impl CommandRouter {
             .await
     }
 
+    pub(crate) async fn relay_capture_room_screenshot(
+        &self,
+        kernel_id: &str,
+        public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+    ) -> Result<crate::local::RoomEnvironmentScreenshotArtifact, DaemonError> {
+        self.runtime_state
+            .execute_bound_room_screenshot_capture(kernel_id, public_key, session_id, slice_id)
+            .await
+    }
+
+    pub(crate) fn relay_read_room_screenshot_chunk(
+        &self,
+        kernel_id: &str,
+        public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+        artifact_id: &str,
+        offset: u64,
+        max_bytes: u32,
+    ) -> Result<crate::local::RoomEnvironmentScreenshotChunk, DaemonError> {
+        self.runtime_state.execute_bound_room_screenshot_chunk(
+            kernel_id,
+            public_key,
+            session_id,
+            slice_id,
+            artifact_id,
+            offset,
+            max_bytes,
+        )
+    }
+
     pub(crate) fn relay_daemon_id(&self) -> String {
         self.config_projection.snapshot().daemon_id
     }

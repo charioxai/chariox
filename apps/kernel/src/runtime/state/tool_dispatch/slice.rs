@@ -471,6 +471,42 @@ async fn run_slice_screen_command(
     run_slice_screen_command_inner(args, None, None).await
 }
 
+pub(in crate::runtime::state) async fn capture_room_environment_screenshot(
+    destination: &std::path::Path,
+) -> Result<(), DaemonError> {
+    let destination = destination
+        .to_str()
+        .ok_or_else(|| DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "screenshot destination is not valid UTF-8".to_string(),
+        })?;
+    let output =
+        run_slice_screen_command(vec!["screenshot".to_string(), destination.to_string()]).await?;
+    if !output.success {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: format!(
+                "slice screenshot helper exited with status {}",
+                output
+                    .status_code
+                    .map(|code| code.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
+        });
+    }
+    let metadata = std::fs::metadata(destination).map_err(|error| DaemonError::LocalTransport {
+        operation: "environment.screenshot.capture",
+        message: format!("slice screenshot helper did not create the capture: {error}"),
+    })?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        return Err(DaemonError::LocalTransport {
+            operation: "environment.screenshot.capture",
+            message: "slice screenshot helper produced an empty capture".to_string(),
+        });
+    }
+    Ok(())
+}
+
 async fn run_slice_screen_command_with_stdin(
     args: Vec<String>,
     stdin: String,

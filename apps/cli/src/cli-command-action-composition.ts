@@ -7,6 +7,10 @@ import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
 import {
+  defaultRoomScreenshotOutputRoot,
+  downloadRoomEnvironmentScreenshot,
+} from "./room-screenshot-api.js"
+import {
   aliasAgent,
   cycleAgentFocus as cycleAgentFocusApi,
   destroyAgent as destroyAgentApi,
@@ -444,6 +448,16 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       if (!apiUrl) return null
       const url = buildHostedCloudViewUrl(apiUrl, target)
       return { url, opened: await openExternalUrl(url) }
+    },
+    captureRoomScreenshot: async () => {
+      const attachment = attachmentState()
+      if (!attachment) throw new Error("Room screenshot capture requires an active attachment")
+      return downloadRoomEnvironmentScreenshot({
+        sessionId: sessionState().id,
+        attachmentId: attachment.id,
+        outputRoot: defaultRoomScreenshotOutputRoot(),
+        send: (request) => client.send(request),
+      })
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,

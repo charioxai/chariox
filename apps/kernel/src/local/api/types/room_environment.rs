@@ -20,6 +20,38 @@ pub struct GetRoomEnvironmentSliceRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CaptureRoomEnvironmentScreenshotRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReadRoomEnvironmentScreenshotChunkRequest {
+    pub session_id: String,
+    pub attachment_id: String,
+    pub artifact_id: String,
+    pub offset: u64,
+    pub max_bytes: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomEnvironmentScreenshotArtifact {
+    pub artifact_id: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub media_type: String,
+    pub display_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RoomEnvironmentScreenshotChunk {
+    pub artifact_id: String,
+    pub offset: u64,
+    pub data_base64: String,
+    pub eof: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GetRoomEnvironmentStateRequest {
     pub session_id: String,
 }

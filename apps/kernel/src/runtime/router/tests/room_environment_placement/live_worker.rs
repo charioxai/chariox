@@ -19,6 +19,7 @@ mod controller_response_loss;
 mod controller_worker_mcp;
 mod display;
 mod lease_release;
+mod screenshot;
 mod session;
 
 pub(super) async fn controller_placement_lifecycle() {
