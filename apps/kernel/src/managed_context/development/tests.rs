@@ -670,11 +670,24 @@ fn import_rejects_wrong_bindings_corruption_and_occupied_destinations_atomically
         destination_root: corrupt_destination.clone(),
     })
     .expect_err("corrupt archive should fail before publication");
-    assert!(
-        corrupt.to_string().contains("archive")
-            || corrupt.to_string().contains("artifact")
-            || corrupt.to_string().contains("manifest")
-    );
+    match &corrupt {
+        DaemonError::ManagedContext {
+            code,
+            operation,
+            retryable,
+            ..
+        } => assert!(
+            (*code == "invalid_managed_context"
+                && *operation == "managed development context"
+                && !retryable)
+                || (*code == "managed_context_unavailable"
+                    && (operation.starts_with("read development context")
+                        || *operation == "finish development context archive")
+                    && *retryable),
+            "unexpected corruption error: {corrupt}"
+        ),
+        _ => panic!("unexpected corruption error: {corrupt}"),
+    }
     assert!(!corrupt_destination.exists());
 
     let occupied = root.join("managed/occupied");
