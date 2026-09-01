@@ -16,15 +16,34 @@ const kernelClientRoot = path.join(repoRoot, "packages", "kernel-client")
 const startedAt = new Date().toISOString()
 const stamp = startedAt.replace(/[:.]/g, "-")
 const runId = `room-pointer-${process.pid}-${stamp}`
-const evidenceRoot = path.join(os.homedir(), ".codex", "evidence", "browser-computer-use", "human-input", stamp)
+const evidenceRoot = path.join(os.homedir(), ".codex", "evidence", "browser-computer-use", "remote-tui-room-activity", stamp)
 const containerName = `chariox-slice-${runId}`
 const homeVolume = `${containerName}-home`
 const kernelPort = 51000 + Math.floor(Math.random() * 1000)
+const relayPort = 53000 + Math.floor(Math.random() * 1000)
+const relayToken = `${runId}-relay-token`
+const homeDaemonId = `${runId}-home`
+const directDaemonEnvironmentNames = [
+  "CHARIOX_DAEMON_SOCKET",
+  "CHARIOX_DAEMON_ID",
+  "CHARIOX_DAEMON_ALIAS",
+  "CHARIOX_KERNEL_PORT",
+  "CHARIOX_MCP_PORT",
+  "CHARIOX_CODEX_PORT",
+  "CHARIOX_OPENCODE_PORT",
+  "CHARIOX_MACHINE_ID",
+  "CHARIOX_MACHINE_ALIAS",
+  "CHARIOX_RELAY_URL",
+  "CHARIOX_RELAY_TOKEN",
+  "CHARIOX_SESSION_HISTORY_DIR",
+]
 const tempRootPromise = mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 const resources = []
 let client = null
 let observerClient = null
+let remoteAutomation = null
+let remoteTuiOutput = ""
 let fixture = null
 let slice = null
 let sessionId = null
@@ -56,22 +75,48 @@ async function run() {
   fixture = await startFixture()
   await seedConfig(tempRoot)
 
-  const kernelBinary = await resolveKernelBinary()
-  const log = createWriteStream(path.join(evidenceRoot, "kernel.log"), { flags: "a" })
-  const kernel = spawn(kernelBinary, [], {
+  const kernelBinary = await resolveRuntimeBinary("chariox-kernel")
+  const relayBinary = await resolveRuntimeBinary("chariox-relay")
+  const relayLog = createWriteStream(path.join(evidenceRoot, "relay.log"), { flags: "a" })
+  const relay = spawn(relayBinary, [], {
     cwd: repoRoot,
     env: {
       ...process.env,
-      CHARIOX_HOME: path.join(tempRoot, "home"),
-      CHARIOX_KERNEL_PORT: String(kernelPort),
-      CHARIOX_MCP_PORT: String(kernelPort + 1),
-      CHARIOX_CODEX_PORT: String(kernelPort + 2),
-      CHARIOX_OPENCODE_PORT: String(kernelPort + 3),
-      CHARIOX_DAEMON_SOCKET: path.join(tempRoot, "daemon.sock"),
-      CHARIOX_DAEMON_ID: `${runId}-home`,
-      CHARIOX_DAEMON_ALIAS: `${runId}-home`,
-      CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "history"),
+      CHARIOX_RELAY_HOST: "127.0.0.1",
+      CHARIOX_RELAY_PORT: String(relayPort),
+      CHARIOX_RELAY_TOKEN: relayToken,
     },
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  relay.stdout.pipe(relayLog)
+  relay.stderr.pipe(relayLog)
+  relay.once("exit", () => relayLog.end())
+  children.push(relay)
+  await waitForTcpPort("127.0.0.1", relayPort, 20_000, "relay did not accept connections")
+
+  const log = createWriteStream(path.join(evidenceRoot, "kernel.log"), { flags: "a" })
+  const kernelEnv = {
+    ...process.env,
+    CHARIOX_HOME: path.join(tempRoot, "home"),
+    CHARIOX_KERNEL_PORT: String(kernelPort),
+    CHARIOX_MCP_PORT: String(kernelPort + 1),
+    CHARIOX_CODEX_PORT: String(kernelPort + 2),
+    CHARIOX_OPENCODE_PORT: String(kernelPort + 3),
+    CHARIOX_DAEMON_SOCKET: path.join(tempRoot, "daemon.sock"),
+    CHARIOX_DAEMON_ID: homeDaemonId,
+    CHARIOX_DAEMON_ALIAS: homeDaemonId,
+    CHARIOX_MACHINE_ID: `${runId}-machine`,
+    CHARIOX_MACHINE_ALIAS: `${runId}-machine`,
+    CHARIOX_RELAY_URL: `ws://127.0.0.1:${relayPort}`,
+    CHARIOX_RELAY_TOKEN: relayToken,
+    CHARIOX_SESSION_HISTORY_DIR: path.join(tempRoot, "history"),
+    XDG_CONFIG_HOME: path.join(tempRoot, "xdg-config"),
+    XDG_STATE_HOME: path.join(tempRoot, "xdg-state"),
+    XDG_CACHE_HOME: path.join(tempRoot, "xdg-cache"),
+  }
+  const kernel = spawn(kernelBinary, [], {
+    cwd: repoRoot,
+    env: kernelEnv,
     stdio: ["ignore", "pipe", "pipe"],
   })
   kernel.stdout.pipe(log)
@@ -102,14 +147,24 @@ async function run() {
     "SessionCreated",
   ).session
   sessionId = session.id
-  slice = unwrap(await client.send(requests.createSliceRequest({
+  remoteAutomation = await startRemoteTui({ tempRoot })
+  const attachedRemoteTui = await waitForAutomationSnapshot(
+    remoteAutomation,
+    (snapshot) => snapshot.session?.id === sessionId,
+    "relay-attached remote TUI session",
+    30_000,
+  )
+  assert.equal(attachedRemoteTui.session?.id, sessionId)
+
+  const createSliceResponse = await withTimeout(client.send(requests.createSliceRequest({
     name: runId,
     backend: "local_docker",
     displayMode: "headed",
     workspaceMount: repoRoot,
     workerKernelRef: `${runId}-worker`,
     base: "clean",
-  })), "SliceCreated").slice
+  })), 15_000, "CreateSlice response")
+  slice = unwrap(createSliceResponse, "SliceCreated").slice
   const binding = unwrap(
     await client.send(requests.bindRoomEnvironmentSliceRequest(sessionId, slice.id)),
     "RoomEnvironmentSlice",
@@ -136,6 +191,7 @@ async function run() {
     desktop_pixel_height: 800,
   })), "RoomEnvironmentUpdated").environment
   assert.equal(environment.lifecycle, "ready")
+  const readyRemoteTui = await waitForRemoteNotice(/^Room screen: ready · tab Room pointer drill — /)
   const activityNotices = []
   const daemonActivities = []
   const activityController = createRoomEnvironmentActivityController({
@@ -160,8 +216,12 @@ async function run() {
   assert.equal(desktopOwner?.actor_id, "user:local")
   assert.equal(await activityController.synchronize(), true)
   assert.ok(activityNotices.includes("Room input: Local user controls desktop"))
+  await waitForRemoteNotice(/^Room input: Local user controls desktop$/)
 
   const noticesBeforePointers = activityNotices.length
+  const remoteNoticesBeforePointers = automationNoticeTexts(
+    await remoteAutomation.send("snapshot"),
+  ).length
   for (const pointer of [{ x: 200, y: 100 }, { x: 400, y: 200 }, { x: 640, y: 400 }]) {
     await client.send(requests.updateRoomEnvironmentPointerRequest(
       sessionId,
@@ -177,6 +237,15 @@ async function run() {
     false,
     `pointer movement leaked into TUI notices: ${noticesAfterPointers.join(" | ")}`,
   )
+  await sleep(600)
+  const remoteNoticesAfterPointers = automationNoticeTexts(
+    await remoteAutomation.send("snapshot"),
+  ).slice(remoteNoticesBeforePointers)
+  assert.equal(
+    remoteNoticesAfterPointers.some((notice) => /pointer/i.test(notice)),
+    false,
+    `pointer movement leaked into remote TUI notices: ${remoteNoticesAfterPointers.join(" | ")}`,
+  )
 
   const idempotencyKey = `${runId}-click`
   const click = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
@@ -189,6 +258,7 @@ async function run() {
   assert.equal(actionState(click.environment, click.action_id), "completed")
   assert.equal(await activityController.synchronize(), true)
   assert.match(activityNotices.at(-1), /^Room action: Local user · computer pointer_click · completed$/)
+  await waitForRemoteNotice(/^Room action: Local user · computer pointer_click · completed$/)
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
 
@@ -216,6 +286,7 @@ async function run() {
   ).environment
   assert.equal(await activityController.synchronize(), true)
   assert.equal(activityNotices.at(-1), "Room input: available")
+  const releasedRemoteTui = await waitForRemoteNotice(/^Room input: available$/)
   const observed = unwrap(
     await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
     "RoomEnvironmentState",
@@ -231,7 +302,7 @@ async function run() {
     schema: "chariox.room_environment.pointer_click_drill.v1",
     status: "passed",
     startedAt,
-    topology: "local kernel, private slice relay, provisioned headed Docker worker",
+    topology: "local kernel and headed Docker worker, same-host relay, relay-attached remote TUI",
     sessionId,
     sliceId: slice.id,
     environmentId: retry.environment.environment_id,
@@ -246,10 +317,16 @@ async function run() {
       "idempotent retry returned the original Action without a second click",
       "TUI activity projected lifecycle, focused tab, takeover, and terminal Action outcome",
       "pointer movement produced no pointer-derived TUI notices",
-      "TUI projected input release and a second client observed the same or newer authoritative state",
+      "relay-attached remote TUI projected the same Room lifecycle, takeover, Action, and release",
+      "TUI projected input release and a second protocol client observed the same or newer authoritative state",
     ],
     activityNotices,
     daemonActivities,
+    remoteTui: {
+      sessionId: releasedRemoteTui.session?.id,
+      notices: automationNoticeTexts(releasedRemoteTui),
+      readyNoticeCount: automationNoticeTexts(readyRemoteTui).length,
+    },
   }
 }
 
@@ -275,15 +352,81 @@ async function seedConfig(tempRoot) {
   ].join("\n"))
 }
 
-async function resolveKernelBinary() {
+async function resolveRuntimeBinary(name) {
   const cargoTargetDir = process.env.CARGO_TARGET_DIR
     ? path.resolve(process.env.CARGO_TARGET_DIR)
     : path.join(repoRoot, "target")
-  const binary = path.join(cargoTargetDir, "debug", "chariox-kernel")
+  const binary = path.join(cargoTargetDir, "debug", name)
   await access(binary).catch(() => {
-    throw new Error(`missing ${binary}; build the current chariox-kernel first`)
+    throw new Error(`missing ${binary}; build the current ${name} first`)
   })
   return binary
+}
+
+async function startRemoteTui({ tempRoot }) {
+  const automationSocket = path.join(tempRoot, "remote-tui.sock")
+  const remoteTuiArgs = [
+    "-q",
+    "/dev/null",
+    "bun",
+    path.join(repoRoot, "apps", "cli", "dist", "index.js"),
+    "--relay-url", `ws://127.0.0.1:${relayPort}`,
+    "--relay-token", relayToken,
+    "--target-daemon-id", homeDaemonId,
+    "--automation-socket", automationSocket,
+    "--session", sessionId,
+    "--workspace", repoRoot,
+    "--worktree", repoRoot,
+    "--provider", "dev-stub",
+    "--model", "room-activity-remote-tui-drill",
+    "--client-id", `${runId}-remote-tui`,
+  ]
+  const remoteEnv = remoteTuiEnvironment(tempRoot)
+  for (const name of directDaemonEnvironmentNames) assert.equal(name in remoteEnv, false)
+  const remoteTui = spawn("script", remoteTuiArgs, {
+    cwd: repoRoot,
+    env: remoteEnv,
+    detached: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  remoteTui.killProcessGroup = true
+  children.push(remoteTui)
+  remoteTui.stdout.on("data", (chunk) => {
+    remoteTuiOutput = `${remoteTuiOutput}${chunk}`.slice(-16_000)
+  })
+  remoteTui.stderr.on("data", (chunk) => {
+    remoteTuiOutput = `${remoteTuiOutput}${chunk}`.slice(-16_000)
+  })
+  const startupFailure = new Promise((resolve) => {
+    remoteTui.once("error", resolve)
+    remoteTui.once("exit", (code, signal) => {
+      resolve(new Error(`remote TUI exited during startup: code=${code ?? "none"} signal=${signal ?? "none"}`))
+    })
+  })
+  const startup = await Promise.race([
+    waitForSocket(automationSocket).then(() => null),
+    startupFailure,
+  ])
+  if (startup) {
+    throw new Error(`${startup.message}\nremote TUI output:\n${remoteTuiOutput.slice(-4_000)}`)
+  }
+  const automation = await createAutomationClient(automationSocket)
+  await automation.send("ping")
+  return automation
+}
+
+function remoteTuiEnvironment(tempRoot) {
+  const env = { ...process.env }
+  for (const name of directDaemonEnvironmentNames) {
+    delete env[name]
+  }
+  return {
+    ...env,
+    CHARIOX_HOME: path.join(tempRoot, "remote-tui-home"),
+    XDG_CONFIG_HOME: path.join(tempRoot, "remote-tui-xdg-config"),
+    XDG_STATE_HOME: path.join(tempRoot, "remote-tui-xdg-state"),
+    XDG_CACHE_HOME: path.join(tempRoot, "remote-tui-xdg-cache"),
+  }
 }
 
 async function startFixture() {
@@ -338,6 +481,118 @@ async function screenshot(name) {
   const inside = `/tmp/${name}.png`
   await sliceScreen(["screenshot", inside])
   await docker(["cp", `${containerName}:${inside}`, path.join(evidenceRoot, `${name}.png`)])
+}
+
+async function waitForRemoteNotice(pattern, timeoutMs = 20_000) {
+  return await waitForAutomationSnapshot(
+    remoteAutomation,
+    (snapshot) => automationNoticeTexts(snapshot).some((notice) => pattern.test(notice)),
+    `remote TUI notice ${pattern}`,
+    timeoutMs,
+  )
+}
+
+function automationNoticeTexts(snapshot) {
+  const entries = Array.isArray(snapshot?.transcript?.entries)
+    ? snapshot.transcript.entries
+    : []
+  return entries.flatMap((entry) => (
+    entry?.role === "notice" && typeof entry.text === "string"
+      ? [entry.text]
+      : []
+  ))
+}
+
+async function waitForSocket(socketPath, timeoutMs = 20_000) {
+  return await waitFor(async () => {
+    const socket = net.createConnection(socketPath)
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve)
+        socket.once("error", reject)
+      })
+      return true
+    } finally {
+      socket.destroy()
+    }
+  }, timeoutMs, `automation socket ${socketPath} did not become ready`)
+}
+
+async function waitForTcpPort(host, port, timeoutMs, message) {
+  return await waitFor(async () => {
+    const socket = net.createConnection({ host, port })
+    try {
+      await new Promise((resolve, reject) => {
+        socket.once("connect", resolve)
+        socket.once("error", reject)
+      })
+      return true
+    } finally {
+      socket.destroy()
+    }
+  }, timeoutMs, message)
+}
+
+async function createAutomationClient(socketPath) {
+  const socket = net.createConnection(socketPath)
+  socket.setEncoding("utf8")
+  await new Promise((resolve, reject) => {
+    socket.once("connect", resolve)
+    socket.once("error", reject)
+  })
+  let buffer = ""
+  let nextId = 1
+  const pending = new Map()
+  socket.on("data", (chunk) => {
+    buffer += chunk
+    while (buffer.includes("\n")) {
+      const newline = buffer.indexOf("\n")
+      const line = buffer.slice(0, newline).trim()
+      buffer = buffer.slice(newline + 1)
+      if (!line) continue
+      const response = JSON.parse(line)
+      const deferred = pending.get(response.id)
+      if (!deferred) continue
+      pending.delete(response.id)
+      clearTimeout(deferred.timeout)
+      if (response.ok) deferred.resolve(response.data)
+      else deferred.reject(new Error(response.error ?? "automation command failed"))
+    }
+  })
+  const rejectPending = (error) => {
+    for (const deferred of pending.values()) {
+      clearTimeout(deferred.timeout)
+      deferred.reject(error)
+    }
+    pending.clear()
+  }
+  socket.on("error", rejectPending)
+  socket.on("close", () => rejectPending(new Error("automation socket closed")))
+  return {
+    send(action, fields = {}, timeoutMs = 10_000) {
+      const id = nextId++
+      return new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          pending.delete(id)
+          reject(new Error(`automation action ${action} timed out after ${timeoutMs}ms`))
+        }, timeoutMs)
+        pending.set(id, { resolve, reject, timeout })
+        socket.write(`${JSON.stringify({ id, action, ...fields })}\n`)
+      })
+    },
+    close() {
+      rejectPending(new Error("automation client closed"))
+      socket.destroy()
+    },
+  }
+}
+
+async function waitForAutomationSnapshot(automation, predicate, label, timeoutMs = 20_000) {
+  let lastSnapshot = null
+  return await waitFor(async () => {
+    lastSnapshot = await automation.send("snapshot")
+    return predicate(lastSnapshot) ? lastSnapshot : false
+  }, timeoutMs, `${label} did not appear; last snapshot ${JSON.stringify(lastSnapshot)}`)
 }
 
 async function sliceScreen(args) {
@@ -396,16 +651,17 @@ async function dockerLimits() {
 async function cleanup() {
   const tempRoot = await tempRootPromise
   if (client && requests && sessionId) {
-    await client.send(requests.stopRoomEnvironmentRequest(sessionId)).catch(() => undefined)
-    await client.send(requests.endSessionRequest(sessionId)).catch(() => undefined)
+    await withTimeout(client.send(requests.stopRoomEnvironmentRequest(sessionId)), 2_000, "cleanup StopRoomEnvironment").catch(() => undefined)
+    await withTimeout(client.send(requests.endSessionRequest(sessionId)), 2_000, "cleanup EndSession").catch(() => undefined)
   }
   if (client && requests && slice) {
-    await client.send(requests.deleteSliceRequest(slice.id)).catch(() => undefined)
+    await withTimeout(client.send(requests.deleteSliceRequest(slice.id)), 2_000, "cleanup DeleteSlice").catch(() => undefined)
   }
   await docker(["rm", "-f", containerName]).catch(() => undefined)
   await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   await client?.close?.()
   await observerClient?.close?.()
+  remoteAutomation?.close()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
   await rm(tempRoot, { recursive: true, force: true })
@@ -413,7 +669,7 @@ async function cleanup() {
   resources.push(after)
   const containerGone = (await runCommand("docker", ["container", "inspect", containerName], 20_000)).code !== 0
   const volumeGone = (await runCommand("docker", ["volume", "inspect", homeVolume], 20_000)).code !== 0
-  const ports = [kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixture?.port].filter(Number.isInteger)
+  const ports = [relayPort, kernelPort, kernelPort + 1, kernelPort + 2, kernelPort + 3, fixture?.port].filter(Number.isInteger)
   const occupiedPorts = []
   for (const port of ports) {
     if (!(await portIsAvailable(port))) occupiedPorts.push(port)
@@ -437,7 +693,10 @@ async function cleanup() {
     await writeFile(path.join(evidenceRoot, "result.json"), `${JSON.stringify(result, null, 2)}\n`)
   }
   if (failure) {
-    await writeFile(path.join(evidenceRoot, "failure.txt"), `${failure?.stack ?? String(failure)}\n`)
+    await writeFile(
+      path.join(evidenceRoot, "failure.txt"),
+      `${failure?.stack ?? String(failure)}\n\nremote TUI output:\n${remoteTuiOutput}\n`,
+    )
   }
 }
 
@@ -458,9 +717,39 @@ async function portIsAvailable(port) {
 
 async function terminateChild(child) {
   if (!child || child.exitCode != null) return
-  child.kill("SIGTERM")
-  await Promise.race([new Promise((resolve) => child.once("exit", resolve)), sleep(5_000)])
-  if (child.exitCode == null) child.kill("SIGKILL")
+  signalChild(child, "SIGTERM")
+  if (await waitForChildExit(child, 5_000)) return
+  signalChild(child, "SIGKILL")
+  await waitForChildExit(child, 1_000)
+}
+
+function waitForChildExit(child, timeoutMs) {
+  if (child.exitCode != null) return Promise.resolve(true)
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (exited) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      child.off("exit", onExit)
+      resolve(exited)
+    }
+    const onExit = () => finish(true)
+    const timeout = setTimeout(() => finish(false), timeoutMs)
+    child.once("exit", onExit)
+  })
+}
+
+function signalChild(child, signal) {
+  if (child.killProcessGroup) {
+    try {
+      process.kill(-child.pid, signal)
+      return
+    } catch (error) {
+      if (error?.code !== "ESRCH") throw error
+    }
+  }
+  child.kill(signal)
 }
 
 async function waitFor(operation, timeoutMs, message) {
@@ -505,4 +794,18 @@ function unwrap(response, variant) {
 
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+async function withTimeout(promise, timeoutMs, label) {
+  let timeout = null
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timeout = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timeout) clearTimeout(timeout)
+  }
 }
