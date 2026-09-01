@@ -16,6 +16,7 @@ mod home_connector_executor;
 mod home_extension_authorizer;
 mod home_extension_execution_policy;
 mod home_mcp_proxy_executor;
+mod home_room_browser_runtime;
 mod home_script_executor;
 mod meta;
 mod recall;
@@ -26,6 +27,7 @@ mod skill_package_response;
 mod slice;
 mod worker_home_credential_client;
 mod worker_home_extension_client;
+mod worker_home_room_browser_client;
 mod workflow_authenticated;
 mod workflow_forwarding;
 mod workspace_live_sync_access;
@@ -396,6 +398,18 @@ impl KernelRuntimeState {
                     .await;
             }
             if is_slice_runtime_tool(canonical_tool_name) {
+                if is_room_browser_controller_runtime_tool(canonical_tool_name) {
+                    if let Some(result) = self
+                        .try_dispatch_remote_room_browser_runtime_tool_call(
+                            provider_run.expect("non-workflow tool should have provider run"),
+                            canonical_tool_name,
+                            arguments.clone(),
+                        )
+                        .await?
+                    {
+                        return Ok(result);
+                    }
+                }
                 return self
                     .dispatch_slice_runtime_tool_call(
                         provider_run.expect("non-workflow tool should have provider run"),
@@ -474,6 +488,30 @@ fn is_slice_runtime_tool(tool_name: &str) -> bool {
         || tool_name == crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
 }
 
+fn is_room_browser_controller_runtime_tool(tool_name: &str) -> bool {
+    use crate::transport::runtime_tools::*;
+    matches!(
+        canonical_slice_tool_name(tool_name),
+        Some(
+            SLICE_BROWSER_STATUS_TOOL
+                | SLICE_OPEN_URL_TOOL
+                | SLICE_BROWSER_CLICK_TOOL
+                | SLICE_BROWSER_FILL_TOOL
+                | SLICE_BROWSER_SUBMIT_TOOL
+                | SLICE_BROWSER_DIALOG_TOOL
+                | SLICE_BROWSER_EVENTS_TOOL
+                | SLICE_BROWSER_DOWNLOADS_TOOL
+                | SLICE_BROWSER_UPLOAD_TOOL
+                | SLICE_BROWSER_PERMISSION_TOOL
+                | SLICE_BROWSER_FIND_TOOL
+                | SLICE_BROWSER_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_TEXT_TOOL
+                | SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL
+                | SLICE_BROWSER_WAIT_FOR_IDLE_TOOL
+        )
+    )
+}
+
 fn unambiguous_runtime_tool_provider_run<'a>(
     provider_runs: &'a [crate::provider::RuntimeProviderRun],
     tool_name: &str,
@@ -531,6 +569,36 @@ mod tests {
     fn browser_secret_paste_uses_the_slice_dispatch_path() {
         assert!(super::is_slice_runtime_tool(
             crate::transport::runtime_tools::PASTE_SECRET_TO_SLICE_TOOL
+        ));
+    }
+
+    #[test]
+    fn worker_room_browser_forwarding_has_one_explicit_tool_allowlist() {
+        use crate::transport::runtime_tools::*;
+        for tool_name in [
+            SLICE_BROWSER_STATUS_TOOL,
+            SLICE_OPEN_URL_TOOL,
+            SLICE_BROWSER_CLICK_TOOL,
+            SLICE_BROWSER_FILL_TOOL,
+            SLICE_BROWSER_SUBMIT_TOOL,
+            SLICE_BROWSER_DIALOG_TOOL,
+            SLICE_BROWSER_EVENTS_TOOL,
+            SLICE_BROWSER_DOWNLOADS_TOOL,
+            SLICE_BROWSER_UPLOAD_TOOL,
+            SLICE_BROWSER_PERMISSION_TOOL,
+            SLICE_BROWSER_FIND_TOOL,
+            SLICE_BROWSER_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_TEXT_TOOL,
+            SLICE_BROWSER_WAIT_FOR_SELECTOR_TOOL,
+            SLICE_BROWSER_WAIT_FOR_IDLE_TOOL,
+        ] {
+            assert!(super::is_room_browser_controller_runtime_tool(tool_name));
+        }
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            PASTE_SECRET_TO_SLICE_TOOL
+        ));
+        assert!(!super::is_room_browser_controller_runtime_tool(
+            SLICE_SCREENSHOT_TOOL
         ));
     }
 }

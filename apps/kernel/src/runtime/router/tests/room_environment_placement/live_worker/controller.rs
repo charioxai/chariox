@@ -114,7 +114,7 @@ fn room_environment_controller_boot_rejects_invalid_binding() {
 
 pub(super) async fn controller_scenario(private_relay: bool) {
     let mut fixture = LiveWorker::start_configured(private_relay, true).await;
-    let result = std::panic::AssertUnwindSafe(check_slice_controller(&fixture))
+    let result = std::panic::AssertUnwindSafe(check_slice_controller(&mut fixture))
         .catch_unwind()
         .await;
     let pids = std::fs::read_to_string(fixture._worker_state.root.join("controller.pids"))
@@ -127,8 +127,15 @@ pub(super) async fn controller_scenario(private_relay: bool) {
         .runtime_state
         .shutdown_browser_controller_process()
         .await;
+    let provider_cleanup = fixture
+        .worker
+        .app
+        .lock()
+        .await
+        .teardown_provider_processes(Some("managed-dev-stub"), true);
     fixture.stop().await;
     cleanup.expect("stop fixture controller on success and failure");
+    provider_cleanup.expect("stop fixture worker provider on success and failure");
     for pid in pids {
         eprintln!("relay controller fixture PID: {pid}");
         assert!(
@@ -141,7 +148,8 @@ pub(super) async fn controller_scenario(private_relay: bool) {
     }
 }
 
-async fn check_slice_controller(fixture: &LiveWorker) {
+async fn check_slice_controller(fixture: &mut LiveWorker) {
+    let worker_mcp_placement = fixture.placement();
     fixture.create_slice().await;
     let room = &fixture.rooms[0];
     let original = dispatch_json(
@@ -343,6 +351,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
         tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
     }));
     super::controller_compatibility::check(fixture, &token).await;
+    super::controller_worker_mcp::check(fixture, worker_mcp_placement).await;
     dispatch_json(
         &fixture.home,
         json!({"StopRoomEnvironment":{"session_id":room}}),

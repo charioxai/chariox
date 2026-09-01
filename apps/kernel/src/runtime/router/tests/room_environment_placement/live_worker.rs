@@ -14,6 +14,7 @@ mod controller_integrations;
 mod controller_mutations;
 mod controller_observations;
 mod controller_response_loss;
+mod controller_worker_mcp;
 mod lease_release;
 mod session;
 
@@ -214,9 +215,36 @@ impl LiveWorker {
                 crate::session::unix_epoch_ms(),
             )
             .unwrap();
+        if self.private_relay {
+            let slice = self
+                .home
+                .runtime_state
+                .resolve_slice("desktop")
+                .expect("private-relay fixture slice");
+            let relay_config = self
+                .home_state
+                .config
+                .slice_relay_override(&slice)
+                .expect("private slice relay config");
+            self.home
+                .runtime_state
+                .ensure_slice_private_relay_home_connection(
+                    &slice.id,
+                    relay_config.relay_url.expect("private slice relay URL"),
+                    relay_config.relay_token.expect("private slice relay token"),
+                )
+                .await
+                .expect("home kernel joins the private slice relay");
+        }
     }
 
     async fn stop(&mut self) {
+        if self.private_relay {
+            self.home
+                .runtime_state
+                .stop_slice_private_relay_home_connection("slice-1")
+                .await;
+        }
         let _ = self.shutdown.send(true);
         let mut failures = Vec::new();
         for mut task in self.tasks.drain(..) {

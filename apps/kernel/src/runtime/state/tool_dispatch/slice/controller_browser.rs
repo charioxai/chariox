@@ -15,7 +15,8 @@ impl KernelRuntimeState {
         args: crate::transport::runtime_tools::PasteSecretToSliceArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let status =
-            run_controller_browser_status_tool(self, provider_run, slice_id, agent_id).await?;
+            run_controller_browser_status_tool(self, provider_run.session_id(), slice_id, agent_id)
+                .await?;
         let browser = status
             .payload
             .get("browser")
@@ -98,55 +99,50 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_status_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_status_tool(self, provider_run, slice_id, agent_id).await
+        run_controller_browser_status_tool(self, session_id, slice_id, agent_id).await
     }
 
     pub(super) async fn controller_browser_find_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         query: &str,
         kind: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_find_tool(self, provider_run, slice_id, agent_id, query, kind).await
+        run_controller_browser_find_tool(self, session_id, slice_id, agent_id, query, kind).await
     }
 
     pub(super) async fn controller_browser_text_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        run_controller_browser_text_tool(self, provider_run, slice_id, agent_id).await
+        run_controller_browser_text_tool(self, session_id, slice_id, agent_id).await
     }
 
     pub(super) async fn controller_browser_wait_for_text_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         query: &str,
         timeout_ms: Option<u64>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         run_controller_browser_wait_for_text_tool(
-            self,
-            provider_run,
-            slice_id,
-            agent_id,
-            query,
-            timeout_ms,
+            self, session_id, slice_id, agent_id, query, timeout_ms,
         )
         .await
     }
 
     pub(super) async fn controller_browser_fill_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserFillArgs,
@@ -158,7 +154,7 @@ impl KernelRuntimeState {
         )?;
         let result = self
             .perform_browser_environment_locator_action_as_agent(
-                provider_run.session_id(),
+                session_id,
                 agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Fill {
@@ -176,7 +172,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_click_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserClickArgs,
@@ -188,7 +184,7 @@ impl KernelRuntimeState {
         )?;
         let result = self
             .perform_browser_environment_locator_action_as_agent(
-                provider_run.session_id(),
+                session_id,
                 agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Click,
@@ -202,7 +198,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_submit_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserSubmitArgs,
@@ -215,7 +211,7 @@ impl KernelRuntimeState {
             Ok(reference) => reference,
             Err(_) if args.selector.is_none() && args.field_id.is_none() => {
                 let status =
-                    run_controller_browser_status_tool(self, provider_run, slice_id, agent_id)
+                    run_controller_browser_status_tool(self, session_id, slice_id, agent_id)
                         .await?;
                 status
                     .payload
@@ -231,7 +227,7 @@ impl KernelRuntimeState {
         };
         let result = self
             .perform_browser_environment_locator_action_as_agent(
-                provider_run.session_id(),
+                session_id,
                 agent_id,
                 &element_ref,
                 crate::runtime::browser_controller_action::BrowserLocatorAction::Submit,
@@ -245,7 +241,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_dialog_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserDialogArgs,
@@ -264,7 +260,7 @@ impl KernelRuntimeState {
         };
         let environment = ensure_controller_browser_environment(
             self,
-            provider_run.session_id(),
+            session_id,
             "runtime_tool_slice_browser_dialog",
         )
         .await?;
@@ -275,12 +271,7 @@ impl KernelRuntimeState {
                 message: "the Room browser has no focused tab".to_string(),
             })?;
         let result = self
-            .handle_browser_environment_dialog_as_agent(
-                provider_run.session_id(),
-                agent_id,
-                &tab_id,
-                action,
-            )
+            .handle_browser_environment_dialog_as_agent(session_id, agent_id, &tab_id, action)
             .await?;
         Ok(controller_browser_dialog_tool_result(
             slice_id, agent_id, result,
@@ -289,7 +280,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_events_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserEventsArgs,
@@ -306,35 +297,32 @@ impl KernelRuntimeState {
         }
         ensure_controller_browser_environment(
             self,
-            provider_run.session_id(),
+            session_id,
             "runtime_tool_slice_browser_events",
         )
         .await?;
         let batch = self
             .poll_browser_environment_events(
-                provider_run.session_id(),
+                session_id,
                 args.browser_generation,
                 args.cursor,
                 args.limit,
             )
             .await?;
         Ok(controller_browser_events_tool_result(
-            slice_id,
-            agent_id,
-            provider_run.session_id(),
-            batch,
+            slice_id, agent_id, session_id, batch,
         ))
     }
 
     pub(super) async fn controller_browser_downloads_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         let environment = ensure_controller_browser_environment(
             self,
-            provider_run.session_id(),
+            session_id,
             "runtime_tool_slice_browser_downloads",
         )
         .await?;
@@ -345,7 +333,7 @@ impl KernelRuntimeState {
                 message: "the Room browser has no focused tab".to_string(),
             })?;
         let result = self
-            .configure_browser_environment_downloads(provider_run.session_id(), &tab_id)
+            .configure_browser_environment_downloads(session_id, &tab_id)
             .await?;
         Ok(controller_browser_downloads_tool_result(
             slice_id, agent_id, result,
@@ -354,19 +342,19 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_upload_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserUploadArgs,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         ensure_controller_browser_environment(
             self,
-            provider_run.session_id(),
+            session_id,
             "runtime_tool_slice_browser_upload",
         )
         .await?;
         let result = self
-            .upload_browser_environment_files(provider_run.session_id(), &args.field_id, args.files)
+            .upload_browser_environment_files(session_id, &args.field_id, args.files)
             .await?;
         Ok(controller_browser_upload_tool_result(
             slice_id, agent_id, result,
@@ -375,7 +363,7 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_permission_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         args: crate::transport::runtime_tools::SliceBrowserPermissionArgs,
@@ -395,7 +383,7 @@ impl KernelRuntimeState {
         })?;
         let environment = ensure_controller_browser_environment(
             self,
-            provider_run.session_id(),
+            session_id,
             "runtime_tool_slice_browser_permission",
         )
         .await?;
@@ -406,12 +394,7 @@ impl KernelRuntimeState {
                 message: "the Room browser has no focused tab".to_string(),
             })?;
         let result = self
-            .set_browser_environment_permission(
-                provider_run.session_id(),
-                &tab_id,
-                permission,
-                setting,
-            )
+            .set_browser_environment_permission(session_id, &tab_id, permission, setting)
             .await?;
         Ok(controller_browser_permission_tool_result(
             slice_id, agent_id, result,
@@ -444,11 +427,10 @@ fn runtime_tool_browser_permission(
 
 pub(super) async fn run_controller_browser_status_tool(
     state: &KernelRuntimeState,
-    provider_run: &crate::provider::RuntimeProviderRun,
+    session_id: &str,
     slice_id: &str,
     agent_id: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let session_id = provider_run.session_id();
     let environment = ensure_controller_browser_environment(
         state,
         session_id,
@@ -543,14 +525,13 @@ pub(super) async fn ensure_controller_browser_environment(
 
 pub(super) async fn run_controller_browser_find_tool(
     state: &KernelRuntimeState,
-    provider_run: &crate::provider::RuntimeProviderRun,
+    session_id: &str,
     slice_id: &str,
     agent_id: &str,
     query: &str,
     kind: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let status =
-        run_controller_browser_status_tool(state, provider_run, slice_id, agent_id).await?;
+    let status = run_controller_browser_status_tool(state, session_id, slice_id, agent_id).await?;
     let browser_status =
         status
             .payload
@@ -572,7 +553,7 @@ pub(super) async fn run_controller_browser_find_tool(
             "source": "browser_controller",
             "slice_id": slice_id,
             "agent_id": agent_id,
-            "session_id": provider_run.session_id(),
+            "session_id": session_id,
             "browser": browser,
         }),
     })
@@ -580,23 +561,20 @@ pub(super) async fn run_controller_browser_find_tool(
 
 pub(super) async fn run_controller_browser_text_tool(
     state: &KernelRuntimeState,
-    provider_run: &crate::provider::RuntimeProviderRun,
+    session_id: &str,
     slice_id: &str,
     agent_id: &str,
 ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-    let (environment, text) = capture_controller_browser_text(
-        state,
-        provider_run.session_id(),
-        "runtime_tool_slice_browser_text",
-    )
-    .await?;
+    let (environment, text) =
+        capture_controller_browser_text(state, session_id, "runtime_tool_slice_browser_text")
+            .await?;
     Ok(crate::transport::runtime_tools::RuntimeToolResult {
         ok: true,
         payload: serde_json::json!({
             "source": "browser_controller",
             "slice_id": slice_id,
             "agent_id": agent_id,
-            "session_id": provider_run.session_id(),
+            "session_id": session_id,
             "environment_id": environment.environment_id,
             "runtime_generation": environment.runtime_generation,
             "tab_id": environment.focused_tab_id,
@@ -607,7 +585,7 @@ pub(super) async fn run_controller_browser_text_tool(
 
 pub(super) async fn run_controller_browser_wait_for_text_tool(
     state: &KernelRuntimeState,
-    provider_run: &crate::provider::RuntimeProviderRun,
+    session_id: &str,
     slice_id: &str,
     agent_id: &str,
     query: &str,
@@ -624,7 +602,7 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
     let started = std::time::Instant::now();
     let environment = ensure_controller_browser_environment(
         state,
-        provider_run.session_id(),
+        session_id,
         "runtime_tool_slice_browser_wait_for_text",
     )
     .await?;
@@ -637,9 +615,7 @@ pub(super) async fn run_controller_browser_wait_for_text_tool(
         })?
         .to_string();
     loop {
-        let text =
-            capture_controller_browser_text_from_tab(state, provider_run.session_id(), &tab_id)
-                .await?;
+        let text = capture_controller_browser_text_from_tab(state, session_id, &tab_id).await?;
         let waited_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
         if text.contains(query) {
             return Ok(controller_browser_wait_for_text_result(

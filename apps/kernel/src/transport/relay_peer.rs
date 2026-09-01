@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 27 routes legacy browser navigation and wait adapters to the
-/// authenticated Room worker that owns the physical browser controller.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 27;
+/// Version 28 forwards worker-agent Room browser runtime tools to the
+/// authenticated home kernel that owns Room action authority.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 28;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -78,6 +78,34 @@ pub struct RemoteExtensionInvocationContext {
     pub worker_kernel_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worker_machine_id: Option<String>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemoteRoomBrowserRuntimeToolCall {
+    pub tool_name: String,
+    pub arguments: serde_json::Value,
+}
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolCall {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("RemoteRoomBrowserRuntimeToolCall")
+            .field("tool_name", &self.tool_name)
+            .field("arguments", &"<redacted>")
+            .finish()
+    }
+}
+
+#[derive(Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct RemoteRoomBrowserRuntimeToolResult(
+    pub crate::transport::runtime_tools::RuntimeToolResult,
+);
+
+impl std::fmt::Debug for RemoteRoomBrowserRuntimeToolResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("RemoteRoomBrowserRuntimeToolResult(<redacted>)")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -401,6 +429,10 @@ pub enum RelayPeerRequest {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    ForwardRoomBrowserRuntimeTool {
+        context: RemoteExtensionInvocationContext,
+        call: RemoteRoomBrowserRuntimeToolCall,
+    },
     InvokeHomeExtensionTool {
         context: RemoteExtensionInvocationContext,
         #[serde(default)]
@@ -556,6 +588,9 @@ pub enum RelayPeerResponse {
     },
     MetaRuntimeToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
+    },
+    RoomBrowserRuntimeToolHandled {
+        result: RemoteRoomBrowserRuntimeToolResult,
     },
     HomeExtensionToolHandled {
         result: crate::transport::runtime_tools::RuntimeToolResult,
