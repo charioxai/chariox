@@ -75,6 +75,19 @@ impl<'a> RemoteLeaseRuntime<'a> {
     }
 
     pub(crate) fn destroy_execution_lease(&mut self, lease_id: &str) -> Result<(), DaemonError> {
+        self.destroy_execution_lease_with(lease_id, |app, agent_id| {
+            RemoteLeaseRuntime::new(app).destroy_leased_agent(agent_id)
+        })
+    }
+
+    fn destroy_execution_lease_with<F>(
+        &mut self,
+        lease_id: &str,
+        mut destroy_agent: F,
+    ) -> Result<(), DaemonError>
+    where
+        F: FnMut(&mut DaemonApp, &str) -> Result<(), DaemonError>,
+    {
         if !self.app.execution_leases.contains_key(lease_id) {
             return if self
                 .app
@@ -96,8 +109,16 @@ impl<'a> RemoteLeaseRuntime<'a> {
             .filter(|agent| agent.lease_id == lease_id)
             .map(|agent| agent.id.clone())
             .collect::<Vec<_>>();
+        let mut first_error = None;
         for agent_id in agent_ids {
-            self.destroy_leased_agent(&agent_id)?;
+            if let Err(error) = destroy_agent(self.app, &agent_id) {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+        }
+        if let Some(error) = first_error {
+            return Err(error);
         }
         self.app.execution_leases.remove(lease_id);
         remember_completed_cleanup(&mut self.app.completed_execution_lease_deletions, lease_id);
@@ -775,6 +796,91 @@ impl<'a> RemoteLeaseRuntime<'a> {
         if let Some(agent) = self.app.leased_agents.get_mut(leased_agent_id) {
             agent.projected_output_history_keys.push(key);
         }
+    }
+}
+
+#[cfg(test)]
+mod cleanup_tests {
+    use super::*;
+    use crate::config::DaemonConfig;
+
+    fn leased_agent(id: &str, lease_id: &str) -> LeasedAgent {
+        LeasedAgent::new(
+            id.to_string(),
+            lease_id.to_string(),
+            format!("home-{id}"),
+            "dev-stub".to_string(),
+            "default".to_string(),
+            None,
+            None,
+            None,
+            None,
+            format!("session-{id}"),
+            format!("backing-{id}"),
+            format!("attachment-{id}"),
+        )
+    }
+
+    #[test]
+    fn execution_lease_cleanup_attempts_every_agent_and_converges_after_partial_failure() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let lease = RemoteLeaseRuntime::new(&mut app)
+            .create_execution_lease(
+                "home-kernel",
+                "home-session",
+                "home-agent",
+                false,
+                "user-home",
+            )
+            .expect("execution lease should be created");
+        for agent_id in ["agent-1", "agent-2", "agent-3"] {
+            app.leased_agents
+                .insert(agent_id.to_string(), leased_agent(agent_id, &lease.id));
+        }
+
+        let mut attempted = Vec::new();
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .destroy_execution_lease_with(&lease.id, |app, agent_id| {
+                attempted.push(agent_id.to_string());
+                if agent_id == "agent-2" {
+                    return Err(DaemonError::LocalTransport {
+                        operation: "test leased agent cleanup",
+                        message: "injected failure".to_string(),
+                    });
+                }
+                app.leased_agents.remove(agent_id);
+                Ok(())
+            })
+            .expect_err("partial cleanup should keep the lease incomplete");
+
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "test leased agent cleanup",
+                ..
+            }
+        ));
+        assert_eq!(attempted, ["agent-1", "agent-2", "agent-3"]);
+        assert!(app.execution_leases.contains_key(&lease.id));
+        assert_eq!(
+            app.leased_agents.keys().cloned().collect::<Vec<_>>(),
+            ["agent-2"]
+        );
+        assert!(!app.completed_execution_lease_deletions.contains(&lease.id));
+
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_execution_lease_with(&lease.id, |app, agent_id| {
+                app.leased_agents.remove(agent_id);
+                Ok(())
+            })
+            .expect("retry should finish the remaining cleanup");
+        assert!(!app.execution_leases.contains_key(&lease.id));
+        assert!(app.leased_agents.is_empty());
+        assert!(app.completed_execution_lease_deletions.contains(&lease.id));
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_execution_lease(&lease.id)
+            .expect("completed cleanup replay should remain idempotent");
     }
 }
 
