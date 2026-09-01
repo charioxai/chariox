@@ -1672,6 +1672,40 @@ fn terminal_action_snapshot_is_bounded_but_history_and_idempotency_are_retained(
 }
 
 #[test]
+fn compacted_non_idempotent_actions_release_their_request_payloads() {
+    let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
+    let mut environment =
+        RoomEnvironment::new_with_event_capacity("room-1", "environment-1", viewport, 2).unwrap();
+    environment.start_runtime().unwrap();
+    environment
+        .transition_to(EnvironmentLifecycle::Ready)
+        .unwrap();
+    environment
+        .register_actor(EnvironmentActor::new(
+            "agent-1",
+            EnvironmentActorKind::Agent,
+            "Mara",
+        ))
+        .unwrap();
+
+    for operation in ["snapshot-1", "snapshot-2", "snapshot-3"] {
+        let action_id = accepted_action_id(
+            environment
+                .submit_action(EnvironmentActionRequest::computer_mutation(
+                    "agent-1", 1, operation, None,
+                ))
+                .unwrap(),
+        );
+        environment
+            .finish_action(&action_id, EnvironmentActionTerminal::Completed)
+            .unwrap();
+    }
+
+    assert_eq!(environment.snapshot().actions.len(), 2);
+    assert_eq!(environment.retained_action_request_count(), 2);
+}
+
+#[test]
 fn action_history_pages_newest_first_across_hot_record_compaction() {
     let viewport = CanonicalViewport::new(1440, 900, 1, 1440, 900).unwrap();
     let mut environment =

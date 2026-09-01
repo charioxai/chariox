@@ -83,6 +83,11 @@ impl EnvironmentActionLedger {
         self.actions.get(action_id)
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_request_count(&self) -> usize {
+        self.requests.len()
+    }
+
     pub(crate) fn action_history(
         &self,
         before_sequence: Option<u64>,
@@ -772,7 +777,10 @@ impl EnvironmentActionLedger {
             .collect();
         let evict_count = terminal_ids.len().saturating_sub(self.terminal_capacity);
         for action_id in terminal_ids.into_iter().take(evict_count) {
-            self.actions.remove(&action_id);
+            let evicted_action = self.actions.remove(&action_id);
+            if evicted_action.is_some_and(|action| action.idempotency_key.is_none()) {
+                self.requests.remove(&action_id);
+            }
             self.order.retain(|candidate| candidate != &action_id);
         }
     }

@@ -118,6 +118,11 @@ impl RoomEnvironment {
         )
     }
 
+    #[cfg(test)]
+    pub(crate) fn retained_action_request_count(&self) -> usize {
+        self.action_ledger.retained_request_count()
+    }
+
     pub fn transition_to(&mut self, next: EnvironmentLifecycle) -> Result<(), EnvironmentError> {
         if !allows_transition(self.lifecycle, next) {
             return Err(EnvironmentError::InvalidLifecycleTransition {
