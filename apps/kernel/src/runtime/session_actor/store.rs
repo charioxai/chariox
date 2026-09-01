@@ -5,7 +5,7 @@ use crate::local::{
     DetachFromSessionRequest, EndSessionRequest, FocusAgentRequest, ListProjectsRequest,
     LocalDaemonResponse, RenameProjectRequest, RespondToInteractionRequest, RestoreProjectRequest,
     RetryRoomEnvironmentRequest, StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
-    UpdateSessionConfigRequest,
+    UpdateRoomEnvironmentViewportRequest, UpdateSessionConfigRequest,
 };
 use crate::runtime::state::KernelRuntimeState;
 use crate::session::CreateSessionRequest;
@@ -101,6 +101,48 @@ impl SessionRuntimeStore {
             .retry_room_environment(&request.session_id)
             .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
             .map_err(|error| room_environment_control_error("environment.retry", error));
+        (result, None)
+    }
+
+    pub(super) async fn update_room_environment_viewport(
+        &self,
+        request: UpdateRoomEnvironmentViewportRequest,
+        caller_user_id: String,
+    ) -> (
+        Result<LocalDaemonResponse, DaemonError>,
+        Option<SessionProjectionAction>,
+    ) {
+        let viewport = crate::session::CanonicalViewport::new(
+            request.viewport.css_width,
+            request.viewport.css_height,
+            request.viewport.device_scale_factor,
+            request.viewport.desktop_pixel_width,
+            request.viewport.desktop_pixel_height,
+        )
+        .map_err(|error| room_environment_control_error("environment.viewport.update", error));
+        let result = viewport.and_then(|viewport| {
+            let actor_id = crate::session::human_environment_actor_id(&caller_user_id);
+            let display_label = if caller_user_id == crate::session::DEFAULT_LOCAL_USER_ID {
+                "Local user"
+            } else {
+                "Room member"
+            };
+            self.state
+                .update_room_environment_viewport_as_actor(
+                    &request.session_id,
+                    crate::session::EnvironmentActor::new(
+                        actor_id,
+                        crate::session::EnvironmentActorKind::Human,
+                        display_label,
+                    ),
+                    request.expected_revision,
+                    viewport,
+                )
+                .map(|environment| LocalDaemonResponse::RoomEnvironmentUpdated { environment })
+                .map_err(|error| {
+                    room_environment_control_error("environment.viewport.update", error)
+                })
+        });
         (result, None)
     }
 

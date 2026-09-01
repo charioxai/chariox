@@ -38,6 +38,7 @@ impl SessionActor {
                 | LocalDaemonRequest::StartRoomEnvironment(_)
                 | LocalDaemonRequest::StopRoomEnvironment(_)
                 | LocalDaemonRequest::RetryRoomEnvironment(_)
+                | LocalDaemonRequest::UpdateRoomEnvironmentViewport(_)
                 | LocalDaemonRequest::CreateAgentPromptSchedule(_)
                 | LocalDaemonRequest::CancelAgentPromptSchedule(_)
                 | LocalDaemonRequest::AliasAgent(_)

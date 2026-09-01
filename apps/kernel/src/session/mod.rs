@@ -36,12 +36,13 @@ pub use agent_config::{
 pub(crate) use owner::{SessionStateOwner, SessionStateReader, SessionStateStore};
 pub(crate) use room_environment::RoomEnvironmentRegistry;
 pub use room_environment::{
-    ActionAdmission, CanonicalViewport, EnvironmentAction, EnvironmentActionRequest,
-    EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor, EnvironmentActorKind,
-    EnvironmentActorPresence, EnvironmentComponent, EnvironmentComponentHealth,
-    EnvironmentComponentHealthState, EnvironmentError, EnvironmentEvent, EnvironmentEventKind,
-    EnvironmentLifecycle, EnvironmentMode, EnvironmentReplay, EnvironmentTab, InputOwnership,
-    InputTarget, RoomEnvironment, RoomEnvironmentSnapshot, TakeoverOutcome,
+    human_environment_actor_id, ActionAdmission, CanonicalViewport, EnvironmentAction,
+    EnvironmentActionRequest, EnvironmentActionState, EnvironmentActionTerminal, EnvironmentActor,
+    EnvironmentActorKind, EnvironmentActorPresence, EnvironmentComponent,
+    EnvironmentComponentHealth, EnvironmentComponentHealthState, EnvironmentError,
+    EnvironmentEvent, EnvironmentEventKind, EnvironmentLifecycle, EnvironmentMode,
+    EnvironmentReplay, EnvironmentTab, InputOwnership, InputTarget, RoomEnvironment,
+    RoomEnvironmentSnapshot, TakeoverOutcome,
 };
 pub use runtime_project::{
     RuntimeProject, RuntimeProjectKind, RuntimeProjectStatus, SessionProjectSelection,

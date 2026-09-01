@@ -62,6 +62,9 @@ pub(super) async fn resolve_session_lane_key(
         LocalDaemonRequest::RetryRoomEnvironment(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }
+        LocalDaemonRequest::UpdateRoomEnvironmentViewport(request) => {
+            resolve_direct_session_lane_key(session_projection, &request.session_id)
+        }
         LocalDaemonRequest::CreateAgentPromptSchedule(request) => {
             resolve_direct_session_lane_key(session_projection, &request.session_id)
         }

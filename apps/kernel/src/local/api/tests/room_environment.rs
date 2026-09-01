@@ -1,9 +1,101 @@
 use super::*;
 use crate::local::{
     GetRoomEnvironmentStateRequest, RetryRoomEnvironmentRequest, RoomEnvironmentViewportRequest,
-    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest,
+    StartRoomEnvironmentRequest, StopRoomEnvironmentRequest, UpdateRoomEnvironmentViewportRequest,
 };
 use crate::session::CanonicalViewport;
+
+#[test]
+fn room_environment_viewport_update_uses_authenticated_actor_and_revision() {
+    let harness = LocalRouterTestHarness::new();
+    let session = match harness
+        .dispatch(LocalDaemonRequest::CreateSession(
+            CreateSessionRequest::new(
+                "workspace-environment-viewport",
+                "worktree-environment-viewport",
+            ),
+        ))
+        .expect("Room should be created")
+    {
+        LocalDaemonResponse::SessionCreated { session, .. } => session,
+        other => panic!("unexpected local response: {other:?}"),
+    };
+    harness
+        .dispatch(LocalDaemonRequest::StartRoomEnvironment(
+            StartRoomEnvironmentRequest {
+                session_id: session.id().to_string(),
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1280,
+                    css_height: 800,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1280,
+                    desktop_pixel_height: 800,
+                },
+            },
+        ))
+        .expect("Room Environment should start");
+    harness.with_app_mut(|app| {
+        app.session_state_store()
+            .transition_room_environment(session.id(), crate::session::EnvironmentLifecycle::Ready)
+            .expect("managed runtime should become ready");
+    });
+
+    let response = harness
+        .dispatch(LocalDaemonRequest::UpdateRoomEnvironmentViewport(
+            UpdateRoomEnvironmentViewportRequest {
+                session_id: session.id().to_string(),
+                expected_revision: 1,
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1440,
+                    css_height: 900,
+                    device_scale_factor: 2,
+                    desktop_pixel_width: 2880,
+                    desktop_pixel_height: 1800,
+                },
+            },
+        ))
+        .expect("authenticated Room member should update the canonical viewport");
+    let LocalDaemonResponse::RoomEnvironmentUpdated { environment } = response else {
+        panic!("unexpected local response: {response:?}");
+    };
+    let expected_actor_id =
+        crate::session::human_environment_actor_id(crate::session::DEFAULT_LOCAL_USER_ID);
+    assert_eq!(environment.viewport.css_width, 1440);
+    assert_eq!(environment.viewport.revision, 2);
+    assert_eq!(
+        environment.viewport.last_actor_id.as_deref(),
+        Some(expected_actor_id.as_str())
+    );
+    assert!(environment.actors.iter().any(|actor| {
+        actor.actor_id == expected_actor_id
+            && actor.kind == crate::session::EnvironmentActorKind::Human
+            && actor.display_label == "Local user"
+    }));
+
+    let error = harness
+        .dispatch(LocalDaemonRequest::UpdateRoomEnvironmentViewport(
+            UpdateRoomEnvironmentViewportRequest {
+                session_id: session.id().to_string(),
+                expected_revision: 1,
+                viewport: RoomEnvironmentViewportRequest {
+                    css_width: 1600,
+                    css_height: 1000,
+                    device_scale_factor: 1,
+                    desktop_pixel_width: 1600,
+                    desktop_pixel_height: 1000,
+                },
+            },
+        ))
+        .expect_err("a stale viewport revision must fail");
+    assert!(matches!(
+        error,
+        DaemonError::RoomEnvironment {
+            operation: "environment.viewport.update",
+            code: "environment_stale_viewport_revision",
+            ..
+        }
+    ));
+}
 
 #[test]
 fn room_environment_start_rejects_invalid_initial_viewport_with_stable_code() {

@@ -29,3 +29,10 @@ pub struct StopRoomEnvironmentRequest {
 pub struct RetryRoomEnvironmentRequest {
     pub session_id: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdateRoomEnvironmentViewportRequest {
+    pub session_id: String,
+    pub expected_revision: u64,
+    pub viewport: RoomEnvironmentViewportRequest,
+}

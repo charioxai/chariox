@@ -1,5 +1,5 @@
 use super::*;
-use crate::session::EnvironmentLifecycle;
+use crate::session::{EnvironmentActor, EnvironmentLifecycle};
 
 impl SessionService {
     pub(crate) fn create_room_environment(
@@ -74,5 +74,25 @@ impl SessionService {
             });
         }
         self.room_environments.transition(session_id, lifecycle)
+    }
+
+    pub(crate) fn update_room_environment_viewport_as_actor(
+        &mut self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        if !self.has_session(session_id) {
+            return Err(EnvironmentError::RoomNotFound {
+                session_id: session_id.to_string(),
+            });
+        }
+        self.room_environments.update_viewport_as_actor(
+            session_id,
+            actor,
+            expected_revision,
+            viewport,
+        )
     }
 }

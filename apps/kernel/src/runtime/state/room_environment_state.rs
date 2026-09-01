@@ -1,4 +1,6 @@
-use crate::session::{CanonicalViewport, EnvironmentError, RoomEnvironmentSnapshot};
+use crate::session::{
+    CanonicalViewport, EnvironmentActor, EnvironmentError, RoomEnvironmentSnapshot,
+};
 
 use super::KernelRuntimeState;
 
@@ -34,5 +36,22 @@ impl KernelRuntimeState {
         session_id: &str,
     ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
         self.owned.session_store.retry_room_environment(session_id)
+    }
+
+    pub(crate) fn update_room_environment_viewport_as_actor(
+        &self,
+        session_id: &str,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        viewport: CanonicalViewport,
+    ) -> Result<RoomEnvironmentSnapshot, EnvironmentError> {
+        self.owned
+            .session_store
+            .update_room_environment_viewport_as_actor(
+                session_id,
+                actor,
+                expected_revision,
+                viewport,
+            )
     }
 }

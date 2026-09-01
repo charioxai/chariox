@@ -207,11 +207,42 @@ impl RoomEnvironment {
         &mut self,
         actor_id: &str,
         expected_revision: u64,
-        mut replacement: CanonicalViewport,
+        replacement: CanonicalViewport,
     ) -> Result<(), EnvironmentError> {
         if !self.actors.contains_key(actor_id) {
             return Err(EnvironmentError::UnknownActor {
                 actor_id: actor_id.to_string(),
+            });
+        }
+        self.validate_viewport_update(actor_id, expected_revision)?;
+        self.apply_viewport(actor_id, replacement);
+        Ok(())
+    }
+
+    pub fn update_viewport_as_actor(
+        &mut self,
+        actor: EnvironmentActor,
+        expected_revision: u64,
+        replacement: CanonicalViewport,
+    ) -> Result<(), EnvironmentError> {
+        self.validate_viewport_update(&actor.actor_id, expected_revision)?;
+        let actor_id = actor.actor_id.clone();
+        self.register_actor(actor)?;
+        self.apply_viewport(&actor_id, replacement);
+        Ok(())
+    }
+
+    fn validate_viewport_update(
+        &self,
+        actor_id: &str,
+        expected_revision: u64,
+    ) -> Result<(), EnvironmentError> {
+        if !matches!(
+            self.lifecycle,
+            EnvironmentLifecycle::Ready | EnvironmentLifecycle::Degraded
+        ) {
+            return Err(EnvironmentError::EnvironmentNotReady {
+                lifecycle: self.lifecycle,
             });
         }
         if let Some(owner_actor_id) = self.action_ledger.owner(&InputTarget::Desktop) {
@@ -228,13 +259,16 @@ impl RoomEnvironment {
                 actual: expected_revision,
             });
         }
+        Ok(())
+    }
+
+    fn apply_viewport(&mut self, actor_id: &str, mut replacement: CanonicalViewport) {
         replacement.revision = self.viewport.revision + 1;
         replacement.last_actor_id = Some(actor_id.to_string());
         self.viewport = replacement;
         self.emit(EnvironmentEventKind::ViewportChanged {
             revision: self.viewport.revision,
         });
-        Ok(())
     }
 
     pub fn submit_action(
