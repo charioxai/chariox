@@ -17,6 +17,8 @@ let state = existsSync(stateFile)
   ? JSON.parse(readFileSync(stateFile, "utf8"))
   : { open: true, saved: false, clickCount: 0, pressed: false, note: "", submitted: null, focused: "worker-save" };
 state.clickCount ??= 0;
+state.url ??= "https://worker.test/";
+state.documentId ??= "worker-document";
 const persist = () => writeFileSync(stateFile, JSON.stringify(state));
 const subscribers = new Set();
 const emit = (message) => {
@@ -33,14 +35,19 @@ const chromium = {
   async send(method, params = {}, sessionId) {
     switch (method) {
       case "Target.getTargets": return { targetInfos: [
-        { type: "page", targetId: "worker-tab", url: "https://worker.test/", title: "Worker browser" },
+        { type: "page", targetId: "worker-tab", url: state.url, title: "Worker browser" },
         ...(state.popup ? [{ type: "page", targetId: "worker-popup", url: "https://popup.worker.test/", title: "Worker popup" }] : []),
       ] };
       case "Target.attachToTarget": return { sessionId: params.targetId === "worker-popup" ? "worker-popup-session" : "worker-cdp-session" };
       case "Page.getFrameTree": return { frameTree: { frame: {
         id: sessionId === "worker-popup-session" ? "worker-popup-frame" : "worker-frame",
-        loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : "worker-document",
+        loaderId: sessionId === "worker-popup-session" ? "worker-popup-document" : state.documentId,
       } } };
+      case "Page.navigate":
+        state.url = params.url;
+        state.documentId = "worker-navigated-document";
+        persist();
+        return { frameId: "worker-frame", loaderId: state.documentId };
       case "Runtime.evaluate": return { result: { value: true } };
       case "Accessibility.getFullAXTree": return { nodes: [{
         nodeId: "ax-save", backendDOMNodeId: 103, ignored: false,

@@ -193,6 +193,21 @@ async fn execute_local(
         } => processes
             .capture_browser_snapshot(&session_id, &target_id, &document_id)
             .map(|snapshot| Response::Snapshot { snapshot }),
+        Command::Navigate {
+            target_id,
+            document_id,
+            url,
+        } => processes
+            .navigate_browser(&session_id, &target_id, &document_id, url.as_str())
+            .map(|result| Response::Navigation { result }),
+        Command::Wait {
+            target_id,
+            document_id,
+            wait,
+            timeout_ms,
+        } => processes
+            .wait_for_browser(&session_id, &target_id, &document_id, &wait, timeout_ms)
+            .map(|result| Response::Wait { result }),
         Command::Dialog {
             target_id,
             document_id,

@@ -294,6 +294,20 @@ async fn check_slice_controller(fixture: &LiveWorker) {
                 cursor: 0,
                 limit: 10,
             },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Navigate {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                url: crate::runtime::browser_controller_compatibility::BrowserNavigationUrl::new(
+                    "https://denied.worker.test/",
+                )
+                .unwrap(),
+            },
+            crate::transport::room_browser_controller::RoomBrowserControllerCommand::Wait {
+                target_id: "worker-tab".into(),
+                document_id: "worker-document".into(),
+                wait: crate::runtime::browser_controller_compatibility::BrowserCompatibilityWait::Idle,
+                timeout_ms: 500,
+            },
         ] {
             let denied = crate::transport::relay_client::send_peer_request_via_temporary_connection_with_timeout(
             &sender,
@@ -328,6 +342,7 @@ async fn check_slice_controller(fixture: &LiveWorker) {
     assert!(again_tabs.iter().any(|tab| {
         tab["url"] == "https://popup.worker.test/" && tab["title"] == "Worker popup"
     }));
+    super::controller_compatibility::check(fixture, &token).await;
     dispatch_json(
         &fixture.home,
         json!({"StopRoomEnvironment":{"session_id":room}}),

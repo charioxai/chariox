@@ -1,4 +1,4 @@
-export const LOCAL_DAEMON_PROTOCOL_VERSION = 290
+export const LOCAL_DAEMON_PROTOCOL_VERSION = 291
 
 export type * from "./kernel-types-extensions.js"
 export type * from "./kernel-types-session.js"

@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 pub(crate) const MIN_BROWSER_COMPATIBILITY_WAIT_TIMEOUT_MS: u64 = 100;
 pub(crate) const MAX_BROWSER_COMPATIBILITY_WAIT_TIMEOUT_MS: u64 = 5_000;
@@ -6,10 +6,27 @@ pub(crate) const DEFAULT_BROWSER_COMPATIBILITY_WAIT_TIMEOUT_MS: u64 = 5_000;
 const MAX_BROWSER_COMPATIBILITY_SELECTOR_BYTES: usize = 8_192;
 const MAX_BROWSER_COMPATIBILITY_URL_BYTES: usize = 8_192;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "selector", rename_all = "snake_case")]
 pub(crate) enum BrowserCompatibilityWait {
     Selector(String),
     Idle,
+}
+
+impl std::fmt::Debug for BrowserCompatibilityWait {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Selector(_) => formatter
+                .debug_struct("BrowserCompatibilityWait")
+                .field("kind", &"selector")
+                .field("selector", &"[redacted]")
+                .finish(),
+            Self::Idle => formatter
+                .debug_struct("BrowserCompatibilityWait")
+                .field("kind", &"idle")
+                .finish(),
+        }
+    }
 }
 
 impl BrowserCompatibilityWait {
@@ -63,12 +80,58 @@ pub(crate) fn normalize_browser_navigation_url(url: &str) -> Result<String, Stri
     Ok(parsed.to_string())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub(crate) struct BrowserNavigationUrl(String);
+
+impl BrowserNavigationUrl {
+    pub(crate) fn new(url: &str) -> Result<Self, String> {
+        normalize_browser_navigation_url(url).map(Self)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl std::fmt::Debug for BrowserNavigationUrl {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("[redacted browser navigation URL]")
+    }
+}
+
+impl TryFrom<String> for BrowserNavigationUrl {
+    type Error = String;
+
+    fn try_from(url: String) -> Result<Self, Self::Error> {
+        Self::new(&url)
+    }
+}
+
+impl From<BrowserNavigationUrl> for String {
+    fn from(url: BrowserNavigationUrl) -> Self {
+        url.0
+    }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerNavigationResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,
     pub(crate) document_id: String,
     pub(crate) url: String,
+}
+
+impl std::fmt::Debug for BrowserControllerNavigationResult {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserControllerNavigationResult")
+            .field("browser_generation", &self.browser_generation)
+            .field("target_id", &self.target_id)
+            .field("document_id", &self.document_id)
+            .field("url", &"[redacted]")
+            .finish()
+    }
 }
 
 impl BrowserControllerNavigationResult {
@@ -86,7 +149,7 @@ impl BrowserControllerNavigationResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct BrowserControllerCompatibilityWaitResult {
     pub(crate) browser_generation: u64,
     pub(crate) target_id: String,
@@ -139,6 +202,26 @@ mod tests {
         assert!(BrowserCompatibilityWait::Idle
             .validate(MAX_BROWSER_COMPATIBILITY_WAIT_TIMEOUT_MS + 1)
             .is_err());
+        let navigation = BrowserNavigationUrl::new(
+            "https://example.test/path?sensitive-navigation-unit-fixture",
+        )
+        .expect("bounded navigation URL");
+        assert_eq!(
+            serde_json::to_value(&navigation).expect("navigation URL serialization"),
+            serde_json::json!("https://example.test/path?sensitive-navigation-unit-fixture")
+        );
+        assert!(!format!("{navigation:?}").contains("sensitive-navigation-unit-fixture"));
+        let selector = BrowserCompatibilityWait::Selector(
+            "[data-secret='sensitive-selector-unit-fixture']".into(),
+        );
+        assert_eq!(
+            serde_json::to_value(&selector).expect("selector wait serialization"),
+            serde_json::json!({
+                "kind":"selector",
+                "selector":"[data-secret='sensitive-selector-unit-fixture']"
+            })
+        );
+        assert!(!format!("{selector:?}").contains("sensitive-selector-unit-fixture"));
 
         let result = BrowserControllerCompatibilityWaitResult {
             browser_generation: 1,

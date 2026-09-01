@@ -17,6 +17,17 @@ pub(crate) enum RoomBrowserControllerCommand {
         target_id: String,
         document_id: String,
     },
+    Navigate {
+        target_id: String,
+        document_id: String,
+        url: crate::runtime::browser_controller_compatibility::BrowserNavigationUrl,
+    },
+    Wait {
+        target_id: String,
+        document_id: String,
+        wait: crate::runtime::browser_controller_compatibility::BrowserCompatibilityWait,
+        timeout_ms: u64,
+    },
     Dialog {
         target_id: String,
         document_id: String,
@@ -80,6 +91,16 @@ pub(crate) enum RoomBrowserControllerResult {
     Snapshot {
         snapshot: Option<
             crate::runtime::browser_controller_snapshot::BrowserControllerStructuredSnapshot,
+        >,
+    },
+    Navigation {
+        result: Option<
+            crate::runtime::browser_controller_compatibility::BrowserControllerNavigationResult,
+        >,
+    },
+    Wait {
+        result: Option<
+            crate::runtime::browser_controller_compatibility::BrowserControllerCompatibilityWaitResult,
         >,
     },
     Dialog {

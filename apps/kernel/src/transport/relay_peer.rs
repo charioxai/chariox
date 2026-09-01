@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 26 routes bounded browser event polling to the authenticated Room
-/// worker that owns the physical browser controller and event journal.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 26;
+/// Version 27 routes legacy browser navigation and wait adapters to the
+/// authenticated Room worker that owns the physical browser controller.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 27;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
