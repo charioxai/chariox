@@ -24,6 +24,7 @@ const tempRootPromise = mkdtemp(path.join(os.tmpdir(), "chariox-room-pointer-"))
 const children = []
 const resources = []
 let client = null
+let observerClient = null
 let fixture = null
 let slice = null
 let sessionId = null
@@ -78,9 +79,10 @@ async function run() {
   kernel.once("exit", () => log.end())
   children.push(kernel)
 
-  const [{ LocalIpcClient }, importedRequests] = await Promise.all([
+  const [{ LocalIpcClient }, importedRequests, { createRoomEnvironmentActivityController }] = await Promise.all([
     import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc.js")).href),
     import(pathToFileURL(path.join(kernelClientRoot, "dist", "ipc-requests.js")).href),
+    import(pathToFileURL(path.join(repoRoot, "apps", "cli", "dist", "room-environment-activity-controller.js")).href),
   ])
   requests = importedRequests
   client = await waitFor(async () => {
@@ -93,6 +95,7 @@ async function run() {
       throw error
     }
   }, 60_000, "kernel did not accept local connections")
+  observerClient = new LocalIpcClient(`ws://127.0.0.1:${kernelPort}/kernel`)
 
   const session = unwrap(
     await client.send(requests.createSessionRequest(repoRoot, repoRoot, runId)),
@@ -133,6 +136,19 @@ async function run() {
     desktop_pixel_height: 800,
   })), "RoomEnvironmentUpdated").environment
   assert.equal(environment.lifecycle, "ready")
+  const activityNotices = []
+  const daemonActivities = []
+  const activityController = createRoomEnvironmentActivityController({
+    isAttached: () => true,
+    sessionId: () => sessionId,
+    nowMs: () => Date.now(),
+    send: (request) => client.send(request),
+    appendNotice: (message) => activityNotices.push(message),
+    recordDaemonActivity: (kind) => daemonActivities.push(kind),
+  })
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), /^Room screen: ready · tab Room pointer drill — /)
+
   const takeover = unwrap(
     await client.send(requests.requestRoomEnvironmentInputTakeoverRequest(sessionId, { kind: "desktop" })),
     "RoomEnvironmentTakeoverUpdated",
@@ -142,6 +158,20 @@ async function run() {
     (owner) => owner.target.kind === "desktop",
   )
   assert.equal(desktopOwner?.actor_id, "user:local")
+  assert.equal(await activityController.synchronize(), true)
+  assert.ok(activityNotices.includes("Room input: Local user controls desktop"))
+
+  const noticesBeforePointers = activityNotices.length
+  for (const pointer of [{ x: 200, y: 100 }, { x: 400, y: 200 }, { x: 640, y: 400 }]) {
+    await client.send(requests.updateRoomEnvironmentPointerRequest(
+      sessionId,
+      takeover.environment.runtime_generation,
+      takeover.environment.viewport.revision,
+      pointer,
+    ))
+  }
+  assert.equal(await activityController.synchronize(), false)
+  assert.equal(activityNotices.length, noticesBeforePointers)
 
   const idempotencyKey = `${runId}-click`
   const click = unwrap(await client.send(requests.submitRoomEnvironmentActionRequest(
@@ -152,6 +182,8 @@ async function run() {
     { kind: "pointer_click", x: 640, y: 400, button: "left", click_count: 1 },
   )), "RoomEnvironmentActionSubmitted")
   assert.equal(actionState(click.environment, click.action_id), "completed")
+  assert.equal(await activityController.synchronize(), true)
+  assert.match(activityNotices.at(-1), /^Room action: Local user · computer pointer_click · completed$/)
   await waitForBrowserText("POINTER_CLICK_COUNT=1", 20_000, "physical click did not reach the fixture")
   await screenshot("after-click")
 
@@ -173,6 +205,17 @@ async function run() {
   ).page.actions
   assert.equal(history.filter((action) => action.action_id === click.action_id).length, 1)
   assert.equal(history.find((action) => action.action_id === click.action_id)?.actor_id, desktopOwner.actor_id)
+  const released = unwrap(
+    await client.send(requests.releaseRoomEnvironmentInputRequest(sessionId, { kind: "desktop" })),
+    "RoomEnvironmentInputReleased",
+  ).environment
+  assert.equal(await activityController.synchronize(), true)
+  assert.equal(activityNotices.at(-1), "Room input: available")
+  const observed = unwrap(
+    await observerClient.send(requests.getRoomEnvironmentStateRequest(sessionId)),
+    "RoomEnvironmentState",
+  ).environment
+  assert.deepEqual(observed, released)
   resources.push(await resourceSnapshot("active"))
   result = {
     schema: "chariox.room_environment.pointer_click_drill.v1",
@@ -191,7 +234,12 @@ async function run() {
       "public Room request completed one attributed Computer Action",
       "provisioned worker applied the click to the headed desktop",
       "idempotent retry returned the original Action without a second click",
+      "TUI activity projected lifecycle, focused tab, takeover, and terminal Action outcome",
+      "pointer movement produced no TUI notice flood",
+      "TUI projected input release and a second client observed the identical snapshot",
     ],
+    activityNotices,
+    daemonActivities,
   }
 }
 
@@ -299,6 +347,12 @@ async function docker(args, timeoutMs = 120_000) {
 
 async function resourceSnapshot(label) {
   const disk = await runCommand("df", ["-k", repoRoot], 10_000)
+  const memoryPressure = await runCommand("memory_pressure", ["-Q"], 10_000)
+    .then((result) => result.code === 0 ? result.stdout.trim() : null)
+    .catch(() => null)
+  const swapUsage = await runCommand("sysctl", ["-n", "vm.swapusage"], 10_000)
+    .then((result) => result.code === 0 ? result.stdout.trim() : null)
+    .catch(() => null)
   const dockerStats = slice
     ? await runCommand("docker", ["stats", "--no-stream", "--format", "{{json .}}", containerName], 20_000)
         .then((result) => result.code === 0 ? result.stdout.trim() : null)
@@ -308,6 +362,8 @@ async function resourceSnapshot(label) {
     label,
     at: new Date().toISOString(),
     freeMemoryBytes: os.freemem(),
+    memoryPressure,
+    swapUsage,
     loadAverage: os.loadavg(),
     disk: disk.stdout.trim().split("\n").at(-1),
     dockerStats,
@@ -339,6 +395,7 @@ async function cleanup() {
   await docker(["rm", "-f", containerName]).catch(() => undefined)
   await docker(["volume", "rm", "-f", homeVolume]).catch(() => undefined)
   await client?.close?.()
+  await observerClient?.close?.()
   await closeFixtureServer()
   for (const child of children.toReversed()) await terminateChild(child)
   await rm(tempRoot, { recursive: true, force: true })
