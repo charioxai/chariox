@@ -118,7 +118,10 @@ impl SessionRuntimeStore {
         Result<LocalDaemonResponse, DaemonError>,
         Option<SessionProjectionAction>,
     ) {
-        let result = if self.state.browser_controller_process_enabled() {
+        let result = if self
+            .state
+            .browser_controller_enabled_for_room(&request.session_id)
+        {
             self.state
                 .stop_managed_room_environment_runtime(&request.session_id)
                 .await
@@ -188,7 +191,11 @@ impl SessionRuntimeStore {
                 })
         });
         let result = match result {
-            Ok(environment) if self.state.browser_controller_process_enabled() => {
+            Ok(environment)
+                if self
+                    .state
+                    .browser_controller_enabled_for_room(&request.session_id) =>
+            {
                 match self
                     .state
                     .reconcile_browser_controller_environment(&request.session_id)

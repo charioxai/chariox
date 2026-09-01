@@ -386,7 +386,10 @@ impl KernelRuntimeState {
         .await
     }
 
-    pub(super) fn normalize_local_kernel_ref(&self, request: &mut crate::agent::CreateAgentRequest) {
+    pub(super) fn normalize_local_kernel_ref(
+        &self,
+        request: &mut crate::agent::CreateAgentRequest,
+    ) {
         let Some(kernel_ref) = request.kernel_ref.as_deref() else {
             return;
         };
@@ -690,7 +693,7 @@ impl KernelRuntimeState {
     }
 
     async fn stop_managed_environment_for_session_lifecycle(&self, session_id: &str) {
-        if !self.browser_controller_process_enabled() {
+        if !self.browser_controller_enabled_for_room(session_id) {
             return;
         }
         let result = match self.room_environment_snapshot(session_id) {

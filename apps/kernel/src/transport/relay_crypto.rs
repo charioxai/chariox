@@ -147,7 +147,7 @@ fn decode_private_key(private_key_base64: &str) -> Result<SecretKey, DaemonError
         .map_err(|error| relay_crypto_error("decode relay private key", &error.to_string()))
 }
 
-fn decode_public_key(public_key_base64: &str) -> Result<PublicKey, DaemonError> {
+pub(crate) fn decode_public_key(public_key_base64: &str) -> Result<PublicKey, DaemonError> {
     let bytes = decode_bytes(public_key_base64, "decode relay public key")?;
     let encoded = EncodedPoint::from_bytes(bytes)
         .map_err(|error| relay_crypto_error("decode relay public key", &error.to_string()))?;

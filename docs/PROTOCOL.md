@@ -585,6 +585,32 @@ The reservation is the optional `environment_session_id` in the durable slice re
 
 These requests configure placement only. They do not start a container, move a controller, admit a viewer, or persist the full Environment action ledger. Binding must be consumed and revalidated by the worker/controller and secure viewer routes before multi-Room product enablement. Clients invoking placement require v282; clients using only earlier Environment controls keep their existing minimum versions. Rollback to a kernel that does not understand the reservation is not safe for multi-Room use.
 
+Protocol v283 and relay peer v19 add `RoomBrowserController` requests for controller
+acquire, tab/viewport reconciliation, and release. The home kernel resolves its
+persisted Room-to-slice reservation and uses that slice's recorded relay endpoint.
+The worker executes physical controller operations only. Environment lifecycle,
+stable Tab identities, actor ownership, and projections remain home-kernel state.
+These operations do not require an agent execution lease.
+
+The worker must be provisioned with the home kernel ID, home encryption public
+key, Room ID, and slice ID through `CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID`,
+`CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY`, `CHARIOX_ROOM_ENVIRONMENT_SESSION_ID`,
+and `CHARIOX_ROOM_ENVIRONMENT_SLICE_ID`. Partial or inconsistent bootstrap data
+is invalid. Each request must match all four values, including the decrypted
+sender key and authenticated transport peer ID. The worker must never learn
+ownership from the first request or fall back to a different Room's controller.
+Worker-local Room lifecycle requests cannot claim the provisioned controller;
+only the authenticated home relay path may acquire, reconcile or release it.
+
+An already-running worker without this binding rejects controller access. It
+must be restarted through the provisioner after binding the Room; binding alone
+does not restart running agents. Older workers reject the new request variant
+and require an upgrade before this routing can be used. This checkpoint routes
+startup, reconciliation, and shutdown only. Structured actions, observations,
+events, file operations, agent MCP forwarding, and secure viewers still require
+the remaining routing work before product enablement. Existing clients' minimum
+versions remain unchanged because their public request shapes have not changed.
+
 The home-side public `SpawnAgent`, `SpawnAgents`, `CreateSession`, and `MoveAgentToRemote` paths reject known slices reserved for another Room with `environment_slice_access_denied`. Slice names/IDs and known worker aliases/IDs share the check. Admission also rejects shared worker identities, including collisions discovered after binding, for direct slice references as well as worker lookups. Admission holds a slice operation guard so a competing bind or lifecycle operation cannot race it; a failure releases the guard. An unassigned slice with an unambiguous worker keeps legacy behavior. This adds no serialized request/response fields and does not replace worker-side authorization or viewer-token validation.
 
 `SpawnAgent`, successful `SpawnAgents` batches, and `CreateSession` retain the canonical slice identity from admission through worktree-scope validation and attachment, including when the caller supplies a known worker alias or ID instead of `slice_ref`. Session creation also applies the same slice worker-readiness check to aliases and explicit slice references. Mixed batches preserve local target slots and share one guard across aliases of the same slice. Public deletion releases worker execution before deleting the shared home-agent record once and detaching it from its recorded slices. This checkpoint does not enable multi-Room browser execution.

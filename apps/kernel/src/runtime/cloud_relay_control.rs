@@ -174,6 +174,7 @@ mod tests {
             relay_heartbeat_ms: 1_000,
             relay_request_timeout_ms: 2_000,
             accept_remote_leases: true,
+            room_environment_worker_binding: None,
             event_delivery_url: None,
             event_delivery_token: None,
             event_delivery_environment_id: "kernel-1".to_string(),

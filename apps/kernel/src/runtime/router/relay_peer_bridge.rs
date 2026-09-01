@@ -4,6 +4,22 @@ use crate::runtime::native_interaction_bridge::forward_relay_native_interaction;
 use crate::runtime::relay_peer_runtime_executor as relay_peer_runtime;
 
 impl CommandRouter {
+    pub(crate) async fn relay_room_browser_controller(
+        &self,
+        kernel_id: &str,
+        public_key: &str,
+        session_id: &str,
+        slice_id: &str,
+        command: crate::transport::room_browser_controller::RoomBrowserControllerCommand,
+    ) -> Result<crate::transport::room_browser_controller::RoomBrowserControllerResult, DaemonError>
+    {
+        self.runtime_state
+            .execute_bound_room_browser_controller(
+                kernel_id, public_key, session_id, slice_id, command,
+            )
+            .await
+    }
+
     pub(crate) fn relay_daemon_id(&self) -> String {
         self.config_projection.snapshot().daemon_id
     }

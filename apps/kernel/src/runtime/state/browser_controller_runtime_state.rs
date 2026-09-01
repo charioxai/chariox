@@ -6,7 +6,11 @@ use crate::session::{
     RoomEnvironmentSnapshot,
 };
 
+use super::room_browser_controller::controller_route_error;
 use super::KernelRuntimeState;
+use crate::transport::room_browser_controller::{
+    RoomBrowserControllerCommand, RoomBrowserControllerResult,
+};
 
 impl KernelRuntimeState {
     #[cfg(test)]
@@ -30,18 +34,14 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let snapshot = tokio::task::spawn_blocking(move || processes.acquire(&owned_session_id))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "browser_controller_process.start",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "browser_controller_process.start",
-                message,
-            })?;
+        let RoomBrowserControllerResult::Process { snapshot } = self
+            .room_browser_controller_command(session_id, RoomBrowserControllerCommand::Acquire)
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller start response",
+            ));
+        };
         if let Some(snapshot) = snapshot.as_ref() {
             self.observe_browser_controller_generation(session_id, snapshot.runtime_generation)?;
         }
@@ -53,7 +53,7 @@ impl KernelRuntimeState {
         session_id: &str,
         operation: &'static str,
     ) -> Result<RoomEnvironmentSnapshot, DaemonError> {
-        if !self.browser_controller_process_enabled() {
+        if !self.browser_controller_enabled_for_room(session_id) {
             return self
                 .room_environment_snapshot(session_id)
                 .map_err(|error| environment_runtime_error(operation, error));
@@ -125,20 +125,17 @@ impl KernelRuntimeState {
             .room_environment_snapshot(session_id)
             .map_err(|error| environment_runtime_error("browser_controller.reconcile", error))?
             .viewport;
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let reconciliation = tokio::task::spawn_blocking(move || {
-            processes.reconcile_browser(&owned_session_id, &viewport)
-        })
-        .await
-        .map_err(|error| DaemonError::LocalTransport {
-            operation: "browser_controller.reconcile",
-            message: error.to_string(),
-        })?
-        .map_err(|message| DaemonError::LocalTransport {
-            operation: "browser_controller.reconcile",
-            message,
-        })?;
+        let RoomBrowserControllerResult::Reconciled { reconciliation } = self
+            .room_browser_controller_command(
+                session_id,
+                RoomBrowserControllerCommand::Reconcile { viewport },
+            )
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller reconcile response",
+            ));
+        };
         let Some(reconciliation) = reconciliation else {
             return self
                 .room_environment_snapshot(session_id)
@@ -680,18 +677,14 @@ impl KernelRuntimeState {
         &self,
         session_id: &str,
     ) -> Result<Option<BrowserControllerProcessSnapshot>, DaemonError> {
-        let processes = self.owned.browser_controller_processes.clone();
-        let owned_session_id = session_id.to_string();
-        let snapshot = tokio::task::spawn_blocking(move || processes.release(&owned_session_id))
-            .await
-            .map_err(|error| DaemonError::LocalTransport {
-                operation: "browser_controller_process.stop",
-                message: error.to_string(),
-            })?
-            .map_err(|message| DaemonError::LocalTransport {
-                operation: "browser_controller_process.stop",
-                message,
-            })?;
+        let RoomBrowserControllerResult::Process { snapshot } = self
+            .room_browser_controller_command(session_id, RoomBrowserControllerCommand::Release)
+            .await?
+        else {
+            return Err(controller_route_error(
+                "unexpected controller stop response",
+            ));
+        };
         self.owned
             .browser_controller_generations
             .lock()

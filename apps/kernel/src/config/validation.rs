@@ -5,6 +5,9 @@ impl DaemonConfig {
     pub fn validate(&self) -> Result<(), DaemonError> {
         validate_non_empty("daemon_id", &self.daemon_id)?;
         validate_non_empty("host_machine_id", &self.host_machine_id)?;
+        if let Some(binding) = &self.room_environment_worker_binding {
+            binding.validate(&self.host_machine_id)?;
+        }
         if self
             .relay_url
             .as_deref()

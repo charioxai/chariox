@@ -36,6 +36,7 @@ pub struct LocalDockerSliceRelay {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LocalDockerSliceOptions {
     pub root: PathBuf,
+    pub home_public_key: String,
     pub docker_image: String,
     pub build_image: SliceImageBuildPolicy,
     pub extension_dockerfile: Option<PathBuf>,
@@ -63,6 +64,7 @@ impl LocalDockerSliceOptions {
         let linux = &config.user_config.slices.linux;
         Self {
             root: config.slice_root(),
+            home_public_key: config.relay_public_key.clone(),
             docker_image: linux
                 .docker_image
                 .clone()
@@ -668,6 +670,28 @@ fn configure_local_docker_slice_command(
         )
         .env("CHARIOX_SLICE_MACHINE_ID", format!("slice:{}", record.id))
         .env("CHARIOX_SLICE_MACHINE_ALIAS", record.name.clone());
+    // Do not inherit a parent worker's Room when it provisions another slice.
+    for name in [
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+        "CHARIOX_ROOM_ENVIRONMENT_SESSION_ID",
+        "CHARIOX_ROOM_ENVIRONMENT_SLICE_ID",
+    ] {
+        command.env_remove(name);
+    }
+    if let Some(session_id) = record.environment_session_id.as_deref() {
+        command
+            .env(
+                "CHARIOX_ROOM_ENVIRONMENT_HOME_KERNEL_ID",
+                &record.owner_kernel_id,
+            )
+            .env(
+                "CHARIOX_ROOM_ENVIRONMENT_HOME_PUBLIC_KEY",
+                &options.home_public_key,
+            )
+            .env("CHARIOX_ROOM_ENVIRONMENT_SESSION_ID", session_id)
+            .env("CHARIOX_ROOM_ENVIRONMENT_SLICE_ID", &record.id);
+    }
     if let Some(memory_mb) = options.memory_mb {
         command.env("CHARIOX_SLICE_DOCKER_MEMORY", format!("{memory_mb}m"));
     }

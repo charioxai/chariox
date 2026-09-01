@@ -9,9 +9,9 @@ use crate::session::{PromptCancellation, PromptCompletion, PromptOrigin, PromptS
 use crate::skill::CharioxSkillPackage;
 use crate::terminal::TerminalOutputKind;
 
-/// Version 18 adds profile-specific provider-account materialization over the
-/// existing encrypted home-worker peer channel.
-pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 18;
+/// Version 19 adds provisioner-scoped Room browser controller lifecycle over
+/// the existing encrypted home-worker channel, without an agent lease.
+pub const RELAY_PEER_PROTOCOL_VERSION: u32 = 19;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RelayPromptAttachment {
@@ -225,6 +225,11 @@ fn default_workspace_live_sync_invocation_attempt() -> u32 {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerRequest {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        command: super::room_browser_controller::RoomBrowserControllerCommand,
+    },
     Ping {
         value: String,
     },
@@ -451,6 +456,11 @@ pub enum RelayPeerRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RelayPeerResponse {
+    RoomBrowserController {
+        session_id: String,
+        slice_id: String,
+        result: super::room_browser_controller::RoomBrowserControllerResult,
+    },
     Pong {
         value: String,
         daemon_id: String,
