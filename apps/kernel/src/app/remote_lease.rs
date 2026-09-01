@@ -7,7 +7,7 @@ use crate::attachment::{AttachRequest, ClientCapabilityLevel};
 use crate::error::DaemonError;
 use crate::execution_lease::{ExecutionLease, LeasedAgent};
 use crate::provider::ProviderRunState;
-use crate::session::CreateSessionRequest;
+use crate::session::{CreateSessionRequest, SessionStatus};
 
 mod git_observation;
 mod mcp_availability;
@@ -323,7 +323,18 @@ impl<'a> RemoteLeaseRuntime<'a> {
         &mut self,
         leased_agent_id: &str,
     ) -> Result<(), DaemonError> {
-        let Some(agent) = self.app.leased_agents.remove(leased_agent_id) else {
+        self.destroy_leased_agent_with(leased_agent_id, Self::cleanup_leased_agent_resources)
+    }
+
+    fn destroy_leased_agent_with<F>(
+        &mut self,
+        leased_agent_id: &str,
+        cleanup_resources: F,
+    ) -> Result<(), DaemonError>
+    where
+        F: FnOnce(&mut DaemonApp, &LeasedAgent) -> Result<(), DaemonError>,
+    {
+        let Some(agent) = self.app.leased_agents.get(leased_agent_id).cloned() else {
             return if self
                 .app
                 .completed_leased_agent_deletions
@@ -337,62 +348,120 @@ impl<'a> RemoteLeaseRuntime<'a> {
                 })
             };
         };
+        cleanup_resources(self.app, &agent)?;
         self.app
             .leased_workflow_turns
             .retain(|_, binding| binding.leased_agent_id != leased_agent_id);
-        let provider_runs = self
-            .app
+        let removed = self.app.leased_agents.remove(leased_agent_id);
+        debug_assert!(
+            removed.is_some(),
+            "leased agent must remain until cleanup succeeds"
+        );
+        remember_completed_cleanup(
+            &mut self.app.completed_leased_agent_deletions,
+            leased_agent_id,
+        );
+        Ok(())
+    }
+
+    fn cleanup_leased_agent_resources(
+        app: &mut DaemonApp,
+        agent: &LeasedAgent,
+    ) -> Result<(), DaemonError> {
+        let provider_runs = app
             .providers
             .list_runs()
             .into_iter()
             .filter(|run| {
                 run.session_id() == agent.backing_session_id
                     && run.agent_instance_id() == Some(agent.backing_agent_id.as_str())
-                    && run.state() != ProviderRunState::Ended
             })
             .collect::<Vec<_>>();
+        let mut first_provider_error = None;
         for provider_run in provider_runs {
             let run_id = provider_run.id().to_string();
-            let _ = crate::app::provider_runtime::ProviderProcessTracker::new(self.app)
-                .remove_run(&run_id);
-            if let Ok(outcome) = self
-                .app
+            let outcome = match app
                 .providers
                 .terminate_run_provider_only(provider_run.session_id(), provider_run.id())
             {
-                let _ = self
-                    .app
+                Ok(outcome) => outcome,
+                Err(error) => {
+                    if first_provider_error.is_none() {
+                        first_provider_error = Some(error);
+                    }
+                    continue;
+                }
+            };
+            let clear_active_run = match app.sessions.get_session(outcome.run().session_id()) {
+                Ok(session) => session.active_provider_run_id() == Some(run_id.as_str()),
+                Err(DaemonError::SessionNotFound { .. }) => false,
+                Err(error) => {
+                    if first_provider_error.is_none() {
+                        first_provider_error = Some(error);
+                    }
+                    false
+                }
+            };
+            if clear_active_run {
+                match app
                     .sessions
-                    .set_active_provider_run(outcome.run().session_id(), None);
-                self.app.update_provider_run_projection(outcome.into_run());
+                    .set_active_provider_run(outcome.run().session_id(), None)
+                {
+                    Ok(_) | Err(DaemonError::SessionNotFound { .. }) => {}
+                    Err(error) if first_provider_error.is_none() => {
+                        first_provider_error = Some(error);
+                    }
+                    Err(_) => {}
+                }
+            }
+            app.update_provider_run_projection(outcome.into_run());
+            if let Err(error) =
+                crate::app::provider_runtime::ProviderProcessTracker::new(app).remove_run(&run_id)
+            {
+                if first_provider_error.is_none() {
+                    first_provider_error = Some(error);
+                }
             }
         }
-        let backing_session_still_used = self
-            .app
-            .leased_agents
-            .values()
-            .any(|candidate| candidate.backing_session_id == agent.backing_session_id);
-        let session_store = self.app.session_state_store();
-        let _ = {
-            let mut sessions = session_store.write();
-            self.app
-                .attachments
-                .detach(&mut sessions, &agent.backing_attachment_id)
-        };
-        let _ = {
-            let mut sessions = session_store.write();
-            self.app
-                .agents
-                .destroy_agent(&agent.backing_agent_id, &mut sessions)
-        };
-        if !backing_session_still_used {
-            let _ = self.app.sessions.end_session(&agent.backing_session_id);
-            let _ = self.app.sessions.delete_session(&agent.backing_session_id);
+        if let Some(error) = first_provider_error {
+            return Err(error);
         }
-        remember_completed_cleanup(
-            &mut self.app.completed_leased_agent_deletions,
-            leased_agent_id,
-        );
+
+        let backing_session_still_used = app.leased_agents.values().any(|candidate| {
+            candidate.id != agent.id && candidate.backing_session_id == agent.backing_session_id
+        });
+        let session_store = app.session_state_store();
+        match {
+            let mut sessions = session_store.write();
+            app.attachments
+                .detach(&mut sessions, &agent.backing_attachment_id)
+        } {
+            Ok(_) | Err(DaemonError::AttachmentNotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        match {
+            let mut sessions = session_store.write();
+            app.agents
+                .destroy_agent(&agent.backing_agent_id, &mut sessions)
+        } {
+            Ok(_) | Err(DaemonError::AgentNotFound { .. }) => {}
+            Err(error) => return Err(error),
+        }
+        if !backing_session_still_used {
+            match app.sessions.end_session(&agent.backing_session_id) {
+                Ok(_) | Err(DaemonError::SessionNotFound { .. }) => {}
+                Err(DaemonError::InvalidSessionTransition {
+                    from: SessionStatus::Ended,
+                    to: SessionStatus::Ended,
+                    ..
+                }) => {}
+                Err(error) => return Err(error),
+            }
+            match app.sessions.delete_session(&agent.backing_session_id) {
+                Ok(_) | Err(DaemonError::SessionNotFound { .. }) => {}
+                Err(error) => return Err(error),
+            }
+        }
         Ok(())
     }
 
@@ -880,6 +949,47 @@ mod cleanup_tests {
         assert!(app.completed_execution_lease_deletions.contains(&lease.id));
         RemoteLeaseRuntime::new(&mut app)
             .destroy_execution_lease(&lease.id)
+            .expect("completed cleanup replay should remain idempotent");
+    }
+
+    #[test]
+    fn leased_agent_cleanup_failure_retains_authority_until_retry_succeeds() {
+        let mut app = DaemonApp::bootstrap(DaemonConfig::for_tests())
+            .expect("daemon bootstrap should succeed");
+        let leased_agent = leased_agent("agent-1", "lease-1");
+        app.leased_agents
+            .insert(leased_agent.id.clone(), leased_agent.clone());
+
+        let error = RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent_with(&leased_agent.id, |_app, _agent| {
+                Err(DaemonError::LocalTransport {
+                    operation: "test leased agent cleanup",
+                    message: "injected failure".to_string(),
+                })
+            })
+            .expect_err("failed resource cleanup must retain the leased agent");
+
+        assert!(matches!(
+            error,
+            DaemonError::LocalTransport {
+                operation: "test leased agent cleanup",
+                ..
+            }
+        ));
+        assert!(app.leased_agents.contains_key(&leased_agent.id));
+        assert!(!app
+            .completed_leased_agent_deletions
+            .contains(&leased_agent.id));
+
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent_with(&leased_agent.id, |_app, _agent| Ok(()))
+            .expect("retry should finish cleanup");
+        assert!(!app.leased_agents.contains_key(&leased_agent.id));
+        assert!(app
+            .completed_leased_agent_deletions
+            .contains(&leased_agent.id));
+        RemoteLeaseRuntime::new(&mut app)
+            .destroy_leased_agent(&leased_agent.id)
             .expect("completed cleanup replay should remain idempotent");
     }
 }
