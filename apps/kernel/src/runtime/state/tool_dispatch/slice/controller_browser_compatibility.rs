@@ -9,12 +9,11 @@ use super::controller_browser::ensure_controller_browser_environment;
 impl KernelRuntimeState {
     pub(super) async fn controller_browser_open_url_compatibility_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         url: &str,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let session_id = provider_run.session_id();
         ensure_controller_browser_environment(self, session_id, "runtime_tool_slice_open_url")
             .await?;
         let result = self
@@ -42,14 +41,14 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_wait_for_selector_compatibility_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         selector: String,
         timeout_ms: Option<u64>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.controller_browser_wait_compatibility_tool_result(
-            provider_run,
+            session_id,
             slice_id,
             agent_id,
             BrowserCompatibilityWait::Selector(selector),
@@ -60,13 +59,13 @@ impl KernelRuntimeState {
 
     pub(super) async fn controller_browser_wait_for_idle_compatibility_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         timeout_ms: Option<u64>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
         self.controller_browser_wait_compatibility_tool_result(
-            provider_run,
+            session_id,
             slice_id,
             agent_id,
             BrowserCompatibilityWait::Idle,
@@ -77,13 +76,12 @@ impl KernelRuntimeState {
 
     async fn controller_browser_wait_compatibility_tool_result(
         &self,
-        provider_run: &crate::provider::RuntimeProviderRun,
+        session_id: &str,
         slice_id: &str,
         agent_id: &str,
         wait: BrowserCompatibilityWait,
         timeout_ms: Option<u64>,
     ) -> Result<crate::transport::runtime_tools::RuntimeToolResult, DaemonError> {
-        let session_id = provider_run.session_id();
         ensure_controller_browser_environment(
             self,
             session_id,

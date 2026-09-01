@@ -1,13 +1,15 @@
 use super::*;
 use crate::transport::relay_peer::{
-    RelayPeerRequest, RelayPeerResponse, RELAY_PEER_PROTOCOL_VERSION,
+    RelayPeerRequest, RelayPeerResponse, RemoteExtensionInvocationContext,
+    RemoteRoomBrowserRuntimeToolCall, RemoteRoomBrowserRuntimeToolResult,
+    RELAY_PEER_PROTOCOL_VERSION,
 };
 use crate::transport::room_browser_controller::RoomBrowserControllerCommand;
 
 #[test]
 fn room_controller_protocol_shapes_are_versioned() {
-    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 291);
-    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 27);
+    assert_eq!(LOCAL_DAEMON_PROTOCOL_VERSION, 292);
+    assert_eq!(RELAY_PEER_PROTOCOL_VERSION, 28);
     for (command, wire_command) in [
         (
             RoomBrowserControllerCommand::Action {
@@ -262,4 +264,69 @@ fn room_controller_protocol_shapes_are_versioned() {
         }))
         .is_err()
     );
+
+    let context = RemoteExtensionInvocationContext {
+        home_kernel_id: "home-kernel".into(),
+        home_session_id: "room-1".into(),
+        home_agent_id: "agent-1".into(),
+        leased_agent_id: "leased-agent-1".into(),
+        worker_provider_run_id: "worker-run-1".into(),
+        worker_kernel_id: Some("worker-kernel".into()),
+        worker_machine_id: Some("worker-machine".into()),
+    };
+    let forwarded = RelayPeerRequest::ForwardRoomBrowserRuntimeTool {
+        context: context.clone(),
+        call: RemoteRoomBrowserRuntimeToolCall {
+            tool_name: "slice_open_url".into(),
+            arguments: serde_json::json!({
+                "url":"https://sensitive-worker-forward.test/path?token=secret"
+            }),
+        },
+    };
+    let forwarded_wire = serde_json::json!({
+        "kind":"forward_room_browser_runtime_tool",
+        "context":{
+            "home_kernel_id":"home-kernel",
+            "home_session_id":"room-1",
+            "home_agent_id":"agent-1",
+            "leased_agent_id":"leased-agent-1",
+            "worker_provider_run_id":"worker-run-1",
+            "worker_kernel_id":"worker-kernel",
+            "worker_machine_id":"worker-machine"
+        },
+        "call":{
+            "tool_name":"slice_open_url",
+            "arguments":{"url":"https://sensitive-worker-forward.test/path?token=secret"}
+        }
+    });
+    assert_eq!(serde_json::to_value(&forwarded).unwrap(), forwarded_wire);
+    assert_eq!(
+        serde_json::from_value::<RelayPeerRequest>(forwarded_wire).unwrap(),
+        forwarded
+    );
+    assert!(!format!("{forwarded:?}").contains("sensitive-worker-forward"));
+
+    let handled = RelayPeerResponse::RoomBrowserRuntimeToolHandled {
+        result: RemoteRoomBrowserRuntimeToolResult(
+            crate::transport::runtime_tools::RuntimeToolResult {
+                ok: true,
+                payload: serde_json::json!({
+                    "url":"https://sensitive-worker-result.test/path?token=secret"
+                }),
+            },
+        ),
+    };
+    let handled_wire = serde_json::json!({
+        "kind":"room_browser_runtime_tool_handled",
+        "result":{
+            "ok":true,
+            "payload":{"url":"https://sensitive-worker-result.test/path?token=secret"}
+        }
+    });
+    assert_eq!(serde_json::to_value(&handled).unwrap(), handled_wire);
+    assert_eq!(
+        serde_json::from_value::<RelayPeerResponse>(handled_wire).unwrap(),
+        handled
+    );
+    assert!(!format!("{handled:?}").contains("sensitive-worker-result"));
 }

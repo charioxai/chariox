@@ -730,7 +730,18 @@ remained at protocol v290 and relay peer v26. The encrypted home-to-worker drill
 through the authenticated runtime MCP route and verifies stable Tab projection,
 physical controller effects, path redaction, cursor resume, and cleanup.
 
-Protocol v291 and relay peer v27 route the remaining legacy browser
+Protocol v292 and relay peer v28 add the reverse worker-to-home path for Room
+browser runtime MCP. A provider running on a leased slice still discovers the
+normal `slice_browser_*` tools, but its worker kernel sends those calls through
+the encrypted relay to the home kernel. The home kernel validates the relay
+sender against the active remote-agent binding, verifies that the same worker
+owns the Room's reserved slice, and performs the action under the home Room and
+home agent identities. Tool arguments and results cross the encrypted wire but
+their Debug representations redact URLs, selectors, fill text, and upload
+paths. `slice_paste_secret` stays on its dedicated vault path and is not part of
+this forwarding contract.
+
+The previous protocol milestone routes the remaining legacy browser
 compatibility tools through the authenticated Room worker. `slice_open_url`
 normalizes an HTTP or HTTPS URL, submits one kernel-owned `navigate` Action for
 the authenticated agent and focused stable Tab, sends one physical navigation
@@ -754,8 +765,7 @@ Cancellation during other operations and physical input-device reset after a
 mid-sequence controller loss still require further resiliency validation; this
 is not full cancellation acceptance for every Browser and Computer operation.
 
-Worker-agent MCP forwarding and secure viewers still require work before
-product enablement. Existing clients'
+Secure viewers still require work before product enablement. Existing clients'
 minimum versions remain unchanged because their public request shapes have not
 changed.
 

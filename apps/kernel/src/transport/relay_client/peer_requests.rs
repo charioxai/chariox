@@ -718,6 +718,28 @@ pub(super) async fn handle_daemon_peer_request(
                 }
             }
         }
+        RelayPeerRequest::ForwardRoomBrowserRuntimeTool { context, call } => {
+            let handled = router
+                .dispatch_forwarded_room_browser_runtime_tool_call(
+                    stable_peer_daemon_id(from_daemon_id),
+                    context,
+                    call,
+                )
+                .await;
+            match handled {
+                Ok(result) => RelayPeerResponse::RoomBrowserRuntimeToolHandled {
+                    result: crate::transport::relay_peer::RemoteRoomBrowserRuntimeToolResult(
+                        result,
+                    ),
+                },
+                Err(error) => {
+                    return RelayRequestOutcome {
+                        encrypted_response: None,
+                        error: Some(map_relay_error(&error)),
+                    };
+                }
+            }
+        }
         RelayPeerRequest::InvokeHomeExtensionTool {
             context,
             metadata,

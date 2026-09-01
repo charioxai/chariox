@@ -7,6 +7,7 @@ use crate::runtime::state::KernelRuntimeState;
 mod controller_browser;
 mod controller_browser_compatibility;
 mod controller_browser_projection;
+mod controller_browser_runtime;
 mod slice_browser;
 use slice_browser::*;
 
@@ -36,6 +37,19 @@ impl KernelRuntimeState {
                     operation: "dispatch_slice_runtime_tool_call",
                     message: "provider run is not bound to an agent".to_string(),
                 })?;
+        if self.browser_controller_enabled_for_room(provider_run.session_id())
+            && super::is_room_browser_controller_runtime_tool(tool_name)
+        {
+            return self
+                .dispatch_room_browser_controller_runtime_tool_call(
+                    provider_run.session_id(),
+                    &slice_id,
+                    agent_id,
+                    tool_name,
+                    arguments,
+                )
+                .await;
+        }
         let output = match tool_name {
             crate::transport::runtime_tools::SLICE_SCREEN_STATUS_TOOL => {
                 run_slice_screen_command(vec!["status".to_string()]).await?
@@ -225,24 +239,9 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_open_url",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_open_url_compatibility_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            &args.url,
-                        )
-                        .await;
-                }
                 run_slice_screen_command(vec!["open-url".to_string(), args.url]).await?
             }
             crate::transport::runtime_tools::SLICE_BROWSER_STATUS_TOOL => {
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_status_tool_result(provider_run, &slice_id, agent_id)
-                        .await;
-                }
                 let output = run_slice_screen_command(vec!["browser-status".to_string()]).await?;
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
@@ -254,17 +253,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_find",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_find_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            &args.query,
-                            args.kind.as_deref().unwrap_or("any"),
-                        )
-                        .await;
-                }
                 let output = run_slice_screen_command(vec![
                     "browser-find".to_string(),
                     args.query,
@@ -281,16 +269,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_fill",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_fill_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args,
-                        )
-                        .await;
-                }
                 let selector = required_browser_selector(
                     args.selector.as_deref(),
                     args.field_id.as_deref(),
@@ -309,16 +287,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_click",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_click_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args,
-                        )
-                        .await;
-                }
                 let selector = required_browser_selector(
                     args.selector.as_deref(),
                     args.field_id.as_deref(),
@@ -336,16 +304,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_submit",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_submit_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args,
-                        )
-                        .await;
-                }
                 let mut command_args = vec!["browser-submit".to_string()];
                 if let Some(selector) =
                     browser_selector(args.selector.as_deref(), args.field_id.as_deref())
@@ -363,16 +321,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_dialog",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_dialog_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args,
-                        )
-                        .await;
-                }
                 let mut command_args = vec!["browser-dialog".to_string(), args.action];
                 if let Some(prompt_text) = args.prompt_text {
                     command_args.push(prompt_text);
@@ -381,23 +329,18 @@ impl KernelRuntimeState {
                 return Ok(slice_browser_tool_result(&slice_id, agent_id, output));
             }
             crate::transport::runtime_tools::SLICE_BROWSER_EVENTS_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserEventsArgs,
-                >(arguments)
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserEventsArgs>(
+                    arguments,
+                )
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "runtime_tool_slice_browser_events",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_slice_browser_events",
-                        message: "browser events require the long-running Room browser controller"
-                            .to_string(),
-                    });
-                }
-                return self
-                    .controller_browser_events_tool_result(provider_run, &slice_id, agent_id, args)
-                    .await;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_events",
+                    message: "browser events require the long-running Room browser controller"
+                        .to_string(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_DOWNLOADS_TOOL => {
                 serde_json::from_value::<
@@ -407,68 +350,41 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_downloads",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_slice_browser_downloads",
-                        message:
-                            "browser downloads require the long-running Room browser controller"
-                                .to_string(),
-                    });
-                }
-                return self
-                    .controller_browser_downloads_tool_result(provider_run, &slice_id, agent_id)
-                    .await;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_downloads",
+                    message: "browser downloads require the long-running Room browser controller"
+                        .to_string(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_UPLOAD_TOOL => {
-                let args = serde_json::from_value::<
-                    crate::transport::runtime_tools::SliceBrowserUploadArgs,
-                >(arguments)
+                serde_json::from_value::<crate::transport::runtime_tools::SliceBrowserUploadArgs>(
+                    arguments,
+                )
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "runtime_tool_slice_browser_upload",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_slice_browser_upload",
-                        message: "browser uploads require the long-running Room browser controller"
-                            .to_string(),
-                    });
-                }
-                return self
-                    .controller_browser_upload_tool_result(provider_run, &slice_id, agent_id, args)
-                    .await;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_upload",
+                    message: "browser uploads require the long-running Room browser controller"
+                        .to_string(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_PERMISSION_TOOL => {
-                let args = serde_json::from_value::<
+                serde_json::from_value::<
                     crate::transport::runtime_tools::SliceBrowserPermissionArgs,
                 >(arguments)
                 .map_err(|error| DaemonError::LocalTransport {
                     operation: "runtime_tool_slice_browser_permission",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if !self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return Err(DaemonError::LocalTransport {
-                        operation: "runtime_tool_slice_browser_permission",
-                        message:
-                            "browser permissions require the long-running Room browser controller"
-                                .to_string(),
-                    });
-                }
-                return self
-                    .controller_browser_permission_tool_result(
-                        provider_run,
-                        &slice_id,
-                        agent_id,
-                        args,
-                    )
-                    .await;
+                return Err(DaemonError::LocalTransport {
+                    operation: "runtime_tool_slice_browser_permission",
+                    message: "browser permissions require the long-running Room browser controller"
+                        .to_string(),
+                });
             }
             crate::transport::runtime_tools::SLICE_BROWSER_TEXT_TOOL => {
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_text_tool_result(provider_run, &slice_id, agent_id)
-                        .await;
-                }
                 let output = run_slice_screen_command(vec!["browser-text".to_string()]).await?;
                 let mut payload = slice_tool_payload(&slice_id, agent_id, &output);
                 payload["text"] = serde_json::Value::String(output.stdout.clone());
@@ -485,17 +401,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_text",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_wait_for_text_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            &args.text,
-                            args.timeout_ms,
-                        )
-                        .await;
-                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-text".to_string(),
                     args.text,
@@ -512,17 +417,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_selector",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_wait_for_selector_compatibility_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args.selector,
-                            args.timeout_ms,
-                        )
-                        .await;
-                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-selector".to_string(),
                     args.selector,
@@ -539,16 +433,6 @@ impl KernelRuntimeState {
                     operation: "runtime_tool_slice_browser_wait_for_idle",
                     message: format!("invalid tool arguments: {error}"),
                 })?;
-                if self.browser_controller_enabled_for_room(provider_run.session_id()) {
-                    return self
-                        .controller_browser_wait_for_idle_compatibility_tool_result(
-                            provider_run,
-                            &slice_id,
-                            agent_id,
-                            args.timeout_ms,
-                        )
-                        .await;
-                }
                 let output = run_slice_screen_command(vec![
                     "browser-wait-idle".to_string(),
                     browser_timeout_arg(args.timeout_ms),
