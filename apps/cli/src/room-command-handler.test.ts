@@ -166,7 +166,7 @@ test("/room lifecycle commands reject invalid arguments without reaching the ker
   assert.deepEqual(flashes, [
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
     "usage: /room start [WIDTHxHEIGHT] [SCALE]",
-    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
+    "usage: /room status|start [WIDTHxHEIGHT] [SCALE]|stop|retry|reconnect|view|takeover|release [desktop|tab TAB_ID]|cancel ACTION_ID|save restart|shutdown",
   ])
 })
 
@@ -436,6 +436,96 @@ test("/room save rejects invalid modes and an Environment without a bound slice"
   assert.deepEqual(flashes, [
     "usage: /room save restart|shutdown",
     "Room Environment has no bound slice to save",
+  ])
+})
+
+test("/room view opens the focused agent's bound Environment in Chariox Cloud", async () => {
+  const requests: unknown[] = []
+  const viewerTargets: unknown[] = []
+  const notices: string[] = []
+  const command = parseSlashCommand("/room view")
+  assert.equal(command?.kind, "room")
+
+  await handleRoomSlashCommand({
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    focusedAgentId: () => "agent-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentSlice: {
+          binding: {
+            session_id: "session-1",
+            slice_id: "slice-1",
+            owner_kernel_id: "kernel-home",
+            worker_kernel_ref: "kernel-worker",
+          },
+        },
+      } as TResponse
+    },
+    openViewer: async (target) => {
+      viewerTargets.push(target)
+      return {
+        url: "https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1",
+        opened: true,
+      }
+    },
+    appendNotice: (notice) => notices.push(notice),
+    flashFooter: () => undefined,
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.deepEqual(viewerTargets, [{
+    sessionId: "session-1",
+    agentId: "agent-1",
+    sliceId: "slice-1",
+  }])
+  assert.deepEqual(notices, [
+    "Opening Room Environment in Chariox Cloud.\nurl=https://cloud.test/view?view_target=session-1%3Aagent-1%3Aslice-1\nbrowser=opened",
+  ])
+})
+
+test("/room view reports missing focus, slice, and Cloud configuration", async () => {
+  const requests: unknown[] = []
+  const flashes: string[] = []
+  const command = parseSlashCommand("/room view")
+  assert.equal(command?.kind, "room")
+  const common = {
+    isAttached: () => true,
+    sessionId: () => "session-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return { RoomEnvironmentSlice: { binding: null } } as TResponse
+    },
+    appendNotice: () => undefined,
+    flashFooter: (message: string) => flashes.push(message),
+  }
+
+  await handleRoomSlashCommand({ ...common, focusedAgentId: () => null }, command)
+  await handleRoomSlashCommand({ ...common, focusedAgentId: () => "agent-1" }, command)
+  await handleRoomSlashCommand({
+    ...common,
+    focusedAgentId: () => "agent-1",
+    send: async <TResponse>(request: unknown) => {
+      requests.push(request)
+      return {
+        RoomEnvironmentSlice: {
+          binding: { session_id: "session-1", slice_id: "slice-1" },
+        },
+      } as TResponse
+    },
+  }, command)
+
+  assert.deepEqual(requests, [
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+    { GetRoomEnvironmentSlice: { session_id: "session-1" } },
+  ])
+  assert.deepEqual(flashes, [
+    "focus an agent before opening the Room Environment",
+    "Room Environment has no bound slice to view",
+    "Chariox Cloud Web View is not configured; run /cloud link first",
   ])
 })
 

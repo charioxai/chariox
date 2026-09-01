@@ -240,6 +240,7 @@ mod tests {
                 "/room stop",
                 "/room retry",
                 "/room reconnect",
+                "/room view",
                 "/room takeover ",
                 "/room release ",
                 "/room cancel ",

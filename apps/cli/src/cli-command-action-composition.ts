@@ -2,6 +2,7 @@ import type { BootstrapState, RuntimeSession } from "./cli-types.js"
 import { createCommandActionHandlers } from "./command-actions.js"
 import { resolveConfiguredCloudRelayApiUrl } from "./cli-options.js"
 import { bootstrapCloudRelayProfile } from "./cloud-relay.js"
+import { buildHostedCloudViewUrl } from "./cloud-command-lifecycle.js"
 import { importExternalProviderAgent } from "./external-provider-session-api.js"
 import { openExternalUrl } from "./external-url.js"
 import { formatAgentLabel } from "./agent-label.js"
@@ -436,6 +437,13 @@ export function createCliCommandActionComposition(deps: CliCommandActionComposit
       if (!client.supportsKernelEvents()) return false
       await client.restartKernelEventStream()
       return true
+    },
+    openRoomViewer: async (target) => {
+      const apiUrl = relayCloudProfile(preferencesState())?.apiUrl
+        ?? resolveConfiguredCloudRelayApiUrl(preferencesState())
+      if (!apiUrl) return null
+      const url = buildHostedCloudViewUrl(apiUrl, target)
+      return { url, opened: await openExternalUrl(url) }
     },
     sendWorkflowEventPublicationRequest: (request) => client.send(request),
     appendCloudNotice,
